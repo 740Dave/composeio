@@ -1,0 +1,65 @@
+# ComposeUX demo — Activity + SubagentLedger sub-widgets ([SPEC:CXC-IC])
+#
+# The Intelligence Console's two semantic-event sub-widgets:
+#
+#   activity          <- self/activity   {tool,target,phase,id,dur_s,ts}
+#   subagent_ledger   <- self/subagents  {type,model,desc,status,id,tokens,dur_s,ts}
+#
+# State on the bus, behavior in the widget.  `initial:` seeds ONE value per
+# namespace, so the single CLI render below shows a single live row per panel;
+# the in-place dispatched->done update is proven by the unit tests (a scene
+# `initial:` can't fire two events on one namespace).
+#
+#   python -m composeio.render.engine.runtime \
+#       composeio/render/examples/subwidgets_demo.compose.yaml \
+#       --headless /tmp/subwidgets_test.png
+
+app:
+  id: demo-subwidgets
+
+design:
+  title: "Intelligence Console — activity + subagent ledger"
+  width: 420
+  height: 420
+  background: "#0A0E16"
+
+namespaces:
+  - name: self/activity
+    state_engine: json
+    initial:
+      tool: Read
+      target: "spec 34"
+      phase: start
+      id: act-1
+      ts: 0
+  - name: self/subagents
+    state_engine: json
+    initial:
+      type: general-purpose
+      model: opus
+      desc: "Pre-vis Instrument"
+      status: dispatched
+      id: sa-1
+      ts: 0
+
+widgets:
+  - type: stack
+    id: scene
+    direction: column
+    gap: 10
+    padding: [12, 12, 12, 12]
+    children:
+      - type: activity
+        id: activity_panel
+        label: "Activity"
+        width: 396
+        height: 150
+        max_lines: 6
+        namespace: self/activity
+      - type: subagent_ledger
+        id: ledger_panel
+        label: "Subagents"
+        width: 396
+        height: 210
+        max_rows: 8
+        namespace: self/subagents

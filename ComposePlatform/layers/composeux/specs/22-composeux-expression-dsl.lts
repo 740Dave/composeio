@@ -1,0 +1,150 @@
+---
+scope: "The ComposeUX expression DSL — a sandboxed, pure, bit-identical-across-backends expression language for arithmetic, derived values, and multi-namespace conditions in `.compose.yaml`. Closes the six use-cases harvested from Headless Widgets Pass 1 without opening an arbitrary-code surface."
+audience: "ComposeUX/ComposeIO architects, render-engine developers, CYD/embedded developers, widget authors"
+boundary: "IN: the grammar, the deterministic evaluation semantics, the closed function set, the evaluation context, the three integration sites, and the cross-backend conformance contract. OUT: arbitrary code (refused — [CXC-BIND-BOUNDARY]); statements/assignment/loops (this is a pure expression language); transcendental functions (v1-deferred, see [CXC-DSL-SEMANTICS]); the C++/CYD and JS interpreter IMPLEMENTATIONS (each is its own pass, gated on passing the shared corpus — [CXC-DSL-CROSSPLAT])."
+not-this: "Not a scripting runtime; not templating (no `{{ }}` interpolation — a bare typed expression); not Python/JS embedded in YAML; not stateful (no variables you assign — integration is a read-modify-write output expression, [CXC-DSL-STATE])."
+depends-on: [16-composeux-bindings-behaviors.lts, 20-composeux-headless-widgets.lts, 21-composebus-pattern-subscription.lts]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# ComposeUX Expression DSL [SPEC:CXC-DSL]
+
+> A single expression evaluates to a single typed value, identically on every backend. It is the sanctioned middle ground between the declarative 90% and arbitrary code: enough arithmetic and logic to express real control/simulation math, sandboxed hard enough to run safely on a fetch-from-bus display fleet and bit-identically on a $2.50 ESP32.
+
+---
+
+## 1. Intent
+
+### [CXC-DSL-INTENT] Close the Six Harvested Gaps, Open No Code Surface
+
+- definition: a restricted, sandboxed expression language usable anywhere a `.compose.yaml` today takes a literal or a single namespace reference. It computes a value from bus namespaces, inline variables, and tick context (`dt`, `t`) using arithmetic, comparisons, booleans, a ternary, and a closed set of functions — nothing else.
+- origin: this is NOT speculative. Its entire scope is the six use-cases HARVESTED empirically from building the jump-drive triad declaratively in Headless Widgets Pass 1 ([CXC-RM-BEHAVIORS] dsl-gate-MET; `~/.composeio/dsl_candidates.jsonl`, source `headless-pass1`). The DSL exists to close exactly these and no more:
+  1. **variable-rate integration** — `ns('fuel/remaining') - ns('pump/flow_rate') * dt` per tick.
+  2. **conditional rate arithmetic** over a subscribed value — `min(demand, k * ns('fuel/remaining'))`, proportional derating.
+  3. **multi-namespace boolean AND** in one place — `ns('fuel/remaining') >= 40 and ns('ship/charge') >= 60` (in Pass 1 this cost 3 widgets + 2 intermediate namespaces + 2 bus hops to fake declaratively).
+  4. **open-ended comparison operators** — `>= > <= <` (the declarative `in:[lo,hi]` forced a `1e9` sentinel upper bound).
+  5. **canon-aware / typed equality** — an `==` that shares the binding-layer `canon()` vocabulary so a bool `True` publish and a string `"on"` compare equal (the declarative value-map matched `str(raw)` exactly and silently missed).
+  6. **derived / scaled output values** — `ns('fuel/remaining') / capacity * 100`.
+- the discipline: closing these must not re-open arbitrary code. The DSL is a *pure function* of (namespace values, variables, `dt`, `t`) → value, over a *closed* operator+function set, with no names, attributes, indexing, imports, or I/O reachable. That closure is what makes it safe on a fleet and portable to C++/JS — see [CXC-DSL-SANDBOX], [CXC-DSL-CROSSPLAT].
+- part-of: [SPEC:CXC-DSL]
+
+---
+
+## 2. Language
+
+### [CXC-DSL-GRAMMAR] A Bare Typed Expression, Not a Template
+
+- form: a single expression that evaluates to one value (number / bool / string). No statements, no assignment, no blocks, no interpolation braces. It lives in an explicit `expr:` field (opt-in — see [CXC-DSL-SITES]), so a bare literal field is never silently reinterpreted.
+- grammar (informal, precedence high→low):
+  - **atoms**: number literals (parsed as float64), `true`/`false`, single-quoted strings, `dt`, `t`, `$name` (inline variable — reuses the existing `variables:` block and `$var` machinery), `ns('namespace')` (bus read), and a whitelisted function call.
+  - **unary**: `-x`, `not x`.
+  - **`*` `/` `%`** (left-assoc) → **`+` `-`** (left-assoc) → comparisons **`< <= > >= == !=`** (non-assoc) → **`and`** → **`or`** → ternary **`cond ? a : b`** (lowest).
+  - **grouping**: `( … )`.
+- functions (the CLOSED set, v1): `min(a,b)`, `max(a,b)`, `abs(x)`, `clamp(x,lo,hi)`, `round(x)`, `floor(x)`, `ceil(x)`. That is the whole function table. Adding one is a spec change, not an author liberty.
+- namespace read: `ns('name')` returns the namespace's current bus value coerced to float64 when numeric, else its canon token / string. Reads only; writing is via the output site, never inside an expression.
+- example (the triad, closed): tank output `ns('fuel/remaining') - ns('pump/flow_rate') * dt`; pump rate `ns('pump/damaged') ? 0.0 : min(ns('fuel/remaining'), 8.0)`; jump readiness trigger `ns('fuel/remaining') >= 40 and ns('ship/charge') >= 60`.
+- part-of: [SPEC:CXC-DSL]
+
+### [CXC-DSL-SEMANTICS] One Numeric Model, No Surprises, No NaN on a Gauge
+
+- **float64 everywhere.** Every number is IEEE-754 double — the type Python floats and JS numbers already are, and the type the C++/CYD interpreter MUST use (ESP32 emulates `double` in software; expression eval is per-tick, not per-pixel, so the cost is negligible and bit-identity is non-negotiable). A float32 shortcut on the CYD is FORBIDDEN — it would diverge from the reference.
+- **deterministic evaluation order.** Standard precedence, left-associative arithmetic, evaluated left→right; no optimizer reassociation (float add/mul are not associative — reassociation would break bit-identity). Short-circuit `and`/`or` and lazy ternary branches are REQUIRED (both for semantics and to avoid evaluating a divide-by-zero in a dead branch).
+- **guarded division.** `x / 0` and `x % 0` yield `0.0` (documented), never `NaN`/`inf`. Rationale: a NaN silently poisons every downstream expression and paints garbage on a display fleet; a guarded 0 is inspectable and identical on all backends. A one-time per-expression warning is emitted.
+- **no transcendentals in v1.** `sin/cos/tan/sqrt/pow/log/exp` are DEFERRED: their bit-results differ across libm/JS-Math/ESP32 implementations, which would silently break the cross-backend byte-identity that is the DSL's whole reason for a spec. If a real use-case needs one, it is added with a pinned, shared polynomial implementation (compiled into every backend), not a call to the platform libm — that is a deliberate future deliverable, not a v1 convenience.
+- **typed comparison.** Numeric `==/!=/<` compare as float64. When either side is non-numeric, `==`/`!=` compare through the binding layer's `canon()` (use-case #5) so `True`/`'on'`/`'1'`/`1` collapse to one on/off token — reusing, not forking, the [CXC-BIND] `bindings.canon` vocabulary. Ordering comparators on non-numerics are an author error.
+- **result coercion at the site.** The site coerces: a bool attribute wants a bool, a numeric output wants float64, a trigger condition wants a canon on/off. Coercion rules are the site's ([CXC-DSL-SITES]), identical across backends.
+- **total on non-finite inputs** (2026-07-09, Pass-2b falsification finding): `round/floor/ceil` of a non-finite value pass it through (`inf→inf`, `nan→nan`); `%` on non-finite matches C++ `std::fmod` (`fmod(inf|nan, y)=nan`, `fmod(x, inf)=x`). The evaluator NEVER raises outside its `value | parse_error | eval_error` contract. A `1e400` literal overflows to `+inf`.
+- change: "Non-finite function/modulo inputs return IEEE results (matching the C++ backend), never raise — the evaluator is now total."
+- context_for_change:
+  - prior_state: "`round/floor/ceil(1e400)` raised `OverflowError` and `1e400 % 2` raised `ValueError` from `math.fmod` — uncaught, outside the value|error contract; the corpus never pinned non-finite fn/mod args, so Pass-2 conformance passed anyway."
+  - reasoning: "Found by the Pass-2b falsification test — the FIRST independent re-implementation (C++/CYD) exposed it: Fable's C++ was total by construction, and a 30k-expression differential fuzz vs the reference hit 175 crash cases. An overflowing expression must degrade, not crash a display; totalizing to IEEE is consistent with the existing guarded-div philosophy and keeps Python matching the already-total C++. This is exactly the latent-Pythonism that 2b-first was sequenced to surface ([CXC-DSL-CROSSPLAT])."
+  - rejected_alternative: "Make it a `DslEvalError` — rejected: less useful than a total IEEE result and would force the C++ to also raise; totality is the lower-friction agreement point and matches guarded-div."
+  - invalidating_assumption: "That NaN *bit* parity holds on the ESP32 soft-float. It is UNVERIFIED, so only deterministic (inf/finite) totality cases are corpus-pinned (`totality` group, 8 cases); NaN-producing cases (`1e400 % 2`) are deliberately NOT pinned."
+  - implication: "Corpus grew 226→234; Python reference + native C++ both 234/234; on-device remains 226/226 proven (the +8 are universal IEEE bits on the identical C++ interpreter)."
+- part-of: [SPEC:CXC-DSL]
+
+### [CXC-DSL-STATE] Integration Is Read-Modify-Write, Not Assignment
+
+- decision: the DSL is **stateless** — it has no assignable variables and no memory between evaluations. The one use-case that looks stateful (variable-rate integration, #1) is expressed as an **output expression that reads its own current namespace**: `outputs: [{namespace: fuel/remaining, expr: "ns('fuel/remaining') - ns('pump/flow_rate') * dt"}]`. Each `tick(t)` reads the current value, computes the next, publishes; the next tick reads that. The bus IS the state; the expression stays a pure function.
+- why: keeping the language pure (no assignment, no loops, no accumulators) is what makes it (a) trivially sandboxable, (b) deterministic under the [CXC-HW-RUNTIME] explicit-time `tick(t)` — golden `tick(0.0), tick(0.1)…` reproduces the exact integrated sequence, and (c) portable — an assignment/scope model would be far harder to make bit-identical on C++/JS.
+- part-of: [SPEC:CXC-DSL]
+
+---
+
+## 3. Where It Plugs In
+
+### [CXC-DSL-SITES] Three Opt-In `expr:` Sites, One Evaluator
+
+- the DSL is reachable at exactly three sites, each an explicit `expr:` field (opt-in; a literal field is never silently reinterpreted). One evaluator serves all three:
+  - **output expr** — `outputs: [{namespace: x, expr: "…"}]`. Closes #1 (integration), #2 (conditional rate), #6 (derived/scaled). Adds the transform slot that `parse_outputs` today deliberately omits.
+  - **binding value expr** — an attribute bound to an expression rather than a raw namespace/literal (`{attr: opacity, expr: "clamp(ns('signal')/100, 0, 1)"}`). Generalizes the current single-namespace attr binding.
+  - **trigger condition expr** — `when: {expr: "…"}` (visible bindings) and behavior triggers. Closes #3 (multi-namespace AND), #4 (open comparisons), #5 (typed equality). The expression evaluates to a canon on/off.
+- boundary handoff (the promotion): today `expr`/`expression` are in the REFUSED code-field keys (`strip_code_fields`, stripped + warned) and `looks_like_expression()` is a capture hook feeding the DSL-candidate log. Pass 2 **promotes `expr:` from refused to sanctioned-and-parsed at these three sites only** — routed to the DSL parser/evaluator. Everything else stays refused: `code`/`script`/`python`/`eval`/`exec` keys, and `{{`/`{%`/`${`/leading-`=` inside *literal* value fields, remain stripped/refused. The sanctioned surface is precisely the whitelisted grammar via `expr:`, nothing wider.
+- part-of: [SPEC:CXC-DSL]
+
+---
+
+## 4. Define-Once
+
+### [CXC-DSL-CROSSPLAT] The Conformance Corpus IS the Contract
+
+- principle: the DSL is only define-once if `expr` yields the **same bits** on CPython, C++/ESP32, and (future) JS. That guarantee is not asserted in prose — it is an **executable shared conformance corpus**: a set of `{expr, ns_values, vars, dt, t → expected_value}` cases that EVERY backend interpreter must reproduce exactly. This is the [CXC-R-C1] golden-frame discipline applied to expression evaluation instead of pixels.
+- reference implementation: **Python is the reference** (`render/engine/` is Python). The corpus is authored alongside it and Python passes it by construction. The corpus covers: operator precedence/associativity, short-circuit + lazy-ternary, guarded div/mod-by-zero, float64 edge values, canon-typed equality, every whitelisted function at boundaries (clamp inversions, round half-to-even vs half-up — PICK ONE and encode it), and the full triad evaluated over a tick sweep.
+- other backends are their OWN passes, gated on the corpus: the **C++/CYD interpreter (Pass 2b)** and a **JS/browser interpreter (with the Web tier)** each ship only when they pass the identical corpus byte-for-byte. Splitting them out is deliberate — an embedded C++ expression VM is a distinct skill from the Python reference, and the corpus lets it be verified in isolation with zero rendering. Pass 2 delivers the reference + the corpus (the contract); it does not build C++.
+- rounding note to pin in the corpus: Python `round()` is banker's rounding (half-to-even); C++ `std::round` is half-away-from-zero; JS `Math.round` is half-up. The spec MUST choose one (recommend **half-to-even**, IEEE default) and the non-Python backends implement the chosen rule, not their platform default. The corpus makes a violation a test failure, not a field surprise.
+- part-of: [SPEC:CXC-DSL]
+
+### [CXC-DSL-SANDBOX] Why This Is Not Arbitrary Code ([CXC-BIND-BOUNDARY] upheld)
+
+- the closure that keeps it safe: an expression can name ONLY `dt`, `t`, `$vars`, and `ns('…')`; can call ONLY the seven whitelisted functions; has NO attribute access, NO indexing/subscription, NO name binding, NO imports, NO I/O, NO iteration. The Python reference evaluates a parsed AST it built itself — it never touches `eval`/`exec`/`compile`/`__import__` (the Pass-1 refusal detector already guards those; they must not appear in the interpreter either).
+- therefore the [decision-inline-code] invariant HOLDS: this is not Python-in-YAML (which can't run on C++/JS and is an RCE surface on a fetch-from-bus fleet). It is a portable, total, closed calculator. The distinction the spec must keep sharp: *arbitrary code is refused; this bounded expression grammar is sanctioned.*
+- part-of: [SPEC:CXC-DSL]
+
+---
+
+## 5. Proof
+
+### [CXC-DSL-TRIAD] Re-Author the Triad; Close C2
+
+- deliverable: re-author `render/examples/headless/widgets/{fuel_tank,fuel_pump,jump_engine}.compose.yaml` to USE `expr:` — real variable-rate drain, real conditional pump rate, single-expression readiness AND — collapsing the Pass-1 3-widget/2-namespace/2-hop workaround. This closes [CXC-HW] compliance **C2** (full jump-drive from fuel+charge arithmetic) which Pass 1 could only satisfy partially, WITHOUT violating C8.
+- part-of: [SPEC:CXC-DSL]
+
+---
+
+## 6. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-DSL-C1 | Grammar | Parser accepts the full grammar (atoms, unary, arithmetic, comparisons, and/or, ternary, grouping, whitelisted calls) and rejects everything else with a clear error |
+| CXC-DSL-C2 | Float64 determinism | All arithmetic is IEEE-754 double; a corpus case asserts exact bits; no reassociation |
+| CXC-DSL-C3 | Short-circuit + lazy ternary | `and`/`or` short-circuit; only the taken ternary branch evaluates (a divide-by-zero in the dead branch never fires) |
+| CXC-DSL-C4 | Guarded div/mod | `x/0` and `x%0` → `0.0` with a warning; never NaN/inf |
+| CXC-DSL-C5 | Closed function set | Only min/max/abs/clamp/round/floor/ceil callable; any other name is a parse error |
+| CXC-DSL-C6 | Canon-typed equality | `==`/`!=` on a non-numeric side routes through `canon()`; `True`==`'on'`==`'1'` |
+| CXC-DSL-C7 | Stateless integration | Read-modify-write output expr integrates correctly; `tick(0.0),tick(0.1)…` reproduces the exact sequence |
+| CXC-DSL-C8 | Three sites | `expr:` works at output / binding-value / trigger-condition; a literal field still refuses expression-looking strings |
+| CXC-DSL-C9 | Sandbox | No eval/exec/compile/import in the interpreter; no attribute/index/name access reachable from an expression; arbitrary-code keys still refused |
+| CXC-DSL-C10 | Conformance corpus | A shared `{expr,inputs→expected}` corpus exists and the Python reference passes 100%; it is the byte-contract for C++/JS backends |
+| CXC-DSL-C11 | Triad closes C2 | The re-authored triad produces `jumpdrive/readiness` from real fuel+charge arithmetic in a single expression, no inline code |
+| CXC-DSL-C12 | Rounding pinned | `round()` half-to-even is encoded in the corpus; non-Python backends must match it, not their platform default |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-DSL] CLOSES [CXC-HW-DSL]
+[SPEC:CXC-DSL] EXTENDS [SPEC:CXC-BIND]
+[SPEC:CXC-DSL] UPHOLDS [CXC-BIND-BOUNDARY]
+[CXC-DSL-SEMANTICS] MIRRORS [CXC-R-C1]
+[CXC-DSL-STATE] DEPENDS_ON [CXC-HW-RUNTIME]
+[CXC-DSL-CROSSPLAT] RELATED_TO [CXC-RM-BEHAVIORS]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-07-07
+**Status**: Pass 2 OPERATIONAL (2026-07-07). Python reference interpreter `render/engine/dsl.py` (tokenizer → recursive-descent parser → own-AST tree-walking evaluator, zero `eval`/`exec`/`compile`/`__import__`); conformance corpus `render/engine/dsl_conformance/dsl_corpus.json` (**226 cases, IEEE-754-bit-exact matching**, format `composeux-dsl-conformance-v1`, language-agnostic + README — the byte-contract for Pass 2b/JS) with reference adapter + runner; `expr:` promoted from refused → sanctioned at the three sites; the jump-drive triad re-authored to `expr:` (single-expression readiness AND, real variable-rate drain, `min()` conditional pump rate) — **[CXC-HW] C2 CLOSED**. Sandbox proven: malicious exprs (`__import__`, attribute/subscript access, unknown calls) fail at PARSE. CXC-DSL-C1…C12 all PASS; 570 tests green macOS (325 baseline + 245 DSL incl. the 226 corpus cases now CI-enforced, `tests/render/test_dsl.py`). **Pass 2b = C++/CYD interpreter, JS = Web tier — each its own pass, gated ONLY on passing this corpus byte-for-byte.** round() pinned half-to-even; float64 everywhere; guarded div/mod → 0.0; no transcendentals in v1.
+
+**Pass 2b OPERATIONAL (2026-07-09) — define-once PROVEN on silicon.** C++/CYD interpreter `cyd/src/dsl.{h,cpp}` (host-compilable, `double` everywhere, own-AST recursive-descent, bounded recursion for the MCU); corpus→C++ header generator `python/scripts/gen_dsl_corpus_header.py` → `cyd/test/dsl_corpus_generated.h` (cases baked into flash, no JSON parser / no FS on the MCU); native host harness (`[env:native_dsl]`, the hardware-free CI foothold) + on-device runner (`[env:cyd_dsl_test]`). Results: native **234/234**, **on-device 226/226 on the real ESP32 xtensa soft-double** (device `cyd-45302c`, 254 µs/case), Python reference **234/234** — expression eval now bit-identical across macOS arm64 / x86_64 / ESP32. Plus a 30k-expression differential fuzz vs the reference = 0 mismatches. **Falsification payoff:** 2b (the first independent implementation) exposed a latent reference non-totality (see [CXC-DSL-SEMANTICS] change record) — fixed, corpus 226→234. JS/Web-tier interpreter still owed, gated on this same corpus.

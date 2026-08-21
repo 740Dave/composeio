@@ -1,0 +1,63 @@
+# ComposeUX demo — Mermaid ([SPEC:CXC-IC] [CXC-IC-CANVAS])
+#
+# The composable canvas at its purest: state on the bus, behavior in the
+# widget.  An Intelligence emits mermaid-diagram TEXT on `thread/diagram` and
+# this widget renders it live — no round-trip through the model to redraw.
+#
+# Two render tiers, ONE widget (the media/svg graceful-degradation idiom):
+#   web tier    — the vendored, pinned mermaid.min.js rasterizes the diagram
+#                 in the Intelligence Console (offline; never a CDN).  See the
+#                 standalone proof: render/examples/mermaid_widget_demo.html
+#   Canvas tier — degrades to a SOURCE panel (the bytes on the bus) on the
+#                 CYD/MinnowBoard/desktop Canvas backends; the screen is never
+#                 broken.
+#
+# The `source` below is the INITIAL diagram; publishing new mermaid text to
+# `thread/diagram` swaps it reactively (on_bus_state, the SvgWidget idiom).
+# The widget subscribes `thread/diagram` by default — no `namespace:` needed.
+#
+# Run from this directory:
+#   cd python/composeio/render/examples
+#   python3 -m composeio.render.engine.runtime mermaid_diagram.compose.yaml
+#
+# Then, from any bus peer, emit a NEW diagram and watch it re-render:
+#   publish thread/diagram = "sequenceDiagram\n  David->>Architect: emit\n  Architect-->>Widget: render"
+
+app:
+  id: demo-mermaid
+
+design:
+  title: "Mermaid — thread/diagram"
+  width: 480
+  height: 380
+
+namespaces:
+  - name: thread/diagram        # the Intelligence emits mermaid text here
+
+widgets:
+  - type: stack
+    id: scene
+    direction: column
+    gap: 10
+    padding: [16, 16, 16, 16]
+    children:
+      - type: label
+        id: heading
+        text: "diagram · live from bus — thread/diagram · mermaid"
+        font_size: 13
+        color: "#8FA0B4"
+        height: 20
+      # The mermaid surface: subscribes thread/diagram by default, so a value
+      # published there re-renders it with no model round-trip ([CXC-IC-C7]).
+      - type: mermaid
+        id: canvas
+        namespace: thread/diagram
+        theme: dark
+        width: 448
+        height: 320
+        source: |
+          graph TD
+            A[Intelligence] -->|emit mermaid| B(thread/diagram)
+            B --> C{widget subscribes}
+            C -->|renders| D[diagram appears]
+            C -->|no model round-trip| E[state on bus, behavior in widget]

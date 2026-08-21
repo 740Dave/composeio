@@ -1,0 +1,156 @@
+# CAN v2 fleet sweep — findings, decisions and what is still UNPROVEN [SPEC:CANV2-SWEEP]
+
+> A wholesale CAN-v2 conversion was dispatched across "the entire fleet". The conversion was
+> already complete before this session began, because THE FLEET HAS EXACTLY ONE CONVERTIBLE CAN
+> PEER and it was converted on 2026-08-14. What the sweep actually produced is a roster
+> correction, four remediations, two measurements that settle ratified disagreements, the
+> identification of the `0xDEAD` constant, and — the most valuable result — the FIRST MEASURED
+> CROSS-SILICON v2 INTEROP on real wire. No ESP32 flash was written in this session.
+
+- document-status: WORKING DOCUMENT for architect review. NOT a canonical corpus file. It is deliberately in `docs/` rather than `corpora/platform-specs/` because `docs/` is not a registered corpus root, so landing it mutates no live graph. Promote deliberately or not at all.
+- sweep-date: 2026-08-15
+- authored-by: composeio-hardware-architect subagent, dispatched with authority to flash, deploy and make reasonable technical calls, architect reviewing after.
+- evidence-discipline: every claim below is tagged MEASURED, INFERENCE or DATASHEET. Per [CXC-VISION-EPISTEMICS], a machine signal that agrees with the wrong answer is the failure mode being designed against, so every wire claim here was read back through an instrument INDEPENDENT of the thing that wrote it.
+- flash-writes-this-session: NONE. No ESP32 firmware was written, so no factory-image backup was required. The only writes were three Raspberry Pi config files, all backed up with SHA-256 before the first change — see [CANV2-REVERSAL].
+- see-also: [SPEC:CXC-VISION], [CXC-VISION-EPISTEMICS], [BP-CAN-ID], [DX-SPEC-CARRIES-ITS-EVIDENCE], [SPEC:CXC-BOARD-HW]
+
+---
+
+## The roster is NOT what the dispatch assumed — one convertible peer, not a fleet [CANV2-ROSTER]
+
+- headline: MEASURED — the fleet contains exactly THREE CAN-relevant nodes, not a fleet of them. Two are ESP32s on USB and one is the Pi. Of the two ESP32s, one is the ring-fenced controller that is not a CAN peer at all, and the other was already converted. There was no wholesale conversion left to perform.
+- node-cio-ctrl-db1c: MEASURED — USB serial `AA:BB:CC:DD:EE:FF`, mapped PASSIVELY to `/dev/cu.usbmodem31101`. NEVER TOUCHED, as instructed. It reaches the bridge over MQTT and puts no frames on CAN, so it needs no conversion. Confirmed from the bridge's own logs, which show `throttle/right` arriving MQTT-side with `src=cio-ctrl-db1c`.
+- node-c3lcd-c28020: MEASURED — USB serial `AA:BB:CC:DD:EE:FF`, mapped PASSIVELY to `/dev/cu.usbmodem11301`. Already on v2. Its boot banner states the layout in full: `[BP-CAN-ID] v2 prio(3)|type(4)|ns(16)|src(4)|scope(2)`.
+- node-rpi5: MEASURED — `pi.example.local`, two MCP2515 channels (`mcp251x` on `spi0.0`/`spi0.1`) plus `composeio-can-bridge.service`. NOT rebooted at any point; only individual services were restarted.
+- identity-method: MEASURED — port-to-serial mapping was resolved by walking the `ioreg` USB tree to the `IOCalloutDevice` leaf, which reads the descriptor and RESETS NOTHING. `esptool chip-id` was never used; it resets the board, which is the exact harm the check exists to prevent.
+- the-two-c3s-share-a-prefix: Both ESP32s are `AA:BB:CC:xx:xx:xx`. Only the FULL serial separates the ring-fenced controller from the board that was worked on. Every operation in this session was aimed at `/dev/cu.usbmodem11301` only.
+- devices-that-do-not-exist-physically: INFERENCE — the firmware tree carries CAN build envs for a headless relay (`esp32_can_relay`), a pin-drive test, a CAN filter bench, and the corpus describes a CH32V003 + MCP2515 gateway PCB ([PCB-CANGW]). NONE of these is physically present. They are designs and bench tools, not unconverted nodes.
+- fourth-usb-device-unidentified: EMPTY — an FTDI `USB <-> Serial Cable`, serial `FTZ29P6A`, is attached at `/dev/cu.usbserial-FTZ29P6A`. What is on the far end is UNKNOWN and was deliberately NOT probed: opening an FTDI port asserts DTR/RTS and can reset whatever is attached, and nothing identified it as a CAN node. NEEDS DAVID'S EYES.
+- mqtt-census-is-empty-of-devices: MEASURED — a 25-second subscription to `composeio/#` on the broker returned 58 topics and ZERO `_device/*` topics. No embedded node is announcing on MQTT. The live topics are software intelligences and a kiosk.
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## The bridge was transmitting as src=0 — the arbitration hazard was LIVE, and now is not [CANV2-BRIDGE-SRC]
+
+- symptom: MEASURED — every frame the bridge put on the wire carried `src=0` (unassigned). Observed in its own log on the live bus: `throttle/right` went out as `id=0x04036781`, which decodes under [BP-CAN-ID] v2 to `ns=0x0996 src=0 scope=1`.
+- root-cause: MEASURED — `CAN_BRIDGE_NODE_ID` was ABSENT from the environment file entirely, so `_load_node_id()` returned the default `NODE_ID_UNASSIGNED`. This was not a wrong value; it was a missing key, which is why nothing warned.
+- severity: The c3lcd board is ALSO `src=0`, so the segment carried TWO nodes both claiming 0. That is precisely the condition [DEC-UNASSIGNED-SRC-IMPLIES-LISTEN-ONLY] exists to prevent — byte-identical 29-bit ids with different data, bit error, TEC +8 on both, retransmit, a self-sustaining storm that presents as a wiring fault.
+- fix-applied: `CAN_BRIDGE_NODE_ID=1` added to the repo-owned `deploy/can_mqtt_bridge/composeio-can-bridge.env` AND to the running host's `/etc/default/composeio-can-bridge`. Both, deliberately: the host file is overwritten by the next deploy, so a host-only edit would silently revert.
+- why-node-1: The bridge is the fleet's fixed infrastructure peer. Leaves should be allocated upward from 2. Fifteen ids is a real ceiling, not a comfortable one.
+- verification: MEASURED, ON THE WIRE, THROUGH AN INDEPENDENT INSTRUMENT. The bridge emits one `_device/broadcast/announce` frame at startup, so restarting it while running `candump -L can1` — the cross-wired witness channel — captured `1431DF05#01`. Decoding: `prio=5 type=0 ns=0xC77C src=1 scope=1`. The namespace hash was then recomputed INDEPENDENTLY of the bridge (CRC-16/CCITT-FALSE of `_device/broadcast/announce` = `0xC77C`) and matched. `src` is 1.
+- what-was-deliberately-not-done: The ratified rule `src == 0 implies listen-only` was NOT applied to the bridge. Applying it would have MUTED the segment's only working transmitter and presented as a dead bus. The rule is correct for a LEAF; the correct fix for infrastructure is ALLOCATION. Flagged because a later reader implementing that rule mechanically will break the bus.
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## Bit timing — the briefing's one-argument SJW fix is not available; sjw 2 is [CANV2-BITTIMING]
+
+- briefing-claim-corrected: The dispatch said the Pi's `SJW 1 of 16 = 6.25%` is "the driver minimum" and could be widened "via one argument". MEASURED — the driver's advertised range is `sjw 1..4`, NOT 1..16, and `sjw 4` is REJECTED outright: `Error: sjw: 4 greater than phase-seg2: 2`. SJW is bounded by `phase-seg2`, which is 2 at the current sample point.
+- second-correction: MEASURED — requesting `sample-point 0.800` does NOT yield 0.800. The kernel bit-timing calculator lands on `0.750` with `phase-seg2 4`. A caller who requests 0.8 and does not read back believes something false.
+- measured-probe-table: MEASURED, on `can1` so the bridge's interface was never at risk. `sjw 4` REJECTED. `sjw 2` accepted at SP 0.875. `sample-point 0.800 sjw 3` accepted but landed at SP 0.750. `sample-point 0.800 sjw 4` accepted but landed at SP 0.750.
+- decision: `sjw 2` at the existing sample point 0.875. This DOUBLES resync margin from 6.25% to 12.5%, which lands inside the ESP32's SJW band, WITHOUT shifting the sample point on a link that currently works.
+- decision-rejected-and-why: SP 0.750 with `sjw 4` was rejected. It would buy more SJW but move the sample point away from the CiA-recommended 87.5% for 500 kbit/s and perturb a working link to chase a peer that cannot yet transmit. Reversible if the architect disagrees.
+- esp32-side-for-comparison: DATASHEET plus code read — the ESP32 uses stock `TWAI_TIMING_CONFIG_500KBITS()`, which is 20 TQ, sample point 80%, SJW 3 = 15%. The two ends still differ in sample point (87.5% vs 80%); at 500 kbit/s over this bench's cable length that is within tolerance, but it is a REAL residual mismatch and is recorded as such rather than declared fine.
+- applied-where: Both `can0.service` and `can1.service` ExecStart lines on the host, plus a live `ip link` reconfigure so the running interfaces match the units. Verified by read-back: `sjw 2` on both.
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## The bus-off disagreement is SETTLED — and both parties were right about different faults [CANV2-BUSOFF-EXPERIMENT]
+
+- the-disagreement: A CAN specialist held that a lone transmitter reaches bus-off after roughly 32 attempts. ISO 11898-1's error-passive ACK exception says it should stall at error-passive instead. The dispatch asked for the cheap experiment that settles it.
+- experiment: MEASURED. Bridge stopped, `can1` brought DOWN to remove the ONLY ACK peer, `can0` brought up with `restart-ms 0` so any bus-off would be observable rather than silently auto-recovered, then ONE frame sent and the state sampled for 20 seconds.
+- result: The interface went to ERROR-PASSIVE within 1 second and STAYED THERE for the full 20 seconds. Final counters: `error-warn 4`, `error-pass 5`, `bus-off 0`, `re-started 0`.
+- verdict: ISO 11898-1's ACK exception is CONFIRMED. A node alone on a terminated segment with no peer to ACK does NOT reach bus-off. An error-passive transmitter that detects an acknowledgement error does not increment its transmit error counter, so TEC stalls near 128 and never reaches 256.
+- but-the-specialist-is-also-right: INFERENCE, and it reconciles the two positions. The c3lcd board's own boot banner records that in NORMAL mode on its hardware it reaches BUS-OFF in about 5 seconds. The difference is the FAULT, not the standard: a node whose transceiver driver is dead sees BIT errors, and a bit error DOES increment TEC even when error-passive. The ACK exception applies only to the acknowledgement slot. So "lone node stalls at error-passive" and "faulty transmitter reaches bus-off in ~32 attempts" are both correct and describe different failures.
+- consequence-for-restart-ms: This EXPLAINS the standing observation that `restart-ms 100` on the Pi has never fired. It has never fired because the Pi's dominant fault mode cannot produce bus-off. The instrument was not broken; the condition never occurred.
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## restart-ms was deliberately LEFT AT 100 — half a ratified decision is worse than none [CANV2-RESTART-MS]
+
+- ratified-preference: `restart-ms 0` with counted, logged recovery, in place of the current `restart-ms 100`.
+- decision: NOT APPLIED. `restart-ms 100` is retained on both interfaces.
+- reasoning: The ratified decision has two halves — remove the blind auto-restart, AND add counted, logged recovery in its place. The second half DOES NOT EXIST in any code on this host. Applying only the first half would remove the safety net without adding the instrument, so a real bus-off would leave the interface down indefinitely with nothing recording it.
+- and-it-buys-nothing-today: [CANV2-BUSOFF-EXPERIMENT] measured that the Pi does not reach bus-off in its dominant fault mode, so the auto-restart being removed is inert anyway. All risk, no benefit, until the counter exists.
+- how-to-reverse-this-non-change: If the architect wants it anyway, it is one word in each of `/etc/systemd/system/can0.service` and `can1.service`. It is a non-change, recorded so that "nobody thought of it" and "it was considered and declined" are distinguishable.
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## 0xDEAD identified — a hand-built synthetic frame, not a fleet device [CANV2-DEAD-CONSTANT]
+
+- the-question: The retired v1 bridge's final census reported 84,965 frames dropped as unresolvable, 84,961 of them namespace hash `0xDEAD`. A deliberate-looking constant is not noise.
+- measured-identity: Recovered from journald, which outlived the wiped registry file. EVERY such frame carried CAN id `0x1BD5BE00` with exactly 8 data bytes.
+- the-decode: `0x1BD5BE00 >> 13 = 57005 = 0xDEAD` EXACTLY. Under the v1 layout `ns_hash(16) | type(4) | src(9)` that is `ns=0xDEAD`, `type=15`, `src=0`. Type 15 is the maximum representable 4-bit type code.
+- why-it-is-synthetic: INFERENCE, strong. The id is not the CRC-16 of any namespace — every plausible fleet namespace was hashed and none produces `0xDEAD`. It is a hand-chosen memorable constant, shifted into the v1 namespace field, carrying an out-of-range type and a maximal payload. That is a frame built BY HAND to be unresolvable.
+- most-likely-purpose: INFERENCE, not proven. It has the exact shape of a NEGATIVE CONTROL for the bridge's unresolvable-drop census — the deliberate fault injector that [CXC-VISION-EPISTEMICS] `rule-negative-control` demands, without which a drop counter reading zero means nothing. `cangen` is the documented injection tool on this bench and is recorded in `docs/board-bringup/esp32c3-supermini-can.md` injecting a fixed id on `can1`. The human INTENT is not proven and is not claimed.
+- the-other-two-hashes-are-also-explained: MEASURED. The same census listed `0x254C` x3 and `0x443A` x1. The c3lcd boot banner names both: `0x254C` is `_device/c3lcd-c28020/transport` and `0x443A` is `_device/c3lcd-c28020/config_source`. Those are control commands aimed at the board over CAN, unresolvable at the bridge only because its hand-typed register list names the OTHER firmware's device prefix — see [CANV2-REGISTER-UNMADE].
+- is-it-still-happening: MEASURED — NO. Two independent watches, 15 s and 30 s, across BOTH channels, captured ZERO frames. No `cangen`, `cansend` or `canplayer` process is running, there is no cron entry and no systemd timer. The emitter is gone.
+- residual-risk: If it recurs it will be a person at a keyboard, not a device. Nothing needs to be defended against.
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## FIRST MEASURED CROSS-SILICON v2 INTEROP — the Pi encoded it, the ESP32 decoded it [CANV2-INTEROP-PROOF]
+
+- why-this-is-the-headline: [CXC-VISION-EPISTEMICS] `rule-loopback-proves-nothing-about-peers` says a node talking to itself proves the software and the adapter and NOTHING about interoperation, and that this is exactly how [BP-CAN-ID-DIVERGENCE] stayed invisible. Every prior v2 confirmation in this fleet was a loopback or a parity test against a baked corpus. This is the first time TWO DIFFERENT IMPLEMENTATIONS ON DIFFERENT SILICON agreed about a v2 frame on real wire.
+- the-test: MEASURED. The c3lcd board subscribes `_device/broadcast/announce` (hash `0xC77C`). The bridge emits exactly one such frame at startup. The board's serial console was captured while the bridge was restarted.
+- the-result: The board logged `BUS _device/broadcast/announce = 1`, then `announce: poll on _device/broadcast/announce — republishing the full set`. It received the frame, resolved the 16-bit hash to the correct namespace, decoded the value, and acted on it.
+- what-this-proves: The Pi's Python v2 encoder and the ESP32's C++ v2 decoder agree on all of `prio`, `type`, `ns_id`, `src` and `scope` across a real differential pair. It also proves the ENTIRE receive chain end to end — Pi transceiver, cable, the C3 breakout's SN65HVD230 RECEIVER, the C3's TWAI RX path, and the namespace registry.
+- what-it-refutes: `docs/board-bringup/esp32c3-supermini-can.md` records an open bench question, "CANH/CANL between the C3's SN65HVD230 and the Pi HAT appear to be open". That is now REFUTED FOR THE RECEIVE DIRECTION. The pair carries traffic. That document should be corrected.
+- what-it-does-not-prove: NOTHING about TRANSMIT from the ESP32. The board is listen-only and is invisible on the wire by construction. See [CANV2-TRANSCEIVER].
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## The one remaining hardware fault is now isolated to a single component [CANV2-TRANSCEIVER]
+
+- the-fault: DATASHEET-INDEPENDENT MEASUREMENT, recorded on the board and re-read this session from its boot banner. The SN65HVD230's DRIVER is dead — Pi bus-errors unmoved across ten 1.5 s dominant attempts, and −0.6 mV across CANH/CANL with the driver input held low, on TWO SEPARATE MODULES. Its RECEIVER is fine: 1,136 frames at 500 kbit/s, `bus_err=0`, verified twice.
+- newly-narrowed-this-session: [CANV2-INTEROP-PROOF] removes the cabling hypothesis. The wire is good, the receiver is good, the TWAI RX path is good, and the v2 decode is good. The ONLY unproven link in the chain is the transceiver's driver output.
+- briefing-claim-corrected: The dispatch said "CAN transmit from an ESP32 has NEVER worked in this fleet". That is too strong. `docs/board-bringup/esp32c3-supermini-can.md` records the C3 transmitting — `heartbeat 1 sent`, then `tx_err` climbing to bus-off. Frames LEAVE the TWAI controller. What never reached the segment is the differential output of the dead driver. The distinction matters because it says the fault is one component, not the silicon or the stack.
+- what-david-must-decide: EMPTY — whether a REPLACEMENT transceiver has been fitted. This cannot be established from software; every instrument available to this session reads through the dead driver. NEEDS DAVID'S EYES.
+- if-a-good-transceiver-is-fitted: The path is documented in the board's own banner and needs no reflash. Either reflash without `CXC_CAN_LISTEN_ONLY`, or take the two-hop bus route — publish `_device/c3lcd-c28020/transport = "mqtt"` (5 bytes, fits a classic CAN frame), reboot onto MQTT, then publish `_device/c3lcd-c28020/transport = "can listen=0"` over MQTT and reboot. `"can listen=0"` is 13 bytes and does not fit one classic CAN frame, which is why it takes two hops. Direct NVS also works: `can.listen = 0` in namespace `composeio`.
+- the-payoff-if-it-works: This board's `ns_announce` is ALREADY ARMED — 6 names, 173 payload bytes, CRC `0x50AE`, on `_device/announce`. It currently logs `announcement ABANDONED at frame 0/29: the transport refused the header frame`. The moment transmit works the board self-announces and the hand-typed register list becomes unnecessary. See [CANV2-REGISTER-UNMADE].
+- a-firmware-gap-worth-recording: The banner states that in normal mode this node reaches bus-off in about 5 s and then STOPS RECEIVING TOO, because ESP-IDF does not auto-recover and this driver never calls `twai_initiate_recovery()`. That is a real gap that will bite the moment the board transmits onto a segment with any fault. It is the ESP32 analogue of the `restart-ms` question and it has no counted-recovery instrument either.
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## An UNMADE decision I deliberately did not make for you [CANV2-REGISTER-UNMADE]
+
+- the-finding: MEASURED. `CAN_BRIDGE_REGISTER` names nine namespaces under the device prefix `c3can-c28020`. The board at that MAC currently runs the `c3lcd` firmware and announces as `c3lcd-c28020` — confirmed from its boot banner, `Device id: c3lcd-c28020`. The registered list therefore names namespaces the live firmware never emits.
+- it-is-not-hypothetical: The census's `0x254C` and `0x443A` drops ARE the live firmware's `transport` and `config_source` namespaces arriving and being dropped as unresolvable, because they are not in the register list.
+- why-i-did-not-just-fix-it: Three reasons, and they compound. First, the env file carries an explicit instruction that the `c3can-c28020` entries are DELIBERATELY LEFT IN PLACE and are to be deleted "in the same change that flashes it, and not before". Second, the same file warns against EXPANDING the list, because a fleet census that is confidently incomplete is worse than one that is honestly empty. Third, and decisively, I cannot tell from evidence whether `c3can` is a PLANNED SEPARATE BOARD or merely this board's other firmware — `cyd/src/CMakeLists.txt` calls the `c3lcd` prefix "DELIBERATELY DISTINCT from the headless CAN node's `c3can` prefix", which reads as two roles, while only one physical board with that MAC exists.
+- so-this-is-a-genuine-boundary: Guessing here is authoring, not building. It is an UNMADE DECISION about device identity and role, which is a real checkpoint rather than scaffolding.
+- and-it-may-dissolve-entirely: The correct resolution is probably neither edit. The board's `ns_announce` is armed and would make the hand-typed list obsolete the moment transmit works — the mechanism that retires the list already exists in the firmware and is blocked ONLY by the dead transceiver. Fixing the transceiver may delete this problem rather than solve it.
+- harm-today: NONE. The board is listen-only and emits nothing, so no frame is currently being dropped for this reason.
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## What I could NOT verify — explicit EMPTY slots [CANV2-UNPROVEN]
+
+- esp32-transmit-onto-the-segment: EMPTY. Blocked by the dead transceiver driver. No software instrument on this bench can see past it, and a listen-only node is invisible on the wire by construction.
+- whether-a-replacement-transceiver-is-fitted: EMPTY. Requires physical inspection or a meter across CANH/CANL. NEEDS DAVID'S EYES.
+- the-ftdi-cable-far-end: EMPTY. Serial `FTZ29P6A`. Not probed, deliberately — opening an FTDI port asserts DTR/RTS and may reset whatever is attached. Its far end is unidentified. NEEDS DAVID'S EYES.
+- sample-point-mismatch-under-load: EMPTY. Pi at 87.5% and ESP32 at 80% is within tolerance by calculation, but has never been exercised with the ESP32 actually transmitting, because it cannot. Unfalsifiable until the transceiver is fixed.
+- the-dead-constant-author-intent: EMPTY. `0xDEAD` — the frame's identity and syntheticity are measured; the human purpose is inferred from shape and remains unproven.
+- bus-off-recovery-behaviour-on-the-esp32: EMPTY. The banner asserts no auto-recovery and no `twai_initiate_recovery()` call; this session did not exercise it, since the node cannot transmit.
+- negative-control-for-this-session-s-interop-test: PARTIAL. The interop proof has a natural negative control — before the bridge restart the board logged nothing on that namespace, and after it logged the receive. But no deliberate WRONG-format frame was injected to confirm the board would REJECT it. The v2-decodes-v1 silent-drop failure mode is therefore still only argued, not demonstrated, on this hardware.
+- part-of: [SPEC:CANV2-SWEEP]
+
+---
+
+## How to reverse every change in this session [CANV2-REVERSAL]
+
+- scope-of-changes: THREE Raspberry Pi config files and ONE repository file. No ESP32 flash was written. No device was rebooted. `pi.example.local` was NOT rebooted; only `composeio-can-bridge`, `can0` and `can1` were restarted.
+- backups: All three host files were copied to `/var/backups/can-v2-sweep-20260815/` BEFORE the first write, with SHA-256 recorded: `can0.service` = `5de22cf981e29d6371af920793da4331a82f93661ab513305c0652edaba12c52`, `can1.service` = `d50782b9f0234769065923bbae83d6026ff053957b730618ab9b2508740e8323`, `composeio-can-bridge` = `e4d740260a3bbc15d73939c96b74520dcd9ca6264e715f6bc27f45bd4ad21984`.
+- reverse-the-node-id: Remove or set to 0 the `CAN_BRIDGE_NODE_ID` line in `/etc/default/composeio-can-bridge`, and revert the corresponding block in `deploy/can_mqtt_bridge/composeio-can-bridge.env`, then restart the bridge. Reverting only the host file will be undone by the next deploy.
+- reverse-the-sjw: Restore `can0.service` and `can1.service` from the backup directory, `systemctl daemon-reload`, then bring both interfaces down and up. The pre-change ExecStart had no `sjw` argument, which is the driver default of 1.
+- transient-states-already-restored: The bus-off experiment took `can1` down and set `can0` to `restart-ms 0`. Both were restored in the same script via an EXIT trap, and the restoration was verified by read-back: both interfaces are ERROR-ACTIVE with `restart-ms 100` and `sjw 2`, and the bridge is active.
+- the-board-was-reset-not-flashed: `c3lcd-c28020` was reset twice via a DTR/RTS pulse to read its boot banner. It booted normally each time — `rst:0x15 (USB_UART_CHIP_RESET), boot:0xd (SPI_FAST_FLASH_BOOT)` — and never entered download mode. Its flash is byte-identical to what it held before this session.
+- running-build-confirmed-by-compiler-written-markers: `App version: 1b72183-dirty`, `Compile time: Aug 14 2026 10:55:09`, `ESP-IDF 5.5.2.260206`, `Device id: c3lcd-c28020`. These are `__DATE__`/`__TIME__` and a git-describe stamp, not a hand-maintained tag — the class of marker that read `TF13` through ten flashes in this fleet's history.
+- part-of: [SPEC:CANV2-SWEEP]

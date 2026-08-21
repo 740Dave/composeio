@@ -1,0 +1,62 @@
+# Tab-parity test scene ([CXC-PRIM-TIER-PARITY]) — exercises the `tab`
+# widget ported to the embedded tier so a board capture can be
+# pixel-crosschecked against the Skia reference.
+#
+# The base TabWidget renders a segmented BAR (variable-width cells,
+# SEG_BG strip, SEG_SELECTED active cell, SEG_TEXT labels) centred over
+# the widget rect.  Labels come from the parser `tabs:` dialect
+# (parser.py _build_tab); `initial_tab` picks the starting cell.  Both
+# tiers render bar-only (the headless Skia reference never arranges the
+# tab's child pages), so the visuals match without a live bus.
+#
+# port_parity.compose.yaml holds the previous batch (gauge/relay/checkbox/
+# callout/emit_button) and is full — this dedicated scene keeps the tab
+# uncluttered for parity review.
+#
+#   Reference:  cd python && python scripts/cyd_config_crosscheck.py \
+#                 ../cyd/test/configs/tab_parity.compose.yaml <capture.bmp>
+
+design:
+  title: Tab Parity
+  width: 240
+  height: 320
+  background: "#1E1E2E"
+
+widgets:
+  # three equal-min-width cells, first selected
+  - type: tab
+    id: tab_top
+    x: 0
+    y: 16
+    w: 240
+    h: 40
+    initial_tab: 0
+    tabs:
+      - {label: ONE}
+      - {label: TWO}
+      - {label: THREE}
+
+  # two cells, SECOND selected (indicator tracks initial_tab)
+  - type: tab
+    id: tab_mid
+    x: 0
+    y: 116
+    w: 240
+    h: 40
+    initial_tab: 1
+    tabs:
+      - {label: Alpha}
+      - {label: Beta}
+
+  # three short cells (each hits the 70px minimum), THIRD selected
+  - type: tab
+    id: tab_bot
+    x: 0
+    y: 216
+    w: 240
+    h: 40
+    initial_tab: 2
+    tabs:
+      - {label: X}
+      - {label: Y}
+      - {label: Z}

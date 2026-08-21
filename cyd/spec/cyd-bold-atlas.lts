@@ -1,0 +1,205 @@
+---
+scope: "Add a BOLD weight to the CYD/desktop bitmap font atlas and finer size steps (6px, 7px), eliminating the two text-fidelity defects that survive font unification: bold-flagged text rendering at regular weight, and small text passing through a nearest-neighbour 8→7 rescale. Covers the atlas generator's multi-weight source selection and both output formats, the ESP32 firmware's bold lookup, the desktop BitmapFontAtlas weight plumbing, and the acceptance contract."
+audience: "Builder agents modifying the atlas generator (cyd/fonts/generate_atlas.py), the CYD firmware text renderer (canvas_esp32.cpp), and the desktop bitmap font module (python/composeio/render/bitmap_font.py)."
+boundary: "IN: font atlas generation for two weights, weight selection inside draw_text/measure_text on both tiers, and the added 6px/7px atlas sizes. OUT: widget layout, font family selection, geometric rendering, and bilinear glyph scaling."
+not-this: "Not adding italic or any weight beyond regular and bold. Not changing the font family — it stays Helvetica. Not implementing bilinear glyph scaling; the fix for small text is an EXACT-SIZE atlas entry, not a better resampler."
+depends-on: [cyd-font-unification.lts]
+elements: [CXC-CYD-BOLD-*]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+created: 2026-03-30
+converted-from: cyd/spec/cyd-bold-atlas.smd
+---
+# Bold Font Atlas and Size Granularity [SPEC:CXC-CYD-BOLD-ATLAS]
+
+> [SPEC:CXC-CYD-FONT-UNIFY] made the desktop and the CYD draw text from the SAME pre-rendered bitmap
+> atlas, which collapsed the largest source of cross-tier pixel divergence. Two text defects survive it,
+> and both are atlas COVERAGE gaps rather than renderer bugs: the atlas holds exactly one weight, so
+> every `font_bold` request silently renders regular; and it holds no 6px or 7px entry, so the gauge
+> tick labels and subtitles are rescaled 8→7 by nearest neighbour and arrive chunky. This spec closes
+> both by widening the atlas — a second weight group and two smaller sizes — and changing nothing about
+> the text rendering pipeline itself.
+
+---
+
+## 1. The defect
+
+### [CXC-CYD-BOLD-PROBLEM] Both surviving text defects are atlas coverage gaps, not renderer bugs
+
+- definition: After [SPEC:CXC-CYD-FONT-UNIFY], two text-fidelity defects remain on the CYD. Neither is a
+  fault in the glyph blitter — in both cases the renderer faithfully draws the best entry the atlas can
+  offer, and the atlas has no better entry to offer.
+- defect-weight: bold text renders as REGULAR on the CYD. The atlas carries one weight, and while the
+  `font_bold` flag is stored on the canvas state it is never read at lookup time. Affected: the title
+  "ComposeUX Dashboard" (14px bold) and the value readout "82.0 C" (12px bold).
+- defect-scale: small text renders CHUNKY on the CYD. The requested size is ~7px, the nearest atlas
+  entry is 8px, and the 8→7 nearest-neighbour downscale drops glyph rows unevenly. Affected: the gauge
+  tick labels "40/80/120" and the gauge subtitle "Coolant Temp".
+- consequence: the repair for both is the SAME repair — widen atlas coverage. Neither defect justifies a
+  change to `draw_text`'s scaling arithmetic, and changing that arithmetic would break the pixel
+  equivalence with the desktop that [SPEC:CXC-CYD-FONT-UNIFY] just established.
+- invalidating-assumption: that the gauge subtitle's computed size stays at ~7.0px. If widget layout
+  changes the derived font size, the exact-match size list must be re-derived from the layout rather
+  than kept at 6/7.
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+---
+
+## 2. Atlas generator
+
+### [CXC-CYD-BOLD-GEN-WEIGHT] The generator takes a second face and emits two weight groups
+
+- file: cyd/fonts/generate_atlas.py
+- requirement: accept a `--bold-ttf <path>` flag naming the bold weight source. For a Helvetica TTC,
+  the bold face is face index 1 in `/System/Library/Fonts/Helvetica.ttc`.
+- fallback: when `--bold-ttf` is omitted, auto-detect the bold face inside a TTC collection by scanning
+  for a FreeType `face.style_name` containing "Bold".
+- output: generate two complete atlas sets — regular and bold — each at EVERY requested size, so the two
+  groups are always symmetric and a weight lookup can never miss a size the other weight has.
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+### [CXC-CYD-BOLD-GEN-C] The C header gains a parallel bold lookup table
+
+- file: cyd/src/font_atlas.h
+- requirement: emit bold atlas structs alongside the regular ones, plus a parallel lookup array and a
+  parallel find function, so firmware weight selection is a choice of TABLE and not a change of
+  algorithm.
+- symbols: `font_atlas_bold_<size>` structs; `font_atlases_bold[]`; `kNumFontAtlasesBold`;
+  `font_atlas_find_bold(int target_size)`
+- constraint: `font_atlas_find_bold()` MUST use the identical nearest-size search as `font_atlas_find()`
+  — a divergence here reintroduces cross-weight scaling inconsistency.
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+### [CXC-CYD-BOLD-GEN-JSON] The JSON output gains a weight level above sizes
+
+- file: python/composeio/render/font_atlas_data.json
+- requirement: nest the existing per-size schema under two weight keys, `regular` and `bold`, each
+  holding the `sizes` array the desktop loader already understands.
+- constraint: both weight groups share the IDENTICAL per-size entry schema; the weight level adds a
+  dictionary key and changes nothing below it.
+- migration-note: this is a BREAKING shape change to the JSON contract — the top level was previously
+  the `sizes` array itself. `BitmapFontAtlas.__init__` is the only reader and is updated in the same
+  change ([CXC-CYD-BOLD-DESKTOP-CLASS]); the generator rewrites both outputs atomically, so a mixed-shape
+  pair cannot be observed.
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+### [CXC-CYD-BOLD-GEN-SIZES] Two smaller sizes are added so small text needs no rescale at all
+
+- requirement: extend the default size list from `8 10 12 14 16` to `6 7 8 10 12 14 16`.
+- rationale-7px: an EXACT match for the gauge tick labels and subtitle text, which compute to ~7.0px.
+  This eliminates the 8→7 nearest-neighbour rescale that produces the chunky rendering entirely, rather
+  than making it look better.
+- rationale-6px: coverage for very small annotations, so the smallest text in a scene is still an
+  exact-size atlas hit rather than an upscale from the floor.
+- cost: seven sizes across two weights is fourteen glyph sets; the flash consequence is budgeted in
+  [CXC-CYD-BOLD-CYD-FLASH].
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+---
+
+## 3. CYD firmware
+
+### [CXC-CYD-BOLD-CYD-SELECT] Firmware weight selection is a table choice, not a pipeline change
+
+- file: cyd/src/canvas_esp32.cpp
+- requirement: in both `draw_text()` and `measure_text()`, select the atlas by the canvas state's
+  `font_bold` flag — `font_atlas_find_bold(target)` when set, `font_atlas_find(target)` otherwise.
+- constraint: NOTHING else in the text rendering pipeline changes. Same scaling arithmetic, same
+  blending, same alignment. Selection happens at lookup and the rest of the path is weight-blind.
+- consequence: `measure_text()` must make the SAME weight choice as `draw_text()`, or measured advance
+  widths will not match the glyphs actually drawn and alignment will drift.
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+### [CXC-CYD-BOLD-CYD-FLASH] The bold arrays must stay inside the flash budget
+
+- requirement: verify CYD flash usage remains under 50% after the bold arrays are added.
+- baseline: 24.8% flash used before this change.
+- estimate: approximately 20KB additional for bold glyphs across seven sizes.
+- verdict: well within budget; the check is a guard against a size-list mistake, not an expected risk.
+- verify-machine: PlatformIO build output reports flash usage below 50% for the `cyd` environment.
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+---
+
+## 4. Desktop bitmap font
+
+### [CXC-CYD-BOLD-DESKTOP-CLASS] BitmapFontAtlas carries weight through every entry point
+
+- file: python/composeio/render/bitmap_font.py
+- requirement: `__init__` loads BOTH the `regular` and `bold` weight groups from the JSON atlas.
+- requirement-lookup: `find_atlas(target_size, bold=False)` selects within the correct weight group.
+- requirement-measure: `measure_text(text, font_size, bold=False)` passes the weight through to the
+  lookup, so measurement and drawing agree on the tier the same way [CXC-CYD-BOLD-CYD-SELECT] requires
+  on the firmware.
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+### [CXC-CYD-BOLD-DESKTOP-SKIA] SkiaCanvas records weight at set_font and forwards it
+
+- file: python/composeio/render/skia_backend.py
+- requirement: while the bitmap atlas is enabled, `set_font(family, size, weight)` records both the
+  `size` and a derived `bold = (weight == "bold")`.
+- requirement-forward: `draw_text()` and `measure_text()` pass that bold flag into `BitmapFontAtlas`.
+- context: before this change the atlas had one weight, so `set_font` legitimately discarded `weight`
+  ([SPEC:CXC-CYD-FONT-UNIFY] records that as intentional). This spec is what makes the discarded
+  argument load-bearing again.
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+---
+
+## 5. Acceptance
+
+### [CXC-CYD-BOLD-VERIFY] The regeneration and verification sequence
+
+- definition: the ordered post-implementation sequence that produces the evidence the compliance
+  contract is judged against.
+- verify-machine:
+  - s1-regenerate: run `generate_atlas.py` with both weight sources and all seven sizes (6 7 8 10 12 14 16).
+  - s2-crosscheck: run `cyd_dashboard_crosscheck.py` and save the atlas render to `cyd/screenshots/progression/`.
+  - s3-build: build the CYD firmware and confirm flash usage is acceptable per [CXC-CYD-BOLD-CYD-FLASH].
+  - s4-regression: run the existing font unification tests and confirm no regressions.
+- verify-human: compare the new atlas render against the previous one on the glass — text specified bold
+  must visibly carry heavier strokes, and "Coolant Temp" must read crisper at ~7px. Machine-green is
+  necessary but not sufficient; weight and crispness are judged by eye, as in [CXC-LINE-TARGETS].
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+### [CXC-CYD-BOLD-COMPLIANCE] The compliance contract
+
+- definition: seven acceptance criteria, each with the verification that settles it.
+
+| ID | Requirement | Verification |
+|----|-------------|-------------|
+| BA-C1 | Atlas generator produces both regular and bold weight atlases | Inspect JSON: `regular` and `bold` keys both present with equal size count |
+| BA-C2 | C header contains the bold lookup function `font_atlas_find_bold()` | Grep font_atlas.h for the function |
+| BA-C3 | CYD draw_text uses the bold atlas when font_bold is true | Flash firmware, observe title "ComposeUX Dashboard" has bolder strokes |
+| BA-C4 | Desktop bitmap atlas uses bold when weight is "bold" | Crosscheck PNG shows bolder title and value text |
+| BA-C5 | The 7px atlas eliminates rescaling for gauge labels and ticks | Crosscheck: "Coolant Temp" renders crisper at ~7px |
+| BA-C6 | Existing font unification tests pass | Test suite green |
+| BA-C7 | CYD flash usage stays under 50% | PlatformIO build output |
+
+- part-of: [SPEC:CXC-CYD-BOLD-ATLAS]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-CYD-BOLD-ATLAS] DEPENDS_ON [SPEC:CXC-CYD-FONT-UNIFY]
+- [SPEC:CXC-CYD-BOLD-ATLAS] RELATED_TO [SPEC:CXC-CYD-AA]
+- [CXC-CYD-BOLD-PROBLEM] CAUSES [CXC-CYD-BOLD-GEN-SIZES]
+- [CXC-CYD-BOLD-PROBLEM] CAUSES [CXC-CYD-BOLD-GEN-WEIGHT]
+- [CXC-CYD-BOLD-GEN-WEIGHT] PRECONDITION_FOR [CXC-CYD-BOLD-GEN-C]
+- [CXC-CYD-BOLD-GEN-WEIGHT] PRECONDITION_FOR [CXC-CYD-BOLD-GEN-JSON]
+- [CXC-CYD-BOLD-GEN-C] PRECONDITION_FOR [CXC-CYD-BOLD-CYD-SELECT]
+- [CXC-CYD-BOLD-GEN-JSON] PRECONDITION_FOR [CXC-CYD-BOLD-DESKTOP-CLASS]
+- [CXC-CYD-BOLD-DESKTOP-CLASS] PRECONDITION_FOR [CXC-CYD-BOLD-DESKTOP-SKIA]
+- [CXC-CYD-BOLD-GEN-SIZES] CAUSES [CXC-CYD-BOLD-CYD-FLASH]
+- [CXC-CYD-BOLD-VERIFY] PRECONDITION_FOR [CXC-CYD-BOLD-COMPLIANCE]
+
+- [SPEC:CXC-CYD-BOLD-ATLAS] CONTAINS [CXC-CYD-BOLD-PROBLEM]
+- [CXC-CYD-BOLD-DESKTOP-SKIA] BEFORE [CXC-CYD-BOLD-VERIFY]
+---
+
+**Version**: 1.1 — converted to FactLattice from `cyd/spec/cyd-bold-atlas.smd` (v1.0, 2026-03-30).
+**Status**: Draft

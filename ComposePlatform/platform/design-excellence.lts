@@ -1,0 +1,62 @@
+# Design Excellence for the ComposePlatform
+
+[DOC-DX] Design Excellence — the decompositional edges
+- domain: PLT.DX
+- audience: the ComposePlatform Architect at every wake; David reviews
+- premise: ComposePlatform is INVERTED/DECOMPOSED — behavior at leaves, intent on a bus, contracts between. Absorbing "a decomposed app" is easy; knowing WHERE the edges go is not — it is hands-on, earned with David (the continuity agent). This corpus is terse ON PURPOSE: each node is one edge-decision rule + the question that locates the edge. Reason the paired dusk gift; don't just read the rule. Authored in LTS so MAGMA can query it.
+
+### [DX-LEAF-OWNS-BEHAVIOR] Complexity flows DOWN to the leaf; intent flows UP the bus
+- edge-question: "which node can FULLY own this behavior for the least cost?" — put it there.
+- rule: the cheapest node that can own a behavior owns ALL of it (a $0.10 chip owns its own debounce). Never lift leaf-local behavior up into a coordinator; never push coordinator intent down into a leaf. The leaf publishes SEMANTIC intent up; it never exposes its mechanism.
+- tell-you-drew-it-wrong: a central app growing a special-case for one leaf's quirk.
+- re-derive-via: [FIXTURE-registration-protocol-P1]
+- relates-to: [DX-STATE-ON-BUS]
+
+### [DX-STATE-ON-BUS] Semantic STATE on the bus; temporal BEHAVIOR in the widget
+- edge-question: "is this a fact others share, or a presentation only this leaf owns?" — fact→bus, presentation→leaf.
+- rule: publish the semantic state ONCE (RED ALERT = true); each leaf owns how it renders that over time (blink rate, easing). Frames NEVER stream over the bus. The edge is between the shared fact and the local animation of it.
+- tell: you're serializing pixels/frames onto a namespace.
+- re-derive-via: [FIXTURE-registration-protocol-P4]
+
+### [DX-COLLAPSE-TRANSPORT] Collapse the TRANSPORT, never the SEAM
+- edge-question: "when two things merge or delivery changes, what is the CONTRACT that must survive?" — the bus namespaces. Change only how they're delivered.
+- rule: the recurring move all day — MQTT→in-process, standalone-daemon→console-thread, overlay→standalone-window, MCP→busApp. In every case the NAMESPACE/query contract is fixed; only the delivery changes. The peer model + testability survive because the seam didn't move.
+- tell: a "simplification" that changes payloads or merges two peers' identities, not just their wire.
+- re-derive-via: [FIXTURE-dx-collapse-transport]
+- relates-to: [DX-INTERNAL-BUS-UPLINK], [DX-ENGINE-VS-POLICY]
+
+### [DX-INTERNAL-BUS-UPLINK] Internal bus by default; uplink to ComposeBus ONLY what's externally interesting
+- edge-question: "who OUTSIDE this app needs to hear this?" — nobody → stays internal; someone → uplink that one namespace.
+- rule: intra-app semantic messages travel on the app's OWN internal bus (in-process). A selective bridge uplinks to the shared ComposeBus only the namespaces a peer outside actually consumes. Default-DENY outward — same shape as the escalation filter. The platform stays quiet; the app stays chatty internally.
+- tell: every internal `self/*` tick round-tripping through the shared broker for no external consumer.
+- re-derive-via: [FIXTURE-dx-internal-vs-external]
+- relates-to: [DEC-INTERNAL-BUS-SELECTIVE-UPLINK], [DEC-NOTIFICATION-ESCALATION-FILTER]
+
+### [DX-SESSION-OWNED-VS-DISTRIBUTED] A source tied to THIS app runs in-process; only genuinely-distributed sources are separate peers
+- edge-question: "does anything OTHER than this app/session need this source, or does it outlive this session?" — no → in-process; yes → a peer process.
+- rule: a data source that exists only to feed this console + is tied to this session (my transcript, memory, projects) is a thread the app OWNS (one launch, correct session, no start-order/duplicate/wrong-session fragility). A source that serves multiple consumers, another machine, or must outlive the caller stays a standalone peer. The PROCESS boundary follows the CONSUMER set, not habit.
+- tell: a session-private source living as a separate daemon you must remember to start + point at the right session.
+- re-derive-via: [FIXTURE-dx-source-boundary]
+- relates-to: [DEC-INPROCESS-SOURCES]
+
+### [DX-ENGINE-VS-POLICY] Extract the generic ENGINE; the POLICY layer cuts cleanly IFF it was its own seam
+- edge-question: "what is the mechanism EVERY deployment needs vs. the policy only THIS one needs?" — engine travels; policy is per-deployment, plugged behind a stub.
+- rule: the parser + MAGMA extractions proved it — security/ACL/audit came out WHOLESALE (not surgically) because they were built behind a swappable `Protocol` from day one, while the store/query engine was policy-blind. Design the seam so the generic core never imports the policy; one canonical engine, N consumers, byte-identical where the contract must not diverge.
+- tell: the "core" engine importing an identity/ACL/tenant-auth module — the seam wasn't drawn.
+- re-derive-via: [FIXTURE-dx-engine-vs-policy]
+- relates-to: [DEC-ONE-FACTLATTICE-PARSER]
+
+### [DX-NARROW-WAIST] Decompose to the Canvas/`.compose.yaml` contract; reuse by reference, never fork
+- edge-question: "can this lower TO the shared contract instead of forking a new path?" — yes, always; N×M becomes N+M.
+- rule: formats lower to the narrow waist; backends are EXTENDED to meet it; a widget is reused by reference, never copied to a backend. The edge is the contract itself — everything meets there rather than fanning out.
+- tell: a per-backend fork of a widget, or a format taught to a backend directly instead of to the contract.
+- re-derive-via: [FIXTURE-registration-protocol-P2]
+
+### [DX-STRUCTURE-SURVIVES] Load-bearing design knowledge lives in QUERYABLE structure, not prose
+- edge-question: "will a summarizer flatten this, or can a successor QUERY it?" — put it where it's queryable (LTS/decision-graph/MAGMA), keyed + typed-edged.
+- rule: this very doc is LTS so MAGMA can walk it; the decision graph carries the why with SUPERSEDES/DEPENDS_ON edges so supersession is knowable. Prose is the weakest carrier across the boundary. And leverage the TYPED edges — a decompositional edge you drew is only re-derivable if the graph records the relationship.
+- re-derive-via: [FIXTURE-registration-protocol-P6]
+- relates-to: [DEC-INTERNAL-BUS-SELECTIVE-UPLINK]
+
+## Maintenance
+The Architect keeps this true as new edges are drawn (a proved pattern, a corrected boundary) and flags the change for David. Terse by mandate — one edge, one rule, one tell, one gift. If a node needs a paragraph, it's two nodes.

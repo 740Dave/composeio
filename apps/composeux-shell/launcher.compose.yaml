@@ -1,0 +1,30 @@
+# ComposeUX launcher — the home screen. Itself just a surface (stored at doc://surfaces/launcher).
+# Its DocPicker queries the `apps` registry in LAUNCH mode: selecting an app tells the shell to
+# swap the active surface. Adding an app = put_doc into `apps` + `surfaces`; it shows up here.
+app:
+  id: launcher
+  transports: []
+
+design:
+  target: desktop
+  title: "ComposeUX"
+  theme: dark
+  width: 460          # the shell sizes the window to design.width/height per app
+  height: 560
+
+namespaces: []
+
+modules:
+  - name: apps
+    label: "Apps"
+    grid_row: 0
+    grid_column: 0
+    widgets:
+      - type: DocPickerWidget
+        label: "Apps on the bus"
+        collection: apps
+        title_field: title
+        subtitle_field: description
+        select_action: launch      # on select -> ctx.launch(app_id) -> shell swaps surface
+        row: 0
+        column: 0

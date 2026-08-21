@@ -1,0 +1,47 @@
+# Part catalog entry — external 5 V supply feed (a 2-pin terminal / barrel pigtail).
+#
+# NOT a component so much as a declared BOUNDARY: it is the point where current
+# enters the panel from something that is not the host board.  It exists in the
+# catalog so a hookup diagram can state WHERE THE POWER COMES FROM instead of
+# leaving it implied, which is how a 320 mA load ends up silently hanging off an
+# MCU dev board's USB rail.
+#
+# ⛔ WHY THE PANEL DOES NOT RUN OFF THE HOST'S 5V PIN.  Four TM1637 modules at
+# full brightness draw ~320 mA.  On an ESP32-C3 SuperMini the `5V` pin is USB
+# VBUS direct — the 3.3 V LDO is NOT in that path, it only feeds the ESP32 core
+# — so the LDO is not the problem.  THE USB PORT IS: 320 mA (panel) + ~350 mA
+# (C3 WiFi TX peak) = ~670 mA against a 500 mA USB 2.0 budget.  An external feed
+# removes the question entirely and keeps full brightness available.
+#
+# ⛔ THE GROUND IS NOT OPTIONAL.  This part's GND MUST be tied to the host's GND.
+# Two supplies with no common return means the modules' CLK/DIO see no defined
+# reference and the "level" being shifted is meaningless.  It is one wire and it
+# is the one people leave out.
+
+psu-5v-ext:
+  description: >-
+    External regulated 5 V supply feed (screw terminal / barrel pigtail) — the
+    declared boundary where panel current enters from off-board.
+
+  # Deliberately no `fritzing:` art — this part renders with the clean GENERATED
+  # footprint (a labelled body + named pin stubs).  Real art would imply a
+  # specific connector; the point of the part is the NET, not the housing.
+  pins:
+    - 5V
+    - GND
+
+  rating_note: >-
+    Size it for the panel plus margin: 4 modules x ~80 mA at full brightness =
+    ~320 mA, so a 1 A supply is comfortable and a 500 mA one is not.  Regulated
+    5 V, not a raw phone charger output that sags under load.
+  sequencing_note: >-
+    With a BSS138 level shifter between host and modules, supply ORDER does not
+    matter — an unpowered LV side leaves every FET off and reverse-biases its
+    body diode, so no current reaches the 3.3 V GPIOs.  WITHOUT a shifter (the
+    direct-connect variant) this is no longer true: 5 V up while the host's
+    3.3 V rail is down back-feeds that rail through the GPIO ESD clamps, and
+    the two supplies must then rise and fall together.
+
+  kicad:
+    symbol: "Connector_Generic:Conn_01x02"
+    footprint: "TerminalBlock:TerminalBlock_bornier-2_P5.08mm"

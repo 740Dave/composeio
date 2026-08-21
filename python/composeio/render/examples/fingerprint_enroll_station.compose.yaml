@@ -1,0 +1,56 @@
+# R503 fingerprint-game — the enrollment-STATION capture CEREMONY.
+#
+# FUNCTIONAL PLACEHOLDER ([CXC-FPSVC-STATION-EDITOR], [CXC-FPHAL-FEEDBACK-
+# STATES], [CXC-FPHAL-ENROLLMENT-SEQUENCE]).  A NEW surface distinct from the
+# binding UX's single "Capture finger" button (fingerprint_casting.compose.
+# yaml) and the auth-monitor (fingerprint_monitor.compose.yaml): this is the
+# rich place-lift-place ceremony BEHIND that button — who is enrolling, which
+# of up to two templates, how many of the announced captures have landed, and
+# the live feedback state out of the closed set of twelve.  Composes ONE new
+# widget (enroll_ceremony) + the reused `label` — nothing else is forked.
+# The Colonial (BSG) visual language is David's to author; this is FUNCTION +
+# REUSE only.
+#
+# Run headless:
+#   SDL_VIDEODRIVER=dummy PYTHONPATH=python:services python3 -m \
+#       composeio.render.examples.fingerprint.drive_enroll_station
+#
+# The EnrollmentStation controller (examples/fingerprint/enroll_station.py)
+# drives the mock enroll ceremony and publishes fp/enroll/station; this
+# widget only draws it.
+
+app:
+  id: fp-enroll-station
+  transports: []                 # in-process bus; the station controller rides it
+
+# [CXC-PROJECT-WIDGETS] import the module that self-registers `enroll_ceremony`
+# BEFORE any type: is resolved — zero engine edits.
+widget_modules:
+  - composeio.render.widgets.enroll_ceremony
+
+design:
+  target: desktop
+  title: "R503 — Enrollment station capture ceremony (placeholder)"
+  theme: dark
+  width: 640
+  height: 340
+
+namespaces:
+  - {name: "fp/enroll/station", state_engine: json}
+
+widgets:
+  - type: label
+    id: title
+    text: "Fingerprint enrollment station — capture ceremony"
+    font_size: 18
+    font_weight: bold
+    color: [0x8A, 0xD4, 0xFF]
+    align: left
+    height: 28
+
+  - type: enroll_ceremony
+    id: ceremony
+    title: "ENROLLMENT"
+    namespace: "fp/enroll/station"
+    width: 600
+    height: 208

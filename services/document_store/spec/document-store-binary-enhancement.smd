@@ -1,0 +1,205 @@
+---
+scope: "Binary file upload/download enhancement to the existing ComposeIO document_store service"
+audience: "Builder subagent extending services/document_store/server.py"
+boundary: "server.py HTTP handlers, storage layer, Python client library"
+not-this: "Not a new service; not changing existing JSON document behavior; not adding authentication"
+depends-on: [services/document_store/server.py, python/composeio/docstore.py]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# Document Store Binary File Enhancement [IMPL:DS-BINARY]
+
+> Add binary file upload, download, and listing to the existing JSON document store. Filesystem storage with SQLite metadata. Zero changes to existing JSON document behavior.
+
+---
+
+## 1. Storage Architecture [DS-BINARY-STORAGE]
+
+### 1.1 Filesystem Layout [DS-BINARY-STORAGE-FS]
+
+Binary files stored on the filesystem alongside the SQLite database:
+
+```
+{db_dir}/
+  docstore.db              # existing SQLite database
+  blobs/                   # NEW — binary file storage
+    {collection}/
+      {doc_id}             # raw binary file, original bytes
+```
+
+`{db_dir}` derived from the `COMPOSEIO_DOCSTORE_DB` environment variable path (parent directory of the `.db` file). Default: `/var/lib/composeio/blobs/`.
+
+### 1.2 Metadata Schema [DS-BINARY-STORAGE-META]
+
+Each binary file gets a metadata record in a new SQLite table `_binary_meta`:
+
+```sql
+CREATE TABLE IF NOT EXISTS _binary_meta (
+    collection TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    original_filename TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (collection, doc_id)
+);
+```
+
+This table is created at startup alongside existing collection tables. It does not interfere with JSON document storage.
+
+### 1.3 Platform Independence [DS-BINARY-STORAGE-PLAT]
+
+- Filesystem paths use `os.path.join()` — no hardcoded separators
+- Directory creation uses `os.makedirs(exist_ok=True)`
+- File writes use binary mode (`'wb'`)
+- No symlinks, no OS-specific permissions
+- Works on: macOS (local dev), Linux (Docker, bare metal), AWS (EBS, EFS)
+
+---
+
+## 2. HTTP API [DS-BINARY-API]
+
+### 2.1 Content-Type Dispatch [DS-BINARY-API-DISPATCH]
+
+The existing PUT handler at `/api/v1/collections/{collection}/{doc_id}` gains Content-Type awareness:
+
+| Content-Type | Behavior |
+|---|---|
+| `application/json` (or absent) | Existing JSON path — `json.loads()`, store in SQLite. Unchanged. |
+| `image/*`, `application/octet-stream`, or any non-JSON type | New binary path — write raw bytes to filesystem, metadata to SQLite. |
+
+Detection: check `Content-Type` header. If it starts with `application/json` or is absent, use JSON path. Everything else uses binary path.
+
+### 2.2 Binary PUT [DS-BINARY-API-PUT]
+
+```
+PUT /api/v1/collections/{collection}/{doc_id}
+Content-Type: image/bmp
+Content-Length: 230454
+
+<raw binary bytes>
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "collection": "captures",
+  "doc_id": "1234567890.bmp",
+  "size_bytes": 230454,
+  "content_type": "image/bmp"
+}
+```
+
+The handler reads the full request body as raw bytes (`self.rfile.read(content_length)`), writes to `{db_dir}/blobs/{collection}/{doc_id}`, and inserts/updates the metadata row.
+
+### 2.3 Binary GET [DS-BINARY-API-GET]
+
+```
+GET /api/v1/collections/{collection}/{doc_id}
+```
+
+The existing GET handler checks `_binary_meta` first. If a binary record exists for this collection/doc_id, serve the file with the stored Content-Type:
+
+```
+HTTP/1.1 200 OK
+Content-Type: image/bmp
+Content-Length: 230454
+
+<raw binary bytes>
+```
+
+If no binary record exists, fall through to existing JSON document lookup. This preserves full backward compatibility.
+
+### 2.4 Binary DELETE [DS-BINARY-API-DELETE]
+
+```
+DELETE /api/v1/collections/{collection}/{doc_id}
+```
+
+If the document is binary: delete filesystem file, delete metadata row. If JSON: existing behavior. Response unchanged.
+
+### 2.5 Collection Listing [DS-BINARY-API-LIST]
+
+```
+GET /api/v1/collections/{collection}
+```
+
+Existing behavior returns JSON document IDs. Enhance to also include binary document IDs with a `"type": "binary"` marker:
+
+```json
+{
+  "collection": "captures",
+  "documents": [
+    {"id": "1234567890.bmp", "type": "binary", "content_type": "image/bmp", "size_bytes": 230454},
+    {"id": "config", "type": "json"}
+  ]
+}
+```
+
+### 2.6 Status Endpoint [DS-BINARY-API-STATUS]
+
+Extend `/api/v1/status` to include binary storage stats:
+
+```json
+{
+  "binary_files": 12,
+  "binary_size_bytes": 2765448,
+  "blob_directory": "/var/lib/composeio/blobs"
+}
+```
+
+---
+
+## 3. Python Client Extension [DS-BINARY-CLIENT]
+
+### 3.1 Client Methods [DS-BINARY-CLIENT-METHODS]
+
+Add to existing `DocumentStoreClient` class in `python/composeio/docstore.py`:
+
+```python
+def put_binary(self, collection: str, doc_id: str, data: bytes, content_type: str) -> dict | None:
+    """Upload binary file to document store. Returns None on error."""
+
+def get_binary(self, collection: str, doc_id: str) -> tuple[bytes, str] | None:
+    """Download binary file. Returns (data, content_type) or None on error/404."""
+```
+
+These use `urllib.request` consistent with existing client methods. No new dependencies.
+
+---
+
+## 4. CYD Integration Notes [DS-BINARY-CYD]
+
+### 4.1 Port Alignment [DS-BINARY-CYD-PORT]
+
+The CYD firmware (`include/wifi_config.h`) currently references port 8890. The document_store defaults to port 8421. Align to **8421** — update `wifi_config.h` to use `http://mqtt-broker.local:8421`.
+
+### 4.2 CYD Upload Path [DS-BINARY-CYD-PATH]
+
+CYD captures upload to: `PUT /api/v1/collections/captures/{device_id}/{timestamp}.bmp`
+
+Where `{device_id}` identifies the CYD instance and `{timestamp}` is epoch milliseconds or uptime.
+
+---
+
+## 5. Compliance [DS-BINARY-COMPLIANCE]
+
+### [DS-BINARY-C1] Binary PUT with `Content-Type: image/bmp` stores file to filesystem and metadata to SQLite
+### [DS-BINARY-C2] Binary GET returns raw bytes with correct Content-Type header
+### [DS-BINARY-C3] JSON PUT behavior is completely unchanged — no regression
+### [DS-BINARY-C4] JSON GET behavior is completely unchanged — no regression
+### [DS-BINARY-C5] Collection listing includes both JSON and binary documents
+### [DS-BINARY-C6] Binary DELETE removes both filesystem file and metadata row
+### [DS-BINARY-C7] Python client `put_binary()` successfully uploads a binary file
+### [DS-BINARY-C8] Python client `get_binary()` successfully downloads a binary file with correct content type
+### [DS-BINARY-C9] Service starts and creates blob directory on first binary upload
+### [DS-BINARY-C10] No new Python dependencies beyond stdlib
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-30
+**Status**: Draft

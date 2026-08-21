@@ -1,0 +1,58 @@
+# office_fan — headless relay-fan controller (config-fetched device model).
+# [SPEC:CXC-EMBED-REACTIVE] [CXC-ER-DEVICE] + [SPEC:CXC-HAL] [CXC-HAL-ACTUATE]
+# (Output Tier 1 — break-before-make relay bank).
+#
+# A generic ESP32-WROOM-32E integrated 4-relay board running the platform
+# reactive_core firmware (env:office_fan).  NO baked pins: the firmware GETs
+# THIS file from the bus asset store at boot by device id and self-configures
+# its relay HAL from the `relay_actuator:` block.  Reflash-free reconfigure:
+# edit this file, PUT it, then trigger a live re-fetch (publish truthy to
+# `_device/office_fan/restart`) — no power-cycle.  Mirrors the dual_throttle
+# config-fetch pattern; this is its OUTPUT/actuator dual.
+#
+# HEADLESS: no widgets — the ESP32 only SUBSCRIBES `office_fan/speed` and
+# actuates the relay bank.  A speed-tap AC fan wired RY2/RY3/RY4 = low/med/high
+# (RY1 = spare, unused).  off = all relays open.
+#
+#   python3 -m composeio.render.engine.runtime office_fan.compose.yaml   # (parse-only; headless)
+
+app:
+  id: office_fan
+
+# The one semantic namespace this device consumes.  A human, an Intelligence,
+# or any bus peer publishes a speed; the device subscribes + actuates.  Per-
+# device namespace so office_fan and office_hepa never collide.
+namespaces:
+  - name: office_fan/speed
+    state_engine: enum
+    values: ["off", low, medium, high] # the enum domain (advisory; the device
+                                       #   maps these strings to relay pins)
+
+# --- OUTPUT actuator: the break-before-make relay bank --------------------
+# GPIO->relay map (VERIFIED on this board, active-HIGH — relay energizes on
+# GPIO HIGH):  RY1=GPIO32 (spare)  RY2=GPIO33  RY3=GPIO25  RY4=GPIO26.
+# Fan speed tap:  low=RY2  medium=RY3  high=RY4.  off = every relay open.
+#
+# BREAK-BEFORE-MAKE (motor safety): on EVERY speed change the device first
+# opens ALL owned relays (incl. the spare RY1), waits `dead_time_ms`, THEN
+# closes the single target relay.  Two speed relays are NEVER closed at once
+# (that would back-feed the fan windings).  ~80ms dead-time is verified-safe.
+relay_actuator:
+  subscribes: office_fan/speed     # the enum namespace this actuator drives
+  active_high: true                # relay energizes on GPIO HIGH
+  dead_time_ms: 80                 # break-before-make dead-time (ms)
+  default: "off"                   # asserted at boot (fan starts OFF)
+  # ALL owned relay GPIOs — break de-energizes every one (incl. the spare).
+  pins: [mcu.GPIO32, mcu.GPIO33, mcu.GPIO25, mcu.GPIO26]
+  # enum value -> the SINGLE relay pin energized for that state.
+  # (quote "off": unquoted off/on are YAML 1.1 booleans.)
+  states:
+    - {value: "off",  pin: none}        # RY1..RY4 all open
+    - {value: low,    pin: mcu.GPIO33}  # RY2
+    - {value: medium, pin: mcu.GPIO25}  # RY3
+    - {value: high,   pin: mcu.GPIO26}  # RY4
+
+# SEAM (deferred, do NOT wire now): reactive SENSOR RULES.  A future local
+# ReactiveCore binding could DERIVE office_fan/speed from a sensor namespace;
+# it would ride the existing binding/DSL engine and publish the SAME enum this
+# actuator already subscribes — no change here.  Left intentionally open.

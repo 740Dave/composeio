@@ -1,0 +1,38 @@
+# Part catalog entry — 10k linear rotary potentiometer (3-terminal).
+#
+# See esp32-c3.yaml for the field contract.  The wiper is the analog output:
+# a hookup wire `potX.wiper -> mcu.GPIOn` with `publishes: throttle/x` is the
+# load-bearing seam (physical pin -> slot -> widget binding).
+
+pot-10k:
+  description: 10k linear-taper rotary potentiometer, 3 terminals.
+
+  # Canonical pins.  `vcc`/`gnd` are the outer legs, `wiper` the center tap.
+  pins:
+    - vcc
+    - wiper
+    - gnd
+
+  value: 10k
+
+  fritzing: potentiometer.svg
+  fritzing_part: "Rotary Potentiometer"
+  # pin -> breadboard connector id (2026-07-26 compositing pass).  The art's
+  # three legs are connector0/1/2 left->right with explicit connectorNterminal
+  # lead-tip elements; the WIPER is geometrically the CENTER leg (connector1),
+  # which is the only electrically load-bearing assignment — the outer legs
+  # are interchangeable for a divider (swapping them only reverses the sweep
+  # direction).
+  fritzing_connectors:
+    vcc: connector0
+    wiper: connector1
+    gnd: connector2
+  fritzing_note: >-
+    Real footprint cached at render/engine/parts/svg/potentiometer.svg
+    (Fritzing core "Rotary Potentiometer" breadboard art).  S3 composites it
+    and anchors wires to the connectorNterminal lead tips via
+    `fritzing_connectors` above.
+
+  kicad:
+    symbol: "Device:R_Potentiometer"
+    footprint: "Potentiometer_THT:Potentiometer_Bourns_3386F_Vertical"

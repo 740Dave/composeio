@@ -1,0 +1,789 @@
+---
+scope: "Role firmware contracts, capability declarations, I2C register maps, config binary formats, and flash layouts for ComposeIO modules"
+audience: "Firmware developers implementing role firmware, host library developers pushing config, hardware designers selecting MCUs for modules"
+boundary: "Role-level contracts and binary formats only; bus protocol in 01-composeio-bus-protocol.smd; YAML config schema in 02-composeio-config-schema.smd; design principles in 00-composeio-design-principles.smd"
+not-this: "Not the YAML config language; not the host-side push tooling; not PCB design guidance"
+depends-on:
+  - "00-composeio-design-principles.smd"
+  - "01-composeio-bus-protocol.smd"
+  - "02-composeio-config-schema.smd"
+---
+# ComposeIO Module Roles [SPEC:CIO-MODULE-ROLES]
+
+> Every ComposeIO module runs role firmware — flashed once, configured at runtime. This spec defines the contract that all role firmware must satisfy, the built-in roles shipped with the platform, and the binary formats that cross the I2C boundary.
+
+---
+
+## Governing Principles
+
+This spec is constrained by:
+
+- **[DP-CIO-1]** Adding hardware is config, not recoding — role firmware is generic, behavior comes from config binary.
+- **[DP-CIO-3]** Push behavior to the edge — modules close the semantic gap between raw GPIO and application intent.
+- **[DP-CIO-7]** Config is the product, firmware is infrastructure — firmware exists to interpret config, not to encode behavior.
+- **[DP-CIO-11]** Graceful degradation — modules boot from cached config when the host is absent.
+- **[DP-CIO-14]** Parameterized collections — a single role handles N buttons, N channels, N motors.
+- **[DP-CIO-16]** Control priority enforced at edge — modules resolve contention locally, not at the host.
+
+---
+
+## MCU Targets
+
+| MCU | Package | Clock | Flash | SRAM | I2C | SPI | GPIO | Config Budget |
+|-----|---------|-------|-------|------|-----|-----|------|---------------|
+| CH32V003 | SOP-16 | 48MHz | 16KB | 2KB | 1 | 1 | 14 | 128 bytes (2 pages) |
+| CH32V003 | TSSOP-20 | 48MHz | 16KB | 2KB | 1 | 1 | 18 | 128 bytes (2 pages) |
+| CH32V203 | LQFP-48 | 144MHz | 64KB | 20KB | 2 | 2 | 37 | 4KB (4 pages) |
+| ESP32-S3 | Module | 240MHz | 4MB | 512KB+2MB | 2 | 3 | 45 | 64KB (NVS partition) |
+
+Firmware budget on CH32V003: ~8-10KB code, leaving 2 pages (128 bytes) for config and 4-6KB headroom. CH32V203 has substantially more room for complex roles.
+
+---
+
+## Role Contract [MR-CONTRACT]
+
+Every role firmware implementation MUST satisfy this contract. No exceptions.
+
+### [MR-CONTRACT-I2C] I2C Slave Interface
+
+The module operates as an I2C slave at an address assigned by the host (or a default compiled into firmware). The shared register map is:
+
+| Register | R/W | Size | Function |
+|----------|-----|------|----------|
+| `0x00` | R | 2 bytes | Firmware role ID (high byte) + version (low byte) |
+| `0x01` | R | 1 byte | Config checksum (CRC-8 of active config binary) |
+| `0x10`-`0x1F` | R/W | Role-specific | Data registers — role defines meaning |
+| `0xF0` | W | 1+N bytes | Config write: offset (1 byte) + data (up to 30 bytes) |
+| `0xF1` | W | 0 bytes | Config commit: triggers flash write + CRC verify + soft reboot |
+| `0xF2` | R | 1+N bytes | Config read: write offset (1 byte), then read up to 30 bytes |
+| `0xFE` | R | 2 bytes | Config size in bytes (little-endian uint16) |
+| `0xFF` | W | 0 bytes | Factory reset: erase config pages, reboot with compiled defaults |
+
+Register access protocol:
+1. **Write to data register**: I2C write — first byte is register address, remaining bytes are data.
+2. **Read from data register**: I2C write register address (1 byte), then I2C read N bytes.
+3. **Config write (0xF0)**: Write `[0xF0, offset, data...]`. Max 30 data bytes per transaction. Host chunks large configs across multiple writes.
+4. **Config commit (0xF1)**: Write `[0xF1]`. Module writes buffered config to flash, computes CRC, verifies, then soft-reboots to load new config. If CRC verify fails, module retains previous config and sets error flag readable at `0x01` (checksum will read `0x00` to indicate invalid).
+5. **Config read (0xF2)**: Write `[0xF2, offset]`, then read up to 30 bytes starting at that offset.
+
+### [MR-CONTRACT-BOOT] Boot Sequence
+
+```
+Power-on / Soft reboot
+  │
+  ├─ Initialize watchdog timer (2s timeout)
+  ├─ Initialize I2C slave at default address
+  ├─ Read config from flash
+  │   ├─ Valid config (magic + CRC match) → parse and activate
+  │   └─ Invalid/empty config → run with compiled defaults (safe mode)
+  ├─ Apply config: configure GPIO, timers, peripherals per config binary
+  ├─ Begin main loop:
+  │   ├─ Service I2C requests
+  │   ├─ Execute role-specific scan/update cycle
+  │   ├─ Pet watchdog
+  │   └─ Publish state changes to data registers
+  └─ If watchdog fires → hardware reset → re-enter boot sequence
+```
+
+Safe mode means the module is discoverable and configurable but performs no role-specific behavior. It responds to all register reads/writes normally. The host can push config to bring it into active mode without a reflash.
+
+### [MR-CONTRACT-DISCOVERY] Discovery Announcement
+
+When the host polls register `0x00`, the module responds with its role ID and firmware version. The host then reads capability data from a discovery block accessible via config read (`0xF2`) at offset `0x00` when no config is committed, or from a fixed capability struct in code.
+
+Discovery payload (read via `0xF2` at offset 0 when config is empty, or via registers `0x10`-`0x13` when running):
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 1 | Role ID |
+| 1 | 1 | Firmware version |
+| 2 | 1 | MCU type: `0x01`=CH32V003-SOP16, `0x02`=CH32V003-TSSOP20, `0x03`=CH32V203, `0x04`=ESP32-S3 |
+| 3 | 1 | Max configurable channels (role-dependent: buttons, relays, motors, etc.) |
+| 4 | 2 | Config capacity in bytes (little-endian) |
+| 5 | 1 | Capability flags (role-specific bitfield) |
+| 7 | 1 | Active namespace count (0 if unconfigured) |
+
+### [MR-CONTRACT-HEARTBEAT] Heartbeat
+
+Modules set bit 7 of register `0x01` to `1` on every main loop iteration. The host clears it by reading. If the host reads `0x01` and bit 7 is `0`, the module has stopped executing its main loop (hung or crashed — watchdog should recover it).
+
+Register `0x01` layout:
+- Bits [6:0]: CRC-8 of active config (0x00 = no valid config)
+- Bit [7]: Heartbeat flag (set by firmware each loop, cleared on read)
+
+### [MR-CONTRACT-WATCHDOG] Watchdog Timer
+
+- CH32V003 / CH32V203: Hardware IWDG, 2-second timeout.
+- ESP32-S3: Task watchdog, 5-second timeout.
+- Firmware MUST pet the watchdog in the main loop. If the main loop hangs (I2C interrupt storm, config parse error, peripheral lockup), the watchdog fires a hardware reset. The module re-enters the boot sequence, loads cached config from flash, and resumes operation. This satisfies [DP-CIO-11].
+
+### [MR-CONTRACT-FLASH] Flash Config Management
+
+Config is stored in reserved flash pages at the top of the address space. Firmware never erases or writes these pages during normal operation — only on `0xF1` (commit) or `0xFF` (factory reset).
+
+Write sequence:
+1. Host writes config in 30-byte chunks via register `0xF0`.
+2. Module buffers chunks in SRAM.
+3. Host writes `0xF1` to commit.
+4. Module erases config pages, writes buffer, computes CRC-32 over written data, stores CRC in header.
+5. Module reads back flash and verifies CRC-32 against header.
+6. If verify passes: soft reboot to load new config.
+7. If verify fails: retain previous config (do not erase). Set CRC-8 in register `0x01` to `0x00` to signal error. Host can retry.
+
+Power-loss safety: if power is lost during erase/write, the config pages may be corrupted. On next boot, CRC check will fail and the module enters safe mode. The host must re-push config. This is acceptable — config push takes <500ms and the host always has the canonical YAML source.
+
+---
+
+## Config Binary Format [MR-CONFIG-FORMAT]
+
+### [MR-CONFIG-HEADER] Header
+
+All config binaries share a common 10-byte header:
+
+```
+Offset  Size  Field
+0x00    2     Magic bytes: 0x43 0x49 ("CI")
+0x02    1     Config format version (currently 0x01)
+0x03    1     Role ID
+0x04    2     Config body size in bytes (little-endian, excludes header)
+0x06    4     CRC-32 of body (bytes after header, little-endian)
+```
+
+Total header: 10 bytes. Maximum config body size on CH32V003: 118 bytes (128 - 10).
+
+### [MR-CONFIG-ENCODING] Encoding Rules
+
+- All multi-byte integers are little-endian (RISC-V native byte order).
+- Namespace references are stored as CRC-16/CCITT hashes of the full namespace string (e.g., `"office.desk.button.0"` → 16-bit hash). Collisions are detected at config-compile time by the host tooling.
+- Enumerated types use 4-bit or 8-bit packed fields as specified per role.
+- Booleans pack 8 per byte as bitfields.
+- No padding between fields unless explicitly noted. Structs are packed.
+
+---
+
+## Config Flash Layout [MR-FLASH-LAYOUT]
+
+### [MR-FLASH-CH32V003] CH32V003 Layout
+
+CH32V003 flash: 16KB at `0x08000000`-`0x08003FFF`. Page size: 64 bytes.
+
+```
+0x08000000 ┌─────────────────────┐
+           │ Firmware code       │
+           │ (~8-10KB)           │
+           │                     │
+0x08003F80 ├─────────────────────┤  ← Config page 0 (64 bytes)
+           │ Config header (10B) │
+           │ Config body start   │
+0x08003FC0 ├─────────────────────┤  ← Config page 1 (64 bytes)
+           │ Config body cont.   │
+0x08003FFF └─────────────────────┘
+```
+
+Total config capacity: 128 bytes (10 header + 118 body).
+
+Linker script reserves:
+```
+MEMORY {
+  FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 16K - 128
+  CONFIG (r)  : ORIGIN = 0x08003F80, LENGTH = 128
+}
+```
+
+### [MR-FLASH-CH32V203] CH32V203 Layout
+
+CH32V203 flash: 64KB at `0x08000000`-`0x0800FFFF`. Page size: 1KB.
+
+```
+0x08000000 ┌─────────────────────┐
+           │ Firmware code       │
+           │ (~24-40KB)          │
+           │                     │
+0x0800F000 ├─────────────────────┤  ← Config page 0 (1KB)
+           │ Config header (10B) │
+           │ Config body         │
+0x0800F400 ├─────────────────────┤  ← Config page 1 (1KB)
+           │ Config body cont.   │
+0x0800F800 ├─────────────────────┤  ← Config page 2 (1KB)
+           │ Config body cont.   │
+0x0800FC00 ├─────────────────────┤  ← Config page 3 (1KB)
+           │ Config body cont.   │
+0x0800FFFF └─────────────────────┘
+```
+
+Total config capacity: 4096 bytes (10 header + 4086 body).
+
+Linker script reserves:
+```
+MEMORY {
+  FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 64K - 4K
+  CONFIG (r)  : ORIGIN = 0x0800F000, LENGTH = 4K
+}
+```
+
+### [MR-FLASH-ESP32S3] ESP32-S3 Layout
+
+Config stored in a dedicated NVS partition (`composeio_cfg`, 64KB). Not flash-page-managed — uses ESP-IDF NVS API. Same binary format, stored as a single NVS blob keyed `"config"`.
+
+---
+
+## Built-in Roles
+
+### [MR-ROLE-BUTTON-MATRIX] Role: button-matrix (ID: 0x01)
+
+**Purpose**: Scan a key matrix, debounce inputs, classify input types, drive per-key state engines, generate LED patterns. This is the primary input role. A single button-matrix module can serve an entire panel of buttons, toggles, encoders, and indicator LEDs.
+
+**MCU targets**:
+| MCU | Package | Max Matrix | Max Buttons |
+|-----|---------|------------|-------------|
+| CH32V003 | SOP-16 | 7 rows x 7 cols | 49 |
+| CH32V003 | TSSOP-20 | 7 rows x 8 cols | 56 |
+| CH32V203 | LQFP-48 | 17 rows x 17 cols | 289 |
+
+Matrix dimensions derive from available GPIO: rows + cols <= usable GPIO count. Row pins are outputs (active-low scan), column pins are inputs (pull-up, read during scan).
+
+**Capability flags** (register `0x13`, bit 5 of discovery):
+- Bit 0: Supports momentary input type
+- Bit 1: Supports toggle input type
+- Bit 2: Supports rotary encoder input type
+- Bit 3: Supports analog (ADC) input type
+- Bit 4: Supports LED output per button
+- Bit 5: Supports RGB LED output per button
+- Bit 6: Supports state engine: cycle
+- Bit 7: Supports state engine: radio-group
+
+**Scan cycle**: The main loop scans the full matrix at >=1kHz. Each scan:
+1. Drive one row low, read all columns.
+2. Advance to next row.
+3. After full scan, run debounce filter (4-sample majority, ~4ms settle).
+4. For each changed button, evaluate input type logic.
+5. Update state engine.
+6. Compute LED output from state + LED behavior.
+7. Update data registers with new state.
+
+**Data registers** (`0x10`-`0x1F`):
+
+| Register | R/W | Size | Function |
+|----------|-----|------|----------|
+| `0x10` | R | 8 bytes | Button state bitmap (bit per button, up to 64 buttons). Bit = 1 means active/pressed. For >64 buttons (CH32V203), use `0xF2` config read at offset `0x80`+ for extended bitmap. |
+| `0x11` | R | 2 bytes | Change flags: button index (high byte) + new state (low byte) of most recent change. Host polls this to detect events without scanning full bitmap. |
+| `0x12` | R/W | 4 bytes | State engine values — packed 2-bit or 4-bit per button depending on state engine type. Read to get current states. Write to force a state (host override). |
+| `0x13` | R | 1 byte | Capability flags (see above). |
+| `0x14` | W | 3 bytes | LED command: button_index(1) + color_or_pattern(1) + brightness(1). Write to override LED for one button. |
+| `0x15` | W | 1 byte | LED global brightness (0-255). Applies to all LEDs. |
+
+**Config binary body**:
+
+```
+Offset  Size   Field
+0x00    1      Button count (N), max 56 for CH32V003, 255 for CH32V203
+0x01    1      Matrix rows
+0x02    1      Matrix columns
+0x03    1      Scan rate divider (1 = 1kHz, 2 = 500Hz, etc.)
+0x04    N*5    Per-button config (5 bytes each):
+               [0:1]  namespace_hash (uint16 LE, CRC-16 of namespace string)
+               [2]    input_type (high nibble, 4 bits) | state_engine_type (low nibble, 4 bits)
+               [3]    led_behavior (uint8)
+               [4]    options (uint8, bitfield: bit0=inverted, bit1=enable_long_press, bit2-7=reserved)
+```
+
+Input types (4-bit enum):
+| Value | Type | Behavior |
+|-------|------|----------|
+| 0x0 | Momentary | Active while pressed |
+| 0x1 | Toggle | Alternates on each press |
+| 0x2 | Momentary-repeat | Auto-repeat after 500ms hold, 100ms interval |
+| 0x3 | Rotary-A | Encoder channel A (paired with next button as B) |
+| 0x4 | Rotary-B | Encoder channel B (paired with previous button as A) |
+| 0x5 | Long-press | Separate event on hold >1s |
+| 0x6-0xF | Reserved | |
+
+State engine types (4-bit enum):
+| Value | Type | Behavior |
+|-------|------|----------|
+| 0x0 | None | Raw input, no state transformation |
+| 0x1 | Binary | On/off state tracks input |
+| 0x2 | Cycle-N | Cycles through N states (N stored in options[4:2]) |
+| 0x3 | Radio-group | Mutual exclusion — group ID in options[4:2], pressing one deactivates others in same group |
+| 0x4 | Increment | Each press increments a counter (wraps at max in options) |
+| 0x5-0xF | Reserved | |
+
+LED behaviors (8-bit enum):
+| Value | Behavior |
+|-------|----------|
+| 0x00 | Off — LED always off |
+| 0x01 | State-follow — LED mirrors button state |
+| 0x02 | State-invert — LED is inverse of button state |
+| 0x03 | Blink-slow — 1Hz blink when active |
+| 0x04 | Blink-fast — 4Hz blink when active |
+| 0x05 | Pulse — smooth fade pulse when active |
+| 0x06 | Flash-on-change — brief flash on any state transition |
+| 0x07-0xFF | Reserved |
+
+**Config size calculation**:
+- Header: 10 bytes
+- Body overhead: 4 bytes
+- Per-button: 5 bytes
+- 16 buttons: 10 + 4 + 80 = 94 bytes (fits CH32V003 128-byte budget)
+- 23 buttons: 10 + 4 + 115 = 129 bytes (exceeds CH32V003 — use CH32V203 or reduce to 22)
+- 22 buttons: 10 + 4 + 110 = 124 bytes (fits CH32V003)
+- Max CH32V003: 22 buttons with full config, or 49 buttons on CH32V203 (254 bytes)
+
+---
+
+### [MR-ROLE-RELAY-CONTROLLER] Role: relay-controller (ID: 0x02)
+
+**Purpose**: Drive relay or MOSFET outputs. Each channel subscribes to a namespace and responds to state changes. Supports a priority stack so that safety overrides (e.g., emergency shutoff) take precedence over normal control. Satisfies [DP-CIO-16].
+
+**MCU targets**:
+| MCU | Package | Max Channels |
+|-----|---------|-------------|
+| CH32V003 | SOP-16 | 12 (14 GPIO - 2 for I2C) |
+| CH32V003 | TSSOP-20 | 16 (18 GPIO - 2 for I2C) |
+| CH32V203 | LQFP-48 | 35 (37 GPIO - 2 for I2C) |
+
+**Capability flags**:
+- Bit 0: Supports normally-open relay mode
+- Bit 1: Supports normally-closed relay mode
+- Bit 2: Supports MOSFET (active-high) mode
+- Bit 3: Supports MOSFET (active-low) mode
+- Bit 4: Supports priority stack
+- Bit 5: Supports timed auto-off
+- Bit 6-7: Reserved
+
+**Data registers** (`0x10`-`0x1F`):
+
+| Register | R/W | Size | Function |
+|----------|-----|------|----------|
+| `0x10` | R | 4 bytes | Channel state bitmap (bit per channel, up to 32). Bit = 1 means energized. |
+| `0x11` | R/W | 2 bytes | Priority override: channel_index(1) + priority_value(1). Write to assert a priority-level state change. Read returns highest active priority per channel. |
+| `0x12` | W | 2 bytes | Direct command: channel_index(1) + state(1). Bypasses namespace, sets channel directly. Priority 0 (lowest). |
+| `0x13` | R | 1 byte | Capability flags. |
+| `0x14` | R | 2 bytes | Fault register: channel_index(1) + fault_code(1). `0x00` = no fault. `0x01` = overcurrent detected (if sensing is wired). `0x02` = relay stuck. |
+
+**Priority stack**: Each channel maintains a 4-level priority stack:
+| Priority | Use |
+|----------|-----|
+| 0 | Normal namespace-driven state |
+| 1 | Timed override (auto-expires) |
+| 2 | Host direct command |
+| 3 | Safety interlock (highest — cannot be overridden by lower priorities) |
+
+The active output state is determined by the highest-priority non-empty entry. When a higher-priority entry expires or is cleared, the channel falls back to the next lower priority. This is edge-resolved — no host round-trip needed. Satisfies [DP-CIO-16].
+
+**Config binary body**:
+
+```
+Offset  Size   Field
+0x00    1      Channel count (N)
+0x01    1      Default state bitmap (bit per channel, up to 8; 0=off at boot)
+0x02    N*4    Per-channel config (4 bytes each):
+               [0:1]  namespace_hash (uint16 LE)
+               [2]    output_mode (high nibble) | priority_mode (low nibble)
+               [3]    auto_off_seconds (0 = disabled, 1-255 = seconds until auto-shutoff)
+```
+
+Output modes (4-bit):
+| Value | Mode |
+|-------|------|
+| 0x0 | Normally-open relay (active-high GPIO) |
+| 0x1 | Normally-closed relay (active-low GPIO) |
+| 0x2 | MOSFET active-high |
+| 0x3 | MOSFET active-low |
+| 0x4-0xF | Reserved |
+
+Priority modes (4-bit):
+| Value | Mode |
+|-------|------|
+| 0x0 | Simple — no priority stack, last-write-wins |
+| 0x1 | Stack — full 4-level priority stack |
+| 0x2 | Latch — once energized, stays on until explicit off |
+| 0x3 | Safety-default-off — boots off, safety priority permanently reserves level 3 as off |
+| 0x4-0xF | Reserved |
+
+**Config size calculation**:
+- Header: 10 bytes, body overhead: 2 bytes, per-channel: 4 bytes.
+- 8 channels: 10 + 2 + 32 = 44 bytes (fits CH32V003).
+- 28 channels: 10 + 2 + 112 = 124 bytes (fits CH32V003).
+- Max CH32V003: 29 channels (128 bytes). Exceeds GPIO count, so GPIO is the real limit.
+
+---
+
+### [MR-ROLE-STEPPER-CONTROLLER] Role: stepper-controller (ID: 0x03)
+
+**Purpose**: Accept position and speed commands, generate step/direction signals with acceleration profiles. Each motor subscribes to a namespace for target position. The module handles all real-time motion control locally — the host sets destinations, the edge handles kinematics. Satisfies [DP-CIO-3].
+
+**MCU targets**:
+| MCU | Package | Max Motors | Notes |
+|-----|---------|-----------|-------|
+| CH32V003 | SOP-16 | 2 | 2 GPIO per motor (step + dir) + optional 2 for enable/home = 4-6 per motor |
+| CH32V003 | TSSOP-20 | 3 | Same per-motor cost, more GPIO |
+| CH32V203 | LQFP-48 | 8 | Timer channels enable precise step timing for multiple axes |
+
+**Capability flags**:
+- Bit 0: Supports linear acceleration
+- Bit 1: Supports S-curve acceleration
+- Bit 2: Supports homing (home switch input)
+- Bit 3: Supports microstepping control (MS1/MS2 pins)
+- Bit 4: Supports position feedback (encoder input)
+- Bit 5-7: Reserved
+
+**Data registers** (`0x10`-`0x1F`):
+
+| Register | R/W | Size | Function |
+|----------|-----|------|----------|
+| `0x10` | R/W | 4 bytes | Motor 0: target position (int32 LE, steps). Write to command move. |
+| `0x11` | R | 4 bytes | Motor 0: current position (int32 LE, steps). |
+| `0x12` | R/W | 2 bytes | Motor 0: speed (uint16 LE, steps/sec). Write to set max speed. |
+| `0x13` | R | 1 byte | Motor 0: status flags. Bit 0=moving, bit 1=homed, bit 2=stalled, bit 3=at-limit. |
+| `0x14`-`0x17` | R/W | — | Motor 1: same layout as `0x10`-`0x13`. |
+| `0x18`-`0x1B` | R/W | — | Motor 2: same layout (TSSOP-20 / CH32V203 only). |
+| `0x1F` | W | 1 byte | Command register: `0x01`=home all, `0x02`=stop all, `0x03`=emergency stop (instant, no decel). |
+
+For >3 motors (CH32V203), extended motor registers are accessible via `0xF2` config read at offsets `0x80`+.
+
+**Config binary body**:
+
+```
+Offset  Size   Field
+0x00    1      Motor count (N)
+0x01    1      Global flags: bit 0=enable_stall_detect, bit 1=enable_limits
+0x02    N*10   Per-motor config (10 bytes each):
+               [0:1]  namespace_hash (uint16 LE)
+               [2:3]  steps_per_rev (uint16 LE)
+               [4]    microstepping (0=full, 1=half, 2=1/4, 3=1/8, 4=1/16, 5=1/32)
+               [5]    accel_profile (0=none, 1=linear, 2=s-curve)
+               [6:7]  max_speed (uint16 LE, steps/sec)
+               [8:9]  home_offset (int16 LE, steps from home switch)
+```
+
+**Config size calculation**:
+- Header: 10 bytes, body overhead: 2 bytes, per-motor: 10 bytes.
+- 2 motors: 10 + 2 + 20 = 32 bytes (fits CH32V003).
+- 8 motors: 10 + 2 + 80 = 92 bytes (fits CH32V003 if GPIO allows, but 8 motors need CH32V203).
+- Max on CH32V203 config budget: 408 motors (absurd — GPIO is the limit at ~8).
+
+---
+
+### [MR-ROLE-PWM-BANK] Role: pwm-bank (ID: 0x04)
+
+**Purpose**: N channels of hardware PWM output with per-channel frequency, duty cycle, and fade control. Used for LED dimming, fan speed, servos, and other analog-like outputs. Each channel subscribes to a namespace.
+
+**MCU targets**:
+| MCU | Package | Max PWM Channels | Notes |
+|-----|---------|-------------------|-------|
+| CH32V003 | SOP-16 | 4 | Limited by timer channels with PWM capability |
+| CH32V003 | TSSOP-20 | 4 | Same timer limitation |
+| CH32V203 | LQFP-48 | 16 | Multiple advanced timers |
+
+**Capability flags**:
+- Bit 0: Supports independent frequency per channel
+- Bit 1: Supports fade/transition
+- Bit 2: Supports servo mode (pulse-width output)
+- Bit 3: Supports complementary output (for H-bridge)
+- Bit 4-7: Reserved
+
+**Data registers** (`0x10`-`0x1F`):
+
+| Register | R/W | Size | Function |
+|----------|-----|------|----------|
+| `0x10` | R/W | 1 byte | Channel 0 duty cycle (0-255 maps to 0-100%) |
+| `0x11` | R/W | 1 byte | Channel 1 duty cycle |
+| `0x12` | R/W | 1 byte | Channel 2 duty cycle |
+| `0x13` | R/W | 1 byte | Channel 3 duty cycle |
+| `0x14`-`0x17` | R/W | 1 byte each | Channels 4-7 (CH32V203 only) |
+| `0x18` | W | 2 bytes | Fade command: channel_index(1) + target_duty(1). Fades at rate defined in config. |
+| `0x19` | R | 1 byte | Fade status bitmap (bit per channel, 1 = fade in progress). |
+| `0x1A` | W | 1 byte | Global brightness scalar (0-255). Multiplied against all channel duties. |
+
+For >8 channels (CH32V203), channels 8-15 accessible via `0xF2` at offset `0x80`+.
+
+**Config binary body**:
+
+```
+Offset  Size   Field
+0x00    1      Channel count (N)
+0x01    1      Global flags: bit 0=gamma_correction, bit 1=sync_update (all channels latch simultaneously)
+0x02    N*6    Per-channel config (6 bytes each):
+               [0:1]  namespace_hash (uint16 LE)
+               [2:3]  frequency (uint16 LE, Hz; 0 = use default 1kHz)
+               [4]    default_duty (uint8, 0-255)
+               [5]    fade_rate (uint8, 0=instant, 1-255 = ms per step of 1/255)
+```
+
+**Config size calculation**:
+- Header: 10 bytes, body overhead: 2 bytes, per-channel: 6 bytes.
+- 4 channels: 10 + 2 + 24 = 36 bytes (fits CH32V003).
+- 16 channels: 10 + 2 + 96 = 108 bytes (fits CH32V003 config budget, but needs CH32V203 for GPIO/timers).
+
+---
+
+### [MR-ROLE-FINGERPRINT-GATE] Role: fingerprint-gate (ID: 0x05)
+
+**Purpose**: Broker communication with an R503 optical fingerprint sensor over UART. Manages an allow-list of template IDs, performs match verification, and publishes match/deny events to a namespace. The I2C host never touches the UART protocol — this module fully encapsulates it. Satisfies [DP-CIO-3].
+
+**MCU target**: CH32V003 TSSOP-20 only (needs UART + I2C + status LED GPIO).
+
+**Hardware interface**: R503 sensor connected via UART (57600 baud default). Module uses 2 GPIO for UART TX/RX, 2 for I2C, 1 for status LED, 1 for sensor power control. Remaining GPIO unused.
+
+**Capability flags**:
+- Bit 0: Supports match verification
+- Bit 1: Supports enrollment (add new templates)
+- Bit 2: Supports template deletion
+- Bit 3: Supports confidence threshold adjustment
+- Bit 4-7: Reserved
+
+**Data registers** (`0x10`-`0x1F`):
+
+| Register | R/W | Size | Function |
+|----------|-----|------|----------|
+| `0x10` | R | 1 byte | Last scan result: `0x00`=no scan, `0x01`=match, `0x02`=no-match, `0x03`=error, `0x04`=finger-present-scanning |
+| `0x11` | R | 1 byte | Last matched template ID (valid when `0x10`=0x01) |
+| `0x12` | R | 2 bytes | Last match confidence score (uint16 LE, 0-65535) |
+| `0x13` | R | 1 byte | Sensor status: `0x00`=idle, `0x01`=scanning, `0x02`=enrolling, `0xFF`=sensor-offline |
+| `0x14` | W | 1 byte | Command: `0x01`=start-enrollment, `0x02`=cancel-enrollment, `0x03`=delete-template (ID in 0x15) |
+| `0x15` | W | 1 byte | Template ID argument for commands |
+| `0x16` | R | 1 byte | Enrolled template count on sensor |
+
+**Config binary body**:
+
+```
+Offset  Size   Field
+0x00    2      namespace_hash (uint16 LE) — namespace for match/deny events
+0x02    1      Max templates in allow list (N, max 200 for R503)
+0x03    1      Flags: bit 0=enrollment_enabled, bit 1=auto_led (flash green/red on match/deny),
+               bit 2=deny_publishes_event, bit 3=power_save (sensor sleep between scans)
+0x04    1      Confidence threshold (0-255, maps to sensor's 0-65535 range; default 0x80 = ~50%)
+0x05    1      Scan interval (tenths of a second; 0x0A = 1 second between scans in power-save mode)
+0x06    N*1    Allow list: template IDs (1 byte each). Template ID 0x00 = slot empty.
+```
+
+**Config size calculation**:
+- Header: 10 bytes, body overhead: 6 bytes, per-template: 1 byte.
+- 20 templates: 10 + 6 + 20 = 36 bytes (fits CH32V003).
+- 112 templates: 10 + 6 + 112 = 128 bytes (maxes out CH32V003).
+
+---
+
+### [MR-ROLE-COMPOSITE-DEVICE] Role: composite-device (ID: 0x06)
+
+**Purpose**: Orchestrate multiple physical outputs as one logical device with lifecycle sequencing and safety interlocks. For example, a motorized drawer might need: unlock solenoid, wait 50ms, energize motor forward, monitor limit switch, de-energize motor, lock solenoid. This role encodes that entire sequence in config — no host round-trips during execution. Satisfies [DP-CIO-3] and [DP-CIO-16].
+
+**MCU targets**:
+| MCU | Package | Max Components | Max Sequence Steps |
+|-----|---------|---------------|-------------------|
+| CH32V003 | SOP-16 | 4 | 8 |
+| CH32V003 | TSSOP-20 | 6 | 12 |
+| CH32V203 | LQFP-48 | 16 | 64 |
+
+"Components" are physical outputs (GPIO pins) controlled by the composite device. "Sequence steps" are the lifecycle transitions.
+
+**Capability flags**:
+- Bit 0: Supports timed sequencing
+- Bit 1: Supports condition-wait (wait for input pin)
+- Bit 2: Supports safety interlocks
+- Bit 3: Supports reverse sequence (undo)
+- Bit 4: Supports timeout abort
+- Bit 5-7: Reserved
+
+**Data registers** (`0x10`-`0x1F`):
+
+| Register | R/W | Size | Function |
+|----------|-----|------|----------|
+| `0x10` | R | 1 byte | Component state bitmap (bit per component, 1 = energized) |
+| `0x11` | R | 1 byte | Current lifecycle phase index (0 = idle, 1-N = executing step N) |
+| `0x12` | R | 1 byte | Lifecycle status: `0x00`=idle, `0x01`=running-forward, `0x02`=running-reverse, `0x03`=paused-on-condition, `0xFF`=fault |
+| `0x13` | R | 1 byte | Active interlock bitmap (bit per interlock rule, 1 = tripped) |
+| `0x14` | W | 1 byte | Command: `0x01`=start (run forward), `0x02`=reverse, `0x03`=stop (emergency), `0x04`=reset-fault |
+| `0x15` | R | 2 bytes | Fault detail: step_index(1) + fault_code(1). Codes: `0x01`=timeout, `0x02`=interlock-tripped, `0x03`=component-fault |
+
+**Config binary body**:
+
+```
+Offset  Size   Field
+0x00    2      namespace_hash (uint16 LE) — namespace for device state events
+0x02    1      Component count (C)
+0x03    1      Sequence step count (S)
+0x04    1      Interlock rule count (I)
+0x05    1      Flags: bit 0=auto_reverse_on_fault, bit 1=require_home_before_start
+0x06    C*3    Per-component config (3 bytes each):
+               [0]    GPIO pin index (physical pin on MCU)
+               [1]    output_mode: 0=active-high, 1=active-low, 2=PWM
+               [2]    default_state (0=off, 1=on at boot)
+
+Following component configs:
++0      S*4    Per-step config (4 bytes each):
+               [0]    action_type:
+                      0x00 = set_component (component_index in [1], state in [2])
+                      0x01 = delay_ms (duration in [1:2] as uint16 LE)
+                      0x02 = wait_condition (input_pin in [1], expected_state in [2])
+                      0x03 = publish_event (event_code in [1])
+               [1]    param_a
+               [2]    param_b
+               [3]    timeout_100ms (timeout for this step in 100ms units; 0=no timeout)
+
+Following step configs:
++0      I*3    Per-interlock rule (3 bytes each):
+               [0]    input_pin (GPIO pin to monitor)
+               [1]    trigger_state (0=low, 1=high)
+               [2]    action: 0x00=pause, 0x01=abort, 0x02=reverse, 0x03=force-component-off (component index in high nibble)
+```
+
+**Config size calculation**:
+- Header: 10 bytes, body overhead: 6 bytes, per-component: 3, per-step: 4, per-interlock: 3.
+- 4 components, 8 steps, 2 interlocks: 10 + 6 + 12 + 32 + 6 = 66 bytes (fits CH32V003).
+- 6 components, 12 steps, 4 interlocks: 10 + 6 + 18 + 48 + 12 = 94 bytes (fits CH32V003).
+
+---
+
+### [MR-ROLE-SENSOR-HUB] Role: sensor-hub (ID: 0x07)
+
+**Purpose**: Read analog and digital sensors, apply transform chains (scaling, offset, smoothing, threshold), and publish processed values to namespaces. Handles ADC sampling, I2C sensor polling (on CH32V203 with second I2C bus), and digital pin monitoring. The host reads processed values — never raw ADC counts. Satisfies [DP-CIO-3].
+
+**MCU targets**:
+| MCU | Package | Max ADC Channels | Max Digital Inputs | Max I2C Sensors |
+|-----|---------|-----------------|-------------------|----------------|
+| CH32V003 | SOP-16 | 8 | 6 | 0 (single I2C used for host bus) |
+| CH32V003 | TSSOP-20 | 10 | 8 | 0 |
+| CH32V203 | LQFP-48 | 16 | 20 | 8 (second I2C bus) |
+
+**Capability flags**:
+- Bit 0: Supports ADC sensors
+- Bit 1: Supports digital input sensors
+- Bit 2: Supports I2C sensors (CH32V203 only)
+- Bit 3: Supports moving-average smoothing
+- Bit 4: Supports threshold alerting
+- Bit 5: Supports polynomial transform
+- Bit 6-7: Reserved
+
+**Data registers** (`0x10`-`0x1F`):
+
+| Register | R/W | Size | Function |
+|----------|-----|------|----------|
+| `0x10` | R | 2 bytes | Sensor 0 processed value (uint16 LE) |
+| `0x11` | R | 2 bytes | Sensor 1 processed value |
+| `0x12` | R | 2 bytes | Sensor 2 processed value |
+| `0x13` | R | 2 bytes | Sensor 3 processed value |
+| `0x14`-`0x17` | R | 2 bytes each | Sensors 4-7 processed values |
+| `0x18` | R | 1 byte | Alert bitmap (bit per sensor, 1 = threshold exceeded) |
+| `0x19` | R | 1 byte | Sensor count (configured) |
+| `0x1A` | W | 1 byte | Force-read command: write sensor index to trigger immediate sample + publish |
+
+For >8 sensors, extended values accessible via `0xF2` at offset `0x80`+.
+
+**Config binary body**:
+
+```
+Offset  Size   Field
+0x00    1      Sensor count (N)
+0x01    1      Global publish rate divider (1 = every scan, 10 = every 10th scan)
+0x02    N*8    Per-sensor config (8 bytes each):
+               [0:1]  namespace_hash (uint16 LE)
+               [2]    pin_or_address: GPIO pin index for ADC/digital, I2C address for I2C sensors
+               [3]    sensor_type:
+                      0x00 = ADC (10-bit, pin is analog input)
+                      0x01 = Digital (pin is digital input, pull-up)
+                      0x02 = Digital-no-pull (pin is digital input, no pull)
+                      0x03 = I2C-register (read 2 bytes from I2C device register)
+                      0x04 = NTC-thermistor (ADC + Steinhart-Hart transform)
+                      0x05 = Voltage-divider (ADC + linear scale)
+               [4]    transform_chain:
+                      High nibble = primary transform (0=none, 1=scale, 2=offset, 3=moving-avg, 4=polynomial)
+                      Low nibble = secondary transform (applied after primary, same codes)
+               [5]    transform_param (uint8, meaning depends on transform type):
+                      scale: multiply raw by param/16 (fixed-point 4.4)
+                      offset: add (param - 128) to raw (signed offset)
+                      moving-avg: window size (1-255 samples)
+                      polynomial: coefficient index into a shared table (CH32V203 only)
+               [6]    threshold_low (uint8, scaled to sensor range; 0 = no low threshold)
+               [7]    threshold_high (uint8, scaled to sensor range; 0 = no high threshold)
+```
+
+**Config size calculation**:
+- Header: 10 bytes, body overhead: 2 bytes, per-sensor: 8 bytes.
+- 4 sensors: 10 + 2 + 32 = 44 bytes (fits CH32V003).
+- 14 sensors: 10 + 2 + 112 = 124 bytes (fits CH32V003).
+- 16 sensors: 10 + 2 + 128 = 140 bytes (needs CH32V203).
+
+---
+
+## Role Registration [MR-REGISTRATION]
+
+### [MR-REGISTRATION-TABLE] Role ID Table
+
+| Role ID | Name | Min MCU | Typical Use |
+|---------|------|---------|-------------|
+| `0x01` | button-matrix | CH32V003 SOP-16 | Panel buttons, toggles, encoders |
+| `0x02` | relay-controller | CH32V003 SOP-16 | Relays, MOSFETs, solenoids |
+| `0x03` | stepper-controller | CH32V003 SOP-16 | Stepper motors, gauges |
+| `0x04` | pwm-bank | CH32V003 SOP-16 | LED dimming, fans, servos |
+| `0x05` | fingerprint-gate | CH32V003 TSSOP-20 | Biometric access control |
+| `0x06` | composite-device | CH32V003 SOP-16 | Multi-output sequenced devices |
+| `0x07` | sensor-hub | CH32V003 SOP-16 | Analog/digital sensor monitoring |
+| `0x08`-`0x7F` | Reserved | — | Future built-in roles |
+| `0x80`-`0xFE` | User-defined | — | Custom role firmware |
+| `0xFF` | Invalid | — | Never used; reserved as sentinel |
+
+Role IDs `0x80`-`0xFE` are available for user-defined roles. User roles MUST implement the full contract defined in [MR-CONTRACT]. The host tooling treats them identically — same register map, same config push protocol, same discovery mechanism.
+
+### [MR-REGISTRATION-VERSION] Version Scheme
+
+Firmware version is a single byte in register `0x00` (low byte):
+- Bits [7:4]: Major version (0-15). Increment on breaking config format changes.
+- Bits [3:0]: Minor version (0-15). Increment on backward-compatible additions.
+
+Config format version in the header (`0x02`) must match the firmware major version. If they differ, the module rejects the config on commit and enters safe mode.
+
+---
+
+## Implementation Notes [MR-IMPL-NOTES]
+
+### [MR-IMPL-INTERRUPT] I2C Interrupt Handling
+
+The I2C slave interface runs entirely in interrupt context on CH32V003/CH32V203. The ISR must be minimal:
+- Register read: return value from a register shadow array in SRAM.
+- Register write: copy data into a write buffer, set a flag.
+- Main loop checks the flag and processes writes. This prevents I2C clock-stretching from blocking the scan loop.
+
+Config writes (`0xF0`) buffer into a dedicated SRAM region. The main loop only touches this buffer during commit (`0xF1`).
+
+### [MR-IMPL-NAMESPACE] Namespace Hash Collisions
+
+CRC-16/CCITT over namespace strings gives 65,536 possible values. For a typical system with <100 namespaces, collision probability is <0.08%. The host config compiler MUST check for collisions and reject configs where two namespaces within the same module hash to the same value. Cross-module collisions are harmless — each module only acts on its own configured hashes.
+
+### [MR-IMPL-SAFE-MODE] Safe Mode Behavior
+
+When a module boots with no valid config (empty flash or CRC mismatch):
+- Register `0x00` returns role ID + version normally.
+- Register `0x01` returns `0x00` (no valid config, heartbeat still toggles bit 7).
+- Data registers `0x10`-`0x1F` return `0x00`.
+- All GPIO remain in input/hi-Z state (safe for connected hardware).
+- Module accepts config writes and commits normally.
+
+This ensures a freshly flashed module is immediately configurable without any special boot mode or jumper. Satisfies [DP-CIO-11] and [DP-CIO-1].
+
+### [MR-IMPL-DEFAULTS] Compiled Defaults
+
+Each role firmware compiles a minimal default config as a `const` array in flash (separate from the config pages). This default config is used only if config pages are empty AND the module has never received a config push. It sets:
+- All channels/buttons/motors to zero count (no active behavior).
+- Safe output states (all GPIO hi-Z or de-energized).
+- Discovery information valid so host can identify the module.
+
+The default config is never written to config pages. It exists solely as a safe boot fallback.
+
+---
+
+## Conformance Checklist [MR-CONFORMANCE]
+
+A role firmware implementation is conformant if and only if all of the following hold:
+
+1. Implements the full I2C register map per [MR-CONTRACT-I2C].
+2. Boots per [MR-CONTRACT-BOOT] sequence — valid config activates, invalid config enters safe mode.
+3. Responds to discovery reads per [MR-CONTRACT-DISCOVERY].
+4. Toggles heartbeat bit per [MR-CONTRACT-HEARTBEAT].
+5. Enables hardware watchdog per [MR-CONTRACT-WATCHDOG].
+6. Manages flash config per [MR-CONTRACT-FLASH] — write, verify, survive power loss gracefully.
+7. Parses config binary with header per [MR-CONFIG-HEADER] and rejects mismatched versions.
+8. Respects flash layout per [MR-FLASH-LAYOUT] for its target MCU.
+9. Enters safe mode (GPIO hi-Z, zero behavior) when unconfigured.
+10. Does not require reflash to change behavior — all behavior parameterized via config. Satisfies [DP-CIO-1] and [DP-CIO-7].

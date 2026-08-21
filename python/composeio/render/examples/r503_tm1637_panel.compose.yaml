@@ -1,0 +1,1083 @@
+# R503 + TM1637 QUAD PANEL — one ESP32-S3 SuperMini carrying BOTH halves of a
+# jump-authorization prop: a capacitive fingerprint sensor (INPUT) and four
+# 7-segment tubes (OUTPUT), on TWO RAILS.
+#
+# ONE artifact, BOTH halves (maker-project-flow design lock §2):
+#   PHYSICAL half (`hookup:`) — an R503 on the S3's 3.3 V rail over a second
+#     UART plus a touch-induction line, AND 4x tm1637-4digit modules on the
+#     S3's 5 V rail, shared CLK through per-module 470 R containment, INDIVIDUAL
+#     DIO ([CXC-TM1637-SHARED-CLK]).
+#   LOGICAL half (`namespaces` + `widgets`) — the four semantic tube values with
+#     their CONSOLE mirror, plus the ALREADY-RESERVED `fingerprint/*` surface.
+#
+# ⛔ THIS IS NOT `tm1637_quad_panel.compose.yaml` WITH A SENSOR ADDED.  That
+# scene is an ESP32-C3 and is still the correct artifact for a C3-only panel;
+# it is untouched.  This is an ESP32-S3, whose STRAPPING PINS ARE A DIFFERENT
+# SET (GPIO0/3/45/46, not the C3's GPIO2/8/9) — so the C3 file's pin exclusions
+# are not merely stale here, they are WRONG IN BOTH DIRECTIONS: they forbid
+# pins that are free on this part and permit one that is a boot strap on it.
+# Copying that scene forward would have produced a well-formed guide for the
+# wrong board.
+#
+#   python3 -m composeio.render.engine.runtime r503_tm1637_panel.compose.yaml
+#
+# ===========================================================================
+# ⛔ NOTHING IN THIS FILE HAS BEEN OBSERVED ON HARDWARE (2026-08-15).
+# No TM1637 and no R503 has been connected to anything in this project.  Of the
+# ELEVEN `facts:` rows below, NINE carry an explicitly EMPTY evidence slot and
+# FOUR are marked measure-before-build.
+#
+# ⚠ DISTINGUISH TWO KINDS OF UNVERIFIED — the file marks them differently and
+# conflating them is how a citation gets invented:
+#   ✅ MANUAL-READ — R503 User Manuals V1.1 / V1.2.1 / V1.4 and the ESP32-S3
+#      datasheet were obtained and read.  WAKEUP polarity, the touch-rail
+#      reference and rating, the pin ORDER, the strapping-pin set and the
+#      GPIO4-11 reset states are CITED, with a revision behind them.
+#   ⛔ NOT PUBLISHED ANYWHERE — the R503's idle current, any VCC tolerance band,
+#      a V1.4.1 manual.  Recorded AS HOLES, not filled with plausible numbers.
+#   ⛔ NEITHER KIND HAS TOUCHED A BENCH.  A citation is not a measurement.
+#
+# TWO ROWS ARE DESTRUCTIVE IF WRONG and no machine signal in this project can
+# see either: which physical conductor of the pigtail is pin 1 (a reversed
+# VCC/GND kills the sensor), and the rail feeding `3V3T` (a 5 V feed there kills
+# a host GPIO — and the SENSOR datasheet PERMITS it, so nothing on the module
+# side will warn you).  Both are settled with a meter, in two minutes, before
+# anything is powered.
+# ===========================================================================
+
+app:
+  id: r503-tm1637-panel
+
+design:
+  title: "Fingerprint · Quad Panel · Console Mirror"
+  width: 560
+  height: 300
+  theme: dark
+
+# ===========================================================================
+# ⛔ THE HAZARD THAT CAN DESTROY THE MCU — READ BEFORE STRIPPING A WIRE
+# ===========================================================================
+# THE R503's `WAKEUP` PIN IS A CMOS OUTPUT REFERENCED TO `3V3T`, THE TOUCH-POWER
+# RAIL — NOT TO `VCC`.  Whatever rail feeds 3V3T is the rail WAKEUP swings to.
+# Feed 3V3T from 5 V and WAKEUP drives 5 V into a 3.3 V GPIO.
+#
+# ✅ THE MANUAL PROVES IT, TWICE (V1.2.1 / V1.4).  "the touch signal output is
+# CMOS output, and the output voltage is ROUGHLY THE SAME AS THE INPUT VOLTAGE."
+# And §6.5, decisively: the host "can cut off the main power supply of the
+# module (CAN NOT CUT OFF THE TOUCH-SENSITIVE POWER SUPPLY).  Once the module
+# detects a finger, it outputs a signal."  ⛔ WAKEUP KEEPS ASSERTING WITH `VCC`
+# REMOVED ENTIRELY — impossible if VCC powered it.
+# ⚠ "CMOS" is the manual's word.  "PUSH-PULL" is an INFERENCE (it drives high to
+# its rail, which argues against open-drain) and is not quoted anywhere.
+#
+# ⛔⛔ AND HERE IS WHAT MAKES IT WORSE THAN A SIMPLE MISWIRE: `3V3T` IS RATED
+# `DC 3-5 V`.  FIVE VOLTS ON IT IS IN SPEC FOR THE SENSOR.  The module sits
+# there working perfectly; nothing smokes; no datasheet is violated ON THE PART
+# BEING WIRED.  It is the HOST that dies — an ESP32-S3 pad is 3.6 V absolute
+# max.  A builder who reads the manual, sees "3-5 V" on that pin and feeds it
+# from the 5 V rail is CORRECT ABOUT THE SENSOR and has destroyed the MCU.
+# ⛔ AND IT IS CONTINUOUS, NOT A TOUCH-TIME PULSE: WAKEUP IDLES HIGH (standby-
+# high, finger-low), so the overvoltage is present from the moment 3V3T powers
+# up and never goes away.
+# ⚠ THE ASYMMETRY IS THE WHOLE TRAP: on this one 6-way connector, `3V3T` is
+# rated 3-5 V and `VCC` is rated a flat 3.3 V.  Two adjacent pins, two different
+# answers, and the PERMISSIVE one is the one that kills the host.
+#
+# ⛔ AND THIS FLEET'S OWN 5 V REASONING DOES NOT COVER IT EITHER — the second
+# half of the trap.
+# The TM1637 direct-connection ruling ([DD-TM1637-LEVEL], res-470r.yaml)
+# concluded a 5 V line is safe against an ESP32 pin, and the argument was
+# entirely about MAGNITUDE: the current is held to 110-440 uA BY THE MODULE'S
+# OWN 10 kOhm PULL-UP.  A pull-up is a resistor.  WAKEUP is a DRIVER — a
+# low-impedance push-pull stage with no series element at all, so the clamp
+# current would be bounded only by its own on-resistance, tens of milliamps.
+#
+#     TM1637 released line -> ~440 uA into the clamp -> absorbed
+#     WAKEUP driven high   -> ~10s of mA into the clamp -> a dead pin
+#
+# THREE ORDERS OF MAGNITUDE APART, AND THEY LOOK IDENTICAL ON A DIAGRAM: two
+# peripheral output pins, each going to one GPIO.  A builder who has read the
+# TM1637 story and generalised "5 V peripherals are fine on this fleet" applies
+# a correct rule to the one part it does not fit.  That generalisation is the
+# actual failure mode here, not ignorance.
+#
+# ⛔ 3V3T TIES TO mcu.3V3.  It is CHECKED below (`fp-touch-rail-never-on-5v`),
+# not merely written down: the netlist is REFUSED if 3V3T and the 5 V rail ever
+# land on one net.
+#
+# ⚠ NOTE WHAT THE CONSTRAINT BUYS: once 3V3T is on 3.3 V, WAKEUP CANNOT EXCEED
+# 3.3 V *WHETHER OR NOT THE REFERENCE CLAIM ABOVE IS TRUE*.  The wiring is
+# correct under both answers, which is why the sensor may be built before the
+# `wakeup-rail-reference` fact row is settled.  (Same shape as the C3 panel's
+# 50 kHz choice: pick the setting that survives the open question.)
+
+# ===========================================================================
+# THE SEMANTIC SURFACE — ⛔ ALREADY RESERVED.  NOTHING HERE IS INVENTED.
+# ===========================================================================
+# The fleet's vocabulary was searched BEFORE any name was written, per the
+# design-from-intent discipline, and the search changed the answer.  A
+# `fingerprint/*` surface is ALREADY DECLARED in the HAL vocabulary
+# ([SPEC:CXC-HALD], corpora/platform-specs/32-composeux-hal-declaration.lts)
+# and — more convincingly than a spec — is ALREADY EXECUTED by
+# `python/composeio/hal/selftest.py`, which publishes `fingerprint/cmd` and
+# reads `fingerprint/enroll/status` and `fingerprint/match` today, naming the
+# R503 as the Tier-3 device.  A live caller is evidence a spec is not.
+#
+# So this scene MINTS NOTHING.  It binds to what exists:
+#   fingerprint/cmd            {enroll|match|delete}      host -> sensor
+#   fingerprint/enroll/status  {step, prompt}             sensor -> host
+#   fingerprint/match          {id, score}                sensor -> host
+#
+# ⛔ AND IT MUST NOT NAME THE VENDOR.  David, 2026-08-15: "take R503 out of the
+# taxonomy everywhere EXCEPT the R503 side of the HAL."  The catalog part file
+# `r503-fingerprint.yaml` is that one permitted side; every namespace, widget id
+# and message field in THIS file is above the seam and carries no vendor name.
+#
+# ⚠ OPEN, AND DELIBERATELY NOT RESOLVED HERE — THREE OF THEM.
+#  (1) SPELLING.  The identity layer proposes a different surface for the same
+#      events: `<location>/user_detected` and `access_granted`, with location as
+#      a NAMESPACE SEGMENT rather than a payload field.  That is not a synonym
+#      for `fingerprint/match` — it is a different decomposition (identity-layer
+#      semantics vs HAL device semantics) and both may legitimately exist, with
+#      the second derived from the first.  The unresolved spec-27-vs-32 conflict
+#      is recorded as `[DD-R503-NAMESPACE-SPELLING]`.  ⛔ THIS SCENE USES THE
+#      RATIFIED HAL SPELLING because it is the one with a live caller.  It does
+#      NOT rule the identity spelling out, and it changes NOT ONE WIRE either
+#      way — renaming these is a text edit, not a rewire.
+#  (2) `access/` IS ALREADY TAKEN, by the NFC badge surface ([SPEC:CXC-NFC] —
+#      `access/badge`, `access/badge_data`).  A fingerprint namespace under
+#      `access/` would collide with a different sensor class.  Stated because it
+#      is the first prefix anyone reaches for.
+#  (3) ⛔ ASSURANCE CLASS.  Spec 32 classifies a fingerprint reader as
+#      EXPERIENTIAL — "NOT an access-control primitive", "a ceremony, not an
+#      auth system".  Nothing in this scene may be named as though it were a
+#      security guarantee, and the gate for any real action belongs where the
+#      action is EXECUTED, not where the finger is read.  A peer that can
+#      publish the enabling namespace bypasses this board entirely, by design.
+namespaces:
+  # --- the sensor surface (already reserved; see above) ---
+  - name: fingerprint/cmd              # host -> sensor: enroll | match | delete
+  - name: fingerprint/enroll/status    # sensor -> host: {step, prompt}
+  - name: fingerprint/match            # sensor -> host: {id, score}
+  # --- the four tube values, IDENTICAL to tm1637_quad_panel.compose.yaml ---
+  # ⛔ REUSED BY REFERENCE, NOT RE-DERIVED.  Same four semantic values, same
+  # derivation argument (`dradis/contacts/count` is deliberately a DERIVED
+  # higher-order namespace over the existing `dradis/contacts` list, which keeps
+  # the counting policy in one place and off the leaf).  Keeping them identical
+  # is what makes the two scenes directly comparable — a C3 panel and an S3
+  # panel showing the same four values is the semantic-realization claim with a
+  # THIRD realization added, not a fork.
+  - name: ship/jump/countdown
+  - name: ship/fuel
+  - name: dradis/contacts/count
+  - name: ship/population
+
+# ===========================================================================
+# PHYSICAL half — the hookup netlist (design lock §3)
+# ===========================================================================
+#
+# ⛔ THE ONE THING THAT IS GENUINELY NEW HERE: THIS BOARD RUNS TWO RAILS, AND
+# THAT BREAKS THE C3 SCENE'S STATED PRECONDITION.  Re-derived rather than
+# inherited, because the C3 file says in terms: "⛔ THE ONE CONSTRAINT THIS
+# BUYS: EVERYTHING RUNS FROM ONE SUPPLY."  The tubes need 5 V (white tubes,
+# measured); the R503 needs 3.3 V and dies above 3.6 V.  Both cannot be true of
+# one rail.  So the question is not rhetorical and the C3 conclusion may not be
+# assumed to carry.  It does carry — but its ARGUMENT changes, and one clause
+# of it INVERTS.  Three parts:
+#
+#   (a) ⛔ THE BACK-DRIVE CASE STILL CANNOT OCCUR — CARRIES, SAME REASON.
+#       The hazard the C3 rule protects against is "5 V rail UP while the 3.3 V
+#       rail is DOWN", when the TM1637 pull-ups inject ~880 uA into a dead 3.3 V
+#       rail.  On this board BOTH rails still derive from ONE source: `mcu.5V`
+#       IS USB VBUS, and `mcu.3V3` is the S3's own LDO output FED FROM THAT SAME
+#       VBUS.  VBUS up implies LDO up.  "Two rails" here means two VOLTAGES, not
+#       two SUPPLIES — and the C3 rule was always about supplies.  A second,
+#       independent 5 V brick would reintroduce the case and IS still forbidden.
+#
+#   (b) ⚠ ONE CLAUSE INVERTS, IN OUR FAVOUR, AND IT IS WORTH KNOWING WHICH.
+#       The C3 argument leans on "the 880 uA cannot be SUNK BY AN LDO" — true,
+#       LDOs source and do not sink, so on a C3 with nothing else on the rail
+#       that injection can LIFT the 3.3 V rail.  This board puts the R503 on
+#       3.3 V as a permanent DC load, which is a sink several orders larger than
+#       880 uA, so the injection is swallowed rather than lifting anything.  The
+#       direct connection is therefore MORE comfortable here, not less.
+#       ⛔ BUT THE INVERSION IS CONDITIONAL ON THE SENSOR STAYING POWERED.  Power-
+#       gate the R503 (the low-power design its separate 3V3T rail exists to
+#       enable) and that sink vanishes — and the C3's objection returns in full.
+#       Recorded as a `stated:` constraint below, because no netlist can see a
+#       firmware decision to switch a MOSFET.
+#
+#   (c) ⛔ SLEEP IS STILL FORECLOSED, unchanged from the C3 scene.  880 uA
+#       swamps light sleep (~130 uA) and deep sleep (~5 uA).  An always-on rack
+#       panel never sleeps, so this costs nothing HERE, but it is a real
+#       capability given up — and it is why the WAKEUP line's wake-source
+#       capability (see the pin table) is latent rather than usable today.
+#
+# ⚠ AND A SEQUENCING NOTE THAT IS NEW WITH TWO RAILS: at USB plug-in, VBUS
+# rises FIRST and the LDO output follows it.  During that window the TM1637
+# pull-ups are on 5 V while the MCU rail is still coming up — bounded to 880 uA
+# by the modules' own 10k, for microseconds.  The R503's own VCC ramps with the
+# LDO and it has a documented power-on artefact (a stray 0x55 byte, see the
+# driver notes) that a UART reader must expect on every cold start.
+#
+# LEVEL SHIFTING — [DD-TM1637-LEVEL], SETTLED 2026-08-15: DIRECT CONNECTION on
+# the TM1637 side, inherited WITHOUT modification from tm1637_quad_panel.
+# The R503 side needs no shifter at all: it is a 3.3 V-logic part talking to a
+# 3.3 V-logic host.  Fitting one there is forbidden below and CHECKED.
+# Full comparison and arithmetic: docs/board-bringup/tm1637-quad-panel.md §1.
+hookup:
+  board: perfboard
+
+  # =========================================================================
+  # THE NEGATIVE SPACE — connections that must NOT exist.
+  # =========================================================================
+  # A netlist can only express connections that DO exist, and a diagram cannot
+  # draw an absence.  EIGHT of these are CHECKED — the parser REFUSES this
+  # netlist if one is violated — and FIVE are STATED, marked as such everywhere
+  # they are rendered so they can never be mistaken for checked ones.
+  # ⚠ THE COUNTS WERE WRONG HERE UNTIL 2026-08-16 ("SEVEN ... and four"), and
+  # they had been wrong since the block was written.  Corrected against the
+  # PARSER's own classification, not by recounting the prose: 8 clauses carry a
+  # `distinct_nets`/`unwired`/`absent_parts` predicate, 5 carry `stated:`.  A
+  # number in a safety preamble gets quoted, so it is derived, not asserted.
+  must_not:
+    # ---- the destructive one, first --------------------------------------
+    - id: fp-touch-rail-never-on-5v
+      why: >-
+        ⛔ THE MCU-KILLER.  `3V3T` is the touch-power rail AND the reference
+        that sets the HIGH LEVEL OF THE `WAKEUP` OUTPUT.  On 5 V it turns
+        WAKEUP into a 5 V push-pull driver aimed at a 3.3 V GPIO, with no
+        series impedance to bound the clamp current — tens of milliamps, not
+        the 110-440 uA the TM1637 analysis is about.  This is the single most
+        damaging error available on this board, and the fleet's own (correct)
+        5 V-tolerance reasoning for the TM1637 does NOT extend to it.
+      distinct_nets: [mcu.5V, fp.3V3T]
+
+    - id: fp-vcc-never-on-5v
+      why: >-
+        The R503's main supply is a flat "DC 3.3V" in every manual revision.
+        ⚠ NO ABSOLUTE-MAXIMUM IS PUBLISHED, so the case against 5 V rests on
+        something better than a number: GROW sells `R503-5V` as a SEPARATE SKU
+        with a different connector.  A vendor shipping a distinct 5 V product
+        is strong evidence the standard part is not 5 V capable.
+        ⛔ THIS IS THE EXACT OPPOSITE OF THE TM1637 ON THE SAME BOARD, whose
+        white tubes MUST have 5 V or they do not light at all.  Two peripherals,
+        two rails, opposite answers to "what voltage?", inches apart.  Checked
+        separately from the 3V3T constraint so a refusal names WHICH pin was
+        mis-railed — and because the two have DIFFERENT VICTIMS: this one
+        destroys the sensor, the other destroys the host.
+      distinct_nets: [mcu.5V, fp.VCC]
+
+    - id: rails-never-shorted
+      why: >-
+        The general form of the two constraints above.  `mcu.5V` is USB VBUS
+        and `mcu.3V3` is the S3's LDO OUTPUT fed from it; tying them together
+        back-feeds the regulator and puts 5 V on every 3.3 V part at once.  On
+        the C3 panel this could not be authored wrong because only one rail was
+        ever used; here both are legitimately present, six wires apart.
+      distinct_nets: [mcu.5V, mcu.3V3]
+
+    # ---- boot / diagnostics ----------------------------------------------
+    - id: no-boot-straps
+      why: >-
+        ⛔ ESP32-S3 STRAPPING PINS — AND THEY ARE A DIFFERENT SET FROM THE C3's.
+        Datasheet §2.8, verbatim: "ESP32-S3 has four strapping pins: GPIO0,
+        GPIO45, GPIO46, GPIO3."  The C3 straps GPIO2/8/9, and GPIO8/9 are
+        perfectly ordinary pins here.  Carrying the C3's list forward would have
+        BOTH wasted free pins AND left GPIO3 open to a peripheral.
+        WHAT EACH ONE DOES: GPIO0 selects boot mode (weak pull-UP at reset);
+        GPIO45 selects the VDD_SPI voltage, 0 = 3.3 V and 1 = 1.8 V (weak pull-
+        DOWN); GPIO46 gates ROM message output and combines with GPIO0 for boot
+        mode (weak pull-DOWN); GPIO3 selects the JTAG signal source (NO internal
+        pull — it floats).  Straps are latched 3 ms after CHIP_PU rises, so
+        anything driving one must be settled through that window.
+        ⚠ TWO HONEST WEAKENINGS, RECORDED BECAUSE A CONSTRAINT THAT OVERSTATES
+        ITS OWN HAZARD GETS DELETED BY THE FIRST PERSON WHO CHECKS IT:
+        (1) GPIO3's strap is INERT ON A FACTORY PART — it only acts when
+        `EFUSE_STRAP_JTAG_SEL` is burned, and it ships unburned, so JTAG is
+        hardwired to the USB Serial/JTAG controller and GPIO3's reset level is
+        ignored.  (2) GPIO45's VDD_SPI role is ALSO likely inert on this board:
+        on S3R2 / S3R8 / S3FN8 / S3FH4R2 parts `VDD_SPI_FORCE` is burned to 1 and
+        the voltage is fixed regardless of GPIO45 — and the SuperMini typically
+        carries an S3FH4R2.  ⛔ BOTH EXCLUSIONS STAND ANYWAY.  "Probably inert"
+        depends on an eFuse nobody has read on THIS board and on a chip variant
+        clones vary silently; the pins are free, so the conservative answer is
+        free too.  ⛔ AND GPIO45/46 ARE INDEPENDENTLY WRONG FOR THIS SCENE'S ONE
+        CANDIDATE INPUT: both default to pull-DOWN, and the R503's WAKEUP IDLES
+        HIGH, so landing it there would fight the strap at reset.
+        ⚠ GPIO0 IS ABSENT FROM THIS LIST ON PURPOSE, and the absence is not an
+        oversight: this SuperMini does not break GPIO0 out at all, so naming it
+        would bind to no pad — and the parser rightly refuses a constraint that
+        can never fire, because such a constraint reads as protection and
+        provides none.
+      unwired: [mcu.GPIO3, mcu.GPIO45, mcu.GPIO46]
+
+    - id: console-uart-stays-free
+      why: >-
+        `TX`/`RX` are GPIO43/44, U0TXD/U0RXD.  The ROM bootloader banner on
+        UART0 is the substrate proof that costs nothing and excludes wiring
+        faults BEFORE any firmware runs — and on THIS board that matters more
+        than it did on the C3, because there is now a SECOND UART carrying a
+        framed binary protocol to the sensor.  Keeping UART0 free means a
+        silent R503 link can be diagnosed from a console that was never in
+        doubt; spending these two pins puts the diagnostic and the suspect on
+        the same wires.  Prove the substrate before the protocol.
+      unwired: [mcu.TX, mcu.RX]
+
+    # ---- the TM1637 topology, inherited verbatim -------------------------
+    - id: b-header-dio-unconnected
+      why: >-
+        The `-B` pads are the SAME FOUR NETS as the A header, INCLUDING DIO.
+        VCC/GND/CLK may legitimately be linked on either header; a DIO-B link
+        commons DIO between modules and produces identical displays.  The whole
+        asymmetry of this topology is that every DIO-B stays open.
+      unwired: ["*.DIO-B"]
+
+    - id: dio-never-common
+      why: >-
+        Individual DIO per module IS the topology ([CXC-TM1637-SHARED-CLK]).
+        Two modules on one DIO net show IDENTICAL CONTENT — a well-formed,
+        confident, wrong panel with no error anywhere.  Checked against the
+        computed nets, so a link made on the pass-through pads is caught too.
+      distinct_nets: [tm1.DIO, tm2.DIO, tm3.DIO, tm4.DIO]
+
+    # ---- parts that must not appear --------------------------------------
+    - id: no-level-shifter-on-the-sensor
+      why: >-
+        The R503 is a 3.3 V-logic part and the S3 is a 3.3 V-logic host, so a
+        translator on the sensor UART shifts 3.3 V to 3.3 V — it adds two
+        failure modes and a propagation delay to buy nothing.  ⛔ IT IS ALSO
+        ACTIVELY HARMFUL ON THIS PART: the BSS138 breakout is a BIDIRECTIONAL
+        OPEN-DRAIN topology with its own 10k pull-ups, and a UART is PUSH-PULL
+        and unidirectional per line.  Checked rather than stated because the
+        part exists in the catalog and can therefore actually be placed — and
+        because a builder who has just read the TM1637 level-shifting analysis
+        is primed to reach for exactly this.
+      absent_parts: [bss138-4ch-levelshift]
+
+    # ---- what no machine here can see ------------------------------------
+    - id: identify-pin-1-before-power
+      why: >-
+        A reversed VCC/GND on the R503 is a DESTRUCTIVE error, not a functional
+        one — the module does not misbehave, it dies.  The 6-way pigtail's wire
+        colours vary between batches, and the two connector families that ship
+        on this part (MX1.0--6P and SH1.0--6P) are DIFFERENT PITCHES, so a
+        socket that "nearly fits" is the wrong revision.
+      stated: >-
+        Identify pin 1 against the MODULE BODY — not against a colour
+        convention, not against this file, and not against a photograph found
+        online.  Meter continuity from the connector shell to the module's GND
+        plane before applying power.  ⛔ Nothing here can check this: the
+        netlist names pins, and a pigtail's physical order is not a wire.
+
+    - id: do-not-butt-the-modules
+      why: >-
+        The two 4-pin headers are wired IN PARALLEL along the board, so butting
+        modules together commons all four nets including DIO.  They LOOK like a
+        daisy-chain and are not one ([CXC-TM1637-NO-CHAIN]).
+      stated: >-
+        Do not butt the modules together on the pass-through headers.  Use them
+        PIN-BY-PIN for VCC/GND/CLK only.  ⛔ Nothing here can check this: a
+        mechanical joint is not a wire, and this netlist looks identical either
+        way.
+
+    - id: never-touch-an-idle-dio
+      why: >-
+        Pulling an idle module's DIO low while CLK is high IS a start condition
+        (V2.4 p.3).  That module arms and latches the next eight bits meant for
+        its neighbour, displaying its sibling's value — well-formed and wrong.
+      stated: >-
+        A non-selected DIO must be PARKED HIGH and never driven
+        ([CXC-TM1637-DIO-PARK-HIGH]).  Selection is "drive exactly one DIO,
+        leave the other three released".  ⛔ This is a DRIVER obligation: it is
+        firmware behaviour, invisible to any netlist check.
+
+    - id: do-not-power-gate-the-sensor
+      why: >-
+        ⛔ THE CLAUSE OF THE TWO-RAIL ARGUMENT THAT A FIRMWARE CHANGE CAN
+        SILENTLY REVOKE.  Part (b) of the rail derivation above holds BECAUSE
+        the R503 is a permanent DC load on the 3.3 V rail, large enough to sink
+        the TM1637 modules' ~880 uA of clamp injection.  Switching the sensor's
+        VCC off to save power removes that sink — and the C3 scene's original
+        objection (an LDO cannot sink, so the injection lifts the rail) comes
+        straight back, on a board where nobody will re-read this argument.
+      stated: >-
+        Do NOT power-gate the R503's VCC while the TM1637 panel is energised.
+        If a future design needs gating, re-derive the rail arithmetic FIRST —
+        the answer may well still be fine, but it is not fine BY INHERITANCE.
+        ⛔ Unseeable here: this is a MOSFET and a firmware decision, and this
+        netlist is byte-identical whether or not one is fitted.
+
+    - id: no-added-pullups
+      why: >-
+        Each TM1637 module already carries the datasheet reference network — a
+        10 kOhm pull-up and a 100 pF cap on EACH of CLK and DIO (V2.4 p.8).  A
+        second pull-up in parallel lowers the effective resistance, raises
+        low-side sink current and buys nothing.
+      stated: >-
+        Do not fit pull-up resistors on CLK or DIO.  A hookup diagram showing
+        them is WRONG.  ⚠ Stated rather than checked, and for a reason worth
+        recording: `res-470r` now EXISTS in the catalog and is PLACED FOUR
+        TIMES in this very netlist for CLK containment, so `absent_parts` can
+        never express "no resistor in THAT role".  The clause forbids a part
+        TYPE, and the distinction being drawn here is a part's JOB.
+
+  # =========================================================================
+  # PROVENANCE — which numbers are fact, which are arithmetic, which are guesses
+  # =========================================================================
+  # [DX-SPEC-CARRIES-ITS-EVIDENCE].  Every row carries an evidence slot that is
+  # explicitly EMPTY until a bench fills it, because an ABSENT key is
+  # indistinguishable from one nobody thought to write.
+  #
+  # ⛔ READ THE PROVENANCE COLUMN ON THE R503 ROWS BEFORE QUOTING ANY OF THEM.
+  # No copy of the GROW manual was reachable from this checkout, so EVERY R503
+  # electrical and protocol number below is `assumed` — sourced from the
+  # architect's brief and from a prior spec audit, not read off a datasheet
+  # page.  Marking them `datasheet` would have been one keystroke and would have
+  # laundered a second-hand recollection into a citation.  They are not.
+  facts:
+    # ---- the R503 side: every row here is second-hand, and says so ---------
+    - id: wakeup-rail-reference
+      what: which rail sets the HIGH level of the R503's WAKEUP output
+      value: "3V3T (the touch rail) — NOT VCC"
+      provenance: datasheet
+      source: >-
+        R503 User Manual V1.2.1 (2022.03) and V1.4 (2023.07), TWO independent
+        statements.  (i) Hardware Connection: "the touch signal output is CMOS
+        output, and the output voltage is ROUGHLY THE SAME AS THE INPUT
+        VOLTAGE".  (ii) §6.5 Low power standby — the host "can cut off the main
+        power supply of the module (CAN NOT CUT OFF THE TOUCH-SENSITIVE POWER
+        SUPPLY).  Once the module detects a finger, it outputs a signal."  ⛔
+        (ii) IS DECISIVE: WAKEUP keeps asserting with VCC REMOVED ENTIRELY,
+        which is impossible if VCC powered it.
+      measure_before_build: false
+      if_different: >-
+        ⛔ AND THE RATING IS THE TRAP: `3V3T` IS SPEC'D `DC 3-5 V` (V1.2.1,
+        V1.4; V1.1 said 3-6 V, since reduced).  FIVE VOLTS THERE IS IN SPEC FOR
+        THE SENSOR — the module works perfectly, nothing smokes, and no
+        datasheet is violated ON THE PART BEING WIRED.  The casualty is the
+        HOST: an ESP32-S3 pad is 3.6 V absolute max.  ⚠ AND WAKEUP IDLES HIGH
+        (standby-high, finger-low), so the overvoltage is CONTINUOUS from
+        power-up, not a pulse when someone touches the ring.
+        ⚠ NOTE WHAT THE ENFORCED CONSTRAINT BUYS: with 3V3T on the host's 3.3 V
+        rail, WAKEUP cannot exceed 3.3 V regardless.  The netlist is safe; this
+        row exists so nobody LATER "optimises" 3V3T onto the 5 V rail on the
+        entirely correct grounds that the sensor permits it.
+      measured: EMPTY
+
+    - id: wakeup-polarity
+      what: which way the WAKEUP line moves when a finger touches the ring
+      value: "active LOW — standby HIGH, finger present LOW"
+      provenance: datasheet
+      source: >-
+        R503 User Manual V1.2.1 and V1.4, stated TWICE in each, independently:
+        the pin table ("Standby-high level, have finger-output low level") and
+        Hardware Connection ("When there is no finger touch, the default touch
+        sensing signal outputs high level; When a finger touches, ... outputs
+        low level").
+        ⚠ V1.1 (2019) CARRIES NO POLARITY LANGUAGE AT ALL — only "Finger
+        Detection Signal".  That is very likely why the community answer is
+        inconsistent, and it is why this row cites a REVISION rather than "the
+        datasheet": someone reading the 2019 manual genuinely cannot know.
+      measure_before_build: false
+      if_different: >-
+        ⛔ CHANGES NO WIRE — CHANGES AN `if`.  Inverted, the firmware reads
+        either "a finger is present forever" (the capture path arms
+        continuously and the ring never goes idle) or "no finger, ever" — and
+        the SECOND IS INDISTINGUISHABLE FROM A BROKEN WIRE, which is how a
+        polarity bug gets diagnosed as a bad solder joint for an hour.
+        ⛔ IT DOES CONSTRAIN PIN CHOICE, THOUGH, AND THAT IS WHY THIS ROW IS
+        HERE RATHER THAN IN THE FIRMWARE NOTES: because the line IDLES HIGH, it
+        must not land on a host strapping pin that is pulled DOWN by default and
+        latched at reset — on the S3 that is GPIO45 and GPIO46, both already
+        excluded by `no-boot-straps`.  A polarity fact reached into the netlist.
+      measured: EMPTY
+
+    - id: fp-connector-revision
+      what: which connector family the module in hand carries
+      value: "MX1.0--6P (V1.1 / V1.2.1 / V1.4) or SH1.0-6pin (current product page)"
+      provenance: assumed
+      source: >-
+        ✅ MANUAL-READ for the first: V1.1, V1.2.1 AND V1.4 all state
+        `MX1.0--6P`.  The vendor's current product page lists `SH1.0-6pin`, so a
+        later revision plainly changed it.
+        ⛔ BUT "SH1.0 ON V1.4.1" IS NOT DOCUMENTED: no V1.4.1 manual could be
+        obtained, and V1.4's own revision history (V1.2, V1.2.1, V1.2.2, V1.3,
+        V1.4) DOES NOT LIST A V1.4.1.  Recorded as an unconfirmed reconciliation
+        of a product page with a revision number — which is exactly what it is.
+        ⚠ THIRD FAMILY, DO NOT LET IT IN BY ACCIDENT: the separate `R503-5V`
+        SKU uses `MX1.25-6pin`.
+      measure_before_build: true
+      if_different: >-
+        This decides which socket/pigtail to order and nothing else electrical.
+        ⚠ But it fails LATE and expensively: the wrong part looks correct in a
+        parts bin, nearly fits, and is discovered with the board already built.
+        Look at the module and match the connector BEFORE ordering anything that
+        mates with it.
+      measured: EMPTY
+
+    - id: fp-pigtail-pin-1
+      what: which physical conductor of the 6-way pigtail is pin 1
+      value: "UNKNOWN — and the VENDOR DISCLAIMS every colour convention"
+      provenance: assumed
+      source: >-
+        ✅ THE PIN ORDER ITSELF IS CONFIRMED and is identical across V1.1,
+        V1.2.1 and V1.4: 1 VCC · 2 GND · 3 TXD · 4 RXD · 5 WAKEUP · 6 3.3VT.
+        It did not move when the connector did.
+        ⛔ WHAT IS UNKNOWN IS WHICH WIRE IS WHICH, and the manual says so
+        ITSELF, printed inside the pin table: "Note: The line order has nothing
+        to do with color."  No revision assigns colours at all.  ⚠ THAT MAKES
+        EVERY R503 WIRE-COLOUR CHART — including every one online — AN UNSOURCED
+        GUESS THE MANUFACTURER HAS PRE-EMPTIVELY DISOWNED.  The catalog part
+        carries NO Fritzing art for this reason: a picture asserting a
+        conductor order would be believed faster than this caveat is read.
+      measure_before_build: true
+      if_different: >-
+        ⛔ DESTRUCTIVE.  A reversed VCC/GND does not misbehave — it kills the
+        module, and possibly the rail behind it.  This is the single row whose
+        EMPTY slot most deserves to be filled before anything is powered, and it
+        takes a meter and two minutes: continuity from a pigtail conductor to
+        the module's GND plane identifies pin 2, and therefore pin 1, with
+        certainty.
+      measured: EMPTY
+
+    - id: fp-vcc-rating
+      what: the R503's main supply rating
+      value: "DC 3.3 V flat, ripple <= 50 mV p-p — NO TOLERANCE BAND IS PUBLISHED"
+      provenance: datasheet
+      source: >-
+        R503 User Manual V1.1, V1.2.1, V1.4 — all three state a flat "DC 3.3V".
+        V1.2.1's Power Supply Requirements adds only the ripple limit and gives
+        NO min/max.
+        ⛔ THE ABSENCE OF A BAND IS THE FACT, AND IT COST A CORRECTION: an
+        earlier draft of this scene carried "3.0 - 3.6 V" from the briefing.
+        That range could not be found in ANY revision and was REMOVED rather
+        than kept because it looked reasonable.  Do not reintroduce it without a
+        page number.
+        ⚠ 5 V IS A DIFFERENT PART, NOT A TOLERANCE: GROW sells `R503-5V` as a
+        separate SKU.  A vendor shipping a distinct 5 V product is stronger
+        evidence than an absolute-maximum figure would have been.
+      measure_before_build: false
+      if_different: >-
+        ⛔ NOTE THE ASYMMETRY ON THIS ONE CONNECTOR: `3V3T` IS rated 3-5 V and
+        `VCC` is not.  Two adjacent pins, two different answers, and the
+        permissive one is the one that kills the host.  Both `distinct_nets`
+        constraints stand regardless — the `fp.3V3T` one is NOT about the
+        module's survival at all, but about the GPIO reading its output.
+      measured: EMPTY
+
+    - id: fp-idle-current
+      what: the R503's DC draw on the 3.3 V rail while powered but not acquiring
+      value: "UNKNOWN — not published in any manual revision"
+      provenance: assumed
+      source: >-
+        ✅ WHAT IS PUBLISHED: working current during fingerprint acquisition is
+        20 mA (manual, all revisions), and the touch rail draws ~2 uA average.
+        A vendor product page quotes a 60 mA peak that NO manual states.
+        ⛔ IDLE-BUT-POWERED IS SIMPLY NOT GIVEN.  Recorded as a hole rather than
+        filled with a plausible figure, because a number invented here gets
+        quoted back as if measured.
+      measure_before_build: true
+      if_different: >-
+        ⛔ THIS IS THE ROW PART (b) OF THE RAIL ARGUMENT RESTS ON.  The claim is
+        that the sensor's DC load comfortably sinks the TM1637 modules' ~880 uA
+        of clamp injection, so the injection cannot lift the 3.3 V rail.  The
+        cited 20 mA acquisition current clears that by ~23x, which is why the
+        conclusion is robust WHILE THE SENSOR IS BUSY — but the idle case is the
+        common one and it is UNQUANTIFIED.  ⚠ And note the 2 uA touch-rail
+        figure does NOT help: it is far BELOW 880 uA, so a sensor whose VCC is
+        gated off (leaving only 3V3T) provides essentially no sink at all.  That
+        is precisely the `do-not-power-gate-the-sensor` case.  A meter in series
+        with fp.VCC settles it.
+      measured: EMPTY
+
+    - id: fp-search-time-ambiguity
+      what: what the manufacturer's "1:N search < 10 ms" figure is measured PER
+      value: "< 10 ms per SWEEP or per TEMPLATE — GENUINELY AMBIGUOUS, NOT RESOLVED"
+      provenance: assumed
+      source: >-
+        Architect's brief.  ⛔ THE AMBIGUITY IS THE CONTENT OF THIS ROW.  It is
+        recorded rather than decided, because picking a reading silently is how
+        a capacity limit gets designed against a number nobody checked.
+      measure_before_build: true
+      if_different: >-
+        At a 20-template working set the two readings are 10 ms and 200 ms — a
+        20x spread on the ONLY term that scales with roster size.  Against a
+        capture-dominated transaction (image acquisition < 0.2 s + feature
+        generation < 0.5 s, both quoted by the manufacturer and both ALSO
+        unverified here), 200 ms is a ~29% addition, not the rounding error it
+        is easy to call it.  ⚠ Time it on the bench across a populated set;
+        that is a two-minute experiment and it retires the question permanently.
+      measured: EMPTY
+
+    # ---- the TM1637 side: inherited, and one row is BETTER than the C3's ---
+    - id: tube-colour
+      what: LED colour of the tubes in hand, which fixes VDD
+      value: white (Vf ~3.0-3.4 V, so VDD must be 5 V)
+      provenance: measured
+      source: "V2.4 p.8 note 3 — 'blue-ray nixie tube ... power supply should be 5V'"
+      measure_before_build: false
+      if_different: >-
+        Red/green/yellow tubes (Vf ~1.8-2.1 V) run happily at 3.3 V — which on
+        THIS board would collapse the two rails into one and delete most of the
+        rail derivation above.  ⚠ Note the direction: a single-rail board would
+        be SIMPLER here, not harder.  The two rails are forced by the tubes in
+        hand, not chosen.
+      measured: "WHITE — the physical modules in hand, David, 2026-08-15"
+
+    - id: module-pullups
+      what: onboard pull-up per line, per TM1637 module (CLK and DIO)
+      value: 10 kOhm to 5 V
+      provenance: measured
+      source: >-
+        TM1637 V2.4 p.8 shows R1/R2 = 10 kOhm in the reference application, and
+        the SMD marking on David's four modules reads `103` = 10 x 10^3.
+      measure_before_build: false
+      if_different: >-
+        4.7 kOhm clones exist and would roughly DOUBLE the clamp injection to
+        ~1.9 mA.  ⚠ NOTE WHICH WAY: that makes the direct connection WORSE, not
+        better — nobody should read a 4.7 kOhm result as permission to delete
+        anything.  It would also strengthen, not weaken, the requirement that
+        the R503 stay powered as a sink.
+      measured: >-
+        10 kOhm — SMD marking `103` read on David's four modules, 2026-08-15.
+        ⚠ EVIDENCE CLASS: MARKING-READ, not meter-measured.
+        ⛔ DIVERGENCE REPORTED, NOT SILENTLY FIXED: `tm1637_quad_panel.compose.
+        yaml` still carries this row as `provenance: assumed` with `measured:
+        EMPTY`, even though `tm1637-4digit.yaml` records the marking read.  The
+        C3 scene's fact row is STALE against its own catalog entry.  That scene
+        is out of scope for this task and was deliberately not edited; this note
+        is the report.
+
+    - id: vih-min
+      what: TM1637 input HIGH threshold
+      value: 3.5 V (0.7 x VDD at VDD = 5.00 V)
+      provenance: datasheet
+      source: "TM1637 V2.4 p.10, electrical characteristics"
+      measure_before_build: false
+      measured: EMPTY
+
+    - id: clamp-injection-total
+      what: total current the TM1637 panel injects into the host's 3.3 V rail
+      value: ~880 uA (shared CLK ~440 uA + four DIO at ~110 uA each)
+      provenance: computed
+      source: >-
+        Released lines clamp to V_3V3 + one diode drop; current is set by the
+        modules' own 10k pull-ups to 5 V.  CLK is ONE host pin carrying FOUR
+        pull-ups in parallel (2.5k) -> ~440 uA; each DIO sees ONE pull-up (10k)
+        -> ~110 uA.  ⚠ Espressif publishes NO input-clamp/injection rating for
+        the ESP32-S3 any more than for the C3, so there is no vendor number to
+        hold this against.  Stated as a gap, not dressed up with another
+        vendor's convention.
+      measure_before_build: false
+      if_different: >-
+        This is the figure the R503's DC load must exceed for part (b) of the
+        rail argument to hold; see `fp-idle-current`.
+      measured: EMPTY
+
+  # ⛔ PLACEMENT IS A SAFETY SURFACE ON A HOOKUP GUIDE, NOT A COSMETIC ONE.
+  # Where two conductors cross, the renderer draws a HOP — a little bridge — so
+  # the reader can see they are not joined.  When it cannot fit one (two
+  # crossings closer than 2x the hop radius on the same run, a crossing landing
+  # on a pad, or one too near a corner) it SKIPS the hop and the crossing
+  # renders as a PLAIN INTERSECTION.  ⛔ ON A WIRING GUIDE A PLAIN INTERSECTION
+  # READS AS A JUNCTION — a solder joint that must not exist.  A skipped hop is
+  # therefore a wrong instruction, not an ugly one.
+  #
+  # ⛔ AND A PART BODY ON A CONDUCTOR IS THE SAME LIE ONE LAYER UP.  A crossing
+  # can be BRIDGED; a part cannot.  Where a trunk passes beneath an opaque body
+  # the reader simply loses the conductor for the width of the part — and "where
+  # does this ground go" is the question a wiring guide exists to answer.  That
+  # is now a HARD class (`legibility_report` -> `body_wire`), measured against
+  # each part's full EXTENT (slab + pads + the pin band between them), and it is
+  # kept strictly separate from the soft `label_wire` note.
+  #
+  # ⛔ SO THIS LAYOUT WAS MEASURED, NOT EYEBALLED.  `plan_hops()` returns
+  # (hops, skipped); this arrangement was searched against that function until
+  # `skipped` was EMPTY and no two part bodies overlapped:
+  #     67 hops planned, 0 SKIPPED, 0 body overlaps.
+  # ⚠ FOR CONTRAST, AND AS THE REASON THE 2x2 BLOCK EXISTS: the C3 panel's
+  # 1x4 column arrangement, transplanted here verbatim, measured 101 hops with
+  # 46 SKIPPED — 46 crossings that would have drawn as junctions.  The C3 file
+  # itself measures 7 skipped.  This board simply has more parts (10 vs 9) and
+  # more wires (26 vs 20) in the same channels, so the C3 spacing does not
+  # survive the extra traffic.  A 1x4 column here bottomed out at 2 skips no
+  # matter how it was stretched; the 2x2 block reached 0.
+  # ⛔ IF YOU MOVE A PART, RE-MEASURE.  Do not trust the picture — the failure
+  # being prevented is precisely one that LOOKS FINE.
+  parts:
+    # ---- the host and the sensor, side by side ---------------------------
+    # ⛔ THE SENSOR SITS BESIDE THE MCU, NOT ACROSS THE BOARD FROM IT — and this
+    # reverses an earlier draft that separated them deliberately.  The original
+    # reasoning was sound (two peripherals wanting OPPOSITE supply voltages,
+    # separated so no hand reaches for the nearest power pad) but it was paid
+    # for in crossings: the sensor's five wires then traversed the entire tube
+    # cluster.  ⚠ THE SAFETY ARGUMENT IS BETTER SERVED BY THE `must_not:` BLOCK,
+    # WHICH IS CHECKED, THAN BY PHYSICAL DISTANCE, WHICH IS NOT: a builder can
+    # reach across six inches, but the netlist cannot pass validation with
+    # `fp.3V3T` on the 5 V rail.  Enforcement beats geography.
+    #
+    # ⛔ `fp` MOVED FROM COLUMN 3 TO COLUMN 9 (2026-08-15) — David, on the
+    # delivered guide: "the fingerprint sensor placement is so close to the pins
+    # that the wiring is unreadable."  He was right, and "beside" had been
+    # ASSERTED rather than measured.  ⚠ THE GRID COLUMN IS NOT THE PART: a
+    # column step is 41.8 px and the S3's art is 220 px wide — FIVE columns —
+    # so `at: [22, 3]` did not put the sensor one place to the right of the
+    # MCU, it put it ON TOP of it.  The two extents met at y=862.4 with a
+    # clearance of EXACTLY ZERO, which every strict interior-overlap test
+    # answers "no overlap" about, and the sensor's pin labels printed straight
+    # across the MCU's top pad row.  Column 9 is the first anchor that clears
+    # the art (60 px of air), and `composeio.maker.hookup_svg.legibility_report`
+    # now measures that rather than trusting the word "beside".
+    #
+    # ⚠ THE ROW IS UNCHANGED, DELIBERATELY.  Every pad this sensor lands on —
+    # `3V3`, `GND`, `GPIO10`, `GPIO11` — is on the MCU's TOP row, so the sensor
+    # belongs level with it; moving it a row would send five wires down a
+    # channel they have to share with the 5 V and GND rails.  The routing
+    # reasoning that put the sensor next to the MCU is intact: same row, still
+    # adjacent, now with a body-width of air instead of none.
+    #
+    # ⛔ AND THE ROW STAYS UNCHANGED AFTER THE SECOND REJECTION TOO (2026-08-16)
+    # — BECAUSE THE FAULT WAS NEVER `fp`'s ANCHOR.  David, on the guide that
+    # followed: "I COULD use this diagram, but it's really not quite right — see
+    # how the FP component and its wires overlay the gnd for tm2 and tm4."  He
+    # was right again, and NOT ONE `at:` IN THIS FILE CAUSED IT.  Measured: the
+    # `mcu.GND -> tm2.GND` and `mcu.GND -> tm4.GND` trunks (and both 5 V runs)
+    # rode ONE lane at y=858.0 — 4.4 px above this sensor's six pads — for the
+    # FULL 134.2 px width of the part, straight through its pin band and its
+    # captions.  ⚠ The router allowed it because it avoided each part's `body`
+    # slab, and a generated horizontal part draws that slab ABOVE its pin row:
+    # the pads, the stubs and every caption live in a band the obstacle
+    # rectangle did not cover.  ⛔ FIXED IN THE ROUTER, NOT HERE
+    # (`hookup_layout._assign_routes` now avoids `_part_extent`), because moving
+    # the sensor would have moved the defect rather than removed it — the next
+    # part placed in a trunk lane would have been buried the same way.  The
+    # trunks now run ABOVE `fp` and its own leads come up from below.
+    - {id: mcu,  part: esp32-s3-supermini, at: [22, 2]}
+    - {id: fp,   part: r503-fingerprint,   at: [22, 9]}
+    # ---- the tube panel: a 2x2 BLOCK, not the C3's 1x4 column -------------
+    # ⚠ THE ARRANGEMENT CHANGED FOR ROUTING, NOT FOR ELECTRICS.  Nothing about
+    # the TM1637 topology depends on the modules being in a line — shared CLK
+    # and individual DIO are identical either way, and the netlist below is
+    # unchanged.  The block halves the vertical span, which is what stops the
+    # long ground and 5 V runs from raking across every horizontal signal run.
+    # ⛔ 470R AT EACH MODULE'S CLK PIN — FAULT CONTAINMENT, NOT LEVEL SHIFTING.
+    # See res-470r.yaml.  CLK is SHARED, so one module with an intermittent VCC
+    # can hold it low and blank ALL FOUR displays while the ACK blames the host.
+    # These four resistors turn that into a single-module failure.  Inherited
+    # from tm1637_quad_panel WITHOUT modification — the argument is about the
+    # TM1637 side of the board and nothing on the S3 side touches it.  Each
+    # resistor sits in the channel left of the module it protects.
+    #
+    # ⛔ `r4` MOVED FROM COLUMN 28 TO COLUMN 27 (2026-08-16) — AND NOBODY
+    # REPORTED THIS ONE.  It was found by the new `body_wire` class while it was
+    # being built to catch what David DID report, which is the point of an
+    # instrument: the shared-CLK trunk `mcu.GPIO7 -> r3.A` was drawn STRAIGHT
+    # THROUGH r4's body, 43.7 px of teal printed across a 46.2 px part, over its
+    # `A` pad and under its own name.  ⚠ The cause is COLLINEARITY, not
+    # crowding: r3 and r4 shared column 28, so `r3.A` and `r4.A` share an x, and
+    # r3 is the TOP resistor — every vertical approach to it from the mcu below
+    # must pass through r4.  No lane of either trunk mode cleared, so the router
+    # took its documented least-bad route and drew the wire over the part.
+    # ⚠ AND THE OLD GATE COULD NOT SEE IT: nothing measured conductor x part.
+    # ⚠ r1/r2 STILL SHARE COLUMN 14 and measure clean — but only because a lane
+    # happened to be free there.  It is the SAME shape, and it is left alone
+    # deliberately: the gate is what makes that safe, not the layout.
+    - {id: r1,   part: res-470r,           at: [8, 14]}
+    - {id: r2,   part: res-470r,           at: [25, 14]}
+    - {id: r3,   part: res-470r,           at: [8, 28]}
+    - {id: r4,   part: res-470r,           at: [25, 27]}
+    - {id: tm1,  part: tm1637-4digit,      at: [6, 17]}
+    - {id: tm2,  part: tm1637-4digit,      at: [26, 17]}
+    - {id: tm3,  part: tm1637-4digit,      at: [6, 31]}
+    - {id: tm4,  part: tm1637-4digit,      at: [26, 31]}
+
+  wires:
+    # ======================================================================
+    # RAIL 1 — 5 V (USB VBUS, direct) — THE TUBES ONLY
+    # ======================================================================
+    # ⛔ FROM mcu.5V, WHICH IS USB VBUS DIRECT — the S3's 3.3 V LDO is NOT in
+    # this path.  ⛔ NOTHING ON THIS RAIL MAY TOUCH THE SENSOR.  Checked.
+    # ⛔ STAR, NOT DAISY-CHAIN.  Chaining puts the whole panel behind module 1's
+    # VCC contact, which is the exact cascade the CLK resistors exist to break.
+    # Same wire count either way, so the chain buys nothing and risks a cascade.
+    - {from: mcu.5V,  to: tm1.VCC}
+    - {from: mcu.5V,  to: tm2.VCC}
+    - {from: mcu.5V,  to: tm3.VCC}
+    - {from: mcu.5V,  to: tm4.VCC}
+
+    # ======================================================================
+    # RAIL 2 — 3.3 V (the S3's own LDO, fed from the SAME VBUS) — THE SENSOR
+    # ======================================================================
+    # ⛔ BOTH R503 SUPPLY PINS GO HERE.  `3V3T` is not optional and it is not a
+    # "touch feature" pin to be left floating: it powers the touch circuit AND
+    # sets WAKEUP's high level.  Floating it gives an undefined output level on
+    # a line wired straight into a GPIO; 5 V on it destroys that GPIO.
+    # ⚠ TYING VCC AND 3V3T TOGETHER IS A DECISION, NOT A DEFAULT.  The part
+    # separates them so a design can leave the touch circuit powered while
+    # gating main VCC — a low-power pattern this always-on board does not need,
+    # and which `do-not-power-gate-the-sensor` forbids here for a rail reason
+    # that has nothing to do with the sensor itself.
+    - {from: mcu.3V3, to: fp.VCC}
+    - {from: mcu.3V3, to: fp.3V3T}
+
+    # ---- ground: common, star-wired --------------------------------------
+    - {from: mcu.GND, to: fp.GND}
+    - {from: mcu.GND, to: tm1.GND}
+    - {from: mcu.GND, to: tm2.GND}
+    - {from: mcu.GND, to: tm3.GND}
+    - {from: mcu.GND, to: tm4.GND}
+
+    # ======================================================================
+    # THE SENSOR LINK — a SECOND UART, and it CROSSES
+    # ======================================================================
+    # ⛔ UART CROSSES: host TX -> sensor RXD, sensor TXD -> host RX.  Stated
+    # loudly because the fleet's other recently-added link — CAN — does NOT
+    # cross (H<->H, L<->L, differential pair), and the habit from the last link
+    # carries into the next one.  Two wires between two devices, opposite rules.
+    #
+    # ⚠ WHY NOT UART0 (mcu.TX / mcu.RX)?  Because UART0's value here is that it
+    # is NOT carrying anything of ours.  See `console-uart-stays-free`.  The S3
+    # has a full GPIO matrix, so a second UART lands on any pins we like and the
+    # console stays a clean instrument.
+    #
+    # ⛔ ONE WIRE, MANY NAMESPACES — A SCHEMA GAP, REPORTED NOT WORKED AROUND.
+    # `publishes:` takes exactly ONE namespace string, but `fp.TXD` is a framed
+    # BYTE STREAM carrying `fingerprint/match` AND `fingerprint/enroll/status`
+    # AND every command response, multiplexed.  The seam field can express a
+    # PIN-PER-VALUE peripheral (a pot, a tube) and cannot express a PROTOCOL.
+    # `fingerprint/match` is named below because it is the primary semantic
+    # output; `fingerprint/enroll/status` rides the SAME WIRE and is invisible
+    # to `pin_seam_map()`.  ⛔ Not smuggled into `note:` as a fake second seam:
+    # encoding the wrong structure into the single-source artifact to make a
+    # rendered guide look complete is how a wrong diagram gets soldered.  The
+    # TM1637 panel hit the mirror-image gap (an actuator with no `subscribes:`)
+    # and this is the second instance — which is the point at which the pattern
+    # is real rather than an anecdote.
+    - {from: mcu.GPIO4, to: fp.RXD,
+       subscribes: fingerprint/cmd,
+       note: "host TX -> sensor RXD (UART CROSSES).  57600 8N1 default"}
+    - {from: fp.TXD, to: mcu.GPIO5,
+       publishes: fingerprint/match,
+       note: "sensor TXD -> host RX.  ALSO carries fingerprint/enroll/status — one wire, many namespaces"}
+
+    # ---- the touch-induction line ----------------------------------------
+    # ⛔ THIS IS THE PIN THE 3V3T HAZARD LANDS ON.  A CMOS push-pull output with
+    # NO series impedance, driven from whatever rail feeds 3V3T.
+    #
+    # ⚠ NO NAMESPACE, DELIBERATELY — [DX-INTERNAL-BUS-UPLINK].  "A finger is
+    # touching the ring" is a LOCAL arming hint: it tells this firmware to wake
+    # the capture path and light the ring 'ready'.  It is not a fleet-interesting
+    # fact.  Publishing it would put a continuous presence signal on the bus that
+    # nothing consumes, and it would leak WHO IS STANDING WHERE independently of
+    # any match — a privacy surface acquired by accident, for a value that is
+    # already implied by the `fingerprint/match` that follows a second later.
+    # ⛔ TOUCH IS NOT DETECTION.  The identity layer's `user_detected` fires on a
+    # MATCH (including a denied one); a touch is not a match and must not be
+    # published as though it were.  If a remote 'someone is at the hatch'
+    # indicator is ever wanted, that is a DERIVED higher-order namespace and it
+    # belongs on whichever node owns that policy — not on this leaf.
+    # ✅ WHY GPIO6 SPECIFICALLY — three independent reasons, all datasheet-cited:
+    #   (1) RTC-CAPABLE.  Table 2 gives GPIO6 as `RTC_GPIO6 / GPIO6 / TOUCH6 /
+    #       ADC1_CH5`, and the S3's RTC range is a contiguous GPIO0-21, so this
+    #       line COULD serve as a deep-sleep ext0/ext1 wake source.  ⚠ LATENT,
+    #       NOT USED: sleep is foreclosed on this board by the TM1637 clamp
+    #       injection (part (c) of the rail derivation).  The pin choice costs
+    #       nothing and keeps the door open for a sensor-only build.
+    #   (2) NOT A STRAP, and `IE0`/no-pull at reset — nothing to fight.
+    #   (3) ⛔ AND IT IS NOT PULLED DOWN.  WAKEUP IDLES HIGH, so a default
+    #       pull-down pin (GPIO45/46) would be actively wrong here, not merely
+    #       inadvisable.  A polarity fact reached into the pin selection.
+    - {from: fp.WAKEUP, to: mcu.GPIO6,
+       note: "touch-induction, ACTIVE LOW (standby HIGH) — LOCAL wake hint, no namespace"}
+
+    # ======================================================================
+    # THE PANEL — shared CLK through four containment resistors
+    # ======================================================================
+    # PIN SELECTION ON THE S3, and why it is NOT the C3 file's set:
+    #   GPIO0/3/45/46 — ESP32-S3 STRAPPING pins (datasheet §2.8).  GPIO3 is on
+    #                   the edge header; GPIO45/46 are bottom pads; GPIO0 is not
+    #                   broken out at all.  Excluded — see `no-boot-straps`,
+    #                   which also records why two of them are probably inert
+    #                   and excluded anyway.
+    #   TX/RX (43/44) — U0TXD/U0RXD, both defaulting to pull-UP.  Kept free as
+    #                   the substrate proof.
+    #   GPIO19/20     — USB D-/D+, not on the header.  (Also the only pins with
+    #                   40 mA default drive rather than 20 mA.)
+    #   GPIO26-32     — the SoC's internal SPI flash/PSRAM (SPICS1/HD/WP/CS0/
+    #                   CLK/Q/D), not exposed.  On OCTAL-PSRAM parts (S3R8/R8V)
+    #                   GPIO33-37 go too — which is a reason to prefer the edge
+    #                   header over the bottom pads on a board whose exact
+    #                   variant nobody has read.
+    # ✅ AND THE PINS ACTUALLY CHOSEN ARE THE CLEANEST ON THE PART: datasheet
+    #   Table 5 gives GPIO4-11 as `IE0` both at reset and after it — input
+    #   disabled, no pull, genuinely high-Z.  Nothing on this board fights a
+    #   default.  (GPIO9/10/11 carry FSPI alternate functions, but FSPI is the
+    #   general-purpose external SPI peripheral, unused unless selected — not
+    #   internal flash.)
+    #   GPIO1/2       — free and unused here; left spare deliberately.  The C3
+    #                   panel had ZERO headroom and had to state a collision with
+    #                   the audio cover; this board has GPIO1, GPIO2, GPIO12 and
+    #                   GPIO13 free on the edge header AFTER everything above.
+    # ⛔ THE C3 SCENE'S EXCLUSION LIST IS WRONG ON THIS PART IN BOTH DIRECTIONS:
+    # it forbids GPIO2/8/9 (all ordinary GPIO here — GPIO8 and GPIO9 in fact
+    # carry two of the four DIO lines below) and it does not mention GPIO3 (a
+    # strap here).  A copy-forward would have been well-formed and unsafe.
+    # ⚠ CLK carries NO namespace — it is a clock, not a value.
+    - {from: mcu.GPIO7, to: r1.A, note: "shared CLK (host -> panel only)"}
+    - {from: mcu.GPIO7, to: r2.A}
+    - {from: mcu.GPIO7, to: r3.A}
+    - {from: mcu.GPIO7, to: r4.A}
+    - {from: r1.B, to: tm1.CLK}
+    - {from: r2.B, to: tm2.CLK}
+    - {from: r3.B, to: tm3.CLK}
+    - {from: r4.B, to: tm4.CLK}
+
+    # INDIVIDUAL DIO: straight to the module, NO series resistor and no shifter.
+    # DIO is point-to-point, so a dead module can only pull down its OWN line —
+    # it is already self-isolating and needs no containment.
+    - {from: mcu.GPIO8,  to: tm1.DIO, subscribes: ship/jump/countdown}
+    - {from: mcu.GPIO9,  to: tm2.DIO, subscribes: ship/fuel}
+    - {from: mcu.GPIO10, to: tm3.DIO, subscribes: dradis/contacts/count}
+    - {from: mcu.GPIO11, to: tm4.DIO, subscribes: ship/population}
+
+    # ---- THE ENTIRE `-B` HEADER IS DELIBERATELY UNCONNECTED -----------------
+    # Not an omission, and not spare capacity to be "tidied up" with a 4-way
+    # ribbon.  The B header carries the SAME FOUR NETS as A — including DIO.
+
+# ===========================================================================
+# LOGICAL half — the console mirror
+# ===========================================================================
+# ⚠ `digits: 4` is a RASTER-SHAPED FIELD ([CXC-TM1637-DIGITS-NOT-PORTABLE]).
+# On the raster widget `.` and `:` each consume their OWN narrow cell; on a tube
+# a `.` folds into the preceding digit's dp bit.  The count is carried here
+# because the raster widget needs it, NOT because it is portable.
+#
+# ⛔ WHY THERE IS NO MIRROR OF THE SENSOR HALF, AND WHY THAT IS A FINDING.
+# The tube mirror is not decoration — it is the checkable content of
+# [CXC-VISION-SEMANTIC-REALIZATION]: the SAME namespace drives a raster widget
+# and a physical tube, and if the two disagree the claim is false.  The R503's
+# AURA LED RING is genuinely the second realization of a semantic state
+# (ready / matched / failed) and would be the exact analogue.
+# ⛔ IT CANNOT BE AUTHORED, because the semantic-state -> colour/mode/duration
+# mapping DOES NOT EXIST ANYWHERE NORMATIVE.  David's one stated UX preference
+# for this sensor — 'ready for authentication' should be BLUE OR PURPLE,
+# reserving green/red for matched/failed — is recorded in the identity spec ONLY
+# as intent to be authored in the device spec, and the device spec never
+# received it (spec audit finding C8).  A mirror written now would ASSERT a
+# mapping nobody has ruled, and a console showing green-for-ready against a ring
+# showing blue-for-ready is a manufactured disagreement in the one instrument
+# built to detect real ones.
+# ⛔ SO THE ABSENCE IS DELIBERATE AND IT IS BLOCKED ON C8, not forgotten.  This
+# comment is the EMPTY sentinel for a widget.
+widgets:
+  - type: stack
+    id: mirror
+    direction: row
+    children:
+      - type: seven_segment
+        id: countdown
+        value_namespace: ship/jump/countdown
+        digits: 4
+        height: 90
+      - type: seven_segment
+        id: fuel
+        value_namespace: ship/fuel
+        digits: 4
+        height: 90
+      - type: seven_segment
+        id: contacts
+        value_namespace: dradis/contacts/count
+        digits: 4
+        height: 90
+      - type: seven_segment
+        id: population
+        value_namespace: ship/population
+        digits: 4
+        height: 90
+
+# ===========================================================================
+# DEVICE half — the S3 firmware config
+# ===========================================================================
+# ⛔ SCHEMA GAP, REPORTED NOT WORKED AROUND SILENTLY — the same one the TM1637
+# panel documents.  The `hookup:` schema has a one-namespace-per-wire seam, so
+# it can express neither a multi-namespace protocol link nor a compound
+# actuator.  These parallel blocks carry what the seam cannot, and every pin
+# below MUST match the hookup wire above.  Two files of truth is the defect;
+# stating it is the least-bad handling until the seam grows.
+
+tm1637_panel:
+  # ⛔ INHERITED VERBATIM from tm1637_quad_panel.compose.yaml except for the pin
+  # numbers, which move because the STRAPPING SET MOVED.  The timing, the
+  # open-drain obligation and the unconditional-refresh discipline are the
+  # TM1637's properties and do not depend on which host drives it.
+  bus:
+    clk_pin: GPIO7           # shared CLK — must match the hookup wire above
+    # ⛔ 50 kHz, NOT the driver default of 100 kHz.  A released line rises toward
+    # the CLAMPED ~3.9 V, not 5 V, and must reach V_IH 3.5 V — 89.7% of the
+    # asymptote, costing 2.28*tau where a level-shifted line costs 1.20*tau.
+    # The clamp eats TIMING margin as well as voltage margin.  50 kHz is the
+    # setting that is CORRECT UNDER BOTH ANSWERS to the unresolved line-cap
+    # question, which is why it is chosen while that question is open.
+    half_period_us: 10       # 50 kHz.  Datasheet floor is CLK high >= 1 us (p.10).
+    open_drain: true         # ⛔ MANDATORY: (1) V_IH = 0.7*VDD > a 3.3 V push-pull
+                             # high; (2) the chip drives DIO low itself to ACK.
+    # ⛔ REWRITE ALL FOUR MODULES UNCONDITIONALLY, ONCE A SECOND.  These are
+    # stateful displays with NO readback: a module corrupted by a glitch stays
+    # wrong FOREVER.  Cost: 5.6 ms/s = 0.6% duty.
+    refresh_hz: 1
+    refresh_unconditional: true
+  displays:
+    - {id: tm1, dio_pin: GPIO8,  digits: 4, value_ns: ship/jump/countdown}
+    - {id: tm2, dio_pin: GPIO9,  digits: 4, value_ns: ship/fuel}
+    - {id: tm3, dio_pin: GPIO10, digits: 4, value_ns: dradis/contacts/count}
+    - {id: tm4, dio_pin: GPIO11, digits: 4, value_ns: ship/population}
+  # ⛔ BRIGHTNESS IS A STEP INDEX, NEVER A DUTY CYCLE — V2.4 p.5 gives EIGHT
+  # non-linear steps.  ⚠ AND DIMMING IS NOT A FIX FOR A PEAK-CURRENT PROBLEM:
+  # the answer to a supply peak is BULK CAPACITANCE (470-1000 uF at the panel).
+  brightness_step: 3
+
+fingerprint_sensor:
+  uart:
+    tx_pin: GPIO4            # host TX -> fp.RXD   (must match the hookup wire)
+    rx_pin: GPIO5            # host RX <- fp.TXD   (must match the hookup wire)
+    baud: 57600              # the module's default; N=6 in its baud register
+    frame: "8N1"
+  wakeup:
+    pin: GPIO6
+    active_low: true         # ⛔ UNVERIFIED — see the `wakeup-polarity` fact row
+    # ⚠ DEBOUNCE IN FIRMWARE, NOT WITH AN RC.  The line has a ~120 ms touch
+    # response and a ~4.0 s recalibration settle; an RC sized for the second
+    # would swallow the first.
+    debounce_ms: 50
+    # ⛔ DO NOT LATCH AN INTERRUPT ON THIS PIN UNTIL THE POLARITY IS SCOPED.  An
+    # inverted edge-triggered handler either fires continuously or never, and
+    # the 'never' case is indistinguishable from a broken wire.
+    interrupt: false
+  # ⛔ DRIVER OBLIGATIONS — two ways a CORRECT one-response-per-command reader
+  # desyncs on this part.  Both produce well-formed wrong results, not errors.
+  protocol:
+    # (1) A single spurious 0x55 byte is emitted ONCE after power-on, before any
+    # command.  A reader that treats the first byte on the line as the head of a
+    # response frame is misaligned from the start, and the symptom is a checksum
+    # failure on a command that is perfectly formed.
+    flush_rx_after_power_on: true
+    # ⛔ AND RESYNCHRONISE ON THE HEADER ANYWAY.  A flush fixes the known case;
+    # header resync fixes the class.  Do both — the flush is cheap and the
+    # resync is what survives the next undocumented artefact.
+    resync_on_header: true
+    # (2) AutoEnroll / AutoIdentify with Config3 = 1 return a STREAM of
+    # intermediate progress acks before the final result.  A reader that issues
+    # a command and reads exactly one response returns THE FIRST PROGRESS STEP
+    # AS IF IT WERE THE OUTCOME — a success reported before the operation has
+    # happened.  Either keep Config3 = 0, or read until the terminal code.
+    expect_intermediate_acks: true
+  # ⛔ THE AURA RING MAPPING IS DELIBERATELY ABSENT, NOT FORGOTTEN.
+  # `AuraLedConfig` (0x35) drives SEVEN colours; the widely-used Adafruit
+  # library exposes THREE, so a mapping written against that library silently
+  # loses four states with no error anywhere.  David's stated intent is
+  # 'ready' = BLUE OR PURPLE, with green/red reserved for matched/failed — but
+  # that intent is normative NOWHERE (spec audit C8), and this file will not be
+  # the place it is invented.  Author the semantic-state -> colour/mode/duration
+  # table in the device spec, then bind it here.
+  aura_led: EMPTY

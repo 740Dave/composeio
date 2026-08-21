@@ -1,0 +1,144 @@
+---
+scope: "Add bold weight font atlas and finer size granularity to eliminate bold/regular mismatch and small-text scaling artifacts across CYD and desktop bitmap atlas rendering"
+audience: "Builder agents modifying atlas generator, CYD firmware text renderer, and desktop bitmap font module"
+boundary: "Font atlas generation, weight selection in draw_text, atlas size additions. Does not change widget layout, font family, or geometric rendering."
+not-this: "Not adding italic or other weights. Not changing the font family (stays Helvetica). Not implementing bilinear glyph scaling."
+depends-on: [cyd-font-unification.smd]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# Bold Font Atlas and Size Granularity [SPEC:BOLD-ATLAS]
+
+> Add bold weight to the font atlas and finer size steps (6/7px) to eliminate weight mismatch and small-text nearest-neighbor scaling artifacts.
+
+---
+
+## 1. Problem [BOLD-ATLAS-PROBLEM]
+
+Two text fidelity issues remain after font unification:
+
+| Issue | Cause | Affected text |
+|-------|-------|---------------|
+| Bold text renders as regular on CYD | Atlas has one weight (regular). `font_bold` flag stored but unused. | Title "ComposeUX Dashboard" (14px bold), value "82.0 C" (12px bold) |
+| Small text looks chunky on CYD | ~7px requested, nearest atlas is 8px, nearest-neighbor scale 8→7 introduces artifacts | Tick labels "40/80/120", gauge label "Coolant Temp" |
+
+---
+
+## 2. Atlas Generator Enhancement [BOLD-ATLAS-GEN]
+
+### 2.1 Multi-Weight Support [BOLD-ATLAS-GEN-WEIGHT]
+
+Modify `cyd/fonts/generate_atlas.py`:
+
+- Accept `--bold-ttf <path>` flag for the bold weight source. For Helvetica TTC, extract bold face from the collection (face index 1 in `/System/Library/Fonts/Helvetica.ttc`).
+- If `--bold-ttf` is omitted, attempt to auto-detect bold face in TTC collections via FreeType `face.style_name` containing "Bold".
+- Generate two atlas sets: regular and bold, each at all requested sizes.
+
+### 2.2 C Header Output [BOLD-ATLAS-GEN-C]
+
+Extend `font_atlas.h` with bold atlas structs:
+
+```c
+static const FontAtlas font_atlas_bold_8 = { ... };
+static const FontAtlas font_atlas_bold_10 = { ... };
+/* ... */
+
+static const FontAtlas* const font_atlases_bold[] = { ... };
+static constexpr int kNumFontAtlasesBold = ...;
+
+static inline const FontAtlas* font_atlas_find_bold(int target_size) { ... }
+```
+
+### 2.3 JSON Output [BOLD-ATLAS-GEN-JSON]
+
+Extend `font_atlas_data.json`:
+
+```json
+{
+  "regular": { "sizes": [ ... ] },
+  "bold": { "sizes": [ ... ] }
+}
+```
+
+Both weight groups share the same schema per size entry.
+
+### 2.4 Size Additions [BOLD-ATLAS-GEN-SIZES]
+
+Extend default sizes from `8 10 12 14 16` to `6 7 8 10 12 14 16`.
+
+| Added size | Rationale |
+|-----------|-----------|
+| 7px | Exact match for gauge tick labels and label text (~7.0px computed). Eliminates 8→7 scaling. |
+| 6px | Coverage for very small annotations without upscaling from nothing. |
+
+---
+
+## 3. CYD Firmware Changes [BOLD-ATLAS-CYD]
+
+### 3.1 Bold Atlas Selection [BOLD-ATLAS-CYD-SELECT]
+
+In `canvas_esp32.cpp`, `draw_text()` and `measure_text()`:
+
+```cpp
+const FontAtlas* atlas = _state.font_bold
+    ? font_atlas_find_bold(target)
+    : font_atlas_find(target);
+```
+
+Same logic, different lookup table. No other changes to the text rendering pipeline.
+
+### 3.2 Include Guard [BOLD-ATLAS-CYD-GUARD]
+
+The bold atlas arrays increase `font_atlas.h` size. Verify flash usage stays under 50%. Current: 24.8%. Expected increase: ~20KB for bold glyphs at 7 sizes — well within budget.
+
+---
+
+## 4. Desktop Bitmap Font Changes [BOLD-ATLAS-DESKTOP]
+
+### 4.1 BitmapFontAtlas Weight Support [BOLD-ATLAS-DESKTOP-CLASS]
+
+Modify `python/composeio/render/bitmap_font.py`:
+
+- `__init__` loads both `regular` and `bold` weight groups from JSON
+- `find_atlas(target_size, bold=False)` selects from the correct weight group
+- `measure_text(text, font_size, bold=False)` passes weight through
+
+### 4.2 SkiaCanvas Integration [BOLD-ATLAS-DESKTOP-SKIA]
+
+In `skia_backend.py`, when bitmap atlas is enabled:
+
+- `set_font(family, size, weight)` records both `size` and `bold = (weight == "bold")`
+- `draw_text()` and `measure_text()` pass the bold flag to `BitmapFontAtlas`
+
+---
+
+## 5. Regeneration and Verification [BOLD-ATLAS-VERIFY]
+
+After implementation:
+
+1. Run `generate_atlas.py` with both weights and all sizes (6 7 8 10 12 14 16)
+2. Run `cyd_dashboard_crosscheck.py` — save atlas render to `screenshots/progression/`
+3. Compare new atlas render against previous atlas render — text should appear bolder where bold was specified
+4. Build CYD firmware — verify flash usage acceptable
+5. Run existing font unification tests — no regressions
+
+---
+
+## 6. Compliance [BOLD-ATLAS-COMPLIANCE]
+
+| ID | Requirement | Verification |
+|----|-------------|-------------|
+| BA-C1 | Atlas generator produces both regular and bold weight atlases | Inspect JSON: `regular` and `bold` keys both present with equal size count |
+| BA-C2 | C header contains bold lookup function `font_atlas_find_bold()` | Grep font_atlas.h for the function |
+| BA-C3 | CYD draw_text uses bold atlas when font_bold is true | Flash firmware, observe title "ComposeUX Dashboard" has bolder strokes |
+| BA-C4 | Desktop bitmap atlas uses bold when weight="bold" | Crosscheck PNG shows bolder title and value text |
+| BA-C5 | 7px atlas eliminates scaling for gauge labels/ticks | Crosscheck: "Coolant Temp" renders crisper at ~7px |
+| BA-C6 | Existing font unification tests pass | Test suite green |
+| BA-C7 | CYD flash usage < 50% | PIO build output |
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-30
+**Status**: Draft

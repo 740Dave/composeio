@@ -1,0 +1,514 @@
+---
+scope: "Core design principles governing the ComposeIO Software-Defined I/O platform — the non-negotiable architectural decisions that all implementations must respect"
+audience: "Firmware developers, host library implementers, spec authors, hardware designers working on ComposeIO modules"
+boundary: "Principles only; bus protocol details in 01-composeio-bus-protocol.smd; config schema in 02-composeio-config-schema.smd; module role contracts in 03-composeio-module-roles.smd"
+not-this: "Not a tutorial; not implementation code; not the human-facing architecture overview (see composeio_architecture.md)"
+depends-on: []
+---
+# ComposeIO Design Principles [SPEC:CIO-PRINCIPLES]
+
+> Non-negotiable architectural principles for the ComposeIO Software-Defined I/O platform. Every implementation decision — firmware, host library, config tooling, transport binding — must be evaluated against these principles.
+
+---
+
+## Analogy: Software-Defined Radio
+
+Software-Defined Radio moved the specificity boundary from hardware to software. Before SDR, each radio protocol required purpose-built receiver hardware. After SDR, a generic wideband receiver could decode any protocol — defined entirely in software.
+
+ComposeIO applies the same shift to physical I/O. Generic hardware modules with embedded processors become programmable behavior services. The specificity moves from firmware to configuration. This analogy is not cosmetic — it is the governing design intuition. When a design decision is unclear, ask: "What would SDR do?" SDR wouldn't require you to rebuild the receiver to change the protocol. ComposeIO shouldn't require you to reflash firmware to change the behavior.
+
+---
+
+## Principles
+
+### [DP-CIO-1] Adding Hardware Is Configuration, Not Recoding
+
+> When a builder adds a new ComposeIO module to a system, the only required action is writing or modifying a YAML configuration file. No host application code, no firmware modification, no recompilation.
+
+- implication: The host library must discover modules at startup and configure them from YAML without the builder writing module-specific setup code. A new relay module appears on the bus, the builder adds a namespace to its YAML config, and it participates in the system.
+- implication: Module firmware must be generic enough to serve any application within its role. A button-matrix module handles any arrangement of buttons, any LED behavior, any state engine — all from config.
+- test: If adding a module requires opening an IDE, the design has failed.
+
+### [DP-CIO-2] APIs Must Not Be Brittle — Pub/Sub by Namespace
+
+> Modules are connected by shared namespace, not by hardware address, channel number, device ID, or any physical topology artifact. Renumbering, rewiring, swapping, or relocating a module must not break connections.
+
+- implication: A button config says `namespace: office_lights`. A relay config says `namespace: office_lights`. That is the entire connection. No `target: relay-1.channel_3`. No `address: 0x42`. No routing tables.
+- implication: Multiple producers and multiple consumers on the same namespace must work without additional configuration. Two buttons publishing to `red_alert` and three devices consuming it is a valid, zero-config topology.
+- implication: The namespace is the API contract between modules. If two modules share a namespace, they agree on the state engine and value semantics. Nothing else needs to be shared.
+- implication: Namespaces support an optional `label` property — a human-readable display name that travels with discovery messages. The namespace string (`sublight_engines`) is the machine contract for pub/sub. The label (`"Sublight Engines"`) is the human contract for display. Changing a label never breaks subscribers. Subscribers auto-discover labels — they never need to configure a label for a namespace they didn't create.
+- test: If swapping a module for an identical replacement requires editing any config other than the replacement module's own YAML, the design has failed.
+- test: If renaming a button's display label requires updating any subscriber's config, the design has failed.
+
+### [DP-CIO-3] Push Behavior to the Edge
+
+> Processing that can be performed locally on the module MCU must be performed locally. The host application should receive semantic events and state, not raw signals that require further processing.
+
+- implication: Debounce, matrix scanning, LED pattern generation, PWM timing, state engine transitions, and input interpretation all happen on the module. The host never scans a matrix. The host never debounces a button. The host never manages LED blink timing.
+- implication: The module publishes `{namespace: "ftl_arm", state: "on"}`, not `{pin: 3, value: HIGH}`. The semantic gap between hardware and application is closed at the edge, not in the host.
+- implication: This is economically viable because sub-dollar MCUs make per-module intelligence effectively free. The architecture assumes this cost structure.
+- test: If the host application contains code that processes raw pin states, debounces inputs, or generates timing signals for module hardware, the design has failed.
+
+### [DP-CIO-4] Separate Input Mechanics from State Domain
+
+> How a user physically interacts with a control (momentary press, toggle, hold-and-ramp, rotary turn) is independent of what values the control cycles through (binary, tri-level, stop-light, continuous, custom enum). These must be configured independently.
+
+- implication: A `toggle` input with a `binary` state engine is a simple on/off switch. The same `toggle` input with a `tri_level` state engine cycles off → half → full. The same `toggle` input with a custom `enum` engine cycles through `[standby, warp_1, warp_5, warp_9, maximum]`. One input mechanic, infinite state domains.
+- implication: State engine values are semantic — `"half"`, `"warp_5"`, `"red"` — not numeric encodings. Consumers interpret the semantic value in hardware-appropriate ways (relay maps `"half"` to 50% PWM; display renders a half-filled gauge; game logic checks for `"warp_9"`).
+- implication: State engines are shared vocabulary. A producer and consumer on the same namespace must agree on the state engine type. Mismatched state engines are a config error, detectable at push time.
+- test: If adding a new state transition pattern requires firmware changes instead of a YAML config change, the design has failed.
+
+### [DP-CIO-5] The Bus Has a Local Loop and a Global Loop
+
+> The ComposeIO bus supports three communication scopes — local, global, and remote — all using identical semantics. The builder controls scope explicitly when needed, but the default behavior is automatic resolution.
+
+- implication: **Local loop** — within a single device (Arduino + I2C daughterboards). The host library implements the bus entirely in-process. No external transport required.
+- implication: **Global loop** — across devices on the same physical network via CAN, MQTT, or another transport. Events with `scope: global` are published to the external transport. Events with `scope: local` stay on the device.
+- implication: **Remote loop** — across networks via encrypted tunnel (WireGuard or similar). Extends global scope beyond the local network. See [DP-CIO-9].
+- implication: Events with no explicit scope use **auto-resolution**: local if a listener exists locally, global otherwise. Remote scope is always explicit.
+- implication: The transition from single-device to multi-device to multi-site is a transport configuration change, not an application rewrite. The same namespace, the same state engine, the same events — just carried over a different medium.
+- test: If moving a module from local I2C to a remote CAN node requires changes to any YAML config other than the transport binding, the design has failed.
+
+### [DP-CIO-6] Transport Is an Implementation Detail, Not an Architectural Decision
+
+> The bus protocol must be instantiable over multiple transport mechanisms without changing the semantic model. The same message format, namespace resolution, and scope routing must work identically regardless of whether the physical transport is I2C, CAN, MQTT, USB, or an in-process function call.
+
+- implication: The bus defines message semantics (namespace, event type, state value, scope). The transport binding defines how those messages are serialized and carried. These are separate layers.
+- implication: Transport bindings exist for at least: I2C (local loop, single device), CAN bus (wired multi-device), MQTT (wireless/networked multi-device), in-process (Python simulator, test harness). Adding a new transport does not require changes to the bus protocol or any module configs.
+- implication: A builder who prototypes on I2C and deploys on CAN changes the transport binding in one place. Everything else — namespaces, state engines, application logic — remains unchanged.
+
+| Transport | Medium | Use Case | Topology |
+|-----------|--------|----------|----------|
+| I2C | PCB traces / short wire | Single device, local loop | Mainboard ↔ daughterboards |
+| CAN | Twisted pair, up to 1km | Wired multi-device, vehicle, industrial | Daisy-chain bus, 100+ nodes |
+| MQTT | WiFi / Ethernet | Wireless multi-device, HA integration | Broker-mediated, any topology |
+| In-process | Function call | Simulator, test harness, single-app | Same process |
+| MQTT/WireGuard | VPN tunnel | Remote monitoring, distributed systems | Cross-network, encrypted |
+
+- test: If a message that works on I2C produces different behavior when carried over CAN or MQTT (given the same namespace and config), the design has failed.
+
+### [DP-CIO-7] Configuration Is the Product, Firmware Is Infrastructure
+
+> From the builder's perspective, the YAML configuration file is the primary artifact they create and maintain. Firmware, transport bindings, and host libraries are infrastructure that the builder should rarely think about.
+
+- implication: The YAML config schema must be expressive enough to cover the vast majority of use cases without escape hatches to custom code. If builders routinely need to write C or modify firmware, the config schema is insufficiently expressive.
+- implication: A `composeio push` command (or equivalent) is the primary tool. It validates the YAML, compiles it to a compact binary, pushes it to the module, and the module reconfigures itself. The builder's iteration loop is: edit YAML → push → observe behavior.
+- implication: Firmware is flashed once (at manufacturing or initial setup) and then never touched again for the life of the module. All behavioral changes are configuration changes.
+- test: If a builder's normal workflow involves an IDE, a compiler, or a firmware flasher, the design has failed.
+
+### [DP-CIO-8] Compute Platform Is Irrelevant
+
+> The ComposeIO bus makes no assumptions about what processor, operating system, or development environment a participant is running. Any device that can implement the bus protocol can participate as a peer.
+
+- implication: A $0.10 CH32V003, an ESP32, an RP2040, a Raspberry Pi 5 running Linux, a Mac running a Python simulator, and a cloud server are all equally valid bus participants. The bus protocol is defined in terms of messages and semantics, not in terms of any platform's native capabilities.
+- implication: Host libraries must exist for multiple platforms (C for bare-metal MCUs, Arduino/C++ for ESP32/RP2040, Python for Linux/macOS) and produce identical bus behavior. No platform gets special treatment or extended capabilities at the protocol level.
+- implication: A builder can develop and test on macOS, deploy to an RPi 5, and have CH32V003 edge nodes — all on the same bus, all speaking the same protocol. The platform boundary is invisible to the bus.
+- test: If a module or host application works on one platform but fails on another due to bus protocol differences (not hardware capability differences), the design has failed.
+
+### [DP-CIO-9] The Bus Extends Beyond the Local Network
+
+> The ComposeIO bus supports a **remote loop** in addition to the local and global loops. Remote loops bridge bus traffic across networks via VPN tunnels (WireGuard or similar), enabling geographically distributed systems to share namespaces.
+
+- implication: Three scope levels exist: `local` (within a single device), `global` (across devices on the local network via CAN/MQTT), and `remote` (across networks via encrypted tunnel). Auto-resolution checks local first, then global, then remote.
+- implication: A remote loop is an MQTT bridge over WireGuard, a CAN-to-MQTT gateway, or any transport binding that carries bus messages across a network boundary. The bus semantics are identical — only the latency changes.
+- implication: Use cases include monitoring a vehicle's CAN bus from home (Fiat head unit reporting SOC to Home Assistant), controlling an escape room from a remote game master station, or distributing a prop system across multiple physical locations.
+- implication: Remote loops are optional but architecturally first-class. A system that works locally must work remotely with only a transport config change, subject to latency constraints.
+- test: If a namespace event published on a remote device cannot be consumed by a local device (given appropriate transport config), the design has failed.
+
+### [DP-CIO-10] Sensor-to-Actuator Bindings Are First-Class
+
+> A sensor value on one namespace driving an actuator on another namespace — with an optional transformation — must be expressible in YAML configuration without custom code on either side or a server in the middle.
+
+- implication: A common pattern across maker projects is: sensor reads a value → some logic maps it to an action → actuator responds. Examples: power draw drives fan speed (laser cutter ventilation), presence drives servo position (louver system), temperature drives heater duty cycle (thermostat). Today these require HA automations, Node-RED flows, or bespoke Python servers as intermediaries. In ComposeIO, the binding is a config declaration.
+- implication: The bus must support **namespace bindings with transformation**: `namespace: laser_power` → map function → `namespace: vent_fan_speed`. The mapping can be a lookup table, a linear scale, a threshold set, or a PID loop — all declared in YAML.
+- implication: This eliminates the "server in the middle" anti-pattern where a Python process on a Mac Mini or RPi mediates between two devices that should talk directly. If both devices are on the same ComposeIO bus, the binding is local. If they're on different transports, the bus routes it — no bespoke server required.
+- learned-from: [PROJ-LASER] (power draw → fan speed via HA), [PROJ-LOUVER] (presence → servo), [PROJ-THERMO] (presence + temp → heater PID via 7 HA YAML files), [PROJ-TIKI] (3-button → WLED alert levels — a literal stop_light state engine)
+- extension: **Compound namespace bindings** — an output namespace may depend on multiple input namespaces simultaneously. Conditions are evaluated top-to-bottom when any input namespace changes. First matching condition wins. This extends single-source bindings to multi-source without changing the declarative model.
+  ```yaml
+  bindings:
+    - output_namespace: ftl_jump_led
+      requires: ftl_arm == "on"
+      default: "off"
+      conditions:
+        - when:
+            ftl_cap_charge: "< 50"
+          value: "blink_fast"
+        - when:
+            ftl_cap_charge: ">= 50"
+            ftl_coord_status: "!= committed"
+          value: "blink_slow"
+        - when:
+            ftl_cap_charge: ">= 50"
+            ftl_coord_status: "== committed"
+          value: "solid"
+  ```
+- learned-from-extension: FTL Jump system integration test (2026-03-18) — first physical+simulated ComposeIO scenario. The FTL Jump LED state depends on both capacitor charge level AND coordinate entry status. Single-source bindings couldn't express this. Compound bindings resolve it declaratively.
+- test: If connecting a sensor namespace to an actuator namespace requires writing code (Python, C, Node-RED flow), the design has failed. This includes multi-source dependencies — if an output depends on two input namespaces, the binding must still be declarative.
+
+### [DP-CIO-11] The System Degrades Gracefully, Not Catastrophically
+
+> When a component fails — a server crashes, a network drops, a host reboots — the remaining modules must continue functioning at their local capability level. No single point of failure should disable the entire system.
+
+- implication: Namespace bindings that can be resolved locally must continue to work when the global transport is unavailable. A button and a relay on the same CAN bus keep toggling even if the RPi game master is offline. A presence sensor and a servo louver on the same device keep operating even if WiFi is down and HA is unreachable.
+- implication: Modules must retain their last-pushed configuration in local flash. A power cycle does not require re-configuration from a server. The module boots, reads its config, and resumes its role on the bus.
+- implication: This is a direct architectural advantage over HA-centric systems, where a central server (often a Raspberry Pi with an SD card) is a single point of failure for every automation in the house. HA's complexity — setup, maintenance, plugin compatibility, update breakage — is beyond most people to manage at any layer of sophistication. ComposeIO pushes intelligence to the edge specifically so that the system works without a central coordinator.
+- implication: The host application (RPi, ESP32, Mac) adds value — game logic, dashboards, remote access, complex orchestration — but it is not required for basic cause-and-effect relationships. Those live on the bus.
+- contrast: In HA, if the server's SD card corrupts: every automation stops, every light switch automation fails, every sensor-driven behavior dies. In ComposeIO, the edge modules keep running their configured behavior. The host adds orchestration; the edge provides resilience.
+- test: If unplugging the host computer causes a locally-bound button to stop toggling a locally-bound relay, the design has failed.
+
+### [DP-CIO-12] LED Behavior Is Declarative, Not Procedural
+
+> LED patterns — solid, blink, pulse, proportional, follow-state, chase — must be expressible as declarative configuration, not as procedural scripts with while-loops, delays, and conditional branches.
+
+- implication: The LED behavior vocabulary must include at minimum: `solid`, `off`, `follow_state`, `while_pressed`, `blink` (with configurable rate), `pulse`, `proportional` (brightness tracks a value), and `chase` (sequential pattern across multiple LEDs).
+- implication: LED behavior can be **conditional on state engine value**. Example: heater timer >30min = solid, 2-30min = blink_slow, <2min = blink_fast, 0 = off. This is a **LED behavior map** keyed to state ranges, not a set of procedural scripts.
+- implication: LED behavior can respond to **remote state** via namespace binding. A button LED that mirrors an HA entity's state is: `led: follow_state` with the LED's namespace bound to the remote entity. The module handles the subscription and sync.
+- learned-from: [PROJ-PANEL] tos-gumdrops-office.yaml — 790 lines of ESPHome YAML, of which ~400 lines are repetitive LED state mirroring (6 buttons × 3 identical if/then/else blocks for on_boot, on_client_connected, and on_state). An additional ~80 lines implement three blink-rate scripts for one button's heater timer. In ComposeIO, the entire panel would be ~40 lines of YAML.
+- test: If expressing "LED blinks at 500ms when value is between 2 and 30, blinks at 250ms when value is between 0 and 2, solid when above 30, off at 0" requires writing procedural code, the design has failed.
+
+### [DP-CIO-13] Buttons Can Be Modal — Context Changes Behavior
+
+> A physical button may have different behaviors in different contexts (time of day, system state, game phase, user mode). The context that selects the active behavior must be expressible in configuration, not hard-coded in firmware or host logic.
+
+- implication: A button can have multiple **modes**, each with its own namespace, state engine, and LED behavior. The active mode is selected by a condition: time window, namespace value, external trigger.
+- implication: Example from [PROJ-PANEL]: Button 3 normally toggles monitor power, but during 12:30-12:59 AM it toggles a "suppress auto-shutdown" flag instead, and the LED blinks to indicate the modal window is active. In ComposeIO:
+  ```yaml
+  - namespace: office_monitors
+    input: toggle
+    led: follow_state
+    modes:
+      - when: time_window(00:30, 00:59)
+        namespace: suppress_shutdown
+        input: toggle
+        led: blink_500ms
+  ```
+- implication: Game systems benefit heavily from modal buttons. The same physical console button might arm weapons in one game phase and control shields in another. The game master changes the mode via a namespace event — no rewiring, no reflashing.
+- learned-from: [PROJ-PANEL] button 3 time-window context switch (60 lines of ESPHome YAML with lambdas, interval polling, and script coordination)
+- test: If a button that needs to change behavior based on time of day or game state requires firmware changes or host-side routing logic, the design has failed.
+
+### [DP-CIO-17] The Bus Provides Shared Infrastructure Services
+
+> Certain services — time, identity, discovery, health — are needed by many modules but should not be independently sourced by each one. The bus master publishes these as infrastructure namespaces that any module can consume.
+
+- implication: **Bus time**: The bus master publishes `namespace: _bus/time` at a regular interval (e.g., once per minute). Edge modules that need time-based behavior (scheduled actions, time-window modes, countdown timers) subscribe to this namespace instead of independently sourcing NTP, RTC, or HA time. This is especially important for low-cost MCUs without RTC hardware.
+- implication: **Heartbeat/health**: The bus master publishes `namespace: _bus/heartbeat`. Modules can detect bus master loss and enter degraded mode (DP-CIO-11). Individual modules publish their own heartbeat under their module namespace for the bus master to monitor.
+- implication: **Discovery**: When a module joins the bus, it announces its role, capabilities, and namespaces. The bus master maintains a registry. This enables auto-resolution of scope (DP-CIO-5) and config validation.
+- implication: Infrastructure namespaces use a reserved prefix (`_bus/`) to distinguish them from application namespaces.
+- learned-from: [PROJ-PANEL] tos-gumdrops-office.yaml polls HA for time. [PROJ-MEDIA] plex_monitor.py independently sources system clock for scheduled tasks. Every time-dependent device reinvents clock access.
+- test: If an edge module needs to add an RTC chip or NTP client to implement a time-based behavior, the design has failed.
+
+### [DP-CIO-18] Large Payloads Are Referenced, Not Transmitted
+
+> The bus carries lightweight semantic messages (events, state, config). Large payloads — images, audio, video frames, firmware binaries, log files — must never be pushed onto the bus. Instead, the bus carries a reference (URL, path, or content-addressable ID) and the consumer fetches the payload through an appropriate sideband channel.
+
+- implication: A camera module publishes `{namespace: "camera_front", event: "frame_ready", url: "http://server:5000/frame/latest.jpg"}` — not the JPEG bytes. The consumer fetches via HTTP, filesystem, or shared memory as appropriate to its platform.
+- implication: This keeps the bus fast and lightweight. CAN bus frames are 8 bytes. MQTT messages should be small. The bus is for coordination, not bulk data transfer.
+- implication: The sideband channel is transport-specific and outside the bus protocol. The bus only guarantees delivery of the reference. Fetching the payload is the consumer's responsibility.
+- implication: Firmware updates, config binaries, and large asset files follow the same pattern: the bus announces availability, the module fetches from a known endpoint.
+- learned-from: camera_server.py streams 320×480 JPEG frames at 2.5 FPS over raw TCP to an ESP32. Pushing those onto MQTT or CAN would be absurd. The pattern is: compute-heavy processing on a server, lightweight status/control on the bus.
+- analogy: Redis has the same lesson — pushing images into Redis is a well-known anti-pattern. Store the image in S3/filesystem, store the reference in Redis.
+- test: If a bus message exceeds 256 bytes, something is wrong. If it exceeds 1KB, the design has failed.
+
+### [DP-CIO-19] State Authority Can Be Local or External
+
+> A module's state may be locally authoritative (the button controls the relay — the button is the source of truth) or externally authoritative (the button requests a change from an external service — the service's confirmed state is the source of truth). The authority model must be declared in configuration.
+
+- implication: For locally authoritative state, the button toggles and the LED follows immediately. The bus event reflects the new state. This is the common case for relays, local actuators, and game controls.
+- implication: For externally authoritative state, the button sends a *request* (e.g., "toggle zone Kitchen"). The LED does not change until the external service confirms the new state. If the service rejects the request, the LED stays unchanged. The module must handle the asynchronous confirmation pattern.
+- implication: This distinction affects the LED behavior: `led: follow_state` for locally authoritative means "follow the toggle." For externally authoritative, it means "follow the confirmed external state." Same config keyword, different timing semantics based on the authority model.
+- implication: External authority requires a **service binding** — a bus participant (typically a server-side process) that translates between the ComposeIO bus and the external service API. The service binding is a transport-level concern, not application logic.
+- learned-from: sonos_controller — zone toggle buttons (Office, Kitchen, Garage) request zone group changes from the Sonos API. The LED reflects confirmed Sonos group state, not the button's local toggle. If Sonos rejects the zone change, the LED doesn't toggle. The Python server is purely a protocol translator between WebSocket/JSON and soco/Sonos API.
+- test: If a button LED shows "on" but the external service is actually "off" (because the service rejected the change), the state authority model is broken.
+
+### [DP-CIO-20] External Services Join the Bus Through Declarative Adapters
+
+> Devices and services that have their own APIs but don't natively speak ComposeIO (WLED, Sonos, smart plugs, cameras, cloud services) are brought onto the bus through **service adapters** — lightweight, declarative bridges that map external API state to ComposeIO namespaces. Adapters are configured in YAML, not coded as bespoke servers.
+
+- implication: An adapter config declares: which devices to connect to, which API properties to expose, and which ComposeIO namespaces to map them to. The adapter runtime handles polling, subscribing, reconnection, and error recovery generically.
+- implication: Adapters support both **subscribe mode** (external service pushes updates — preferred when available, e.g., WLED via MQTT, Sonos via UPnP events) and **poll mode** (adapter periodically queries the API — fallback when push isn't available, e.g., REST endpoints). The bus consumer doesn't know or care which mode is active.
+- implication: Adapters are **bidirectional**. Publishing to `namespace: d6_bar_top_power` sends a state change to the WLED REST API. The adapter translates the namespace action into the correct API call. The confirmed new state is published back onto the bus when the device acknowledges (DP-CIO-19 external authority).
+- implication: Each third-party protocol gets one adapter implementation (WLED adapter, Sonos adapter, Tapo adapter, TP-Link adapter). The adapter implementation is reusable across all devices of that type. Adding a new WLED device is a YAML config change, not code.
+- implication: This eliminates the "bespoke Python server per service" anti-pattern. The Sonos controller server (530 lines), the camera server (486 lines), and the plex monitor (870 lines) each become a thin adapter config + the generic adapter runtime.
+- learned-from: Every project that integrates an external service (WLED, Sonos, Plex, Tapo, TP-Link) has a custom Python server or relies on HA as the bridge. Each one re-implements connection management, error handling, state polling, and MQTT publishing.
+- test: If bringing a new WLED device onto the bus requires writing Python code rather than adding 5 lines of YAML to an adapter config, the design has failed.
+
+#### Home Assistant as Adapter Hub
+
+The most powerful adapter is the **HA adapter** — a single adapter that bridges ComposeIO to everything Home Assistant already integrates with. HA has 2,000+ integrations, each representing substantial debugging effort around authentication, reconnection, state normalization, and quirky vendor APIs. ComposeIO rides on that investment rather than replicating it.
+
+The HA adapter queries HA's device and entity registries (REST API + WebSocket subscription) and maps HA entities to ComposeIO namespaces:
+
+```yaml
+adapter: home_assistant
+url: "http://homeassistant.local:8123"
+token: !secret ha_token
+
+devices:
+  # Paste device ID from HA UI → auto-discover all entities
+  - device_id: 9a22aae5561f6a90b52cbbd0b6f0ad44
+    namespace_prefix: d6_bar_top
+    # Auto-maps: light.d6_bar_top → d6_bar_top.power, d6_bar_top.brightness, d6_bar_top.effect
+
+entities:
+  # Or explicit entity-to-namespace mapping for fine control
+  - entity_id: switch.kauf_plug
+    namespace: office_heater
+```
+
+**Auto-discovery**: Given a `device_id`, the adapter queries HA's entity registry, discovers all entities associated with that device (lights, switches, sensors, selects, numbers), and maps each to a ComposeIO namespace with state engines inferred from the entity domain and attributes (`light` → binary + continuous brightness + enum effects; `sensor` → continuous with unit; `switch` → binary; `select` → enum).
+
+**Bidirectional**: Publishing to a namespace calls the corresponding HA service (`light.turn_on`, `switch.toggle`). HA state changes push back onto the bus. The HA adapter is the service binding (DP-CIO-19 external authority — LED follows HA's confirmed state).
+
+**Degradation**: The HA adapter is just one bus participant. If HA goes down, locally-bound modules (CAN bus buttons, I2C relays, direct-wired hardware) keep working. Only HA-bridged devices go offline. The system degrades to local-only, not dead (DP-CIO-11).
+
+**When to use native adapters instead of HA**: Latency-critical paths (CAN bus vehicle data shouldn't round-trip through HA), HA-independent deployments (escape room with no HA server), or devices not supported by HA. Native adapters and the HA adapter coexist — same bus, same namespaces, different transport to the device.
+
+#### Two Adapter Strategies: Bridge vs. Native Reimplementation
+
+HA integrations are open source (Python). Two strategies exist for any given device:
+
+1. **HA bridge** — Route through HA's existing integration via the HA adapter. Fast setup, leverages HA's protocol debugging. Adds latency, requires HA to be running.
+2. **Native reimplementation** — Read the HA integration source, extract the protocol, reimplement as a ComposeIO adapter or edge firmware that talks directly to the device. No HA dependency, lower latency, and can add capabilities HA doesn't support.
+
+Both strategies are valid, and they can coexist for different devices in the same system. The choice depends on latency requirements, HA dependency tolerance, and whether ComposeIO needs capabilities beyond what HA exposes.
+
+#### Composite Device Pattern [CIO-COMPOSITE-DEVICE]
+
+Many real-world "devices" are actually **multiple physical things** that need to behave as one logical unit — with internal sequencing, safety interlocks, and lifecycle management. Today, each physical component is a separate HA entity (printer integration, smart plug, fan ESPHome device) with coordination handled through fragile HA automations or Node-RED flows. Changing one automation can break the safety interlock. There's no single place that owns the device lifecycle.
+
+A ComposeIO **composite device** is a module (any MCU — CH32V003 for simple cases, CH32V203 for USB host, ESP32 for WiFi) that owns multiple physical outputs and inputs as one logical device with declarative internal behavior rules.
+
+**Example: 3D Printer Station**
+
+```yaml
+composite_device: printer_station
+components:
+  - name: printer_power
+    type: relay
+    channel: 1
+  - name: vent_fans
+    type: relay
+    channel: 2
+  - name: printer_status
+    type: usb_poll          # or serial, or network API
+    host: 192.0.2.100
+
+namespaces:
+  printer_station_power: printer_power      # external control point
+  printer_station_status: printer_status    # published state
+  printer_station_fans: vent_fans           # usually auto, but observable
+
+lifecycle:
+  power_on:
+    - set: vent_fans → on
+    - wait: 5s                              # airflow stabilization
+    - set: printer_power → on
+  power_off:
+    - require: printer_status != printing   # safety interlock (DP-CIO-16)
+    - set: printer_power → off
+    - wait: 60s                             # cooldown
+    - set: vent_fans → off
+  safety:
+    - lock: printer_power while printer_status == printing
+    - lock: vent_fans while printer_power == on
+```
+
+The composite device owns the sequencing, the safety rules, and the lifecycle. The bus sees one device with one power namespace. Internally, the module manages two relays, a USB/network poll, timed sequences, and safety interlocks — all configured in YAML, all enforced at the edge.
+
+**Why this matters:**
+- **Safety is local.** The "don't cut power mid-print" rule runs on the edge MCU. No server, no WiFi, no HA required. If the network goes down, the safety interlock still holds.
+- **Sequencing is local.** The fan-before-printer startup, the cooldown-before-fan-off shutdown — these are timing-critical and must not depend on a remote automation engine.
+- **One config, one device.** In HA today, unifying a printer integration, a smart plug, and an ESPHome fan controller into one logical device requires automations spread across multiple files with implicit dependencies. In ComposeIO, it's one YAML file on one module.
+
+**The pattern generalizes to:**
+- Laser cutter station: power + ventilation + water cooling + interlock (lid switch)
+- CNC station: spindle power + dust collection + e-stop
+- Lab equipment: instrument + environmental controls + safety sensors
+- Media station: AVR + display + streaming device + ambient lighting
+- Any "workstation" that's really 3-5 devices with coordinated behavior
+
+### [DP-CIO-21] Namespace Binding Can Be Dynamic — Selectors and Polymorphism
+
+> A module's output namespace does not have to be statically configured. A **selector** — a button, a menu, a bus event — can change which namespace a module publishes to at runtime. Receivers don't need to know about the sender's selection state. They only need to respond (or not) to messages on their own namespace.
+
+- implication: A joystick module publishes movement to whichever namespace is currently selected by a button panel. Press "camera 2" → joystick publishes to `camera_2_ptz`. Press "camera 3" → joystick publishes to `camera_3_ptz`. The joystick config declares a selector binding, not a fixed namespace.
+  ```yaml
+  - namespace: ${active_camera}_ptz    # dynamic, follows selector
+    input: continuous
+    selector: camera_select             # namespace whose value determines the target
+    deadzone: 0.15
+    publish_rate: 10hz
+  ```
+- implication: **Ignore-by-design**. Camera 3 has no PTZ hardware, so its module has no subscriber for movement commands. Messages arrive on `camera_3_ptz` and nobody consumes them. No error, no conditional code, no capability checking on the sender side. The system is correct by absence.
+- implication: This is how ComposeIO avoids capability negotiation. The sender doesn't ask "does this device support PTZ?" It just publishes. Capable devices respond. Incapable devices ignore. Adding PTZ to camera 3 later requires only a hardware change and a config change on camera 3's module — zero changes to the joystick, the button panel, or anything else.
+- implication: Polymorphic namespacing generalizes beyond cameras. A universal remote panel can control different devices depending on which "zone" button is active. A game console's controls can target different game stations depending on the game master's selection. The input module stays the same; only the selector changes which namespace receives the output.
+- learned-from: home_camera_controller — 6 camera buttons select which camera the joystick controls. The joystick doesn't know which camera has PTZ. The server maintains selection state and routes PTZ commands. In ComposeIO, the selector replaces the server-side routing logic.
+- test: If adding a new controllable device to an existing control panel requires modifying the control panel's config or firmware (rather than just adding the new device's config), the design has failed.
+
+### [DP-CIO-22] Signal Transforms Are Declarative — Threshold, Debounce, Scale, Map
+
+> Transformations applied to input signals — debounce, deadzone, scaling, threshold-to-binary conversion, rate limiting — must be declarable in YAML configuration, not implemented as procedural code in firmware or host logic.
+
+- implication: Common transforms include:
+  - **Deadzone**: Continuous input below a threshold is treated as zero. `deadzone: 0.15` on a joystick.
+  - **Threshold-to-binary**: Continuous input held above a value for a duration emits a binary event. "Joystick held left >1s" → `{event: "pan_left"}`. Declared as `threshold: {value: 0.5, duration: 1s, emit: pan_left}`.
+  - **Scale**: Map input range to output range. ADC 0-4095 → -1.0 to +1.0. `scale: {in: [0, 4095], out: [-1.0, 1.0]}`.
+  - **Rate limit**: Continuous input published at a maximum rate. `publish_rate: 10hz` on a joystick prevents bus flooding.
+  - **Debounce**: Input must be stable for a duration before publishing. Already in DP-CIO-3 as an edge responsibility, but the debounce time is configurable: `debounce: 50ms`.
+  - **Map**: Discrete input values mapped to named outputs. `map: {0: "off", 1: "low", 2: "high"}`.
+- implication: Transforms are composable. A joystick input can have deadzone + scale + rate limit applied in sequence. A button can have debounce + threshold (long-press detection) + map.
+- implication: The CH32V003 applies these transforms locally (DP-CIO-3). The bus never sees raw ADC values or un-debounced signals.
+- learned-from: home_camera_controller — joystick analog values scaled to -1.0..1.0 with deadzone in Arduino C++. laser-smart-fan — current draw thresholds mapped to fan speed tiers in a C++ lambda. Both are declarative mappings implemented as procedural code.
+- test: If implementing "ignore joystick values below 15% and publish at most 10 times per second" requires C++ code rather than two YAML properties, the design has failed.
+
+### [DP-CIO-23] The Bus Has Persistent Storage — Config, Assets, and State
+
+> The bus provides a persistent storage service that holds compiled configs, large assets (images, audio, firmware), and system-wide state (namespace registry, device roster). Modules pull their configuration from bus storage on boot rather than requiring individual manual pushes.
+
+- implication: **Config lifecycle**: Builder edits YAML on their laptop → `composeio push` writes the compiled binary to bus storage under the target namespace → any device configured for that namespace pulls the config automatically, either immediately (if online) or on next boot. No per-device flashing. Replacing a dead module with an identical one is: power on → device announces its role → bus storage delivers its config → device self-configures.
+- implication: **Local flash is a cache, not the source of truth.** Devices cache their last-pulled config in local flash for resilience (DP-CIO-11). If bus storage is unavailable on boot, the device runs from its cached config. When bus storage becomes available, the device checks for updates and pulls if the config has changed (version/checksum comparison). This is the Docker registry pattern: pull when available, run local when not.
+- implication: **Large assets live in bus storage.** Album art, audio clips, placeholder images, animation frames — anything too large for a bus message (DP-CIO-18) is stored in bus storage and referenced by `bus://` URI. `{namespace: "now_playing", art_url: "bus://assets/album_art/current.jpg"}`. The consuming device fetches via whatever sideband protocol the bus storage exposes (HTTP, filesystem, etc.).
+- implication: **Namespace registry is persistent.** Bus storage maintains a registry of all known namespaces, their state engines, current values, and which devices publish/subscribe. This enables auto-discovery (DP-CIO-5 scope resolution), system introspection, and diagnostic tooling. A `composeio status` command can show the entire system state by querying bus storage.
+- implication: **System backup = bus storage backup.** The entire system's configuration, assets, and namespace registry lives in one location. Back it up, restore it to a new bus master, power on the devices, and the system self-reconstructs. Critical for deployable installations (vehicle head units, escape rooms, permanent props).
+- implication: **Bus storage is implemented by the bus master.** On an RPi 5, it's a directory on the filesystem exposed via HTTP. On an Arduino host, it could be an SD card or SPIFFS partition. On the simulator, it's an in-memory dict. The storage backend is a transport-level concern, not a protocol concern.
+- learned-from: camera_server — image assets (placeholder JPEGs) stored on the server filesystem and served to ESP32. sonos_controller — album art fetched from URLs, cached server-side. plex_monitor — config in a JSON file on the server. All of these are ad-hoc implementations of bus storage.
+- test: If replacing a dead module requires locating the original config file and manually re-pushing it, the design has failed. The replacement module should self-configure from bus storage.
+
+### [DP-CIO-24] Compute-Intensive Work Runs on a Service Hub, Not Edge Devices
+
+> Processing that exceeds edge MCU capabilities — video frame extraction, image processing, protocol translation for complex APIs, ML inference — runs as a managed workload on a **service hub** (typically an RPi 5 or similar). The service hub accepts packaged Python scripts that use the ComposeIO bus library, manages their lifecycle, and treats them as bus participants.
+
+- implication: A service hub is a bus participant that runs other bus participants. It pulls workload definitions from bus storage (DP-CIO-23), sets up Python environments, runs scripts as supervised processes, restarts on crash, and exposes logs to the bus.
+- implication: Workloads are packaged as: Python entry script + requirements.txt. The service hub manages venv creation and dependency installation. The workload uses the `ComposeIOBus` Python library to publish and subscribe — same API as any other bus participant.
+  ```yaml
+  # Bus storage: workloads/camera_frame_server.yaml
+  workload: camera_frame_server
+  runtime: python
+  entry: server.py
+  requirements: requirements.txt
+  restart: always
+  namespaces:
+    publishes: [camera_front_frame_ready, camera_rear_frame_ready]
+    subscribes: [camera_select, camera_ptz]
+  ```
+- implication: The service hub is NOT a general-purpose compute platform. It runs ComposeIO workloads — Python scripts that speak the bus protocol. It is a managed supervisor, not a PaaS. For general container orchestration, use Kubernetes (which David already has on [INFRA-INTERNAL]).
+- implication: From the bus's perspective, a workload is indistinguishable from any other participant. A camera frame server publishing `frame_ready` events looks the same to the bus whether it's running on the service hub, a standalone Mac, or a cloud VM. DP-CIO-8 (platform irrelevant) applies.
+- implication: Multiple service hubs can exist on the bus for redundancy or load distribution. Workloads can specify affinity ("run on the hub with GPU" or "run on the hub closest to the cameras").
+- learned-from: camera_server (486 lines of Python doing RTSP capture + frame resize — too heavy for ESP32, shouldn't require dedicated bespoke server setup), plex_monitor (870 lines — polls APIs and publishes MQTT, pure compute workload), sonos_controller (530 lines — protocol translation)
+- v1-scope: Python workloads only. `runtime: python` with requirements.txt. Service hub manages venv creation, process supervision, restart-on-crash, and log forwarding.
+- v2-future: GPU-accelerated runtimes (`runtime: python-gpu`), ML inference runtimes (`runtime: onnx`), TTS/STT models (Qwen-TTS, Whisper). The workload YAML schema supports future runtimes without protocol changes — just new `runtime:` values and corresponding hub capabilities.
+- stateless-hub: The service hub's local disk is a cache (DP-CIO-23 pattern). Authoritative workload scripts and configs live in bus storage. Dead service hub → install ComposeIO service hub package on replacement device → point at bus → it pulls all workloads from bus storage, rebuilds venvs, restarts processes. No manual restoration.
+- test: If deploying a new Python-based service onto the bus requires SSH, manual venv setup, systemd service files, and launchd plists, the design has failed. The builder should push a workload config to bus storage and the service hub picks it up.
+
+### [DP-CIO-14] Repetition Is a Design Failure — Parameterize, Don't Copy-Paste
+
+> When multiple instances of the same component type exist in a system (3 stepper gauges, 6 CPU inputs, 4 LED channels, 16 buttons), the configuration must express them as a parameterized collection, not as N copies of the same block.
+
+- implication: A `for_each` or array-based declaration pattern must be supported. `gauges: [{namespace: gauge_1, pins: [0,1,2,3]}, {namespace: gauge_2, pins: [4,5,6,7]}]` — not two identical 30-line gauge definitions.
+- implication: This applies to buttons, LEDs, relays, steppers, sensor inputs, display segments — any component that appears more than once with only a name/pin/address difference.
+- learned-from: [PROJ-PANEL] rack_triple_gauge.yaml — 313 lines for 3 identical stepper gauges where ~120 lines of unique content exist. activity_matrix.yaml — 60+ lines of identical CPU number entities. Both files are 40-60% pure copy-paste.
+- test: If adding a 4th gauge to a 3-gauge system requires duplicating 30+ lines of config instead of adding one entry to an array, the design has failed.
+
+### [DP-CIO-15] Effects and Animations Are Named, Parameterized Primitives
+
+> Visual effects (chase, breathe, twinkle, blinkenlichten, bar graph, proportional) and animation sequences (LED chase on boot, accelerating pulse, fade-out) must be reusable building blocks that are selected and parameterized in YAML, not implemented as inline C++ lambdas.
+
+- implication: A library of built-in effect primitives ships with ComposeIO. Builders select effects by name and set parameters (speed, density, color, direction). Custom effects can be added as named plugins, not inline code.
+- implication: Effects are composable. A display module can run `blinkenlichten` in one mode, `bar_graph` in another, and `clock_quarter` in a third — all selected via namespace-driven mode switching.
+- implication: The same effect primitive works across different hardware. `chase` works on a 4-LED strip, a 96-pixel MAX7219 matrix, or a row of illuminated buttons. The effect doesn't know the hardware; the module maps it to pins.
+- learned-from: wopr1.yaml and activity_matrix.yaml share the blinkenlichten effect via copy-paste with slightly different parameters. lego_dots.yaml implements chase, breathe, and twinkle as 190 lines of C++ lambda. These are all the same 4-5 named effects repeated across projects.
+- test: If implementing "breathing LED effect at 2Hz" requires writing C++ rather than writing `effect: breathe` with `speed: 2`, the design has failed.
+
+### [DP-CIO-16] Control Priority Is Explicit — Disabled, Manual, Auto
+
+> When multiple sources can control the same output (manual override, automated rule, remote command, safety interlock), the priority order must be declared in configuration. The module enforces priority locally without requiring host arbitration.
+
+- implication: A standard priority stack: `disabled` (safety lockout, always wins) > `manual` (physical override at the device) > `remote` (bus command from host/network) > `auto` (sensor-driven rule from namespace binding). The active control source is visible as state on the bus.
+- implication: This prevents the class of bugs where an automation fights a manual override, or a remote command overrides a safety interlock. The module itself enforces the priority — the host can't accidentally bypass it.
+- learned-from: laser-smart-fan.yaml — implements disabled > manual > auto in a `mode: restart` script. This is a universal pattern for any actuator that has both automated and manual control.
+- test: If an automated rule can override a manual safety lockout because priority is handled in host logic that has a bug, the design has failed.
+
+---
+
+## Derived Constraints
+
+These constraints follow directly from the principles above:
+
+| Constraint | Follows From | Rationale |
+|------------|-------------|-----------|
+| Module firmware must be role-generic, not application-specific | DP-CIO-1, DP-CIO-7 | If firmware is application-specific, adding hardware requires recoding |
+| Namespace is the only connection mechanism between modules | DP-CIO-2 | Any other mechanism (address, channel, device ID) creates brittleness |
+| Host application never processes raw pin states | DP-CIO-3 | Edge modules close the semantic gap locally |
+| State engine type is part of the namespace contract | DP-CIO-4 | Producer and consumer must agree on value domain |
+| Default scope is auto-resolve, not explicit | DP-CIO-5 | Builder shouldn't think about topology unless they want to |
+| Adding a new transport requires zero changes to bus protocol | DP-CIO-6 | Transport is a binding, not an architectural concern |
+| YAML validation must catch config errors before push | DP-CIO-7 | Builder's tool must fail fast with clear errors |
+| Sensor→actuator bindings must not require intermediary servers | DP-CIO-10 | The bus handles routing; HA/Node-RED/Python servers are optional, not required |
+| Local namespace bindings must survive host failure | DP-CIO-11 | Edge modules retain config and continue operating independently |
+| Module config must persist in local flash across power cycles | DP-CIO-11 | No server round-trip required on boot |
+| LED patterns must be config, not scripts | DP-CIO-12 | Procedural blink loops are a code smell; declare the pattern |
+| Multi-rate LED behavior maps to state engine ranges | DP-CIO-12 | One config block replaces three blink scripts |
+| Modal buttons are a config concern, not a firmware concern | DP-CIO-13 | Mode selection by condition (time, state, external trigger) |
+| N identical components = 1 parameterized definition + array | DP-CIO-14 | Copy-paste config is a maintenance and bug vector |
+| Visual effects are named primitives, not inline C++ | DP-CIO-15 | Same effect reusable across projects and hardware types |
+| Control priority (disabled > manual > auto) enforced at the edge | DP-CIO-16 | Module enforces priority locally; host can't bypass safety |
+| State authority (local vs external) must be declared per namespace | DP-CIO-19 | Prevents LED-shows-on-but-service-is-off bugs |
+| External authority requires async confirmation before LED update | DP-CIO-19 | Button sends request, LED follows confirmed state |
+| Edge modules get time from bus, not from independent NTP/RTC | DP-CIO-17 | One authoritative clock, no per-module RTC hardware |
+| Infrastructure namespaces use `_bus/` prefix | DP-CIO-17 | Reserved prefix prevents collision with application namespaces |
+| Bus messages must be under 256 bytes | DP-CIO-18 | Bus is for coordination, not bulk data |
+| Large payloads referenced by URL/path, never inline | DP-CIO-18 | Consumer fetches via sideband channel appropriate to platform |
+| Bus protocol must not reference platform-specific types or APIs | DP-CIO-8 | Any platform must be able to implement the protocol |
+| Remote participants are peers, not second-class clients | DP-CIO-9 | Remote loop uses identical bus semantics to local/global |
+
+---
+
+## Anti-Patterns
+
+| Anti-Pattern | Principle Violated | What to Do Instead |
+|---|---|---|
+| `target: relay-1.channel_3` in button config | DP-CIO-2 | Use shared namespace: both modules declare `namespace: office_lights` |
+| Host application contains `digitalRead()` for button scanning | DP-CIO-3 | Module scans locally, publishes semantic events |
+| `behavior: toggle` conflating input and state | DP-CIO-4 | Separate `input: toggle` and `state_engine: binary` |
+| Module firmware hard-codes button count or LED pattern | DP-CIO-1, DP-CIO-7 | Firmware reads config from flash; config defines button count and patterns |
+| CAN-specific message format in bus protocol | DP-CIO-6 | Bus defines semantic messages; CAN binding serializes them for CAN frames |
+| Builder must run `make flash` to change button behavior | DP-CIO-7 | Builder runs `composeio push` with updated YAML |
+| While-loop blink script with delay() calls | DP-CIO-12 | Declare `led: blink_500ms` or LED behavior map |
+| 6× copy-paste if/then/else for LED-follows-HA-entity | DP-CIO-12 | Declare `led: follow_state` with namespace binding |
+| Lambda checking time.hour inside button handler for modal behavior | DP-CIO-13 | Declare mode with `when: time_window(00:30, 00:59)` |
+| Duplicate button handler code inside `api.connected` guard | DP-CIO-11, DP-CIO-12 | Bus handles connectivity; local actions work immediately, remote actions queue |
+| 3 identical stepper definitions differing only in pin numbers | DP-CIO-14 | One stepper definition + array of pin sets |
+| 6 identical CPU number entities differing only in suffix | DP-CIO-14 | One input definition + count parameter |
+| 190-line C++ lambda implementing chase/breathe/twinkle effects | DP-CIO-15 | `effect: breathe`, `effect: chase`, `effect: twinkle` — named and parameterized |
+| Blinkenlichten effect copy-pasted between wopr1 and activity_matrix | DP-CIO-15 | Same effect, different parameters — one reusable primitive |
+| Script with if/else priority logic (disabled > manual > auto) | DP-CIO-16 | Declare `priority: [disabled, manual, remote, auto]` — module enforces |
+| Each device independently sourcing NTP or HA time | DP-CIO-17 | Subscribe to `_bus/time` — one clock for the whole bus |
+| Streaming JPEG frames over MQTT or CAN bus | DP-CIO-18 | Publish `frame_ready` event with URL; consumer fetches via HTTP |
+| Embedding base64-encoded images in bus messages | DP-CIO-18 | Reference by URL, never inline |
+| Base64-encoding album art in WebSocket JSON messages | DP-CIO-18 | Server writes JPEG to HTTP endpoint, bus carries URL reference |
+| Button LED toggles immediately when external service may reject | DP-CIO-19 | LED follows confirmed service state, not optimistic local toggle |
+| 400-line Python server that only translates between two protocols | DP-CIO-19, DP-CIO-6 | Service binding as a thin transport adapter, not a bespoke server |
+| Custom Python server per external service (WLED, Sonos, Plex) | DP-CIO-20 | One adapter type per protocol, configured per device in YAML |
+| Re-implementing connection management and error handling per service | DP-CIO-20 | Generic adapter runtime handles reconnection, polling, error recovery |
+| Server-side if/else routing joystick to selected camera | DP-CIO-21 | Joystick declares `selector: camera_select`, namespace follows dynamically |
+| Checking `if camera.has_ptz` before sending PTZ commands | DP-CIO-21 | Just publish to the namespace. Capable devices respond, others ignore. |
+| C++ code scaling ADC values and applying deadzone | DP-CIO-22 | `deadzone: 0.15`, `scale: {in: [0, 4095], out: [-1.0, 1.0]}` in YAML |
+| Config stored only in device local flash, requires manual re-push on replacement | DP-CIO-23 | Config lives in bus storage; device pulls on boot, caches locally |
+| Assets (images, audio) served from ad-hoc HTTP endpoints on bespoke servers | DP-CIO-23 | Assets in bus storage, referenced via `bus://` URI |
+| No way to see entire system config without SSHing into each device | DP-CIO-23 | `composeio status` queries bus storage namespace registry |
+| SSH + manual venv + systemd service file to deploy a Python service | DP-CIO-24 | Push workload config to bus storage; service hub manages lifecycle |
+| Stealing cycles from the Plex server to run camera frame extraction | DP-CIO-24 | Dedicated service hub runs compute workloads; Plex server stays clean |
+| Three bespoke Python servers with hand-rolled process management | DP-CIO-24 | Three workload YAMLs in bus storage, one service hub supervises all |
+| Lambda with if/else threshold ladder mapping current to fan speed | DP-CIO-22 | `threshold` or `map` transform in YAML |
+| Python server mediating between sensor device and actuator device | DP-CIO-10 | Declare namespace binding in YAML; bus routes directly |
+| 7 HA automation YAML files to connect presence sensor to heater | DP-CIO-10 | One namespace binding with threshold mapping |
+| All automations die when HA server's SD card corrupts | DP-CIO-11 | Edge modules keep running configured behavior; host adds orchestration, not basic function |
+| Module requires server handshake before resuming after power cycle | DP-CIO-11 | Module boots from local flash config, resumes immediately |
+| Bus protocol uses `uint32_t` or Arduino-specific types | DP-CIO-8 | Protocol defines abstract message format; platform bindings handle serialization |
+| Remote devices treated as read-only or degraded participants | DP-CIO-9 | Remote loop is full peer — same pub/sub, same namespace semantics |
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-17
+**Status**: Draft — principles established, bus protocol and config schema specs to follow

@@ -1,0 +1,85 @@
+# Fleet HUD — live VeloCloud-540 soak. A real ComposeUX app over live fleet infra.
+# Rendered via the in-process route (driver: fleet_hud.py) — no broker required.
+# Numeric telemetry uses the `json` engine (accepts any value; the built-in continuous
+# engine hard-caps at 0-255). Gauges display the value against their own min/max.
+app:
+  id: fleet-540-soak
+  transports: []            # in-process; driver publishes directly to the local bus
+
+design:
+  target: desktop
+  title: "540 Soak — live"
+  theme: dark
+
+# Reusable widget shapes (spec 14). Defined once; stamped via `use:` below. The same
+# component is what device_monitor (spec 15) would stamp at runtime per capability.
+components:
+  command-button:
+    params: [label, tool, args, confirm, result_ns]
+    # A param with a default is optional; a `null` default means optional-and-prunable
+    # (absent -> the key vanishes). `label` + `tool` have no default => required.
+    defaults: {args: {}, confirm: false, result_ns: null}
+    widget:
+      type: CommandWidget
+      label: "{{label}}"
+      binding:
+        type: mcp_action
+        tool: "{{tool}}"
+        args: "{{args}}"
+        confirm: "{{confirm}}"
+        result_namespace: "{{result_ns}}"
+
+namespaces:
+  - {name: velo540_temp_c,   state_engine: json,       export: true, label: "540 Temp °C"}
+  - {name: velo540_pf,       state_engine: json,       export: true, label: "540 pf states"}
+  - {name: velo540_phase,    state_engine: stop_light, export: true, label: "540 Phase"}
+  - {name: soak_tx_mbit,     state_engine: json,       export: true, label: "Throughput Mbit/s"}
+  - {name: soak_retx,        state_engine: json,       export: true, label: "iperf retransmits"}
+  - {name: soak_verdict,     state_engine: stop_light, export: true, label: "Soak"}
+  - {name: ginger_temp_c,    state_engine: json,       export: true, label: "ginger °C"}
+  - {name: console_activity, state_engine: json,       export: true, label: "console events"}
+  - {name: velo540_action,   state_engine: stop_light, export: true, label: "Last action"}
+
+modules:
+  - name: dut
+    label: "VeloCloud-540 (DUT)"
+    grid_row: 0
+    grid_column: 0
+    widgets:
+      - {type: GaugeWidget, namespace: velo540_temp_c, label: "540 Temp °C", min_val: 0, max_val: 100, row: 0, column: 0}
+      - {type: GaugeWidget, namespace: velo540_pf, label: "pf states", min_val: 0, max_val: 60000, row: 0, column: 1}
+      - {type: RelayWidget, namespace: velo540_phase, label: "Phase", state_engine: stop_light, row: 1, column: 0}
+      - {type: RelayWidget, namespace: soak_verdict, label: "Soak Verdict", state_engine: stop_light, row: 1, column: 1}
+
+  - name: load
+    label: "Load + endpoints"
+    grid_row: 0
+    grid_column: 1
+    widgets:
+      - {type: GaugeWidget, namespace: soak_tx_mbit, label: "Throughput Mbit/s", min_val: 0, max_val: 400, row: 0, column: 0}
+      - {type: GaugeWidget, namespace: soak_retx, label: "iperf retransmits", min_val: 0, max_val: 100, row: 0, column: 1}
+      - {type: GaugeWidget, namespace: ginger_temp_c, label: "ginger °C", min_val: 0, max_val: 90, row: 1, column: 0}
+
+  - name: console
+    label: "540 console — semantic events (observer)"
+    grid_row: 1
+    grid_column: 0
+    widgets:
+      - {type: BusMonitorWidget, namespace: console_activity, label: "Console events", row: 0, column: 0}
+
+  # v2 control layer — mcp_action bindings (spec 13). Read tools fire for real;
+  # destructive tools are allowlisted + confirm-gated but execution is deferred to
+  # the MCP servers post-soak. Results summarize into velo540_action (stop_light).
+  - name: controls
+    label: "Controls — mcp_action"
+    grid_row: 1
+    grid_column: 1
+    widgets:
+      - {use: command-button, label: "540 console — last events", tool: "fleetsoak.console_tail",
+         args: {n: 5}, result_ns: velo540_action, row: 0, column: 0}
+      - {use: command-button, label: "540 status (live REST)", tool: "fleet540.fw_status",
+         result_ns: velo540_action, row: 1, column: 0}
+      - {use: command-button, label: "540 power-cycle", tool: "fleetpower.power_cycle",
+         args: {target: velocloud540, dwell_s: 10}, confirm: true, result_ns: velo540_action,
+         row: 2, column: 0}
+      - {type: RelayWidget, namespace: velo540_action, label: "Last action", state_engine: stop_light, row: 3, column: 0}

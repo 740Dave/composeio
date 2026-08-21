@@ -1,0 +1,13 @@
+# ESP32-C3 overrides (env:esp32c3_dsl_test, env:esp32_c3_can_bringup,
+# env:esp32_c3_st7796) — layered after sdkconfig.defaults.
+# Both connected C3s (DevKitM and Super Mini) enumerate via the chip's native
+# USB-Serial-JTAG: make it the PRIMARY console so the corpus harness / CAN
+# bring-up printf output lands on the monitored usbmodem port.
+#
+# ONE FILE FOR ALL THREE ENVS on purpose: the requirement is identical
+# (native-USB console on a C3) and a second near-identical defaults file is
+# exactly the kind of duplicate that drifts and then has to be diffed on a
+# bench.  env:esp32_c3_st7796 drives glass and needs nothing else the C6 did
+# not — the WiFi memory trims, the 4 MB partition table and the 24 KB main
+# task stack all come from sdkconfig.defaults and apply unchanged.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

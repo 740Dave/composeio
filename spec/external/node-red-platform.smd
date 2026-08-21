@@ -1,0 +1,1454 @@
+---
+scope: "Authoritative reference specification documenting Node-RED's runtime architecture, node development model, editor APIs, MQTT integration internals, sidebar plugin system, testing framework, and packaging conventions — sourced from official documentation and verified against core source code"
+audience: "Gap analyzers comparing ComposeIO integration claims against Node-RED platform capabilities; spec authors designing custom nodes for Node-RED; integration architects evaluating Node-RED as a bus participant"
+boundary: "Node-RED platform only. Does not specify ComposeIO-specific nodes, bus protocol, or deployment topology. Those concerns live in 10-composeio-node-red-integration.smd"
+not-this: "Not a Node-RED tutorial; not a flow development guide; not an admin/security reference; not a substitute for nodered.org documentation"
+depends-on: []
+status: "Reference — verified against nodered.org docs and github.com/node-red/node-red source, March 2026"
+created: 2026-03-28
+sources:
+  - "https://nodered.org/docs/creating-nodes/"
+  - "https://nodered.org/docs/api/"
+  - "https://nodered.org/docs/user-guide/concepts"
+  - "https://github.com/node-red/node-red (core source)"
+  - "https://github.com/node-red/node-red-node-test-helper"
+  - "https://github.com/mblackstock/node-red-contrib-influxdb"
+  - "https://github.com/zachowj/node-red-contrib-home-assistant-websocket"
+  - "https://github.com/BiancoRoyal/node-red-contrib-modbus"
+---
+
+# Node-RED Platform Reference [SPEC:NR-PLATFORM]
+
+> Comprehensive reference for Node-RED's internal architecture, APIs, and conventions.
+> Written as a verification surface for integration specs that make claims about
+> Node-RED capabilities. Every assertion in this document is sourced from official
+> documentation or core source code — not from inference or training data.
+
+---
+
+## 1. Runtime Architecture [NR-RT]
+
+### 1.1 Core Execution Model [NR-RT-MODEL]
+
+Node-RED is a flow-based programming runtime built on Node.js. The runtime
+executes directed graphs of processing nodes connected by wires. Messages
+(plain JavaScript objects) traverse wires from node outputs to node inputs.
+
+**Key components:**
+
+| Component | Role |
+|-----------|------|
+| Runtime | Node.js process that loads flows, instantiates nodes, routes messages |
+| Editor | Browser-based SPA served by the runtime over HTTP; communicates via Admin API and WebSocket |
+| Flows | JSON documents describing node graphs; stored in `flows_{hostname}.json` by default |
+| Nodes | Individual processing units; each has a server-side JS implementation and an editor-side HTML definition |
+
+The runtime and editor are architecturally separate. The runtime can operate
+without the editor (`disableEditor: true` in settings.js). The editor
+communicates with the runtime exclusively through the Admin HTTP API and a
+WebSocket channel for live updates (node status, debug messages, deploy events).
+
+### 1.2 Flow Structure [NR-RT-FLOWS]
+
+A flow file is a flat JSON array of node objects. Every entity is a node —
+tabs, config nodes, subflows, and working nodes all share the same representation.
+
+**Core node properties (all node types):**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | string | Unique identifier, format `[0-9a-fA-F.]+` |
+| `type` | string | Node type name (e.g., `"mqtt in"`, `"function"`, `"tab"`) |
+| `z` | string | ID of the parent tab or subflow this node belongs to. Tab nodes have no `z`. Config nodes have no `z` (they are global by default) |
+| `name` | string | User-assigned display name |
+| `x` | number | Horizontal position in the editor workspace |
+| `y` | number | Vertical position in the editor workspace |
+| `wires` | array | Array of arrays. Each inner array is a list of node IDs connected to that output port. `wires[0]` = output 0's destinations, `wires[1]` = output 1's destinations, etc. |
+| `d` | boolean | Disabled flag. When `true`, the node is present in the flow but not instantiated at runtime |
+
+**Tab nodes** have `type: "tab"` and define a flow workspace. All nodes with
+`z` matching a tab's `id` belong to that flow.
+
+**Config nodes** have `type` set to the config node type (e.g., `"mqtt-broker"`)
+and no `x`, `y`, or `z` properties. They are globally scoped by default.
+
+**Subflow template nodes** have `type: "subflow"` and contain the subflow's
+internal node definitions. **Subflow instance nodes** have `type: "subflow:{id}"`
+referencing the template.
+
+**Wire format example:**
+```json
+[
+  {"id":"tab1","type":"tab","label":"Flow 1"},
+  {"id":"n1","type":"mqtt in","z":"tab1","wires":[["n2","n3"]]},
+  {"id":"n2","type":"function","z":"tab1","wires":[["n4"]]},
+  {"id":"n3","type":"debug","z":"tab1","wires":[]},
+  {"id":"n4","type":"mqtt out","z":"tab1","wires":[]},
+  {"id":"broker1","type":"mqtt-broker","name":"Local Broker","broker":"localhost","port":"1883"}
+]
+```
+
+This encodes: mqtt-in feeds function and debug in parallel; function feeds mqtt-out.
+The mqtt-broker config node is referenced by mqtt-in and mqtt-out via a property
+(e.g., `"broker":"broker1"`).
+
+### 1.3 Message Passing Model [NR-RT-MSGPASS]
+
+**Pre-1.0 (synchronous):** `node.send(msg)` directly invoked the next node's
+input handler in the same Event Loop tick. Entire branches completed
+synchronously before returning.
+
+**1.0+ (asynchronous, current):** `node.send(msg)` queues the downstream
+invocation via `setImmediate()`. Messages make equal progress through parallel
+branches. This enables:
+- Pluggable message routing
+- Per-node timeout monitoring (individual node processing time, not cumulative)
+- Fair I/O scheduling (sync code no longer starves Event Loop callbacks)
+
+A temporary deprecation flag `runtimeSyncDelivery: true` in settings.js
+restores synchronous behavior but is explicitly marked as non-permanent.
+
+**Message cloning:** When a node sends a message to multiple outputs or multiple
+wires, the runtime clones the message for each destination to prevent
+cross-contamination. Nodes receiving a message own that object.
+
+### 1.4 The `msg` Object Model [NR-RT-MSG]
+
+Messages are plain JavaScript objects. No class, no prototype methods, no
+required shape. Convention establishes these standard properties:
+
+| Property | Type | Convention |
+|----------|------|-----------|
+| `msg.payload` | any | Primary data content. Nearly all nodes read/write this. |
+| `msg.topic` | string | Routing/classification hint. MQTT nodes set this to the MQTT topic. Switch nodes can route on it. |
+| `msg._msgid` | string | Runtime-assigned unique message ID for tracing. Automatically set by the runtime. |
+| `msg.req` | object | HTTP request object (set by HTTP In node, consumed by HTTP Response node). |
+| `msg.res` | object | HTTP response object (set by HTTP In node, consumed by HTTP Response node). |
+| `msg.statusCode` | number | HTTP status code (used by HTTP Response node). |
+| `msg.headers` | object | HTTP headers. |
+| `msg.parts` | object | Split/join metadata for message sequences. |
+| `msg.complete` | boolean | Signals completion of a message sequence (join node). |
+
+**Critical convention:** Nodes should not construct new message objects from
+scratch unless necessary. Building a new `msg` loses properties set by upstream
+nodes (e.g., `msg.req`/`msg.res` needed by HTTP response nodes). Best practice:
+modify `msg.payload` on the incoming message and pass it through.
+
+### 1.5 Context Stores [NR-RT-CONTEXT]
+
+Context provides persistent state storage outside the message flow at three scopes:
+
+| Scope | Access Pattern | Visibility |
+|-------|---------------|------------|
+| Node | `this.context()` | Only the node instance that set the value |
+| Flow | `this.context().flow` | All nodes on the same tab/flow |
+| Global | `this.context().global` | All nodes in the entire runtime |
+
+**Synchronous API:**
+```javascript
+var value = context.get("key");
+context.set("key", value);
+
+// Multiple keys (Node-RED 0.19+):
+var [a, b] = context.get(["key1", "key2"]);
+context.set(["key1", "key2"], [val1, val2]);
+```
+
+**Asynchronous API (for persistent stores):**
+```javascript
+context.get("key", function(err, value) { ... });
+context.get("key", "storeName", function(err, value) { ... });
+context.set("key", value, function(err) { ... });
+context.set("key", value, "storeName", function(err) { ... });
+```
+
+**Store configuration** in `settings.js`:
+```javascript
+contextStorage: {
+    default: "memoryOnly",
+    memoryOnly: { module: 'memory' },
+    file: { module: 'localfilesystem' }
+}
+```
+
+Built-in modules:
+- `memory` — in-memory only, cleared on restart
+- `localfilesystem` — cached in memory, flushed to `~/.node-red/context/` every 30 seconds
+
+Custom store plugins can be created implementing the Context Store API.
+
+**Config node restriction:** Config nodes are globally scoped. They cannot
+assume access to flow context — only node context and global context.
+
+### 1.6 Environment Variables [NR-RT-ENV]
+
+Nodes can access environment variables through multiple mechanisms:
+
+- **Property substitution:** Set any node property to `${ENV_VAR}` in the flow editor. Runtime substitutes at flow load time. Limitation: cannot substitute partial strings (`CLIENT-${HOST}` does not work).
+- **Function node:** `let val = env.get("FOO");`
+- **JSONata:** `$env('ENV_VAR')`
+- **TypedInput widget:** Supports `env` type for editor-side variable selection.
+
+**Built-in variables (Node-RED 2.2+):**
+`NR_NODE_ID`, `NR_NODE_NAME`, `NR_NODE_PATH`, `NR_GROUP_ID`, `NR_GROUP_NAME`,
+`NR_FLOW_ID`, `NR_FLOW_NAME`, `NR_SUBFLOW_ID`, `NR_SUBFLOW_NAME`, `NR_SUBFLOW_PATH`.
+
+**Subflow instance properties** are exposed as environment variables within the
+subflow. Resolution order: subflow properties -> parent flow -> parent subflow ->
+global settings -> process.env.
+
+---
+
+## 2. Node Development: Server-Side JS [NR-DEV-JS]
+
+### 2.1 Module Structure [NR-DEV-JS-MODULE]
+
+Every node's server-side implementation is a Node.js module exporting a single
+function. The function receives `RED` — the Node-RED runtime API object:
+
+```javascript
+module.exports = function(RED) {
+    function MyNode(config) {
+        RED.nodes.createNode(this, config);
+        var node = this;
+
+        node.on('input', function(msg, send, done) {
+            // Process message
+            msg.payload = transform(msg.payload);
+            send(msg);
+            done();
+        });
+    }
+    RED.nodes.registerType("my-node", MyNode);
+}
+```
+
+**`RED.nodes.createNode(this, config)`** — Must be the first call in every
+constructor. Initializes the node's base functionality (event emitter, context
+access, status, logging). `config` is the node's configuration object from
+the flow file.
+
+### 2.2 Node Registration [NR-DEV-JS-REGISTER]
+
+```javascript
+RED.nodes.registerType(name, constructor, options)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Node type identifier. Must match the name used in the editor-side HTML registration. |
+| `constructor` | function | Node constructor function. Called once per node instance when a flow is deployed. |
+| `options` | object | Optional. Contains `credentials` and/or `settings` definitions. |
+
+**Options object:**
+```javascript
+RED.nodes.registerType("my-node", MyNode, {
+    credentials: {
+        username: { type: "text" },
+        password: { type: "password" }
+    },
+    settings: {
+        myNodeColor: {
+            value: "red",
+            exportable: true
+        }
+    }
+});
+```
+
+Settings follow a naming convention: node type (camelCase) + property name.
+Accessed at runtime via `RED.settings.myNodeColor`.
+
+### 2.3 Node Lifecycle [NR-DEV-JS-LIFECYCLE]
+
+```
+Flow Deploy
+  |
+  v
+Constructor(config)             <-- node created, config available
+  |-- RED.nodes.createNode()
+  |-- register event handlers
+  |-- initialize resources
+  |
+  v
+'input' event (repeated)       <-- messages arrive
+  |-- process msg
+  |-- send(msg) to downstream
+  |-- done() to signal completion
+  |
+  v
+'close' event                  <-- flow redeployed or node deleted
+  |-- cleanup resources
+  |-- done() when cleanup complete
+```
+
+### 2.4 Input Event Handler [NR-DEV-JS-INPUT]
+
+```javascript
+this.on('input', function(msg, send, done) {
+    // msg: the incoming message object
+    // send: function to send messages downstream (Node-RED 1.0+)
+    // done: function to signal processing complete (Node-RED 1.0+)
+
+    // Backwards compatibility for pre-1.0:
+    send = send || function() { node.send.apply(node, arguments); };
+    done = done || function(err) { if (err) node.error(err, msg); };
+
+    try {
+        msg.payload = doWork(msg.payload);
+        send(msg);
+        done();
+    } catch(err) {
+        done(err);  // Reports error AND signals completion
+    }
+});
+```
+
+**`send(msg)`** — Routes `msg` to downstream nodes connected by wires.
+
+**`send([msg1, msg2])`** — Sends to multiple outputs. `msg1` goes to output 0,
+`msg2` to output 1. Use `null` to skip an output.
+
+**`send([[msgA, msgB], msg2])`** — Sends multiple messages to output 0
+(msgA and msgB separately) and one to output 1.
+
+**`done()`** — Signals that message processing is complete. Required for
+the runtime's timeout monitoring. If not called within 15 seconds, the
+runtime logs a warning.
+
+**`done(err)`** — Signals error completion. Equivalent to calling
+`node.error(err, msg)` followed by completion signaling.
+
+### 2.5 Close Event Handler [NR-DEV-JS-CLOSE]
+
+Three signatures, selected by argument count:
+
+```javascript
+// Synchronous cleanup (no arguments)
+this.on('close', function() {
+    // cleanup synchronously
+});
+
+// Asynchronous cleanup (one argument)
+this.on('close', function(done) {
+    // cleanup asynchronously
+    setTimeout(done, 1000);
+});
+
+// Full signature (two arguments)
+this.on('close', function(removed, done) {
+    if (removed) {
+        // Node has been disabled or deleted entirely
+    } else {
+        // Node is being restarted (flow redeployed)
+    }
+    done();
+});
+```
+
+The runtime enforces a 15-second timeout on `done()`. If cleanup exceeds this,
+the runtime logs an error and continues.
+
+### 2.6 Sending Messages [NR-DEV-JS-SEND]
+
+```javascript
+// Single output, single message
+node.send(msg);
+
+// Multiple outputs
+node.send([msg1, msg2]);        // msg1 -> output 0, msg2 -> output 1
+
+// Multiple messages to one output
+node.send([[msgA, msgB], null]); // msgA and msgB -> output 0, nothing to output 1
+
+// Suppress output
+node.send(null);                 // no message sent
+```
+
+A `null` in any position suppresses output on that port. Messages are cloned
+when sent to multiple wires on the same output.
+
+### 2.7 Logging and Error Reporting [NR-DEV-JS-LOG]
+
+```javascript
+node.log("Info message");       // info level
+node.warn("Warning message");   // warn level — appears in editor debug tab
+node.error("Error message");    // error level — appears in editor debug tab
+node.error(err, msg);           // error with originating message — enables catch nodes
+node.debug("Debug detail");     // debug level
+node.trace("Trace detail");     // trace level
+```
+
+**Critical distinction:** `node.error(err, msg)` (with the originating `msg`
+as second argument) enables Catch nodes to handle the error. Without `msg`,
+the error is logged but uncatchable.
+
+### 2.8 Status Indicators [NR-DEV-JS-STATUS]
+
+```javascript
+node.status({fill:"green", shape:"dot", text:"connected"});
+node.status({fill:"red", shape:"ring", text:"disconnected"});
+node.status({fill:"yellow", shape:"ring", text:"connecting..."});
+node.status({});  // clear status
+```
+
+| Property | Values | Description |
+|----------|--------|-------------|
+| `fill` | `"red"`, `"green"`, `"yellow"`, `"blue"`, `"grey"` | Status indicator color |
+| `shape` | `"ring"`, `"dot"` | Ring = outline only, dot = filled circle |
+| `text` | string | Short text (<20 chars) displayed beside the indicator |
+
+Status updates are visible in the editor. The Status node (`type: "status"`)
+can capture status changes from other nodes to trigger flows.
+
+### 2.9 Accessing Config Nodes [NR-DEV-JS-CONFIGREF]
+
+```javascript
+function MyNode(config) {
+    RED.nodes.createNode(this, config);
+    this.server = RED.nodes.getNode(config.server);
+    if (this.server) {
+        // Access shared config: this.server.host, this.server.port
+        // Access shared connection: this.server.client
+    } else {
+        this.error("Missing server configuration");
+    }
+}
+```
+
+`RED.nodes.getNode(id)` returns the config node instance by its flow-assigned
+ID. Returns `null` if the config node doesn't exist or is disabled.
+
+### 2.10 Credential Access [NR-DEV-JS-CREDS]
+
+Credentials are stored separately from the flow file and encrypted at rest
+using the `credentialSecret` setting in `settings.js`.
+
+```javascript
+function MyNode(config) {
+    RED.nodes.createNode(this, config);
+    var username = this.credentials.username;
+    var password = this.credentials.password;
+}
+RED.nodes.registerType("my-node", MyNode, {
+    credentials: {
+        username: { type: "text" },
+        password: { type: "password" }
+    }
+});
+```
+
+**Type semantics:**
+- `"text"` — Value is accessible in both runtime and editor.
+- `"password"` — Value is accessible at runtime only. In the editor, replaced
+  by `has_password` boolean indicator. Never sent to the browser.
+
+---
+
+## 3. Node Development: Editor-Side HTML [NR-DEV-HTML]
+
+### 3.1 File Structure [NR-DEV-HTML-STRUCTURE]
+
+The `.html` file contains three `<script>` sections:
+
+```html
+<!-- 1. Node registration and definition -->
+<script type="text/javascript">
+    RED.nodes.registerType('my-node', { /* definition */ });
+</script>
+
+<!-- 2. Edit dialog template -->
+<script type="text/html" data-template-name="my-node">
+    <!-- form rows -->
+</script>
+
+<!-- 3. Help text -->
+<script type="text/html" data-help-name="my-node">
+    <p>Description for palette tooltip and help sidebar.</p>
+</script>
+```
+
+The `data-template-name` and `data-help-name` attributes must match the
+registered node type name exactly.
+
+### 3.2 Node Definition Object [NR-DEV-HTML-DEF]
+
+```javascript
+RED.nodes.registerType('my-node', {
+    category:      'function',              // Palette category
+    color:         '#a6bbcf',               // Background color (hex)
+    defaults: {                             // Editable properties
+        name:   { value: "" },
+        server: { value: "", type: "remote-server" },  // Config node ref
+        count:  { value: 1, required: true, validate: RED.validators.number() }
+    },
+    credentials: {                          // Credential properties (editor-side)
+        username: { type: "text" },
+        password: { type: "password" }
+    },
+    inputs:        1,                       // 0 or 1
+    outputs:       1,                       // 0+
+    icon:          "file.svg",              // Stock or custom icon
+    label:         function() {             // Dynamic label
+        return this.name || "my-node";
+    },
+    paletteLabel:  "My Node",              // Override type name in palette
+    labelStyle:    function() {
+        return this.name ? "node_label_italic" : "";
+    },
+    inputLabels:   "input",                // Port hover label
+    outputLabels:  function(index) {
+        return "output " + index;
+    },
+    align:         'left',                 // 'left' (default) or 'right'
+    button: {                              // Optional edge button
+        toggle: "buttonState",             // References boolean in defaults
+        onclick: function() { }
+    },
+    oneditprepare: function() { },         // Before edit dialog shown
+    oneditsave:    function() { },         // On dialog OK
+    oneditcancel:  function() { },         // On dialog Cancel
+    oneditdelete:  function() { },         // Config node deletion
+    oneditresize:  function(size) { },     // Dialog resize
+    onpaletteadd:  function() { },         // Node type added to palette
+    onpaletteremove: function() { }        // Node type removed from palette
+});
+```
+
+### 3.3 Property Definitions in `defaults` [NR-DEV-HTML-DEFAULTS]
+
+Each property in `defaults` is an object with:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `value` | any | Default value assigned when node is dragged to workspace |
+| `required` | boolean | If `true`, node shows validation error when empty/null |
+| `validate` | function | Custom validator. Receives value, returns boolean. `this` is the node instance. |
+| `type` | string | Config node type name. Tells editor this property is a reference to a config node. Editor auto-generates a select dropdown + edit button. |
+
+**Built-in validators:**
+```javascript
+RED.validators.number()         // Must be numeric
+RED.validators.regex(/^[a-z]+$/) // Must match regex
+```
+
+**Reserved property names:** `id`, `type`, `wires`, `x`, `y`, `z`, `d`, `g`, `l`.
+Exception: `outputs` may be included in defaults if the node needs configurable
+output count.
+
+### 3.4 Edit Dialog Template [NR-DEV-HTML-EDIT]
+
+```html
+<script type="text/html" data-template-name="my-node">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-server"><i class="fa fa-server"></i> Server</label>
+        <input type="text" id="node-input-server">
+    </div>
+    <div class="form-tips"><b>Tip:</b> Helpful guidance text.</div>
+</script>
+```
+
+**Naming convention:**
+- Regular node inputs: `id="node-input-{propertyname}"`
+- Config node inputs: `id="node-config-input-{propertyname}"`
+
+The editor automatically syncs `defaults` properties with matching input
+elements by ID. Before the dialog opens, inputs are populated from current
+values. On dialog close (OK), property values are read back from inputs.
+
+### 3.5 TypedInput Widget [NR-DEV-HTML-TYPEDINPUT]
+
+Initialized in `oneditprepare`:
+
+```javascript
+oneditprepare: function() {
+    $("#node-input-payload").typedInput({
+        type: "str",
+        types: ["str", "num", "bool", "json", "msg", "flow", "global", "env"],
+        typeField: "#node-input-payload-type"
+    });
+}
+```
+
+`typeField` references a hidden `<input>` that stores the selected type. The
+widget renders a type selector button alongside the value input.
+
+### 3.6 Multi-line Editor [NR-DEV-HTML-EDITOR]
+
+```javascript
+oneditprepare: function() {
+    this.editor = RED.editor.createEditor({
+        id: 'node-input-template-editor',
+        mode: 'ace/mode/javascript',
+        value: this.template
+    });
+},
+oneditsave: function() {
+    this.template = this.editor.getValue();
+    this.editor.destroy();
+    delete this.editor;
+},
+oneditcancel: function() {
+    this.editor.destroy();
+    delete this.editor;
+}
+```
+
+### 3.7 Help Text Style Guide [NR-DEV-HTML-HELP]
+
+Required sections in order: introduction paragraph (becomes palette tooltip),
+Inputs, Outputs, Details, References.
+
+```html
+<script type="text/html" data-help-name="my-node">
+    <p>Brief description used as palette tooltip.</p>
+
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">string</span></dt>
+        <dd>The input data to process.</dd>
+        <dt class="optional">topic <span class="property-type">string</span></dt>
+        <dd>Optional routing topic.</dd>
+    </dl>
+
+    <h3>Outputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">object</span></dt>
+        <dd>The processed result.</dd>
+    </dl>
+
+    <h3>Details</h3>
+    <p>Extended description. Reference properties as <code>msg.payload</code>.</p>
+
+    <h3>References</h3>
+    <ul>
+        <li><a href="https://example.com">External API docs</a></li>
+    </ul>
+</script>
+```
+
+For multiple outputs, wrap in `<ol class="node-ports">`:
+```html
+<h3>Outputs</h3>
+<ol class="node-ports">
+    <li>Standard output
+        <dl class="message-properties">
+            <dt>payload <span class="property-type">string</span></dt>
+            <dd>Result data.</dd>
+        </dl>
+    </li>
+    <li>Error output
+        <dl class="message-properties">
+            <dt>payload <span class="property-type">string</span></dt>
+            <dd>Error message.</dd>
+        </dl>
+    </li>
+</ol>
+```
+
+Markdown help (Node-RED 2.1+) is supported with `type="text/markdown"`.
+
+---
+
+## 4. Configuration Nodes [NR-CONFIG]
+
+### 4.1 Definition Pattern [NR-CONFIG-DEF]
+
+Config nodes are distinguished by two conventions:
+
+1. **`category: 'config'`** in the editor-side definition.
+2. **`node-config-input-{prop}`** ID prefix for edit template inputs.
+
+**Editor-side HTML:**
+```javascript
+RED.nodes.registerType('remote-server', {
+    category: 'config',
+    defaults: {
+        host: { value: "localhost", required: true },
+        port: { value: 1234, required: true, validate: RED.validators.number() }
+    },
+    label: function() {
+        return this.host + ":" + this.port;
+    }
+});
+```
+
+```html
+<script type="text/html" data-template-name="remote-server">
+    <div class="form-row">
+        <label for="node-config-input-host"><i class="fa fa-bookmark"></i> Host</label>
+        <input type="text" id="node-config-input-host">
+    </div>
+    <div class="form-row">
+        <label for="node-config-input-port"><i class="fa fa-bookmark"></i> Port</label>
+        <input type="text" id="node-config-input-port">
+    </div>
+</script>
+```
+
+**Server-side JS:**
+```javascript
+module.exports = function(RED) {
+    function RemoteServerNode(n) {
+        RED.nodes.createNode(this, n);
+        this.host = n.host;
+        this.port = n.port;
+    }
+    RED.nodes.registerType("remote-server", RemoteServerNode);
+}
+```
+
+### 4.2 Config Node as Connection Manager [NR-CONFIG-CONNMGR]
+
+The canonical pattern for config nodes managing external connections (MQTT
+brokers, databases, WebSocket servers):
+
+```javascript
+function BrokerNode(config) {
+    RED.nodes.createNode(this, config);
+    this.host = config.host;
+    this.port = config.port;
+    this.connected = false;
+    this.connecting = false;
+    this.users = {};           // Track dependent nodes
+
+    var node = this;
+
+    this.register = function(childNode) {
+        node.users[childNode.id] = childNode;
+        if (Object.keys(node.users).length === 1) {
+            node.connect();    // Connect on first user
+        }
+    };
+
+    this.deregister = function(childNode, done) {
+        delete node.users[childNode.id];
+        if (Object.keys(node.users).length === 0) {
+            node.disconnect(done);  // Disconnect when last user removed
+        } else {
+            done();
+        }
+    };
+
+    this.connect = function() { /* create client, attach handlers */ };
+    this.disconnect = function(done) { /* cleanup, then done() */ };
+
+    this.on('close', function(done) {
+        node.disconnect(done);
+    });
+}
+```
+
+This pattern is used by the built-in MQTT broker config node and replicated
+by most contrib packages managing persistent connections.
+
+### 4.3 Referencing Config Nodes [NR-CONFIG-REF]
+
+A regular node declares a config node dependency in `defaults`:
+
+```javascript
+defaults: {
+    server: { value: "", type: "remote-server" }
+}
+```
+
+The editor automatically renders a dropdown of available config node instances
+plus a pencil button to create/edit instances. At runtime:
+
+```javascript
+function MyNode(config) {
+    RED.nodes.createNode(this, config);
+    this.server = RED.nodes.getNode(config.server);
+    if (this.server) {
+        this.server.register(this);
+        // Use this.server.host, this.server.client, etc.
+    }
+}
+```
+
+### 4.4 Config Node Scope [NR-CONFIG-SCOPE]
+
+Config nodes are globally scoped by default — the same config node instance
+is shared across all flows. This means:
+- Config nodes cannot access flow context (only node and global context).
+- All regular nodes referencing the same config node ID share the same
+  instance, regardless of which flow tab they are on.
+- Config nodes are listed in the editor's Configuration Nodes sidebar panel.
+
+---
+
+## 5. MQTT Integration Internals [NR-MQTT]
+
+### 5.1 Architecture Overview [NR-MQTT-ARCH]
+
+The built-in MQTT nodes (`node-red-node-mqtt`, part of `@node-red/nodes`) are
+located at `packages/node_modules/@node-red/nodes/core/network/10-mqtt.js`
+and `10-mqtt.html` in the core repository.
+
+Three node types form the MQTT subsystem:
+
+| Node Type | Category | Role |
+|-----------|----------|------|
+| `mqtt-broker` | config | Manages a single MQTT connection. Shared by mqtt-in and mqtt-out nodes. |
+| `mqtt in` | network | Subscribes to topics, emits messages into the flow. |
+| `mqtt out` | network | Publishes messages from the flow to MQTT topics. |
+
+### 5.2 MQTT Broker Config Node (`MQTTBrokerNode`) [NR-MQTT-BROKER]
+
+**Underlying library:** `mqtt` (mqtt.js npm package) — the standard JavaScript
+MQTT client. Supports MQTT 3.1.1 and 5.0.
+
+**Connection state tracking:** Three boolean flags: `connected`, `connecting`,
+`closing`. These control status propagation to all dependent nodes.
+
+**Configuration options (via `setOptions()`):**
+
+| Option | Description |
+|--------|-------------|
+| Protocol version | 3 (3.1), 4 (3.1.1), or 5 (5.0) |
+| TLS/certificates | CA cert, client cert, client key, server name, reject unauthorized |
+| Client ID | User-specified or auto-generated |
+| Keep alive | Ping interval in seconds |
+| Clean session | Whether to resume previous session subscriptions |
+| Will message | Last Will and Testament: topic, payload, QoS, retain |
+| Birth message | Published on successful connect |
+| Close message | Published before graceful disconnect |
+| Auto-connect | Connect on deploy or wait for explicit trigger |
+
+**Subscription management:** Stored in `node.subscriptions` object, keyed by
+topic. Each topic entry maps to the subscribing node instances. The broker
+uses a helper function supporting MQTT wildcards (`+` single level, `#`
+multi-level) and MQTT v5 shared subscription syntax.
+
+**Event handler pattern:**
+```
+mqtt.connect -> set connected=true, publish birth message, update all node statuses to green/dot
+mqtt.reconnect -> set connecting=true, update statuses to yellow/ring
+mqtt.close -> set connected=false, update statuses to red/ring
+mqtt.error -> log error, propagate to dependent nodes
+mqtt.message -> route to subscriptionHandler()
+```
+
+**Graceful shutdown:** `disconnect()` publishes the close message (if configured),
+then calls `client.end()` with a 2-second timeout before forcing cleanup. This
+prevents hanging connections on flow redeploy.
+
+**Custom listener tracking:** Methods `_clientOn()` and `_clientRemoveListeners()`
+manage event listeners on the mqtt.js client to prevent listener accumulation
+during reconnections.
+
+### 5.3 Subscription Handler [NR-MQTT-SUBHANDLER]
+
+When a message arrives from mqtt.js:
+
+1. Extract QoS and retain flags from the MQTT packet.
+2. For MQTT v5: extract `responseTopic`, `correlationData`, `contentType`,
+   `messageExpiryInterval`, `payloadFormatIndicator`, `userProperties`.
+3. Convert payload based on the subscribing node's `datatype` setting:
+   - `buffer` — raw Buffer
+   - `utf8` — string
+   - `json` — parsed JSON object
+   - `base64` — base64-encoded string
+   - `auto` — attempts JSON parse, falls back to string
+4. Match the incoming topic against subscribed topics (supporting wildcards).
+5. Invoke each matching node's callback with the transformed message.
+
+### 5.4 MQTT In Node (`MQTTInNode`) [NR-MQTT-IN]
+
+**Static subscriptions:** When a topic is configured in the node properties,
+the node registers with the broker config node at deploy time and creates
+a permanent subscription.
+
+**Dynamic subscriptions (when `inputs: 1`):** The node accepts `msg.action`
+to control subscriptions at runtime:
+
+| Action | Description |
+|--------|-------------|
+| `connect` | Initiate broker connection |
+| `disconnect` | Close broker connection |
+| `subscribe` | Add dynamic topic subscription (from `msg.topic`, with optional `msg.qos`) |
+| `unsubscribe` | Remove subscription (`msg.topic = true` to unsubscribe all) |
+| `getSubscriptions` | Return current subscription list |
+
+**QoS handling:** QoS values validated to 0-2 range, default 2. Node-level
+and message-level QoS settings are both supported.
+
+### 5.5 MQTT Out Node (`MQTTOutNode`) [NR-MQTT-OUT]
+
+**Publishing pattern:**
+1. Validate topic (from node config or `msg.topic`).
+2. Convert payload: null/undefined to empty string, non-Buffer objects to
+   JSON string, everything else to string.
+3. Publish via mqtt.js client with QoS, retain, and (for v5) user properties.
+
+**MQTT v5 properties forwarded:** `userProperties`, `responseTopic`,
+`correlationData`, `contentType`, `messageExpiryInterval`.
+
+### 5.6 Status Propagation Pattern [NR-MQTT-STATUS]
+
+The `updateStatus()` function iterates all registered nodes and sets
+consistent visual indicators:
+
+| State | fill | shape | text |
+|-------|------|-------|------|
+| Connected | green | dot | "connected" |
+| Connecting | yellow | ring | "connecting" |
+| Disconnected | red | ring | "disconnected" |
+
+This pattern — config node propagating status to all dependent nodes — is
+the standard approach used by every well-built contrib package.
+
+---
+
+## 6. Editor APIs [NR-EDITOR]
+
+### 6.1 Available API Namespaces [NR-EDITOR-API]
+
+The editor exposes these API namespaces to nodes and plugins:
+
+| Namespace | Purpose |
+|-----------|---------|
+| `RED.actions` | Register custom keyboard-triggered actions |
+| `RED.events` | Listen for editor lifecycle events |
+| `RED.notify` | Show notification toasts in the editor |
+| `RED.sidebar` | Add/remove custom sidebar tabs |
+| `RED.plugins` | Register editor plugins |
+| `RED.editor` | Create code editors (Ace/Monaco) |
+| `RED.validators` | Built-in validation functions |
+| `RED.nodes` | Node registration and access |
+
+### 6.2 Sidebar API [NR-EDITOR-SIDEBAR]
+
+```javascript
+RED.sidebar.addTab({
+    id:           "my-custom-tab",           // Unique identifier
+    label:        "custom",                  // Short label on tab
+    name:         "My Custom Tab",           // Full name in sidebar menu
+    iconClass:    "fa fa-database",          // FontAwesome 4 icon class
+    content:      domElement,                // DOM element with tab content
+    toolbar:      toolbarElement,            // Optional toolbar DOM element
+    enableOnEdit: false,                     // Allow access during edit dialogs
+    action:       "my-tab:show"              // Registered action for keyboard shortcut
+});
+
+RED.sidebar.removeTab("my-custom-tab");
+RED.sidebar.show("my-custom-tab");
+RED.sidebar.containsTab("my-custom-tab");   // returns boolean
+```
+
+**Timing constraint:** `RED.sidebar.addTab()` will fail if called before the
+editor has finished loading. Plugins and nodes using `onpaletteadd` should
+defer sidebar registration until the editor is ready.
+
+### 6.3 Plugin Registration [NR-EDITOR-PLUGINS]
+
+```javascript
+RED.plugins.registerPlugin("my-plugin-id", {
+    type: "node-red-plugin-type",
+    // Plugin-type-specific configuration
+});
+```
+
+Known plugin types:
+- `"node-red-theme"` — Custom editor themes with CSS and optional Mermaid config.
+- `"node-red-library-source"` — Custom library store backends.
+
+### 6.4 Standard Widgets [NR-EDITOR-WIDGETS]
+
+| Widget | Purpose | Usage |
+|--------|---------|-------|
+| TypedInput | Type-aware value input | `$('#el').typedInput({types: ["str","num","bool","json","msg","flow","global","env"]})` |
+| EditableList | Dynamic list editor | `$('#el').editableList({addButton: true, removable: true, sortable: true})` |
+| SearchBox | Filtered search input | `$('#el').searchBox({delay: 300})` |
+| TreeList | Hierarchical data display | `$('#el').treeList({data: treeData})` |
+
+---
+
+## 7. Subflows [NR-SUBFLOWS]
+
+### 7.1 Definition [NR-SUBFLOWS-DEF]
+
+A subflow is a collection of nodes collapsed into a reusable single-node
+representation. Subflows have:
+- At most **one input** port.
+- **Unlimited output** ports.
+- **Environment variable properties** that can be customized per instance.
+- An optional **status output** node for instance-level status reporting.
+
+### 7.2 Subflow Status [NR-SUBFLOWS-STATUS]
+
+Inside a subflow, a status output node can receive messages:
+- Simple string payload: displayed as status text.
+- Status object `{fill, shape, text}`: displayed as a standard node status indicator.
+
+This allows subflow instances to show status just like regular nodes.
+
+### 7.3 Packaging as Modules [NR-SUBFLOWS-MODULES]
+
+Subflows can be packaged as npm modules via the Module Properties tab in the
+editor, which manages name, version, and license metadata. This enables
+distribution of subflow-based nodes via npm alongside traditional JS/HTML nodes.
+
+---
+
+## 8. Testing Framework [NR-TEST]
+
+### 8.1 `node-red-node-test-helper` [NR-TEST-HELPER]
+
+The official testing framework for Node-RED nodes. Built on top of the
+Node-RED runtime itself, it instantiates a real Node-RED instance for each
+test run. Uses Mocha as the test runner.
+
+**Installation:**
+```bash
+npm install node-red-node-test-helper --save-dev
+```
+
+### 8.2 Core API [NR-TEST-API]
+
+| Method | Description |
+|--------|-------------|
+| `helper.init(require.resolve('node-red'))` | Initialize with Node-RED runtime location. Accepts optional `userSettings` object. |
+| `helper.startServer(done)` | Start the embedded Node-RED server. Call in `beforeEach`. |
+| `helper.stopServer(done)` | Stop the server. Call in `afterEach`. |
+| `helper.load(nodeModule, flow, [credentials,] callback)` | Load node module(s) with a test flow and optional credentials. Callback fires when runtime is ready. |
+| `helper.unload()` | Unload nodes between tests. Call in `afterEach`. |
+| `helper.getNode(id)` | Get a node instance by its flow ID. |
+| `helper.clearFlows()` | Clear all loaded flows. |
+
+### 8.3 Standard Test Pattern [NR-TEST-PATTERN]
+
+```javascript
+var should = require("should");
+var helper = require("node-red-node-test-helper");
+var myNode = require("../my-node.js");
+
+helper.init(require.resolve('node-red'));
+
+describe('my-node Node', function () {
+
+    beforeEach(function (done) {
+        helper.startServer(done);
+    });
+
+    afterEach(function (done) {
+        helper.unload();
+        helper.stopServer(done);
+    });
+
+    it('should be loaded', function (done) {
+        var flow = [{ id: "n1", type: "my-node", name: "test-node" }];
+        helper.load(myNode, flow, function () {
+            var n1 = helper.getNode("n1");
+            try {
+                n1.should.have.property('name', 'test-node');
+                done();
+            } catch(err) {
+                done(err);
+            }
+        });
+    });
+
+    it('should transform payload', function (done) {
+        var flow = [
+            { id: "n1", type: "my-node", name: "test", wires: [["n2"]] },
+            { id: "n2", type: "helper" }
+        ];
+        helper.load(myNode, flow, function () {
+            var n1 = helper.getNode("n1");
+            var n2 = helper.getNode("n2");
+            n2.on("input", function (msg) {
+                try {
+                    msg.should.have.property('payload', 'expected');
+                    done();
+                } catch(err) {
+                    done(err);
+                }
+            });
+            n1.receive({ payload: "input" });
+        });
+    });
+});
+```
+
+### 8.4 Key Testing Patterns [NR-TEST-PATTERNS]
+
+**Helper nodes:** Use `type: "helper"` in test flows as message sinks. These
+are lightweight nodes that emit `input` events for assertion.
+
+**Injecting messages:** `node.receive(msg)` triggers the node's input handler
+as if a message arrived from an upstream node.
+
+**Method spying:** The test helper automatically instruments: `trace()`,
+`debug()`, `warn()`, `log()`, `status()`, `send()`. Assert with:
+```javascript
+n1.warn.should.be.calledWithExactly("expected warning");
+```
+
+**Async spy events:** For asynchronous assertions:
+```javascript
+n1.on('call:warn', function(call) {
+    call.should.be.calledWithExactly("bad input");
+    done();
+});
+```
+
+**Testing with credentials:**
+```javascript
+var credentials = { n1: { username: "user", password: "pass" } };
+helper.load(myNode, flow, credentials, function() { ... });
+```
+
+**Testing config nodes:** Include the config node in the test flow array:
+```javascript
+var flow = [
+    { id: "n1", type: "my-node", server: "s1", wires: [["n2"]] },
+    { id: "s1", type: "remote-server", host: "localhost", port: 1234 },
+    { id: "n2", type: "helper" }
+];
+```
+
+### 8.5 Test Flow Construction [NR-TEST-FLOWCONSTRUCT]
+
+Test flows can be constructed by:
+1. Writing JSON arrays manually (most common for unit tests).
+2. Exporting flows from the editor's Export menu, then replacing
+   `"type":"debug"` with `"type":"helper"` in the JSON.
+
+---
+
+## 9. npm Package Conventions [NR-PKG]
+
+### 9.1 Package Naming [NR-PKG-NAMING]
+
+As of January 2022, new packages must use **scoped names**:
+`@myScope/node-red-contrib-example`. The scope can be a user or organization
+npm scope. Including `node-red` in the name aids discoverability but is not
+mandatory for scoped packages.
+
+Legacy unscoped names (`node-red-contrib-*`) are still accepted for existing
+packages but discouraged for new ones.
+
+### 9.2 `package.json` Node-RED Section [NR-PKG-JSON]
+
+```json
+{
+    "name": "@myScope/node-red-my-nodes",
+    "version": "1.0.0",
+    "description": "Nodes for interacting with FooService",
+    "keywords": ["node-red"],
+    "node-red": {
+        "version": ">=2.0.0",
+        "nodes": {
+            "foo-in": "nodes/foo-in.js",
+            "foo-out": "nodes/foo-out.js"
+        }
+    }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `node-red.nodes` | Yes | Map of node-type names to their `.js` file paths. Each `.js` file's `module.exports` function is called at startup. |
+| `node-red.version` | No | Semver range of compatible Node-RED versions. |
+| `keywords` | Recommended | Must include `"node-red"` for npm discoverability. Add only when the package is stable. |
+
+**Node discovery mechanism:** At startup, the runtime scans `node_modules/`
+for packages with a `node-red` section in `package.json`. It loads each
+listed `.js` file and calls the exported function with the `RED` API object.
+The `.html` file must have the same base name as the `.js` file and reside
+in the same directory (or the directory specified in the path).
+
+### 9.3 File Layout Conventions [NR-PKG-LAYOUT]
+
+There are no strict requirements on directory structure. Common patterns:
+
+**Flat layout:**
+```
+package.json
+my-node.js
+my-node.html
+icons/
+  my-icon.svg
+```
+
+**Organized layout (multiple nodes):**
+```
+package.json
+README.md
+LICENSE
+nodes/
+  foo-in.js
+  foo-in.html
+  foo-out.js
+  foo-out.html
+  icons/
+    foo.svg
+examples/
+  basic-flow.json
+locales/
+  en-US/
+    foo.json
+```
+
+**Icons:** Custom icons go in an `icons/` directory. Requirements: SVG or
+PNG, minimum 40x60px, 2:3 aspect ratio, white on transparent background.
+Font Awesome 4.7 icons can also be used: `"font-awesome/fa-automobile"`.
+
+**Examples:** Example flows placed in `examples/` at the package root are
+discoverable via the editor's Import menu.
+
+**Locales:** Message catalogs in `locales/{lang}/{nodetype}.json` enable
+internationalization of help text and property labels.
+
+### 9.4 Local Development Installation [NR-PKG-LOCALDEV]
+
+```bash
+cd ~/.node-red
+npm install /path/to/node-package
+```
+
+Creates a symlink. Node-RED discovers the package on restart. Changes to
+the `.js` file require a Node-RED restart. Changes to the `.html` file
+require a browser refresh.
+
+### 9.5 Publishing [NR-PKG-PUBLISH]
+
+Standard `npm publish`. After publishing, manual submission to
+`flows.nodered.org` is required for catalogue listing (automatic indexing
+was discontinued April 2020).
+
+---
+
+## 10. Popular Integration Patterns (Contrib Analysis) [NR-CONTRIB]
+
+### 10.1 Pattern Summary from Three Major Packages [NR-CONTRIB-SUMMARY]
+
+| Pattern | mqtt (built-in) | home-assistant-ws | influxdb | modbus |
+|---------|----------------|-------------------|----------|--------|
+| Config node for connection | `mqtt-broker` | `server` (HA instance) | `influxdb` config | `modbus-client` |
+| Connection pooling | Yes (shared mqtt.js client) | Yes (shared WebSocket) | Yes (shared InfluxDB client) | Yes (shared serial/TCP) |
+| Status propagation | Green/yellow/red to all users | Yes, via base class | None (gap) | Yes, via FSM states |
+| Credential storage | `credentials` field | `credentials` field | `credentials` (username, password, token) | `credentials` field |
+| Dynamic subscriptions | Yes (msg.action) | Yes (entity/event type) | N/A (query-based) | N/A (polling) |
+| Error on `msg` | Via done(err) | Via node.error | `msg.influx_error` object | Via node.error |
+| Close cleanup | Explicit disconnect with timeout | WebSocket teardown | Implicit (GC) | FSM-managed cleanup |
+| TypeScript | No | Yes (73% TS) | No | No |
+| Test framework | node-red-node-test-helper | Vitest | Standard Mocha | Standard Mocha |
+| Node count | 3 (broker, in, out) | 20+ (entities, triggers, services) | 3 (config, in, out/batch) | 14 (client, read, write, flex-*) |
+
+### 10.2 Built-in MQTT Nodes (`node-red-node-mqtt`) [NR-CONTRIB-MQTT]
+
+**Source:** `@node-red/nodes/core/network/10-mqtt.js`
+
+Architecture already detailed in Section 5. Key patterns to note for
+integration verification:
+
+- The mqtt-broker config node creates a single mqtt.js client instance.
+- All mqtt-in and mqtt-out nodes sharing the same broker config get the same
+  client. No duplicate connections.
+- Birth/will/close messages provide connection lifecycle notifications.
+- MQTT v5 properties (userProperties, responseTopic, correlationData) are
+  fully supported and threaded through from msg properties.
+- Subscription management tracks listeners per topic per node, enabling
+  clean deregistration on node close.
+
+### 10.3 Home Assistant WebSocket (`node-red-contrib-home-assistant-websocket`) [NR-CONTRIB-HA]
+
+**Source:** `github.com/zachowj/node-red-contrib-home-assistant-websocket`
+
+**Architecture:** Hub-and-spoke pattern.
+
+- **Server config node** manages a single persistent WebSocket connection to
+  Home Assistant. Handles authentication, reconnection, and entity state caching.
+- **Functional nodes** (20+ types: events, entity state, service calls, triggers,
+  sensors, switches, buttons) register with the server config node.
+- **Three-tier integration hierarchy:**
+  - `UnidirectionalEntityIntegration` — push state to HA, no feedback.
+  - `BidirectionalEntityIntegration` — push state and receive commands.
+  - `ValueEntityIntegration` — handle numeric/string value changes.
+- **TypeScript** throughout (73% of codebase), compiled to JS for runtime.
+- **Vitest** for testing instead of Mocha.
+- **Node-RED context storage** used to persist HA entity registrations across restarts.
+- **Credential handling:** HA access tokens stored via Node-RED's credential system.
+
+### 10.4 InfluxDB (`node-red-contrib-influxdb`) [NR-CONTRIB-INFLUX]
+
+**Source:** `github.com/mblackstock/node-red-contrib-influxdb`
+
+**Architecture:** Config node + write/query nodes.
+
+- **Config node** (`influxdb`) manages InfluxDB client, supporting three versions:
+  - v1.x: uses `influx` npm package, `writePoints()` and `query()` methods.
+  - v1.8-flux: uses `@influxdata/influxdb-client`, token = `username:password`.
+  - v2.0: uses `@influxdata/influxdb-client`, explicit token credential.
+- **Credential registration:** `username` (text), `password` (password), `token` (password).
+- **Error pattern:** Errors attached to `msg.influx_error` with `statusCode` or
+  `errorMessage`, then passed to `done(err)`.
+- **Notable gap:** No `node.status()` calls — no visual connection state indicator.
+  No explicit `close` handler — relies on implicit garbage collection.
+
+**`package.json` node-red section:**
+```json
+"node-red": {
+    "nodes": {
+        "influxdb": "influxdb.js"
+    }
+}
+```
+Single JS file exports all three node types (config, in, out/batch).
+
+### 10.5 Modbus (`node-red-contrib-modbus`) [NR-CONTRIB-MODBUS]
+
+**Source:** `github.com/BiancoRoyal/node-red-contrib-modbus`
+
+**Architecture:** FSM-driven config node + 14 functional nodes.
+
+- **Config node** (`modbus-client`) uses `@xstate/fsm` finite state machine
+  for connection lifecycle management (connecting, connected, failed, closed).
+- **Protocol support:** TCP, UDP, Serial RTU, Serial ASCII, Telnet, C701.
+- **14 registered nodes** covering read, write, flex-getter, flex-write,
+  flex-connector, flex-sequencer, queue-info, response filter, server, and IO config.
+- **Dependencies include:** `@openp4nr/modbus-serial` (runtime Modbus),
+  `jsmodbus` (alternative implementation), `bson`, `debug`.
+- **Status propagation:** FSM state changes propagate connection status
+  (green/yellow/red) to all dependent nodes.
+
+---
+
+## 11. Admin HTTP API [NR-ADMIN]
+
+### 11.1 Endpoint Summary [NR-ADMIN-ENDPOINTS]
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| GET | /auth/login | - | Get active authentication scheme |
+| POST | /auth/token | - | Exchange credentials for access token |
+| POST | /auth/revoke | - | Revoke access token |
+| GET | /settings | settings.read | Get runtime settings |
+| GET | /diagnostics | settings.read | Get runtime diagnostics |
+| GET | /flows | flows.read | Get active flow configuration |
+| POST | /flows | flows.write | Set (deploy) flow configuration |
+| GET | /flows/state | flows.read | Get flow runtime state |
+| POST | /flows/state | flows.write | Set flow runtime state (start/stop) |
+| POST | /flow | flows.write | Add a single flow (tab) |
+| GET | /flow/:id | flows.read | Get a single flow by ID |
+| PUT | /flow/:id | flows.write | Update a single flow |
+| DELETE | /flow/:id | flows.write | Delete a single flow |
+| GET | /nodes | nodes.read | List installed node modules |
+| POST | /nodes | nodes.install | Install a node module (by npm name) |
+| GET | /nodes/:module | nodes.read | Get node module details |
+| PUT | /nodes/:module | nodes.write | Enable/disable a node module |
+| DELETE | /nodes/:module | nodes.install | Remove a node module |
+| GET | /nodes/:module/:set | nodes.read | Get node set details |
+| PUT | /nodes/:module/:set | nodes.write | Enable/disable a node set |
+
+### 11.2 Runtime Configuration (`settings.js`) [NR-ADMIN-SETTINGS]
+
+Key properties relevant to integration:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `flowFile` | `flows_{hostname}.json` | Flow storage file name |
+| `userDir` | `~/.node-red` | User data directory |
+| `uiHost` | `0.0.0.0` | Listen interface |
+| `uiPort` | `1880` | Listen port |
+| `httpAdminRoot` | `/` | Root URL for editor and admin API |
+| `httpNodeRoot` | `/` | Root URL for HTTP node endpoints |
+| `disableEditor` | `false` | Serve runtime only, no editor |
+| `credentialSecret` | (auto-generated) | Encryption key for credential storage |
+| `contextStorage` | `{default:{module:'memory'}}` | Context store configuration |
+| `functionGlobalContext` | `{}` | Objects attached to global context for Function nodes |
+| `functionExternalModules` | `false` | Allow Function nodes to require npm modules |
+| `mqttReconnectTime` | `5000` | MQTT reconnect delay (ms) |
+| `adminAuth` | (none) | User authentication for editor/admin API |
+| `logging` | `{console:{level:'info'}}` | Log level configuration |
+
+---
+
+## 12. Key Architectural Constraints and Implications [NR-CONSTRAINTS]
+
+### 12.1 Single Input Port Limit [NR-CONSTRAINTS-INPUT]
+
+Every node has **at most one input** port. This is a hard architectural limit,
+not a convention. A node cannot receive messages from separate logical channels.
+All incoming wires merge into the single input. Differentiation must happen
+via message properties (e.g., `msg.topic`).
+
+### 12.2 Config Nodes Are Singletons [NR-CONSTRAINTS-CONFIGSINGLETON]
+
+A config node with a given ID is instantiated exactly once, regardless of how
+many nodes reference it. This makes config nodes the natural place for shared
+connections and state — but also means config node bugs affect all dependents.
+
+### 12.3 No Native Module System for Complex Nodes [NR-CONSTRAINTS-MODULES]
+
+Node-RED nodes are loaded as Node.js CommonJS modules. There is no Node-RED-specific
+module system, dependency injection, or plugin lifecycle beyond the constructor/close
+pattern. Complex nodes must manage their own internal architecture.
+
+### 12.4 Editor-Runtime Boundary [NR-CONSTRAINTS-BOUNDARY]
+
+The editor and runtime are separate processes (browser vs. Node.js). They
+communicate only through:
+- **Admin HTTP API** — flow deployment, node installation, settings.
+- **WebSocket** — real-time node status, debug messages, deploy notifications.
+- **Credential masking** — password-type credentials never sent to browser.
+
+Nodes cannot call runtime functions from the editor or vice versa. The
+`oneditprepare` function runs in the browser; the constructor runs in Node.js.
+Any data shared between them must go through node properties (stored in the flow
+file) or the Admin API.
+
+### 12.5 Deploy = Full Restart [NR-CONSTRAINTS-DEPLOY]
+
+When a flow is deployed:
+1. All nodes receive the `close` event.
+2. The runtime loads the new flow configuration.
+3. All nodes are re-instantiated via their constructors.
+
+Node-RED supports partial deploys (modified nodes only, modified flows only),
+but the mental model should assume: deploy destroys and recreates affected nodes.
+Any state not persisted in context or external storage is lost.
+
+### 12.6 Async Close Timeout [NR-CONSTRAINTS-CLOSETIMEOUT]
+
+The 15-second timeout on `done()` in the close handler means nodes managing
+persistent connections must implement non-blocking cleanup. The MQTT broker
+node's 2-second forced disconnect timeout (well within the 15-second limit)
+is the reference pattern.
+
+---
+
+## 13. Version and Compatibility Reference [NR-VERSIONS]
+
+| Feature | Introduced In | Notes |
+|---------|---------------|-------|
+| Async message passing | 1.0 | `send`/`done` callback in input handler |
+| Multiple context stores | 0.19 | `contextStorage` in settings.js |
+| Environment variable substitution | 0.20 | `${ENV_VAR}` in node properties |
+| Subflow instance properties | 0.20 | Env vars per subflow instance |
+| Status node | 0.12 | Capture status changes from other nodes |
+| Scoped package naming requirement | 3.x (Jan 2022 policy) | `@scope/node-red-*` |
+| Markdown help text | 2.1 | `type="text/markdown"` in help script |
+| Flow/group-level env vars | 2.1 | Set env vars on tabs and groups |
+| Built-in `NR_*` env vars | 2.2 | `NR_NODE_ID`, `NR_FLOW_ID`, etc. |
+| Global user settings env vars | 3.1 | Configure env vars in User Settings dialog |
+| Subflow `NR_SUBFLOW_PATH` | 3.1 | Full subflow nesting path |
+
+---
+
+*This document was compiled from nodered.org official documentation, the
+node-red/node-red GitHub repository source code, and verified contrib package
+source code. All code examples are sourced from official documentation or
+actual project source files. Last verified: March 2026.*
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-28
+**Status**: Reference — verified against nodered.org docs and core source

@@ -1,0 +1,39 @@
+# Qualia ESP32-S3 RGB666 display overrides (env:qualia_display) —
+# layered after sdkconfig.defaults + sdkconfig.s3.defaults.
+# [SPEC:CXC-EMBED-REACTIVE] R5.
+#
+# The RGB dot-clock panel has NO framebuffer of its own: LCD_CAM DMA
+# continuously scans a PSRAM framebuffer, so octal PSRAM at 80 MHz and
+# the 240 MHz CPU clock are load-bearing here (R4 confirmed the octal
+# PSRAM is present on this board).
+
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# Octal PSRAM (8 MB) — the 720x720 RGB565 framebuffers (~1 MB each:
+# panel scan-out fb + canvas back buffer) live here.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+
+# RGB panel ISR must NOT be IRAM-safe: the bounce buffer (kQualiaBounceBufferPx
+# in qualia_panel.h) refills from the PSRAM framebuffer inside this ISR, and
+# PSRAM is unreachable when the cache is disabled (during flash writes).  With
+# ISR_IRAM_SAFE=y that refill faults -> Guru Meditation (Cache error) reboot
+# loop (David 2026-07-10).  =n is the documented config for a PSRAM-fb bounce
+# buffer; the tradeoff (ISR paused during flash ops) is covered by
+# RESTART_IN_VSYNC below and is invisible on a steady display.
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=n
+CONFIG_GDMA_CTRL_FUNC_IN_IRAM=y
+
+# Resync the RGB DMA at each VSYNC — belt-and-suspenders now that the bounce
+# buffer eliminates steady-state underrun; still recovers cleanly from the rare
+# refill stall during an actual flash write (David 2026-07-10).
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+
+# FreeRTOS run-time stats — the display meters its OWN CPU load onto the
+# demo gauge (sys/cpu).  uxTaskGetSystemState needs USE_TRACE_FACILITY;
+# the idle-vs-busy accounting needs GENERATE_RUN_TIME_STATS (David 2026-07-10).
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y

@@ -1,0 +1,722 @@
+---
+scope: "Amendment to 01-composeio-bus-protocol.smd — application-level acknowledgment for critical-priority messages"
+audience: "Same as parent spec: firmware developers, Python library implementers, transport binding authors"
+boundary: "Ack protocol only; does not change existing message types, field formats, or transport bindings"
+depends-on: [01-composeio-bus-protocol.smd, 00-composeio-design-principles.smd]
+amends: 01-composeio-bus-protocol.smd
+status: "Draft — for review"
+created: 2026-03-28
+---
+
+# Amendment: Application-Level Acknowledgment for Critical Messages [AMEND:BP-ACK]
+
+> CAN hardware ack means "someone saw the frame electrically" — it does not mean
+> "the target firmware received, parsed, and acted on the message." If the target's
+> main loop was blocked servicing an interrupt, the CAN transceiver still ACKs at
+> the hardware level. The sender believes delivery succeeded. The message was never
+> processed. For safety interlocks and config pushes, this is unacceptable.
+>
+> This amendment adds an application-level ack protocol scoped exclusively to
+> `pri: critical` messages. General pub/sub remains fire-and-forget — state is
+> idempotent, periodic broadcast handles missed transitions, and importing TCP
+> semantics to the entire bus would violate the simplicity that makes ComposeIO
+> deployable on CH32V003 with 2 KB of RAM.
+
+---
+
+## Rationale [BP-ACK-RATIONALE]
+
+The existing protocol handles the common case well:
+
+- **State messages** are idempotent and retained. A missed `state` update is corrected by the next publish or by a new subscriber receiving the retained value. No ack needed.
+- **Events** are fire-and-forget by design (`event` = "this happened"). Missing a button press is recoverable — press again. No ack needed.
+- **Heartbeats** and **discovery** are periodic. Missing one is handled by the 3-miss timeout. No ack needed.
+
+The gap is **critical one-shot commands** where the publisher needs confirmation that a specific action was executed:
+
+| Use Case | Why Fire-and-Forget Fails |
+|----------|--------------------------|
+| Safety interlock arm/disarm | Interlock state mismatch between controller and actuator is a safety hazard |
+| Config push to edge module | Module running stale config with no indication to the operator |
+| Firmware update trigger | Module misses update command, stays on vulnerable firmware |
+| Emergency stop | E-stop command lost means machine doesn't stop |
+| Mode transition in safety-critical namespace | Controller believes mode changed; actuator is still in previous mode |
+
+These are rare messages (< 1% of bus traffic) on a narrow set of namespaces. The ack mechanism is a scalpel, not a sledgehammer.
+
+---
+
+## 1. New Message Type: `ack` (Type Code 8) [BP-TYPE-ACK]
+
+**Insert after section 2.8 (`binding`) in 01-composeio-bus-protocol.smd.**
+
+### 2.9 `ack` — Application-Level Acknowledgment [BP-TYPE-ACK]
+
+Confirms that a subscriber received and processed a critical-priority message. Published by the subscriber, not the original publisher.
+
+- **Value**: Ack status string. One of: `"ok"`, `"reject"`, `"error"`
+- **Delivery**: At-least-once. MQTT QoS 1. CAN standard frame
+- **Retained**: No
+- **Correlation**: MUST include `cid` matching the `cid` of the original critical message
+
+```json
+{
+  "ns": "ftl_arm",
+  "type": "ack",
+  "val": "ok",
+  "src": "relay-2",
+  "ts": 12347,
+  "scope": "auto",
+  "seq": 101,
+  "cid": 7
+}
+```
+
+Ack status values:
+
+| Status | Meaning | Publisher Action |
+|--------|---------|-----------------|
+| `"ok"` | Message received and applied successfully | Clear pending ack for this source |
+| `"reject"` | Message received but cannot comply (e.g., actuator in fault state, value out of range) | Clear pending ack, raise fault event with reason |
+| `"error"` | Message received but processing failed (transient — retry may succeed) | Treat as non-ack, retry per protocol |
+
+**Update to section 1.4 type enum table:**
+
+| Enum | JSON value | Numeric (CAN) |
+|------|-----------|----------------|
+| Ack | `"ack"` | 8 |
+
+**APPLIED 2026-08-10** to 01-composeio-bus-protocol §1.4 and to the authoritative allocation
+[BP-TYPE-CODES]. It had been applied to the Python `MessageType` enum only; the transports' code
+tables never got it, so an `ack` frame decoded as `state` on both UART and CAN. Do not re-apply.
+
+---
+
+## 2. Critical Message Protocol [BP-ACK-PROTOCOL]
+
+### 2.1 When Ack Is Required [BP-ACK-WHEN]
+
+Ack is required if and only if `pri: critical` is set on the published message. No other priority level triggers the ack protocol. Setting `pri: critical` on a message is an explicit contract: "I need confirmation this was processed."
+
+When a publisher sets `pri: critical`, the publisher's bus runtime MUST:
+
+1. Assign a `cid` (correlation ID) if not already set
+2. Record the message in an **ack-pending table**: `(cid, namespace, expected_ackers, retry_count, next_retry_time)`
+3. Start the retry timer
+
+### 2.2 Who Must Ack [BP-ACK-WHO]
+
+The set of expected ackers is **declared by the publisher's config**, not derived from the subscriber registry. The publisher explicitly names which modules must confirm receipt.
+
+```yaml
+namespaces:
+  - ns: ftl_arm
+    priority: critical
+    ack_required_from: ["relay-2"]          # only the actuator must confirm
+  - ns: e_stop
+    priority: critical
+    ack_required_from: ["relay-1", "relay-2", "motor-1"]  # all actuators
+```
+
+**Design rationale**: A namespace may have many subscribers — actuators, indicator LEDs, loggers, bus monitors, dashboards. Only a subset are safety-relevant. The publisher knows which responses matter because the ack requirement is a function of the publisher's intent, not the subscriber's self-assessment.
+
+- A subscriber NOT listed in `ack_required_from` still receives the message, still processes it normally. It simply does not participate in the ack/retry/fault protocol. If it misses the message, no fault is raised — periodic state broadcast or the next publish handles catch-up.
+- A subscriber listed in `ack_required_from` that fails to ack triggers retries and, ultimately, a fault event naming that specific module.
+
+**Rules:**
+
+1. `ack_required_from` MUST list at least one module. A critical namespace with no expected ackers is a config validation error — `composeio push` rejects it
+2. Listed modules MUST be known to the namespace registry (via discovery). If a listed module has never been seen on the bus, `composeio push` warns at config time, and the publisher's bus runtime publishes a fault event at publish time rather than retrying into the void
+3. If `ack_required_from` is omitted on a `priority: critical` namespace, it defaults to a config validation error — the publisher must be explicit about who matters
+4. On CAN-only deployments, the ack-pending table stores `src_hash` values for expected ackers (2 bytes each). A typical entry is 1–3 modules — fits in a 4-entry bitmask on CH32V003
+
+### 2.3 Subscriber Behavior [BP-ACK-SUBSCRIBER]
+
+All subscribers receive critical messages normally — `pri: critical` does not change message delivery. The difference is what happens after processing.
+
+**Designated ackers** (modules listed in the publisher's `ack_required_from`):
+
+1. Process the message normally (apply state, execute command, etc.)
+2. Determine the outcome: ok, reject, or error
+3. Publish an `ack` message to the **same namespace** with:
+   - `type`: `"ack"`
+   - `cid`: echoed from the original message
+   - `val`: `"ok"`, `"reject"`, or `"error"`
+   - `src`: the subscriber's own module ID
+4. The ack MUST be published within **25ms** of completing processing (not 25ms of receipt — processing time is not bounded by this spec, but the ack must follow promptly after)
+
+If the subscriber's ack-publishing fails (transport error), the subscriber SHOULD retry once. Beyond that, the publisher's retry mechanism handles recovery.
+
+**Non-designated subscribers** (everyone else on the namespace):
+
+1. Process the message normally — no behavioral change
+2. Do NOT publish an ack
+3. If the message is missed (e.g., main loop blocked during all retries), the subscriber catches up via the next periodic state broadcast or retained value. No fault is raised on their behalf
+
+**How does a subscriber know it's a designated acker?** It doesn't need to. On CAN, any subscriber that receives a `pri: critical` frame and is configured (in its own module config) to ack for that namespace publishes an ack. The publisher-side and subscriber-side configs are kept consistent by `composeio push`, which validates that every module listed in a publisher's `ack_required_from` has a corresponding `ack_for` entry:
+
+```yaml
+# In relay-2's module config:
+namespaces:
+  - ns: ftl_arm
+    role: subscribe
+    ack_for: true    # "I ack critical messages on this namespace"
+```
+
+This is a config-time contract, not a runtime negotiation. Both sides agree at push time. If they disagree, `composeio push` rejects the config.
+
+### 2.4 Retry Protocol [BP-ACK-RETRY]
+
+When not all expected acks are received within the timeout window:
+
+| Attempt | Timeout | Action |
+|---------|---------|--------|
+| Initial send | — | Publish message, start 50ms timer |
+| Retry 1 | 50ms after initial | Re-publish same message (same `cid`) |
+| Retry 2 | 200ms after retry 1 | Re-publish same message (same `cid`) |
+| Retry 3 | 1000ms after retry 2 | Re-publish same message (same `cid`) |
+| Exhaustion | 1000ms after retry 3 | Abandon. Publish fault event |
+
+Total window from initial send to fault: **1250ms** (50 + 200 + 1000).
+
+**Retry rules:**
+
+- Each retry re-publishes the **complete original message** with the **same `cid`**. On CAN, the frame is byte-identical to the original. On JSON transports, `cid` is preserved and `seq` is incremented (JSON dedup uses `(src, seq)`, so a new seq prevents the broker/runtime from dropping the retry; the subscriber deduplicates on `cid` via its processed-cid cache)
+- **CAN dedup bypass**: Critical frames (`pri: critical`) bypass the bus runtime's `(src, seq)` deduplication filter entirely. Deduplication is handled at the application level by the subscriber's processed-cid cache, keyed on `(src_hash, cid)`. This is necessary because CAN critical frames carry `cid` in place of `seq` (section 4.2)
+- Retries go to all subscribers, not just the ones that nexus't acked. Subscribers that already processed the `cid` MUST NOT re-execute — they re-ack from their processed-cid cache (idempotent)
+- If a partial set of acks is received (some subscribers acked, others didn't), only the non-acked subscribers contribute to the fault event
+- The publisher's ack-pending table entry is cleared when ALL expected ackers respond, OR on retry exhaustion
+
+### 2.5 Idempotent Processing Requirement [BP-ACK-IDEMPOTENT]
+
+Subscribers MUST handle duplicate critical messages idempotently. If a subscriber receives a critical message with a `cid` it has already processed:
+
+1. Do NOT re-execute the action
+2. DO re-publish the ack with the same status as the original
+
+Subscribers MUST maintain a **processed-cid cache** of at least the last 32 critical `cid` values (with a 10-second expiry). This cache is small — critical messages are rare by design.
+
+---
+
+## 3. Fault Events [BP-ACK-FAULTS]
+
+### 3.1 New Infrastructure Namespace: `_bus/fault` [BP-BUS-FAULT]
+
+**Insert after section 5.5 (`_bus/log/{module_id}`) in 01-composeio-bus-protocol.smd.**
+
+### 5.6 `_bus/fault` [BP-BUS-FAULT]
+
+- **Published by**: Any module that detects a bus-level fault condition
+- **Message type**: `event`
+- **Value**: JSON object describing the fault
+- **QoS**: MQTT QoS 1 (faults must not be silently lost)
+- **Retained**: No (faults are events, not state)
+- **Purpose**: Centralized fault detection. Bus monitor, operator dashboards, and alerting systems subscribe to `_bus/fault` to detect delivery failures, module faults, and protocol violations
+
+### 3.2 Ack Timeout Fault [BP-ACK-FAULT-TIMEOUT]
+
+Published by the original sender when retry exhaustion occurs:
+
+```json
+{
+  "ns": "_bus/fault",
+  "type": "event",
+  "val": {
+    "fault": "ack_timeout",
+    "target_ns": "ftl_arm",
+    "original_cid": 7,
+    "original_val": "on",
+    "original_src": "panel-1",
+    "unacked": ["relay-2"],
+    "acked": ["indicator-3"],
+    "retries": 3,
+    "elapsed_ms": 1250
+  },
+  "src": "panel-1",
+  "ts": 12348,
+  "scope": "global",
+  "seq": 105
+}
+```
+
+The `unacked` array lists module IDs that did not respond. The `acked` array lists those that did. This enables targeted diagnostics — if one specific module consistently fails to ack, it's likely that module, not the bus.
+
+### 3.3 Ack Reject Fault [BP-ACK-FAULT-REJECT]
+
+Published by the original sender when a subscriber responds with `"reject"`:
+
+```json
+{
+  "ns": "_bus/fault",
+  "type": "event",
+  "val": {
+    "fault": "ack_reject",
+    "target_ns": "ftl_arm",
+    "original_cid": 7,
+    "original_val": "on",
+    "rejected_by": "relay-2",
+    "reject_reason": "actuator_fault"
+  },
+  "src": "panel-1",
+  "ts": 12348,
+  "scope": "global",
+  "seq": 106
+}
+```
+
+Note: `reject_reason` is an optional string in the ack message's `val` field. When `val` is `"reject"`, the subscriber MAY publish an extended value:
+
+```json
+{"type": "ack", "val": {"status": "reject", "reason": "actuator_fault"}, ...}
+```
+
+If `val` is the simple string `"reject"`, no reason is available.
+
+---
+
+## 4. CAN Binary Encoding [BP-ACK-CAN]
+
+### 4.1 Design-for-CAN-First Principle [BP-ACK-CAN-PRINCIPLE]
+
+CAN is the constrained transport (8-byte payload, no structured fields beyond what we encode). The ack protocol is designed for CAN-native operation — it MUST work on a CAN-only bus with no MQTT bridge. JSON transports get the easy translation, not the other way around.
+
+### 4.2 Critical Message Frame — CAN Layout Change [BP-ACK-CAN-CRITICAL]
+
+When `pri: critical` (flags byte bits 5..4 = `11`), the CAN data payload layout changes. **Bytes 1–2 carry a 12-bit correlation ID (cid) instead of the 12-bit sequence number (seq).**
+
+Normal (non-critical) CAN frame — unchanged:
+
+```
+Byte 0:    flags
+Byte 1:    seq[11..4]
+Byte 2:    seq[3..0] (high nibble) | value data
+Bytes 3-7: value payload
+```
+
+Critical CAN frame — revised:
+
+```
+Byte 0:    flags (priority bits = 11, signaling critical layout)
+Byte 1:    cid[11..4]
+Byte 2:    cid[3..0] (high nibble) | value_encoding (low nibble)
+Bytes 3-7: value payload (5 bytes, same encodings as section 1.5.2)
+```
+
+The `cid` is a 12-bit identifier generated by the publisher for this logical operation. It MUST be unique within the publisher's active ack-pending table (typically a rolling counter, wrapping at 4095).
+
+**Retries reuse the same `cid`.** This is the key difference from seq-based deduplication: the cid identifies the *logical operation*, not the *transmission attempt*. The subscriber deduplicates retries using its processed-cid cache (section 2.5), not the bus runtime's `(src, seq)` dedup filter.
+
+**Why replace seq, not add cid alongside it?** There are no spare bytes. The 8-byte CAN payload is fully allocated: 1 byte flags + 1.5 bytes seq/cid + 5-6.5 bytes value. Carrying both seq and cid would require stealing from the value payload, reducing it below the minimum useful size for float32 and uint16 encodings. Since critical messages use cid for both correlation AND deduplication, seq is redundant — cid subsumes its function for this message class.
+
+**Impact on CAN dedup:** The bus runtime's `(src, seq)` dedup filter (section 4.5 of parent spec) does NOT apply to frames with `pri: critical`. Critical frames bypass the seq-based dedup entirely. Deduplication is handled at the application level by the subscriber's processed-cid cache, keyed on `(src_hash, cid)`.
+
+### 4.3 CAN Ack Frame [BP-ACK-CAN-FRAME]
+
+The ack message uses CAN type code 8 in the CAN identifier layout (section 1.5.1):
+
+```
+CAN ID (29 bits):
+  Bit 28..13: ns_hash of the namespace being acked
+  Bit 12..9:  type = 8 (ack)
+  Bit 8..0:   src_hash of the acking module
+```
+
+### 4.4 CAN Ack Data Payload (8 bytes) [BP-ACK-CAN-DATA]
+
+```
+Byte 0:    flags (scope, priority=normal, no ttl)
+Byte 1:    cid[11..4]       — correlation ID from the original critical message
+Byte 2:    cid[3..0] (high nibble) | ack_status (low nibble)
+Bytes 3-7: reserved (0x00)
+```
+
+Ack status codes (4-bit, in low nibble of byte 2):
+
+| Code | JSON equivalent | Meaning |
+|------|----------------|---------|
+| 0x0 | `"ok"` | Processed successfully |
+| 0x1 | `"reject"` | Cannot comply |
+| 0x2 | `"error"` | Transient failure |
+| 0x3–0xF | reserved | — |
+
+The ack frame is compact: 3 bytes used, 5 bytes reserved. The reserved bytes are available for future extensions (e.g., reject reason codes) without a layout-breaking change.
+
+### 4.5 CAN-to-MQTT Bridge Translation [BP-ACK-CAN-BRIDGE]
+
+The CAN-MQTT bridge translates between the CAN cid (12-bit) and JSON cid (uint16):
+
+- **CAN → MQTT**: Bridge reads cid from bytes 1-2 of the CAN critical frame or ack frame, zero-extends to uint16, writes to JSON `cid` field. Bridge generates a `seq` from its own rolling counter for the JSON message.
+- **MQTT → CAN**: Bridge reads `cid` from JSON, truncates to 12 bits, writes to bytes 1-2 of the CAN frame. The JSON `seq` is discarded (not carried on CAN for critical messages).
+
+If the JSON `cid` exceeds 4095 (12-bit max), the bridge MUST reject the message and publish a fault event. Publishers that may bridge to CAN SHOULD keep cid values within 0–4095.
+
+### 4.6 CAN-Only Deployment — Complete Flow [BP-ACK-CAN-ONLY]
+
+No MQTT. No bridge. Pure CAN bus. This is the authoritative flow — all other transports are translations of this.
+
+```
+1. panel-1 generates cid=42 (rolling counter), builds critical CAN frame:
+   CAN ID: ns_hash("ftl_arm") | type=0 (state) | src_hash("panel-1")
+   Data:   [flags: scope=auto, pri=critical] [cid=42] [enum_u8: 1 ("on")]
+
+2. panel-1 bus runtime records ack-pending:
+   {cid: 42, ns_hash: 0xA3F1, expected: [src_hash("relay-2")],
+    retry: 0, next_retry: now+50ms}
+
+3. CAN frame transmitted. CAN hardware acks electrically (meaningless
+   for our purposes — relay-2's transceiver saw the frame, but we
+   don't know if relay-2's firmware processed it).
+
+4. relay-2 firmware processes the frame, arms interlock, builds ack frame:
+   CAN ID: ns_hash("ftl_arm") | type=8 (ack) | src_hash("relay-2")
+   Data:   [flags: scope=auto, pri=normal] [cid=42] [status=0x0 (ok)]
+
+5. panel-1 receives ack frame. Matches cid=42, src_hash matches
+   expected acker. Ack-pending entry cleared. Done.
+
+--- Retry scenario ---
+
+3b. relay-2's main loop is blocked. Frame sits in CAN RX buffer.
+
+4b. 50ms passes. panel-1 retries — SAME cid=42, same frame content.
+    (CAN dedup does not apply — critical frames bypass seq-based dedup.)
+
+5b. relay-2's main loop unblocks, processes BOTH frames from RX buffer.
+    First frame: cid=42, not in processed-cid cache → process, ack, cache cid=42.
+    Second frame: cid=42, found in processed-cid cache → skip processing, re-ack.
+
+6b. panel-1 receives ack(s). First ack clears the pending entry.
+    Duplicate ack silently ignored. Done.
+```
+
+### 4.7 CAN Memory Budget for Critical Ack [BP-ACK-CAN-MEMORY]
+
+| Structure | Entries | Bytes per Entry | Total | Notes |
+|-----------|---------|----------------|-------|-------|
+| Ack-pending table (publisher) | 4 | 8 (cid + ns_hash + expected_mask + retry_state) | 32 bytes | 4 concurrent critical ops is generous for edge MCU |
+| Processed-cid cache (subscriber) | 16 | 4 (src_hash + cid + expiry_tick) | 64 bytes | 16 entries with 10-second expiry |
+
+**Total: 96 bytes** on a CAN-only node. Fits comfortably in CH32V003's 2 KB RAM. The 256-byte estimate in section 7.2 was for the general case including MQTT-capable nodes; CAN-only nodes need less because the data structures are hash-based (2-byte hashes) rather than string-based (32-char module IDs).
+
+---
+
+## 5. Transport-Specific Behavior [BP-ACK-TRANSPORT]
+
+### 5.1 In-Process (Python) [BP-ACK-INPROC]
+
+In-process transport delivers synchronously — all subscriber callbacks execute before `publish()` returns. For designated ackers, ack is implicit in the callback return value. No explicit ack message is published on the in-process bus.
+
+1. Bus runtime delivers to all subscriber callbacks synchronously (existing behavior)
+2. For callbacks registered by designated ackers (`ack_for: true`), the return value is captured as the ack status
+3. Non-designated subscriber callbacks are called normally; return value is ignored for ack purposes
+4. If a designated acker's callback returned `"error"`, retry up to 3 times with the same backoff schedule
+5. Fault event published to `_bus/fault` subscribers if still unresolved
+
+**Python bus library API extension:**
+
+```python
+# Publisher side
+result = bus.publish(msg, priority="critical",
+                     ack_from=["relay-2"])  # or from namespace config
+# result.acked → True if all designated ackers responded ok
+# result.rejected → list of (module_id, reason) for rejects
+# result.timed_out → list of module_ids that didn't respond
+# result.fault → the fault event dict if published, else None
+
+# Designated acker subscriber — return value becomes ack status
+def on_ftl_arm(msg):
+    # Process the message...
+    if success:
+        return "ok"          # or return nothing (None → "ok")
+    elif cannot_comply:
+        return ("reject", "actuator_fault")
+    else:
+        raise RuntimeError("transient failure")  # → "error", triggers retry
+
+# Non-designated subscriber — return value doesn't matter
+def on_ftl_arm_indicator(msg):
+    update_led(msg['val'])   # best-effort, no ack participation
+```
+
+### 5.2 MQTT [BP-ACK-MQTT]
+
+MQTT QoS 1 with retain already provides at-least-once delivery and late-subscriber catch-up. The ack protocol exists primarily for CAN, where hardware-level ack is electrically meaningful but application-meaningless.
+
+When a CAN critical message bridges to MQTT:
+
+- The **CAN-MQTT bridge** handles the CAN-side ack protocol (it is a CAN bus participant). The bridge acks on behalf of MQTT-reachable subscribers if configured to do so, or passes through transparently
+- MQTT subscribers receive the message via normal QoS 1 delivery. They are NOT ack participants unless they are also CAN-reachable (in which case they'd ack on CAN, not MQTT)
+- The fault/retry protocol operates on the CAN side. MQTT delivery is a separate concern handled by the MQTT broker's QoS guarantees
+
+For pure-MQTT critical messages (no CAN involved): the ack protocol MAY be implemented using JSON ack messages on the same topic, but this is optional — MQTT's broker-level QoS already provides delivery guarantees that CAN lacks. If implemented, the JSON ack uses the same `cid` and `val` fields as described in section 2.9.
+
+### 5.3 CAN [BP-ACK-CAN-TRANSPORT]
+
+CAN is the primary transport for critical ack. The protocol is designed CAN-first (section 4.1). Key CAN-specific behaviors:
+
+- Critical CAN frames use `cid` in place of `seq` (section 4.2). This is a layout change from normal frames, signaled by `pri: critical` in the flags byte
+- Ack frames use CAN type code 8 (section 4.3). CAN's broadcast nature means the ack frame is visible to all bus participants, including bridges
+- CAN-only deployments (no MQTT, no bridge) are fully supported. See section 4.6 for the complete CAN-only flow
+- The `(src, seq)` dedup filter does NOT apply to critical frames. Dedup is by `(src_hash, cid)` in the processed-cid cache
+
+**Bus load**: A critical message to a namespace with N ack-eligible subscribers generates N ack frames (each 8 bytes). For safety interlocks, N is typically 1–3. At 250 kbps, an 8-byte CAN frame takes ~500μs. Three ack frames = ~1.5ms of bus time — negligible. If a namespace has more than 5 ack-eligible subscribers on CAN, the config validator (`composeio push`) SHOULD warn about potential bus load during ack bursts.
+
+### 5.4 I2C [BP-ACK-I2C]
+
+I2C ack is handled by the mainboard bus runtime. The mainboard is the I2C master and controls delivery timing, so the ack path is simpler than CAN:
+
+1. Mainboard delivers critical message to daughterboard via CMD registers
+2. Mainboard polls daughterboard STATUS register for ack:
+   - Bit 3 (new): `ack_ready` — set when the daughterboard has processed a critical message
+3. Mainboard reads ack status from new registers:
+
+| Register | Address | R/W | Size | Description |
+|----------|---------|-----|------|-------------|
+| ACK_STATUS | 0x30 | R | 1 | 0x00 = ok, 0x01 = reject, 0x02 = error, 0xFF = no pending ack |
+| ACK_CID | 0x31 | R | 2 | The cid of the acked message (big-endian uint16) |
+
+The mainboard only polls ACK_STATUS on daughterboards that are designated ackers for the published namespace (per config). Non-designated daughterboards receive the message via normal CMD delivery but are not polled for ack.
+
+If the critical message originated on CAN and bridges to I2C (the mainboard is a CAN-I2C bridge), the mainboard polls the designated I2C daughterboard, then publishes the CAN ack frame on behalf of that daughterboard.
+
+---
+
+## 6. Configuration [BP-ACK-CONFIG]
+
+Configuration is the single source of truth for the ack protocol. Both publisher and subscriber configs must agree, and `composeio push` validates consistency at push time.
+
+### 6.1 Publisher Config [BP-ACK-CONFIG-PUB]
+
+```yaml
+# panel-1 config
+namespaces:
+  - ns: ftl_arm
+    role: publish
+    priority: critical
+    ack_required_from: ["relay-2"]
+  - ns: e_stop
+    role: publish
+    priority: critical
+    ack_required_from: ["relay-1", "relay-2", "motor-1"]
+  - ns: office_lights
+    role: publish
+    # priority defaults to normal — no ack protocol
+```
+
+When `priority: critical` is set at the namespace level, the bus runtime automatically sets `pri: critical` on all published messages for that namespace. The publisher does not need to set it per-message.
+
+Per-message override is still supported — a publisher can set `pri: critical` on any individual message regardless of namespace config. When publishing ad-hoc critical messages, `ack_from` must be passed as a parameter to the publish call (see section 5.1 Python API).
+
+### 6.2 Subscriber Config [BP-ACK-CONFIG-SUB]
+
+```yaml
+# relay-2 config (designated acker)
+namespaces:
+  - ns: ftl_arm
+    role: subscribe
+    ack_for: true          # "I participate in ack protocol for this namespace"
+
+# indicator-3 config (non-designated)
+namespaces:
+  - ns: ftl_arm
+    role: subscribe
+    # no ack_for — receives messages normally, no ack obligation
+```
+
+### 6.3 Config Validation [BP-ACK-CONFIG-VALIDATE]
+
+`composeio push` validates ack consistency across all module configs:
+
+| Check | Severity | Description |
+|-------|----------|-------------|
+| `ack_required_from` lists a module with no `ack_for: true` for that namespace | Error | Reject push. Publisher expects ack from a module that isn't configured to provide it |
+| `ack_required_from` is empty on a `priority: critical` namespace | Error | Reject push. Critical without designated ackers is meaningless |
+| `ack_required_from` lists a module not seen in discovery | Warning | Module may be offline or not yet deployed. Push succeeds, but runtime will fault if module is absent at publish time |
+| `ack_for: true` on a module not listed in any publisher's `ack_required_from` | Warning | Module will ack but nobody is listening. Harmless but likely a config mistake |
+
+### 6.4 Ack Timeout Configuration [BP-ACK-CONFIG-TIMEOUT]
+
+The retry schedule (50ms / 200ms / 1s) is the default. It MAY be overridden per-namespace:
+
+```yaml
+namespaces:
+  - ns: e_stop
+    role: publish
+    priority: critical
+    ack_required_from: ["relay-1", "relay-2", "motor-1"]
+    ack_timeout:
+      retries: 3                    # default: 3
+      backoff: [50, 200, 1000]      # default: [50, 200, 1000] — milliseconds
+```
+
+---
+
+## 7. Design Constraints [BP-ACK-CONSTRAINTS]
+
+### 7.1 What This Is Not [BP-ACK-NOT]
+
+This is NOT:
+
+- **TCP over CAN**: The ack protocol applies only to `pri: critical` messages. The vast majority of bus traffic (state updates, events, heartbeats, discovery) remains fire-and-forget. If you're setting `pri: critical` on more than 1% of your messages, you're misusing the mechanism.
+
+- **Guaranteed ordering**: Ack confirms processing, not order. If two critical messages are sent in sequence, both will be acked independently. The second may be processed before the first's ack arrives. If ordering matters, serialize at the application level (wait for ack before sending the next).
+
+- **A replacement for idempotent state design**: State messages are still the primary mechanism. A namespace with `state_engine: binary` that broadcasts `"on"` every 30 seconds doesn't need critical ack — a missed update is corrected 30 seconds later. Reserve critical for state TRANSITIONS where a 30-second gap is unacceptable.
+
+- **A reliability layer for lossy transports**: If your CAN bus is dropping 10% of frames due to electrical noise, fix the bus. Ack handles the rare case of software-level delivery failure (blocked main loop, full receive buffer, race condition), not systematic transport failure.
+
+### 7.2 Memory Budget [BP-ACK-MEMORY]
+
+The ack protocol adds memory requirements to bus participants:
+
+| Data Structure | Size | On Device |
+|---------------|------|-----------|
+| Ack-pending table (publisher) | 8 entries × 16 bytes = 128 bytes | Any module that publishes critical |
+| Processed-cid cache (subscriber) | 32 entries × 4 bytes = 128 bytes | Any module that subscribes to critical namespaces |
+
+Total: **256 bytes** worst case. This fits within CH32V003's 2 KB RAM budget alongside the existing bus runtime.
+
+Modules that never publish or subscribe to critical namespaces need not allocate these structures.
+
+---
+
+## 8. Compliance Additions [BP-ACK-COMPLIANCE]
+
+**Append to section 11 of 01-composeio-bus-protocol.smd:**
+
+A compliant bus implementation supporting critical ack MUST:
+
+12. **[BP-C12]** Implement the `ack` message type (type code 8) per section 2.9
+13. **[BP-C13]** Implement the retry protocol (50ms / 200ms / 1s) for `pri: critical` messages
+14. **[BP-C14]** Publish fault events to `_bus/fault` on ack timeout or reject
+15. **[BP-C15]** Process critical messages idempotently (same `cid` → same result, no re-execution)
+16. **[BP-C16]** Maintain a processed-cid cache of at least 32 entries with 10-second expiry
+
+A minimal implementation (CH32V003, 2 KB RAM) MAY omit critical ack support entirely if the module never publishes or subscribes to critical-priority namespaces. The module MUST still forward critical messages on transport bridges without modification.
+
+---
+
+## 9. Wire Example: Safety Interlock (CAN-Only) [BP-ACK-EXAMPLE]
+
+Complete flow for a safety interlock arm command on a CAN-only bus. Three subscribers, one designated acker.
+
+**Config (established at `composeio push` time):**
+
+```yaml
+# panel-1 config (publisher)
+namespaces:
+  - ns: ftl_arm
+    role: publish
+    priority: critical
+    ack_required_from: ["relay-2"]    # only the actuator must confirm
+
+# relay-2 config (designated acker)
+namespaces:
+  - ns: ftl_arm
+    role: subscribe
+    ack_for: true
+
+# indicator-3 config (non-designated subscriber)
+namespaces:
+  - ns: ftl_arm
+    role: subscribe
+    # no ack_for — receives message, no ack obligation
+```
+
+**Runtime flow:**
+
+```
+1. panel-1 generates cid=42, publishes critical CAN frame:
+   CAN ID: ns_hash("ftl_arm") | type=0 (state) | src_hash("panel-1")
+   Data:   [flags: pri=critical] [cid=42] [enum_u8: 1 ("on")]
+
+2. panel-1 bus runtime records ack-pending:
+   {cid: 42, ns_hash: 0xA3F1, expected: [src_hash("relay-2")],
+    retry: 0, next_retry: now+50ms}
+   Note: indicator-3 is NOT in the expected set.
+
+3. CAN frame transmitted. All three nodes receive it electrically.
+
+4. relay-2 receives, arms the interlock relay, publishes ack CAN frame:
+   CAN ID: ns_hash("ftl_arm") | type=8 (ack) | src_hash("relay-2")
+   Data:   [flags: pri=normal] [cid=42] [status=0x0 (ok)]
+
+5. indicator-3's main loop is busy updating an LED animation.
+   CAN hardware acks electrically, but firmware hasn't processed it yet.
+   This does NOT matter — indicator-3 is not a designated acker.
+
+6. panel-1 receives relay-2's ack. cid=42 matches, src_hash matches
+   expected acker. All designated ackers resolved.
+   Ack-pending entry cleared. No fault. No retry.
+
+7. indicator-3 eventually processes the frame, updates its LED.
+   If it missed the message entirely, it catches up on the next
+   periodic state broadcast (≤30 seconds). No fault raised.
+
+   Total latency: <10ms (single CAN round-trip).
+   The interlock is confirmed armed. The indicator LED is best-effort.
+```
+
+**Failure scenario — relay-2 unresponsive:**
+
+```
+1-3. Same as above.
+
+4b. relay-2's main loop is blocked. No ack within 50ms.
+
+5b. panel-1 retries: same CAN frame, same cid=42.
+
+6b. relay-2 still blocked. No ack within 200ms.
+
+7b. panel-1 retries again. Same frame, same cid=42.
+
+8b. relay-2 still blocked. No ack within 1000ms.
+
+9b. panel-1 exhausts retries. Publishes fault event:
+    CAN frame to _bus/fault:
+    {"fault":"ack_timeout","target_ns":"ftl_arm","unacked":["relay-2"],
+     "retries":3,"elapsed_ms":1250}
+
+    The operator/supervisor now knows: the FTL arm command was sent
+    but relay-2 never confirmed. This is a real safety concern —
+    the interlock may not be armed.
+```
+
+---
+
+## 10. Migration [BP-ACK-MIGRATION]
+
+### 10.1 Backward Compatibility [BP-ACK-COMPAT]
+
+Modules running firmware that predates this amendment will:
+
+- **Ignore** the `pri` field if present (it's optional per section 1.2)
+- **Ignore** `type: ack` messages (unknown type, silently dropped per existing protocol behavior)
+- **Not ack** critical messages (they don't know the protocol)
+
+This means: a publisher sending `pri: critical` to a namespace where some subscribers are pre-amendment will receive acks only from updated subscribers. Pre-amendment subscribers will appear in the `unacked` list of fault events.
+
+**Recommendation**: When deploying critical ack, update subscribers first, then publishers. A publisher that enables critical on a namespace before its subscribers support ack will generate false fault events.
+
+### 10.2 Discovery Extension [BP-ACK-DISCOVERY]
+
+Modules supporting this amendment SHOULD include `critical_ack` in their discovery capabilities:
+
+```json
+{
+  "capabilities": ["button", "led", "state_engine", "critical_ack"],
+  "namespaces": {
+    "publish": ["ftl_arm"],
+    "subscribe": ["ftl_arm", "_bus/time"]
+  }
+}
+```
+
+The `critical_ack` capability flag tells the bus master and `composeio push` validator that this module's firmware supports the ack protocol. Config validation uses this: if a publisher's `ack_required_from` lists a module that doesn't advertise `critical_ack`, the validator warns that the module may not respond to critical messages (pre-amendment firmware).
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-28
+**Status**: Draft — amendment pending review, not yet merged into parent spec
+**Authored-By**: Claude Opus 4.6, in collaboration with David Burnett

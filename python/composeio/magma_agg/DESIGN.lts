@@ -1,0 +1,109 @@
+---
+scope: "The composeio-side count / group-by aggregation layer over MAGMA's find — realizes [DEC-MAGMA-AGGREGATION-AND-SCALING] part 1"
+audience: [composeio-architect, factlattice-maintainer, David]
+boundary: "Specifies the aggregation FOLD only. The graph engine (parse/find/traverse/freshness) is factlattice_engine and is out of scope + read-only here."
+not-this: "Not a second store, not SQLite, not an LLM summarizer, not a new graph query op — a pure deterministic fold over the node set find() already returns."
+depends-on: [factlattice_engine.tools.MagmaTools.find, factlattice_engine.tools.normalize_date, composeio.decision_ops.magma_refresh]
+confidentiality: internal-only
+created: 2026-07-23
+---
+# MAGMA Aggregation Layer — count / group-by over `find` [SPEC:MAGG-AGGREGATION]
+
+> The primitive MAGMA lacks: a **scalar / histogram** answer, not a node/edge/subgraph. `docs/magma-primer.md`
+> §8 records the gap ("no count()/sum()/group by") and David's call — "add a small count/group-by layer over
+> MAGMA's `find` … I know it'll be useful." This is that layer, built COMPOSEIO-SIDE over the read-only
+> `factlattice_engine` (imports + calls it exactly as `decision_ops.magma_refresh` does; never modifies it).
+> Deterministic, no LLM: `count(corpus, group_by=<attr>, filter=…)` -> `{attr_value: count}`. It is the exact
+> primitive the decision-reconciliation and defect-tracking rollups need.
+
+---
+
+### [MAGG-CONTRACT] The public surface: count + group_by
+- realizes: [DEC-MAGMA-AGGREGATION-AND-SCALING]
+- lifecycle-position: built
+- decided-in-session: 2026-07-23
+- importance: high
+- api: `MagmaAggregator(tools=None)` with `.count(corpus, group_by=None, **filters)` and `.group_by(attr, corpus, canonical=True, raw=False, date_granularity='month', **filters)`; module-level `count()` / `group_by()` convenience wrappers build a default composeio store once and reuse it.
+- returns: a deterministic dict — `{success, corpus, attr, total, distinct, groups:{value:count}, buckets:[{value,count}] sorted (-count, value), filters, normalize}`. `count` without `group_by` returns just `{success, corpus, total, filters}`.
+- group-by attributes: `lifecycle-position`, `domain`, `prefix` (= node `type_prefix`), `function`, `status`, `decided-in-session` (date-bucketed), plus any top-level node field or `properties` key by name, via friendly aliases (`prefix`->`type_prefix`, `lifecycle`->`lifecycle-position`, `session`/`date`->`decided-in-session`, `doctype`->`document_tag`).
+- filters: forwarded verbatim to `find` — `domain / function / service / prefix / status / text / since / until / date_property / area`. Aggregation therefore inherits MAGMA's whole predicate surface for free.
+- rationale: the fold is ~10 lines; the entire value is (a) doing it OVER `find` so every filter + the freshness gate come for free, and (b) the two hardening properties below (completeness + canonicalization) that a naive `find`-then-count-in-code gets WRONG.
+
+### [MAGG-COMPLETE] Completeness — drain the token-budget cursor
+- part-of: [MAGG-CONTRACT]
+- lifecycle-position: built
+- decided-in-session: 2026-07-23
+- importance: high
+- problem: `find` applies a TOKEN BUDGET and TRUNCATES its returned node list (context-hygiene for an LLM consumer). A single `find` call over the console decisions corpus (~89 nodes, ~275 tokens each) returns a truncated slice, not the full set. A count over that slice LIES.
+- solution: `_find_all` drives `find` in a cursor loop (`offset := cursor` while `truncated`), accumulating the complete match set regardless of budget. It reuses the engine predicate + freshness logic exactly; it never bypasses the gate, and it guards against a stuck cursor.
+- verification: selftest tier A builds tools with `default_token_budget=1` (per-node truncation) and asserts `count(total) == 6` — the drain must reassemble the full set from single-node pages.
+
+### [MAGG-CANONICAL] Canonicalization — collapse messy status values
+- part-of: [MAGG-CONTRACT]
+- lifecycle-position: built
+- decided-in-session: 2026-07-23
+- importance: high
+- problem: the real corpus stores `lifecycle-position` values with trailing prose — `committed   # proven across c9/c10/c11` is a DISTINCT raw string from `committed`. Measured on the live console corpus: 33 distinct RAW lifecycle values vs 8 meaningful ones. A naive group-by yields ~30 singleton buckets, not the histogram a human means.
+- solution: a per-attribute value normalizer. `lifecycle-position` / `status` collapse to their LEADING STATUS TOKEN (everything before the first whitespace / `#` / `(`); `decided-in-session` buckets to `day`/`month`/`year` via the engine's OWN `normalize_date` (so bucketing matches `find`'s since/until semantics). `raw=True` / `canonical=False` shows the un-collapsed values.
+- evidence: `count decisions group-by lifecycle-position` on the live corpus -> committed 51 / decided 12 / built 11 / raised 8 / superseded 3 / spec-authored 2 / (none) 1 / parked 1 — the reconciliation histogram. Canonical distinct 8 vs raw distinct 33.
+
+### [MAGG-FRESH-HONEST] Freshness + failure pass-through
+- part-of: [MAGG-CONTRACT]
+- lifecycle-position: built
+- decided-in-session: 2026-07-23
+- importance: high
+- behavior: a `find` failure (corpus-not-found, or a STALE partition) is propagated VERBATIM — the aggregator returns the engine's `{success:False, stale:True, …}` marker, never a silently-wrong count. Aggregation is exactly as freshness-honest as `find`.
+- invariant: [INV-MAGMA-FRESH] — never serve a count computed off stale data.
+- verification: selftest tier A drives an `_AlwaysStale` freshness provider and asserts the count call returns `success:False, stale:True`.
+
+### [MAGG-TIER1] Tier 1 — the analytical contract (numeric / distinct / cross-tab / top_k)
+- part-of: [MAGG-CONTRACT]
+- realizes: [DEC-MAGMA-AGGREGATION-AND-SCALING]
+- lifecycle-position: built
+- decided-in-session: 2026-07-23
+- importance: high
+- scope: extends the count/group_by kernel with the finalized set the corpus needs for decision reconciliation + defect rollups + bootstrap state. Every Tier-1 op is a pure deterministic fold over the SAME complete, freshness-gated node set `_find_all` returns, so all inherit [MAGG-COMPLETE] + [MAGG-FRESH-HONEST] for free.
+- numeric: `numeric(attr, op='sum'|'avg'|'min'|'max', group_by=None, **filters)` + thin `sum/avg/min/max(attr, ...)` wrappers. Folds a NUMERIC node attr (tokens, commits, dur_s). HONESTY RULE — a non-numeric / absent / empty value is SKIPPED and reported as `skipped`, NEVER coerced to 0 (a silent-zero sum lies exactly the way a truncated count lies). Global return `{success, corpus, attr, op, value, count, skipped, total, sum, avg, min, max, filters}` (all four stats always present; `value` = requested op). `coerce_number` parses int/float through, a string directly then by leading token (`"7 # measured"`->7.0), a bool -> None (a flag is not a metric).
+- numeric-grouped: `numeric(attr, op, group_by=<attr2>)` — each bucket carries its OWN `{value, count, sum, avg, min, max}`; buckets sorted by the requested op DESC (None last), value ASC. `groups` maps bucket -> the requested-op value. This is what powers "sum tokens per session", "avg dur per root-cause".
+- distinct: `distinct(attr, **filters)` — cardinality of an attr's (canonicalized unless `raw=True`) distinct values. `(none)` is NOT counted; `counted` = nodes carrying a value. Return `{success, corpus, attr, distinct, counted, total, values:[sorted], filters}`.
+- cross-tab: `cross_tab(attr1, attr2, **filters)` — 2-D pivot (e.g. decisions lifecycle x domain). Deterministic `matrix` = nested dict keyed by SORTED row/col value (dense: zero cells present); `rows`/`cols` sorted axis labels; `row_totals`/`col_totals`; flat `buckets:[{attr1,attr2,count}]` sorted (-count, attr1, attr2) with only populated cells.
+- top_k: `top_k(attr, k, by='count'|<numeric_attr>, agg='sum')` — bounded slice of the already-sorted group-by (`by='count'`) or numeric-grouped (`by=<attr>`) result. Return `{success, corpus, attr, by, agg, k, total, distinct, buckets, filters}`.
+- verification: selftest tier A2 + `tests/test_magma_agg.py` — sum(tokens)==400 over 5 contributing with 1 skipped; grouped sum by domain {D1:350,D2:50}; cross-tab matrix `{DEC:{D1:3,D2:2},FIX:{D1:1,D2:0}}` exact; top_k determinism; and the same drain/stale proofs applied to each op.
+
+### [MAGG-TIER2] Tier 2 — graph-native aggregates (degree / edge-type / orphans)
+- part-of: [MAGG-CONTRACT]
+- realizes: [DEC-MAGMA-AGGREGATION-AND-SCALING]
+- lifecycle-position: built
+- decided-in-session: 2026-07-23
+- importance: high
+- scope: the aggregates that make this a GRAPH tool, not SQL-over-nodes — they need EDGE/adjacency data `find()` does not carry. `degree(node)`, `top_by_degree(k, direction='both'|'in'|'out')`, `count_by_edge_type()`, `orphans(limit=None)`.
+- adjacency-build: `_adjacency` derives the node universe + freshness verdict from `_find_all` (so STALE/not-found propagate VERBATIM exactly as Tier 1), then reads edges from the SAME fresh partitions via the PUBLIC `Partition.iter_edges()` — which returns EVERY edge with no token-budget truncation, so degree/edge-type counts are COMPLETE. Edge resolution follows the engine's own `resolved_edge_count` rule: skip `dangling` edges and any with an `unresolved_target` flag.
+- degree: in / out / total resolved-edge degree of one node — computed from the complete adjacency (consistent with `top_by_degree`, not from `node()`'s budget-truncated dangling-inclusive edge list). `orphans` = found nodes with in_degree 0 (an un-referenced decision/spec — corpus health as a query). `count_by_edge_type` is a whole-fresh-corpus histogram (an edge type is a corpus-level fact, not filtered to a node subset).
+- change: "Tier 2 reads adjacency composeio-side via Partition.iter_edges() rather than iterating node() per found node."
+- context_for_change:
+    prior_state: "The task's suggested composeio-side path was node()-per-found-node. But node()'s output groups edges by LAYER as {forward:[ids],reverse:[ids]} with NO edge type, is token-budget TRUNCATED, and includes dangling edges — so it cannot answer count_by_edge_type at all and gives a budget-capped, dangling-inflated degree."
+    reasoning: "Partition.iter_edges() is a PUBLIC read method; gating freshness through the public freshness_provider (the same gate find() uses) keeps the read-only boundary intact while giving COMPLETE, TYPED, dangling-aware edges in one O(edges) scan per corpus instead of O(N) node() calls."
+    rejected_alternative: "node()-per-node. Rejected: no edge type in the output, budget-truncated (violates COMPLETENESS), counts dangling edges — three separate wrong answers."
+    invalidating_assumption: "That Partition.iter_edges() + freshness_provider stay public read surface. If the engine hides them, fall back to a node()-per-node degree (accepting no edge-type histogram) UNTIL the engine-assist lands."
+    implication: "ENGINE-ASSIST FOLLOW-ON (flagged, NOT built here): the efficient whole-corpus form is an engine-native adjacency index / a `magma_edges` read tool exposing (type, in/out degree) directly. That is a factlattice change and a dependency on the DEFERRED adjacency-traverse fix — do NOT modify factlattice to get it. This composeio-side scan is the correct-now implementation and the reference to port."
+- verification: selftest tier A2 + `tests/test_magma_agg.py` — degree(N1)=3 (in1/out2); top_by_degree tie-break by id; edge-type histogram excludes the dangling + unresolved edges (resolved 4 of 6 total); orphans=[N4,N6,N5]; plus a live spot-check (CXC-DECISIONS is the out-degree-93 container root and the sole in-degree-0 orphan).
+
+### [MAGG-PLACEMENT] Why composeio-side, and the engine-side recommendation
+- relates-to: [MAGG-CONTRACT], [DEC-MAGMA-AGGREGATION-AND-SCALING], [DEC-DECISION-MCP-MAGMA-REFRESH]
+- lifecycle-position: built
+- decided-in-session: 2026-07-23
+- importance: medium
+- placement: built in `python/composeio/magma_agg/` (sibling to `decision_ops`), importing `factlattice_engine` read-only via the `FACTLATTICE_ENGINE_ROOT` path shim. `/Users/davidleeburnett/factlattice` is untouched.
+- change: "Added a count/group-by aggregation fold over MAGMA find, composeio-side, rather than in factlattice_engine."
+- context_for_change:
+    prior_state: "MAGMA returned only nodes/edges/subgraphs; meta-questions (count decisions by lifecycle-position) were done by find-then-count-in-the-caller, repeatedly."
+    reasoning: "The layer is a pure fold over find with zero new graph state, so it lives cleanly composeio-side and needs no engine change to be useful NOW; the factlattice repo is read-only to this build and an engine change is David's cross-repo push."
+    rejected_alternative: "Put count/group-by directly in factlattice_engine.tools as a 5th MCP tool. Rejected FOR NOW only — it is the right long-term home (see implication), but building it there would require modifying the read-only engine repo without David's push."
+    counter_argument: "Aggregation is a general MAGMA capability every corpus wants, not a composeio-specific one — so it belongs IN the engine, and building it outside forks the query surface."
+    counter_response: "True, and flagged as the recommendation. Composeio-side is the reference implementation that ports verbatim when the engine adopts it; the load-bearing parts (cursor-drain, canonicalization, freshness pass-through) are engine-agnostic and move with the code."
+    invalidating_assumption: "That the factlattice engine stays read-only to composeio builds. If David greenlights an engine-side push, MOVE this fold into factlattice_engine.tools as magma_count/magma_group_by (+ MCP wiring) and leave a thin composeio re-export — do not maintain two implementations."
+    implication: "Next step is a magma_count / magma_group_by MCP adapter over MagmaAggregator so an Intelligence drives aggregation identically to a human (the credo). Recommend the eventual home is factlattice_engine (David's push)."
+
+---
+
+*MAGG-AGGREGATION v2 — 2026-07-23. Realizes [DEC-MAGMA-AGGREGATION-AND-SCALING] part 1. v2 adds the finalized Tier-1 analytical contract ([MAGG-TIER1]: numeric sum/avg/min/max, distinct, cross-tab, top_k) + Tier-2 graph-native aggregates ([MAGG-TIER2]: degree, top_by_degree, count_by_edge_type, orphans) over the same complete + freshness-gated fold. Standalone design spec co-located with `python/composeio/magma_agg/`; not yet a registered MAGMA corpus.*

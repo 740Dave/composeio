@@ -1,0 +1,203 @@
+# ComposePlatform Launch Bar — the vertical ribbon ([SPEC:CXC-LAUNCHBAR]
+# [CXC-LB-RIBBON] [CXC-LB-ROSTER] [CXC-LB-ACTIVE]).
+#
+# A dark vertical ribbon: the Compose brand logo at top, then the 7 launch
+# TILES top->bottom (monochrome icon + label below).  A tile press publishes
+# `_app/<target>/open` ([CXC-LB-INTENT-BINDING]); the in-process app launcher
+# (compose_projects/intelligence/tools/app_launcher.py) consumes the pattern and spawns the
+# target.  Control-is-a-peer: an Intelligence "presses" a tile by publishing
+# the identical intent ([CXC-LB-CREDO]).
+#
+# No persistent "current app" highlight is drawn (David 2026-07-29: the previs
+# dark box was the PRESSED/held treatment, not an active-app indicator) — a tile
+# shows the near-black inset chip only while click-and-held.
+#
+# All 7 tiles launch a real app (D7 landed the two storage viewers, Document
+# Storage + Bus Storage, as navigation shells; [CXC-DOCNAV-APP]/[CXC-BUSNAV-APP]).
+# A disabled tile would render dimmed and never publish ([CXC-LB-INTENT-TABLE]
+# register-guard); none are disabled now.
+#
+# Tokens lifted from apps/compose_platform_launch_bar/mockup.svg: ribbon #1c1c28,
+# icon #e3e3e3 (in the assets), pressed chip #000000@~.95, label #ffffff.
+# Tier: console-only ([CXC-LB-TIER-CONSOLE]).
+#
+#   python3 -m composeio.render.engine.runtime \
+#       apps/compose_platform_launch_bar/launch_bar.compose.yaml
+
+app:
+  id: compose-launch-bar
+  # BUS-BOUND ([CXC-LB-RIBBON-BUS-BOUND]): the ribbon's whole job is to PUBLISH
+  # `_app/<target>/open` intents that the OUT-OF-PROCESS app_launcher consumes at
+  # global scope.  A tile publish auto-resolves to GLOBAL scope (no local
+  # subscriber), but the runtime only connects the global MQTT leg when the SCENE
+  # declares this transport — `runtime --transports` is INERT without it (see
+  # RenderApp._build_bus, which iterates comp.transports).  Missing this block was
+  # DEFECT-LAUNCH-BAR-BUTTONS-DON-T-*: every tile published into an in-process
+  # bus with no global leg, so no intent ever reached the launcher and NO button
+  # launched.  Broker matches the console + storage-viewer scenes.
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+design:
+  title: "Compose"
+  theme: dark
+  # GEOMETRY IS DERIVED, NOT AUTHORED (David 2026-08-05, the illegibility fix):
+  # every number below is materialized from the constants in
+  # python/composeio/render/widgets/launch_tile.py — RIBBON_W / RIBBON_H /
+  # LOGO_* / tile_y(i) / DEFAULT_TILE_W / DEFAULT_TILE_H.  `pixel_stack` is
+  # ABSOLUTE layout so the offsets must be literal here; test_launch_bar
+  # asserts this file still matches those constants, so a resize is
+  # "edit ICON_BOX / LABEL_FONT, re-materialize, test goes green" — never a
+  # hunt.  72x486 -> 96x932 came from 28px icons / 7.5pt labels -> 64px / 12pt.
+  width: 96
+  height: 932
+  window_key: compose-launch-bar
+  # [CXC-DVL-GEOMETRY] remember where David PUT the ribbon.  With this on, the
+  # shared geometry seam restores the last saved position on launch and, with
+  # nothing saved, opens 20px in from the top-left of the display's WORK AREA
+  # (below the macOS menu bar) instead of OS-centered.  Size is NOT restored
+  # for a fixed-size scene — the width/height above stay authoritative, so a
+  # future ribbon resize is never pinned by a stale saved record.
+  persist_geometry: true
+  # the ribbon bleeds edge-to-edge — zero the root's default 12px gutter/gap so
+  # the 96px pixel_stack fills the surface (no inset that would clip tiles).
+  padding: 0
+  gap: 0
+
+widgets:
+  - type: pixel_stack
+    id: ribbon
+    width: 96
+    height: 932
+    background: "#1c1c28"
+    children:
+      # -- the Compose brand logo ([CXC-LB-RIBBON]) --
+      # scales WITH the ribbon: 44px@x14,y12 on the 72px ribbon -> the same
+      # proportions on 96 (LOGO_BOX / LOGO_X / LOGO_Y in launch_tile.py).
+      - type: image
+        id: brand_logo
+        src: apps/compose_platform_launch_bar/artwork/compose_logo.png
+        fit: contain
+        x: 19
+        y: 16
+        width: 58
+        height: 58
+
+      # -- the seven launch tiles, top->bottom ([CXC-LB-ROSTER]) --
+      # 1 · Designer — the compose console host; its tile is the active-state
+      #     indicator (the launcher routes `designer` to a no-spawn focus).
+      - type: launch_tile
+        id: tile_designer
+        target: designer
+        label: Designer
+        icon: apps/compose_platform_launch_bar/artwork/compose_console.svg
+        enabled: true
+        x: 0
+        y: 96
+        width: 96
+        height: 118
+
+      # 2 · AI Harness — the slash-command / self-directed-/compact harness (a
+      #     DISTINCT app from the Designer console).  Launches the PTY /compact
+      #     proxy (compose_projects/intelligence/launcher/launcher.py) in a Terminal — FLAGGED,
+      #     its exact invocation is unresolved (see app_launcher TARGET_TABLE).
+      - type: launch_tile
+        id: tile_harness
+        target: harness
+        label: AI Harness
+        icon: apps/compose_platform_launch_bar/artwork/terminal.svg
+        enabled: true
+        x: 0
+        y: 214
+        width: 96
+        height: 118
+
+      # 3 · Composer — the Visual / UX Composer (python -m composeio.composer).
+      - type: launch_tile
+        id: tile_composer
+        target: composer
+        label: Composer
+        icon: apps/compose_platform_launch_bar/artwork/composer.svg
+        enabled: true
+        x: 0
+        y: 332
+        width: 96
+        height: 118
+
+      # 4 · Decisions — the Decisions viewer ([SPEC:CXC-DVL]); the ONE tile
+      #     riding an existing intent+launcher (LIVE).
+      - type: launch_tile
+        id: tile_decisions
+        target: graph
+        label: Graph Viewer
+        icon: apps/compose_platform_launch_bar/artwork/decision_viewer.svg
+        enabled: true
+        x: 0
+        y: 450
+        width: 96
+        height: 118
+
+      # -- DISK-SPACE ALERT ([DX-NARROW-WAIST] / [DX-STATE-ON-BUS]) ----------
+      # The two STORAGE tiles (Document Storage + Bus Storage) show a bound
+      # status off `skipper/storage/free_bytes` — an INTEGER number of free
+      # bytes a peer service publishes as a retained STATE (this bar only
+      # SUBSCRIBES it; the expr auto-subscribes it over the mqtt transport
+      # declared above).  The POLICY lives HERE, not in the widget: the launch
+      # tile just exposes a general `icon_tint` (bound colour) + `blink` (bound
+      # bool); ANY tile can use them.  Bands (decimal GB, retune the literals):
+      #     >= 5e9  normal (#e3e3e3, the asset colour)
+      #     < 5e9   orange  (#FF9500)
+      #     < 3e9   red     (#E03B3B, the platform alarm red)
+      #     < 2e9   red + blink @ 0.5 s
+      # ABSENT/UNSET reads 0.0 (an unstarted sensor must NOT false-alarm), so
+      # `<= 0` is treated as NORMAL, not critical — a genuine 0-free-bytes disk
+      # is indistinguishable from "not reporting" and that is the safe default.
+      # The on-chip DSL has no ||/&&; bands nest as ternaries + comparisons.
+      #
+      # 5 · Document Storage — navigation shell over doc:// ([CXC-DOCNAV-APP]).
+      - type: launch_tile
+        id: tile_docstore
+        target: docstore
+        label: Document Storage
+        icon: apps/compose_platform_launch_bar/artwork/document_viewer.svg
+        enabled: true
+        x: 0
+        y: 568
+        width: 96
+        height: 118
+        icon_tint:
+          expr: "ns('skipper/storage/free_bytes') <= 0 ? '#e3e3e3' : (ns('skipper/storage/free_bytes') < 3e9 ? '#E03B3B' : (ns('skipper/storage/free_bytes') < 5e9 ? '#FF9500' : '#e3e3e3'))"
+        blink:
+          expr: "ns('skipper/storage/free_bytes') <= 0 ? false : ns('skipper/storage/free_bytes') < 2e9"
+
+      # 6 · Bus Storage — navigation shell over bus:// ([CXC-BUSNAV-APP]).
+      #     Same disk-space alert as tile_docstore (see the block above).
+      - type: launch_tile
+        id: tile_busstore
+        target: busstore
+        label: Bus Storage
+        icon: apps/compose_platform_launch_bar/artwork/bus_storage.svg
+        enabled: true
+        x: 0
+        y: 686
+        width: 96
+        height: 118
+        icon_tint:
+          expr: "ns('skipper/storage/free_bytes') <= 0 ? '#e3e3e3' : (ns('skipper/storage/free_bytes') < 3e9 ? '#E03B3B' : (ns('skipper/storage/free_bytes') < 5e9 ? '#FF9500' : '#e3e3e3'))"
+        blink:
+          expr: "ns('skipper/storage/free_bytes') <= 0 ? false : ns('skipper/storage/free_bytes') < 2e9"
+
+      # 7 · ComposeBus — the ComposeBus / Headless Monitor
+      #     (python -m composeio.composer.monitor).
+      - type: launch_tile
+        id: tile_bus
+        target: bus
+        label: ComposeBus
+        icon: apps/compose_platform_launch_bar/artwork/bus_monitor.svg
+        enabled: true
+        x: 0
+        y: 804
+        width: 96
+        height: 118

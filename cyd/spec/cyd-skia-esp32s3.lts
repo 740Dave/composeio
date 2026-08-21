@@ -1,0 +1,364 @@
+---
+scope: "Skia's CPU rasteriser as a Canvas backend for ESP32-S3 (and ESP32-P4) targets with PSRAM and high-quality displays, producing pixel-identical output to the desktop Skia backend and eliminating geometric AA divergence entirely. Covers the two-backend selection rule, the memory layout, the Skia build configuration and the Xtensa toolchain risk, the display abstraction, the present() conversion, the PlatformIO/ESP-IDF build integration, and the six-phase plan."
+audience: "Firmware developers, render engine implementers, and builder agents."
+boundary: "IN: a Skia-based Canvas backend for ESP32-S3 class parts. OUT: replacing canvas_esp32.cpp for no-PSRAM ESP32 targets such as the CYD, which keeps its custom renderer; new widgets; bus integration."
+not-this: "Not a Flutter port. Not a modification to canvas_esp32.cpp — that backend survives unchanged and SS-C6 tests exactly that. Not a new Canvas contract: the same abstract interface, a second implementation behind it."
+depends-on: []
+elements: [CXC-CYD-SKIA-*]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-03-31
+converted-from: cyd/spec/cyd-skia-esp32s3.smd
+---
+# Skia Canvas Backend for ESP32-S3 [SPEC:CXC-CYD-SKIA-S3]
+
+> The custom `canvas_esp32.cpp` backend exists because the CYD's ESP32-D0WD has 520KB of SRAM, no PSRAM,
+> and 4MB of flash. Every one of its techniques — integer arithmetic, SDF anti-aliasing, band rendering
+> — is a concession to that budget, and each concession costs pixel fidelity against the desktop. An
+> ESP32-S3 with PSRAM has none of those constraints: a full framebuffer fits, and Skia's own CPU
+> rasteriser fits in flash. This spec takes the obvious consequence seriously — on that class of part,
+> run the SAME rasteriser as the desktop and the geometric divergence does not need to be minimised
+> because it does not exist. The result is one rendering engine and TWO classes of embedded target,
+> selected at build time behind an unchanged Canvas interface.
+
+---
+
+## 1. Rationale
+
+### [CXC-CYD-SKIA-RATIONALE] PSRAM is what makes the tradeoff unnecessary rather than merely cheaper
+
+- premise: `canvas_esp32.cpp` was designed for the ESP32-D0WD (CYD) — 520KB SRAM, no PSRAM, 4MB flash.
+  It uses integer arithmetic, SDF-based AA and band rendering to fit those constraints.
+- cost: those tradeoffs produce visible pixel-level divergence from the desktop Skia backend —
+  staircased corners, different alpha blending, and coarser anti-aliasing.
+
+| Resource | ESP32 (CYD) | ESP32-S3 | ESP32-P4 |
+|----------|-------------|----------|----------|
+| SRAM | 520KB | 512KB | 768KB |
+| PSRAM | None | 2-8MB (QSPI/OPI) | 2-32MB (OPI) |
+| Flash | 4MB | 4-16MB | 4-16MB |
+| CPU | Dual 240MHz | Dual 240MHz + vector instructions | Single 400MHz RISC-V + LP core |
+| Display interface | SPI only | SPI, I2C, parallel 8/16-bit, LCD-CAM | MIPI-DSI, parallel RGB888, LCD-CAM |
+
+- arithmetic: with 2-8MB PSRAM a full 240x320 RGB8888 framebuffer (307KB), or even 480x320 (614KB),
+  fits comfortably, and the Skia CPU rasteriser binary (1-2MB) fits in flash.
+- consequence: the Skia approach becomes viable and eliminates ALL geometric rendering divergence,
+  rather than reducing it.
+- larger-displays: for 800x480 and above the ESP32-P4 is the stronger target — its MIPI-DSI interface
+  drives high-resolution IPS/OLED panels directly without SPI bandwidth limits, 32MB PSRAM accommodates
+  an 800x480 RGBA8888 framebuffer (1.5MB) plus Skia internals and double buffering, and the 400MHz
+  RISC-V core provides roughly 1.7x the single-thread throughput of the ESP32-S3.
+- portability: the SAME `SkiaEmbeddedCanvas` backend targets both parts; only the display driver and the
+  PlatformIO board configuration differ.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+---
+
+## 2. Architecture
+
+### [CXC-CYD-SKIA-ARCH-SELECT] Two backends coexist and are selected at compile time
+
+- definition: two C++ Canvas backends live in the firmware source and are chosen by build flag, not at
+  runtime.
+
+| Backend | Target | File | Selection |
+|---------|--------|------|-----------|
+| `ESP32Canvas` | ESP32 (no PSRAM) | `canvas_esp32.cpp` | `#if !CONFIG_SPIRAM` or build flag |
+| `SkiaEmbeddedCanvas` | ESP32-S3 (PSRAM) | `canvas_skia_embedded.cpp` | `#if CONFIG_SPIRAM` or build flag |
+
+- contract: both implement the SAME `Canvas` abstract interface from `canvas.h`.
+- consequence: widget code, the main loop and touch dispatch are ALL unchanged. Only the rendering
+  backend differs, which is what keeps this spec from touching anything above the canvas.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-ARCH-PIPELINE] The rendering pipeline from widget call to panel
+
+- definition: `Widget.draw(canvas, rect)` issues Canvas drawing commands (`fill_rect`, `fill_arc`,
+  `draw_text` and the rest); `SkiaEmbeddedCanvas` translates each to a Skia API call; Skia's CPU
+  rasteriser renders into an `SkBitmap` (RGB8888 in PSRAM); and `present()` converts RGB8888 to RGB565
+  and DMA-transfers it to the display.
+- rule: the translation layer is the ONLY new code in the path. Rasterisation is Skia's, and the
+  transfer is the display driver's.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-ARCH-MEMORY] The PSRAM budget, and the band option for larger panels
+
+- definition: the buffers this backend needs and where each one lives.
+
+| Buffer | Size (240x320) | Size (480x320) | Location |
+|--------|---------------|-----------------|----------|
+| Skia SkBitmap (RGBA8888) | 307KB | 614KB | PSRAM |
+| Display transfer buffer (RGB565) | 150KB or band | 300KB or band | PSRAM or SRAM |
+| Skia internal allocator | ~200-500KB | ~200-500KB | PSRAM |
+| Widget tree and app logic | ~10-50KB | ~10-50KB | SRAM |
+
+- total: roughly 700KB to 1MB of PSRAM for 240x320 — well within the 2MB minimum.
+- band-option: for 480x320 or 320x480, band rendering can be used on the SKIA side too — render to a
+  Skia surface sized to the band, convert, DMA, advance. This caps PSRAM usage at
+  `band_height * width * 4` bytes per band.
+- consequence: band rendering survives as an OPTION on this tier rather than a requirement, which is the
+  precise difference between the two backends' relationship to memory.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+---
+
+## 3. Skia integration
+
+### [CXC-CYD-SKIA-BUILD-CONFIG] The Skia GN configuration, and what each flag buys
+
+- definition: Skia supports embedded targets through its GN build system; this is the required flag set.
+
+| Flag | Value | Rationale |
+|------|-------|-----------|
+| `skia_use_gl` | false | No GPU — CPU rasteriser only |
+| `skia_use_vulkan` | false | No GPU |
+| `skia_enable_gpu` | false | Saves ~500KB |
+| `skia_use_freetype` | true | Font rendering — use the bitmap atlas instead if too large |
+| `skia_use_harfbuzz` | false | No complex text shaping needed |
+| `skia_use_icu` | false | No internationalisation |
+| `skia_use_libjpeg_turbo_decode` | false | PNG alone is sufficient |
+| `skia_use_libpng_decode` | true | PNG asset loading |
+| `skia_use_zlib` | true | Required by libpng |
+| `target_cpu` | "arm" | ESP32-S3 is Xtensa LX7 and needs a custom toolchain config |
+
+- size-estimate: 1-2MB for the CPU rasteriser plus basic font and PNG decode, which fits in 4MB flash
+  with room for app code and the font atlas.
+- toolchain-risk: the ESP32-S3 is Xtensa LX7, NOT ARM. Skia's build system needs a custom toolchain
+  definition pointing at the ESP-IDF Xtensa compiler. This is the primary integration challenge — Skia
+  has been built for ARM embedded targets but not for Xtensa. See [CXC-CYD-SKIA-RISK-XTENSA].
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-CANVAS] SkiaEmbeddedCanvas is a near-1:1 wrapper over the Skia C++ API
+
+- file: cyd/src/canvas_skia_embedded.cpp
+- definition: a `Canvas` subclass that wraps Skia's C++ API; each Canvas method maps to a single Skia
+  call.
+- method-create-surface: `create_surface(int w, int h)` allocates the `SkBitmap` in PSRAM via
+  `allocPixels(SkImageInfo::MakeN32Premul(w, h))` and constructs the `SkCanvas` over it.
+- method-fill-rect: `fill_rect(x, y, w, h)` maps to `drawRect(SkRect::MakeXYWH(...), _fill_paint)`.
+- method-fill-circle: `fill_circle(cx, cy, r)` maps to `drawCircle(cx, cy, r, _fill_paint)`.
+- method-fill-round-rect: `fill_round_rect(x, y, w, h, radius)` maps to `drawRoundRect(...)`.
+- method-draw-text: `draw_text(text, x, y, align)` uses either the bitmap font atlas (for cross-tier
+  fidelity) or Skia native text (for maximum quality) per [CXC-CYD-SKIA-FONT].
+- method-present: `present()` converts RGBA8888 to RGB565 and DMA-transfers via
+  `_display->transfer_framebuffer(...)`.
+- state: the class holds an `SkBitmap` (PSRAM-allocated), a `std::unique_ptr<SkCanvas>`, an `SkPaint`
+  for fill and one for stroke, and an `IDisplay*`.
+- size-estimate: the implementation should be roughly 200-300 lines, because the API mapping is nearly
+  one-to-one.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-FONT] Text has two modes, and the choice is a fidelity-versus-quality trade
+
+- definition: two font strategies, selectable at build time.
+
+| Option | Approach | Fidelity target |
+|--------|----------|----------------|
+| Atlas mode | The same bitmap font atlas as ESP32Canvas and desktop atlas mode | Pixel-identical to the CYD and to desktop-with-atlas |
+| Skia native | Skia's built-in FreeType text rendering | Pixel-identical to desktop-native, highest quality |
+- rule: for cross-platform visual QA — pixel comparison against the CYD — use ATLAS mode. For production
+  displays where quality matters more than CYD matching, use Skia native.
+- consequence: the two modes are not interchangeable at comparison time. A pixel comparison against the
+  CYD is only meaningful in atlas mode, and reporting a native-mode delta against the CYD measures the
+  mode choice rather than the backend.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+---
+
+## 4. Display abstraction
+
+### [CXC-CYD-SKIA-DISPLAY-IFACE] IDisplay decouples the backend from the panel controller
+
+- definition: an abstract interface behind which any display controller can sit, so the Canvas backend
+  is not written against ILI9341.
+- api: `virtual void init()`; `virtual void transfer_framebuffer(const uint16_t* buf, uint16_t y_start,
+  uint16_t y_end)`; `virtual void transfer_band(const uint16_t* buf, uint16_t y_start, uint16_t y_end)`;
+  `virtual uint16_t width() const`; `virtual uint16_t height() const`.
+- existing: the current `ILI9341` class implements this for the CYD; new drivers implement the same
+  interface.
+
+| Display | Controller | Interface | Resolution | Notes |
+|---------|-----------|-----------|------------|-------|
+| CYD TFT | ILI9341 | SPI | 240x320 | Existing driver |
+| OLED | SSD1351 / SH1107 | SPI / I2C | 128x128 to 256x64 | High contrast, true black |
+| IPS TFT | ST7789 / ILI9488 | SPI / parallel | 240x320 to 480x320 | Wide viewing angle |
+| Round OLED | GC9A01 | SPI | 240x240 | Circular gauge displays |
+
+- rationale: both a full-framebuffer and a band transfer are on the interface because the two are
+  genuinely different operations on this tier — the framebuffer path is the normal one and the band path
+  is the large-panel fallback from [CXC-CYD-SKIA-ARCH-MEMORY].
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-DISPLAY-CONVERT] The RGBA8888 to RGB565 conversion is the ONLY quantisation left
+
+- definition: Skia renders RGBA8888 and most displays accept RGB565, so `present()` converts by
+  extracting each channel and truncating — `((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)`.
+- claim: this conversion is the ONLY remaining source of colour quantisation in the whole pipeline, at
+  plus or minus 3 per channel.
+- consequence: the pixel comparison tool already accounts for RGB565 tolerance, so once geometric
+  divergence is gone the expected residual is exactly this and nothing else.
+- optimisation: on displays that accept RGB888 (some OLED controllers), skip the conversion entirely and
+  pass Skia's buffer straight through — which removes the last quantisation as well.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+---
+
+## 5. Build system
+
+### [CXC-CYD-SKIA-BUILD-PIO] A new PlatformIO environment alongside the CYD one
+
+- definition: environment `[env:esp32s3_skia]` on platform `espressif32`, board `esp32-s3-devkitc-1`,
+  framework `espidf`.
+- cmake-args: `-DUSE_SKIA_BACKEND=ON` and `-DSKIA_DIR=${PROJECT_DIR}/lib/skia` passed through
+  `board_build.cmake_extra_args`.
+- constraint: the existing CYD environment is untouched and must keep building, which SS-C6 verifies.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-BUILD-COMPONENT] Skia ships as a PRE-BUILT ESP-IDF component
+
+- definition: Skia is pre-built as a static library for Xtensa LX7 and included as an ESP-IDF component
+  at `cyd/components/skia/` — a `CMakeLists.txt` component wrapper, an `include/` subset of Skia
+  headers, and `lib/libskia.a` built for `xtensa-esp32s3-elf`.
+- rationale: pre-building avoids compiling Skia from source on every firmware build, which takes about
+  30 minutes.
+- provenance: the pre-built library is either committed or fetched by a build script.
+- risk: a committed binary blob is opaque to review and pins a Skia version implicitly; whichever route
+  is taken, the Skia revision the library was built from must be recorded alongside it.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-BUILD-CONDITIONAL] A canvas_factory header picks the type at compile time
+
+- file: cyd/include/canvas_factory.h
+- definition: when `USE_SKIA_BACKEND` is defined AND `CONFIG_SPIRAM` is set, `PlatformCanvas` aliases
+  `SkiaEmbeddedCanvas`; otherwise it aliases `ESP32Canvas`.
+- consequence: `main.cpp` refers only to `PlatformCanvas` — the same source, a different backend
+  selected at build time, with no runtime branch and no virtual dispatch cost at the selection point.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+---
+
+## 6. Validation
+
+### [CXC-CYD-SKIA-VALIDATION-TARGET] The convergence this backend is expected to produce
+
+- definition: the before-and-after comparison figures that justify the work.
+
+| Comparison | Before (custom renderer) | After (Skia on S3) |
+|-----------|-------------------------|-------------------|
+| Desktop-atlas vs ESP32 | 55% near-match, max delta 136 | >99% near-match (RGB565 quantisation only) |
+| Geometric AA divergence | Visible on all curves | Eliminated — the same Skia rasteriser |
+| Text divergence (with atlas) | Near-zero | Near-zero (unchanged) |
+
+- claim: the only remaining divergence should be RGB565 colour quantisation at plus or minus 3 per
+  channel, which the pixel comparison tool already accounts for.
+- invalidating-assumption: that Skia's CPU rasteriser is deterministic across architectures at the byte
+  level. If Xtensa float behaviour or a portable-C++ code path differs from the desktop's SIMD path, the
+  >99% target is not reachable and the residual must be re-characterised before it is called a defect.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-VALIDATION-QA] Automated QA reuses the CYD capture pipeline unchanged
+
+- definition: the same pipeline as the CYD — the ESP32-S3 renders the dashboard with Skia, captures a
+  BMP and pushes it to document_store; the desktop renders the same dashboard with Skia to PNG;
+  `pixel_comparison.py` compares them; and screenshots are saved to `cyd/screenshots/progression/` with
+  a device tag.
+- reuse: the capture and push half is [SPEC:CXC-CYD-CAPTURE] unchanged; only the device tag is new.
+- verify-machine: `pixel_comparison.py` reports greater than 99% near-match between the ESP32-S3 capture
+  and the desktop render.
+- verify-human: the S3 panel and the desktop render show the same curves and corners; a machine-green
+  near-match with visibly different curve edges means the comparison tolerance is absorbing the very
+  divergence this spec exists to remove.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+---
+
+## 7. Phasing, risk and acceptance
+
+### [CXC-CYD-SKIA-PHASES] The six delivery phases
+
+- definition: the ordered phase plan, each with its deliverable.
+
+| Phase | Scope | Deliverable |
+|-------|-------|-------------|
+| S3-1 | Skia cross-compilation | `libskia.a` built for xtensa-esp32s3-elf, basic drawing test |
+| S3-2 | SkiaEmbeddedCanvas implementation | All Canvas methods mapped to Skia, rendering to a PSRAM bitmap |
+| S3-3 | Display driver abstraction | `IDisplay` interface, ST7789/SSD1351 drivers alongside ILI9341 |
+| S3-4 | present() pipeline | RGBA8888 to RGB565 conversion, DMA transfer, band rendering option |
+| S3-5 | Font atlas integration | Bitmap atlas text rendering via a Skia surface, matching CYD output |
+| S3-6 | Pixel comparison validation | Automated QA showing >99% near-match against the desktop |
+
+- gating: S3-1 gates everything. If Skia cannot be cross-compiled for Xtensa the rest of the plan does
+  not begin, which is why [CXC-CYD-SKIA-RISK-XTENSA] is the first thing to settle.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-RISK-XTENSA] RISK — Skia's GN build does not support Xtensa
+
+- risk: Skia's build system (GN) does not natively support Xtensa, and the ESP32-S3 is Xtensa LX7.
+- approach-cmake: build the Skia source files directly through ESP-IDF's CMake, bypassing GN. Requires
+  enumerating source files manually but avoids toolchain configuration. Community projects such as
+  esp-idf-skia may exist.
+- approach-gn: add an Xtensa toolchain definition to Skia's GN configs. More complex but more
+  maintainable.
+- approach-portable: disable all SIMD and platform-specific code paths and build the portable C++ only.
+  Slower, but guaranteed to compile on any C++17 toolchain including Xtensa.
+- recommendation: start with the PORTABLE C++ approach to validate feasibility, then optimise with the
+  CMake wrapper for build integration. Feasibility first, performance second — the risk being retired
+  is "can this be built at all", not "is it fast".
+- consequence: the portable path forgoes SIMD, so the S3-6 frame-time target is measured against the
+  slowest viable configuration and can only improve.
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+### [CXC-CYD-SKIA-COMPLIANCE] The compliance contract
+
+- definition: eight acceptance criteria spanning interface completeness, pixel convergence, memory,
+  timing, flash, non-regression, display abstraction and the band option.
+
+| ID | Requirement | Verification |
+|----|-------------|-------------|
+| SS-C1 | SkiaEmbeddedCanvas implements every Canvas interface method | Compiles without pure virtual errors; renders the test dashboard |
+| SS-C2 | The same dashboard renders identically on desktop Skia and ESP32-S3 Skia | pixel_comparison.py: >99% near-match at RGB565 tolerance |
+| SS-C3 | PSRAM allocation succeeds for the framebuffer plus Skia internals | Boot log shows successful allocation and a heap report |
+| SS-C4 | Frame rendering completes within an acceptable time | Under 500ms for a full 240x320 frame; target under 200ms |
+| SS-C5 | Firmware builds with Skia included | Flash usage under 80% of 4MB |
+| SS-C6 | canvas_esp32.cpp is unchanged and still builds for ESP32 targets | `pio run -e cyd` succeeds with no modifications |
+| SS-C7 | The display abstraction supports ILI9341 and at least one new controller | Two drivers implement IDisplay and both render correctly |
+| SS-C8 | The band rendering option works on the Skia backend | For displays larger than 240x320, PSRAM-efficient band rendering produces correct output |
+
+- part-of: [SPEC:CXC-CYD-SKIA-S3]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-CYD-SKIA-S3] RELATED_TO [SPEC:CXC-CYD-AA]
+- [SPEC:CXC-CYD-SKIA-S3] DEPENDS_ON [SPEC:CXC-CYD-FONT-UNIFY]
+- [SPEC:CXC-CYD-SKIA-S3] DEPENDS_ON [SPEC:CXC-CYD-CAPTURE]
+- [CXC-CYD-SKIA-RATIONALE] CAUSES [CXC-CYD-SKIA-ARCH-SELECT]
+- [CXC-CYD-SKIA-ARCH-SELECT] PRECONDITION_FOR [CXC-CYD-SKIA-ARCH-PIPELINE]
+- [CXC-CYD-SKIA-ARCH-PIPELINE] PRECONDITION_FOR [CXC-CYD-SKIA-ARCH-MEMORY]
+- [CXC-CYD-SKIA-BUILD-CONFIG] PRECONDITION_FOR [CXC-CYD-SKIA-CANVAS]
+- [CXC-CYD-SKIA-BUILD-CONFIG] CAUSES [CXC-CYD-SKIA-RISK-XTENSA]
+- [CXC-CYD-SKIA-CANVAS] DEPENDS_ON [CXC-CYD-SKIA-DISPLAY-IFACE]
+- [CXC-CYD-SKIA-CANVAS] CONTAINS [CXC-CYD-SKIA-FONT]
+- [CXC-CYD-SKIA-DISPLAY-IFACE] PRECONDITION_FOR [CXC-CYD-SKIA-DISPLAY-CONVERT]
+- [CXC-CYD-SKIA-BUILD-PIO] PRECONDITION_FOR [CXC-CYD-SKIA-BUILD-COMPONENT]
+- [CXC-CYD-SKIA-BUILD-COMPONENT] PRECONDITION_FOR [CXC-CYD-SKIA-BUILD-CONDITIONAL]
+- [CXC-CYD-SKIA-RISK-XTENSA] PRECONDITION_FOR [CXC-CYD-SKIA-PHASES]
+- [CXC-CYD-SKIA-DISPLAY-CONVERT] CAUSES [CXC-CYD-SKIA-VALIDATION-TARGET]
+- [CXC-CYD-SKIA-VALIDATION-TARGET] PRECONDITION_FOR [CXC-CYD-SKIA-VALIDATION-QA]
+- [CXC-CYD-SKIA-VALIDATION-QA] PRECONDITION_FOR [CXC-CYD-SKIA-COMPLIANCE]
+- [CXC-CYD-SKIA-PHASES] BEFORE [CXC-CYD-SKIA-COMPLIANCE]
+
+- [SPEC:CXC-CYD-SKIA-S3] CONTAINS [CXC-CYD-SKIA-RATIONALE]
+- [SPEC:CXC-CYD-SKIA-S3] CONTAINS [CXC-CYD-SKIA-BUILD-CONFIG]
+- [CXC-CYD-SKIA-PHASES] DEPENDS_ON [CXC-CYD-SKIA-BUILD-PIO]
+- [CXC-CYD-SKIA-CANVAS] DEPENDS_ON [CXC-CYD-SKIA-BUILD-COMPONENT]
+- [CXC-CYD-SKIA-FONT] RELATED_TO [CXC-CYD-SKIA-VALIDATION-TARGET]
+- [CXC-CYD-SKIA-ARCH-MEMORY] RELATED_TO [CXC-CYD-SKIA-DISPLAY-IFACE]
+---
+
+**Version**: 1.1 — converted to FactLattice from `cyd/spec/cyd-skia-esp32s3.smd` (v1.0, 2026-03-31).
+**Status**: Draft

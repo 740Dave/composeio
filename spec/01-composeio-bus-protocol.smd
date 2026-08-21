@@ -1,0 +1,1703 @@
+---
+scope: "Wire-level bus protocol specification for the ComposeIO Software-Defined I/O platform — message format, namespace resolution, scope routing, transport bindings, and bus storage API"
+audience: "Firmware developers implementing bus participants, Python library implementers, transport binding authors, service hub developers"
+boundary: "Protocol only; config schema in 02-composeio-config-schema.smd; module role contracts in 03-composeio-module-roles.smd; design rationale in 00-composeio-design-principles.smd"
+not-this: "Not the config YAML schema; not the firmware architecture; not a tutorial"
+depends-on: [00-composeio-design-principles.smd]
+---
+# ComposeIO Bus Protocol [SPEC:CIO-BUS-PROTOCOL]
+
+> Wire-level specification for the ComposeIO semantic bus. Every transport binding — I2C, CAN, MQTT, HTTP, in-process — must implement these semantics identically. A message that works on one transport must produce identical behavior on every other transport (DP-CIO-6).
+
+---
+
+## 1. Bus Message Format [BP-MSG-FORMAT]
+
+Every bus message consists of seven mandatory fields and zero or more optional fields. The semantic meaning of each field is transport-independent. Serialization varies by transport.
+
+### 1.1 Mandatory Fields [BP-MSG-FIELDS]
+
+| Field | JSON Key | Type | Description |
+|-------|----------|------|-------------|
+| Namespace | `ns` | string, max 64 chars | Dot-free, slash-free identifier. Lowercase alphanumeric + underscore. Examples: `ftl_arm`, `office_lights`, `_bus/time` |
+| Message Type | `type` | enum (4-bit) | One of: `state`, `event`, `config_push`, `config_request`, `heartbeat`, `discovery`, `time_sync`, `binding`, `ack`, `log_entry`. Numeric wire codes are allocated ONCE in [BP-TYPE-CODES] |
+| Value | `val` | varies by type | Semantic value. String for state/event, binary blob for config_push, CRC-32 for config_request, JSON object for discovery/binding |
+| Source Module | `src` | string, max 32 chars | Unique identifier of the publishing module. Format: `{role}-{instance}` (e.g., `panel-1`, `relay-2`, `hub-main`) |
+| Timestamp | `ts` | uint32 | Bus time in seconds since bus master epoch. Wraps at 2^32 (~136 years). ⛔ **NOT CARRIED on framed binary transports — see below** |
+| Scope | `scope` | enum (2-bit) | One of: `local`, `global`, `remote`, `auto` |
+| Sequence | `seq` | uint16 | Per-source rolling sequence number. Wraps at 65535. Used for deduplication across transport bridges, not ordering guarantees. **Not carried on CAN or UART** — same exception as `ts` |
+
+⛔ **EXCEPTION — `ts` DOES NOT RIDE THE WIRE ON FRAMED BINARY TRANSPORTS.** [BP-CAN-ID] v2 sums to
+exactly 29 bits with none spare and its data field is the value alone; [BP-UART-FRAME] is
+`[0xC1][len][ns_hash][type_scope][value][crc8]`. **Neither has a timestamp field, and neither has a
+`seq` field.** A message arriving over CAN or UART is **receive-time-stamped locally by the decoding
+transport**. Consequently:
+
+- A `ts` on a message that crossed a CAN or UART hop is the **RECEIVER's** clock at decode time,
+  not the publisher's clock at publish time. It measures arrival, not origin
+- ⛔ **`ts` MUST NOT be used to compute age, latency or freshness.** Receiver-side age measured
+  from arrival, against a refresh contract declared in the device's YAML, is the ratified mechanism
+  (`DEC-FRESHNESS-IS-RECEIVER-SIDE-AND-DECLARED-IN-YAML`). Subtracting a `ts` that a bridge
+  stamped on its own arrival yields a number that is always near zero and always looks healthy —
+  an instrument that can only report health, which is the failure mode this whole rule exists to
+  prevent. ✅ **Now BUILT on the Python tier** (2026-08-15): see `[SPEC:CXC-FRESHNESS]`
+  (`corpora/platform-specs/72-freshness-receiver.lts`) for the monotonic age counter, lazy expiry,
+  the `unknown` type (wire tag `0xFD`) and the per-node heartbeat receiver. **That spec, not this
+  document, is the implementable contract for freshness.**
+- Deduplication by `(src, seq)` ([BP-SCOPE-DEDUP], [BP-C5]) is therefore **unavailable across a
+  CAN or UART hop**, because neither field survives it
+
+**The "modules maintain a local offset" claim is REMOVED as unimplemented.** No module computes or
+holds a `_bus/time` offset — see [BP-TYPE-TIME-SYNC] §2.7, which records that `_bus/time` is
+consumed by nothing. A module without an RTC does not have bus time; it has its own uptime.
+
+### 1.2 Optional Fields [BP-MSG-OPT-FIELDS]
+
+| Field | JSON Key | Type | Status | When Present |
+|-------|----------|------|--------|--------------|
+| TTL | `ttl` | uint8 | **NOT IMPLEMENTED at the core-message level** | Bridge hop limit. Default 3. Decremented by each bridge. Dropped at 0. Prevents infinite loops in multi-bridge topologies |
+| Priority | `pri` | — | ⛔ **RETIRED** | Superseded by [BP-WIRE-PRIORITY] |
+| Correlation ID | `cid` | uint16 | **NOT IMPLEMENTED at the core-message level** | Links a request to its response (e.g., `config_request` → `config_push`). Set by requester, echoed by responder |
+
+⛔ **`pri` is RETIRED, not merely unimplemented.** A 2-bit, application-set message-level priority
+is superseded by [BP-WIRE-PRIORITY]'s **3-bit, SERVER-COMPUTED** mechanism: `prio` is derived from
+the namespace and type by one shared rule (`composeio.transport.priority_for`) and written into the
+CAN arbitration id, precisely so a publisher cannot declare its own urgency. No code reads or
+writes a message-level `pri` on any transport. A `pri` in a JSON message MUST be ignored, and a new
+binding MUST NOT introduce one — reinstating an app-set priority field would reopen the failure
+[BP-WIRE-PRIORITY] closed. (`capture.py` / `transport_replay.py` do round-trip a `pri` KEY in
+capture RECORDS, but that is the capture file format persisting `msg.data["_priority"]`; it is not
+a bus message field.)
+
+**`ttl` and `cid` are specified but not implemented on the core message.** `BusMessage` has no
+`ttl` or `cid` attribute and no transport reads one:
+
+- `ttl` exists only inside the config-chunk header ([SPEC:CXC-CONFIG-BUS], `config_chunk.py`,
+  seed 8), where it is a **protocol constant** decremented per relay hop — not the per-message,
+  app-settable hop limit described here
+- `cid` exists only as `msg.data["_cid"]`, set by `Bus.publish_critical` / `Bus.publish_ack`
+  (`python/composeio/bus.py`) and consumed by the critical-ack path in
+  `python/composeio/peer/critical.py`. It is a payload convention, not a message field, and
+  nothing in the `config_request` → `config_push` flow this section describes uses it
+
+Any binding that needs either MUST implement it, not assume it.
+
+### 1.3 Size Constraint [BP-MSG-SIZE]
+
+256 bytes (DP-CIO-18) is a **DESIGN GUIDELINE for constrained substrates, not an enforced runtime
+limit**, and nothing drops an oversized message.
+
+⛔ **CORRECTED 2026-08-14.** This section previously said messages exceeding 256 bytes "are
+malformed and MUST be dropped by the transport." **No transport does that**, and a binding written
+to obey it literally would break the platform:
+
+- `MQTTTransport.GUIDELINE_PAYLOAD_BYTES = 256` is **checked and LOGGED, never enforced**. Its
+  comment is explicit that this is "a DESIGN guideline for constrained substrates (CAN frames, a
+  UART line), not a runtime alarm for MQTT"
+- Kilobyte payloads are **routine and intended** on the MQTT path — the Intelligence Console's
+  20 bus-routed sources carry transcript narration, the deliverable ledger and the defect roll-up.
+  The WARN threshold sits at `LARGE_PAYLOAD_WARN_BYTES = 256 * 1024`, reserved for a genuine runaway
+- The config path deliberately moves whole artifacts far over 256 bytes (a real scene is 5,856 B)
+  as sequenced chunks, which [SPEC:CXC-CONFIG-BUS] records as an explicit DP-CIO-18 exception:
+  a URL presumes a peer that can dereference it, and a slaved board cannot
+
+**The rule that IS binding** is the per-frame budget of the framed substrates — 8 data bytes on
+classic CAN, 252 value bytes on UART — and it is enforced by the framing itself. Large payloads
+are referenced by URL where the peer has IP, and streamed as chunked content where it does not.
+
+### 1.4 JSON Serialization [BP-MSG-JSON]
+
+Used by: MQTT, HTTP, in-process (Python), WebSocket.
+
+```json
+{
+  "ns": "ftl_arm",
+  "type": "state",
+  "val": "on",
+  "src": "panel-1",
+  "ts": 12345,
+  "scope": "auto",
+  "seq": 42
+}
+```
+
+Field names use short keys to stay within the 256-byte limit. All JSON messages MUST be valid UTF-8. Whitespace is optional (compact serialization preferred for MQTT).
+
+Type enum string values — the authoritative allocation is [BP-TYPE-CODES]:
+
+| Enum | JSON value | Numeric (binary transports) |
+|------|-----------|----------------|
+| State update | `"state"` | 0 |
+| Event | `"event"` | 1 |
+| Config push | `"config_push"` | 2 |
+| Config request | `"config_req"` | 3 |
+| Heartbeat | `"heartbeat"` | 4 |
+| Discovery | `"discovery"` | 5 |
+| Time sync | `"time_sync"` | 6 |
+| Binding | `"binding"` | 7 |
+| Ack | `"ack"` | 8 |
+| Log entry | `"log_entry"` | 9 |
+
+Scope enum string values:
+
+| Enum | JSON value | Numeric (CAN) |
+|------|-----------|----------------|
+| Local | `"local"` | 0 |
+| Global | `"global"` | 1 |
+| Remote | `"remote"` | 2 |
+| Auto | `"auto"` | 3 |
+
+### 1.5 CAN Binary Encoding [BP-MSG-CAN]
+
+CAN 2.0B extended frame (29-bit identifier, 8-byte data payload).
+
+#### 1.5.1 CAN Identifier Layout (29 bits) [BP-CAN-ID]
+
+**VERSION 2, ratified 2026-08-13.** v1 was `ns_hash(16) | type(4) | src_hash(9)` and is
+retired. See "Why v1 was wrong" below — it is kept because the reasoning is what stops
+someone reinstating it.
+
+```
+Bit 28..26  Bit 25..22  Bit 21..6   Bit 5..2  Bit 1..0
+[prio]      [type]      [ns_id]     [src]     [scope]
+ 3 bits      4 bits      16 bits     4 bits    2 bits
+```
+
+| Field | Bits | Description |
+|-------|------|-------------|
+| `prio` | 28..26 (3 bits) | Arbitration tier, 0 most urgent, 7 bulk ([BP-WIRE-PRIORITY]). **SENDER-SIDE ONLY** — nothing decodes it, and no receiver may route on it |
+| `type` | 25..22 (4 bits) | Message type enum. Codes 0–9 are allocated ([BP-TYPE-CODES]); 10–15 reserved. **The codes were NOT renumbered by urgency** — see [BP-WIRE-PRIORITY] |
+| `ns_id` | 21..6 (16 bits) | CRC-16/CCITT of the namespace string ([BP-CAN-HASH]). Same width as v1, so v2 adds no collision exposure |
+| `src` | 5..2 (4 bits) | An **allocated** node id, 1–15. **0 = unassigned.** NOT a hash slice. Diagnostic only — CAN does not address nodes |
+| `scope` | 1..0 (2 bits) | 0=local, 1=global, 2=remote, 3=auto ([BP-MSG-FIELDS]) |
+
+**Why `scope` is at the BOTTOM.** Directly under `type` it would become a second,
+undesigned arbitration axis — and a backwards one, because `auto` (3) is the default for
+anything unspecified and would sort every unspecified message to the bottom of its class.
+Below `ns_id` it cannot distort arbitration between two different messages at all.
+
+**Why v1 was wrong.** With `ns_hash` in the top 16 bits, arbitration priority was a
+pseudo-random function of the namespace *name*: `throttle/left` (0x03F6) won everything by
+luck, `_device/wsc6-6f4ce4/config` (0x8921) outranked `_device/hosyond-d1afe8/config`
+(0xC6B6) because of a MAC suffix, and `shields` (0xCC50) — a combat-critical value — lost
+arbitration to console bounding boxes. Renaming a signal silently re-ranked it. v1 also had
+**no scope field**, so scope was silently lost on every CAN round trip and reconstructed as
+`global` on the far side; that is disqualifying for a mothercard/daughtercard trunk, where
+the internal CAN segment *is* a locality and a relay that cannot see scope leaks all local
+chatter upstream.
+
+**REQUIREMENT — one layout.** `cyd/src/bus_can_id.h`, `python/composeio/transport_can.py`
+and `services/can_mqtt_bridge/bridge.py` MUST all speak this layout, and only
+`transport_can.py` may declare the shifts. Two implementations that "cannot share a
+physical wire until reconciled" was recorded as [BP-CAN-ID-DIVERGENCE]; it is closed and
+must stay closed. Pinned by `env:native_can_id` (110 cases, all 29 bits compared) and
+`python/tests/test_can_wire_format_v2.py`.
+
+#### 1.5.1a Arbitration Priority [BP-WIRE-PRIORITY]
+
+Three bits, eight tiers, 0 most urgent. **Tiers are named by urgency CLASS, not by
+example** — a tier named by example goes stale the moment someone adds a namespace.
+
+| Tier | Class | Assigned by | Examples |
+|------|-------|-------------|----------|
+| 0 | alarm — a human reacts; late is *wrong* | namespace | `alert_status`, `shields` |
+| 1 | live control — closed loop, lag is visible | namespace | `throttle/*` |
+| 2 | transaction control — must not be starved by what it terminates | type | `ack`, `config_request` |
+| 3 | time sync — its value IS its timeliness | type | `time_sync` |
+| 4 | liveness & coordination | type | `heartbeat`, `discovery`, `binding` |
+| 5 | live telemetry — late is stale, not wrong (**THE DEFAULT**) | namespace | `dradis/*` |
+| 6 | display state | namespace | `_app/*` |
+| 7 | bulk — nothing functional may live here | type | `config_push`, `log_entry` |
+
+**THE ASSIGNMENT RULE.** Control-plane messages take their tier from their **type**;
+application data (nearly all of which is `state`/`event`) takes it from its **namespace**. A
+`config_push` of `alert_status` is still bulk: the urgency belongs to the transfer, not to
+the name it happens to carry.
+
+**REQUIREMENT — a rule with a default, not a list.** An implementation MUST place an
+unlisted namespace at the default tier and MUST NOT fail. The default MUST sit below every
+control-plane tier, so a namespace nobody has classified can never starve an `ack`, a
+`time_sync` or a `heartbeat`. Namespace rules are an **ordered** list of exact names and
+`prefix/` patterns; first match wins, so the order is part of the data.
+
+**Type codes MUST NOT be renumbered by urgency.** It was proposed and rejected: it breaks
+the UART `type_scope` byte for a property point-to-point UART cannot use (there is no
+arbitration on a point-to-point link), it welds message identity to urgency permanently, and
+it cannot express *within-class* priority at all. `prio` makes it unnecessary.
+
+**Keep tier 0 nearly empty.** If everything is urgent, nothing is.
+
+#### 1.5.2 CAN Data Payload (8 bytes) [BP-CAN-DATA]
+
+> **NOT IMPLEMENTED.** No transport in this repo emits or parses the flags/seq/TTL framing
+> below; the CAN data field carries the [BP-VALUE-CODEC] value encoding directly, exactly as
+> the UART frame's value field does, so an MCU speaks one dialect on both substrates. In
+> particular `scope` rides in the arbitration id ([BP-CAN-ID] v2 bits 1..0), not in a flags
+> byte, and the value's TYPE is carried by the [BP-VALUE-CODEC] tag rather than by a
+> `value_encoding` nibble. This section is retained as a design sketch and is **not**
+> normative for any current binding.
+
+```
+Byte 0       Byte 1       Bytes 2–3    Bytes 4–7
+[flags]      [seq_hi]     [seq_lo|val] [value continued]
+```
+
+Byte 0 — Flags:
+
+```
+Bit 7..6: scope (2 bits)     — 0=local, 1=global, 2=remote, 3=auto
+Bit 5..4: priority (2 bits)  — 0=low, 1=normal, 2=high, 3=critical
+Bit 3:    ttl_present        — 1 if byte 1 high nibble is TTL
+Bit 2..0: value_encoding     — encoding type for bytes 2–7
+```
+
+Value encoding types (3 bits):
+
+| Code | Name | Payload (bytes 2–7) | Use Case |
+|------|------|---------------------|----------|
+| 0 | `enum_u8` | byte 2 = enum index, bytes 3–7 unused | State engine values mapped to indices. Index 0 = first value in state engine |
+| 1 | `uint16` | bytes 2–3 = big-endian uint16, bytes 4–7 unused | Analog values, counters, raw sensor |
+| 2 | `int16` | bytes 2–3 = big-endian int16, bytes 4–7 unused | Signed analog, temperature |
+| 3 | `float32` | bytes 2–5 = IEEE 754 float, bytes 6–7 unused | Continuous values |
+| 4 | `bool` | byte 2 = 0x00 (false) or 0x01 (true), bytes 3–7 unused | Binary states |
+| 5 | `string_short` | bytes 2–7 = up to 6 bytes UTF-8, null-terminated | Short string values |
+| 6 | `crc32` | bytes 2–5 = CRC-32 checksum, bytes 6–7 unused | Config request/response checksums |
+| 7 | `raw` | bytes 2–7 = opaque 6 bytes | Extension point |
+
+Byte 1:
+- If `ttl_present` = 1: high nibble = TTL (0–15), low nibble + byte 2 = seq (12 bits, wraps at 4095 on CAN)
+- If `ttl_present` = 0: full byte = seq high bits, byte 2 bits 7..4 = seq low bits (12-bit seq), byte 2 bits 3..0 = first value nibble
+
+**CAN seq is 12-bit** (0–4095), not the full 16-bit seq in JSON. CAN bridges MUST map between 12-bit and 16-bit seq using modular arithmetic.
+
+#### 1.5.3 Namespace Hash Function [BP-CAN-HASH]
+
+CRC-16/CCITT (polynomial 0x1021, init 0xFFFF, no final XOR) computed over the namespace string bytes (UTF-8, no null terminator).
+
+```python
+def ns_hash(namespace: str) -> int:
+    crc = 0xFFFF
+    for byte in namespace.encode('utf-8'):
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = (crc << 1) ^ 0x1021
+            else:
+                crc = crc << 1
+            crc &= 0xFFFF
+    return crc
+```
+
+Source hash is CRC-9: take the lower 9 bits of CRC-16/CCITT computed on the source module string.
+
+#### 1.5.4 CAN State-to-Enum Mapping [BP-CAN-ENUM]
+
+> **NOT IMPLEMENTED — non-normative**, on the same footing as §1.5.2 [BP-CAN-DATA]. No transport
+> in this repo maps a state value to a state-engine enum index on any substrate. **Current code
+> sends the state value itself through the generic [BP-VALUE-CODEC]** — `CANTransport._encode_value`
+> imports `transport_uart.encode_value` directly — so `"on"` goes on the wire as the
+> length-prefixed string `02 6f 6e`, not as index `1`. The `enum_u8` code this section depends on
+> belongs to the retired [BP-CAN-DATA] framing.
+>
+> **Why the design went the other way.** An enum index is only decodable by a peer that already
+> holds the same state-engine definition, so it makes the wire format depend on config agreement —
+> and a mismatched enum silently decodes to the WRONG state rather than failing. The self-describing
+> codec was chosen instead, for the reason [BP-VALUE-CODEC] states as a REQUIREMENT: a value that
+> must be guessed at gets guessed wrong. This section is retained as a design sketch and is **not**
+> normative for any current binding.
+
+Sketch follows. State engine values are strings on the JSON bus (`"on"`, `"off"`, `"warp_5"`). The sketch transmits them as `enum_u8` indices, the mapping defined by the state engine's value list order:
+
+```yaml
+state_engine: binary     # ["off", "on"] → 0, 1
+state_engine: tri_level  # ["off", "half", "full"] → 0, 1, 2
+state_engine:
+  type: enum
+  values: [standby, warp_1, warp_5, warp_9, maximum]  # → 0, 1, 2, 3, 4
+```
+
+Both CAN publisher and subscriber MUST share the same state engine definition (enforced at config push time). A CAN-to-MQTT bridge looks up the state engine to convert between enum index and string value.
+
+#### 1.5.5 CAN Wire Example [BP-CAN-EXAMPLE]
+
+Namespace `ftl_arm` state change to the string `"on"`, from node id 1, scope auto. **Computed by
+running the reference encoder, not by hand.**
+
+```
+CAN ID (29 bits) — [BP-CAN-ID] v2:
+  prio  = 5  (ftl_arm is unlisted -> THE DEFAULT tier, [BP-WIRE-PRIORITY])   -> bits 28..26  101
+  type  = 0  (state, [BP-TYPE-CODES])                                        -> bits 25..22  0000
+  ns_id = ns_hash("ftl_arm") = 0xEC85 (CRC-16/CCITT, [BP-CAN-HASH])          -> bits 21..6   1110110010000101
+  src   = 1  (an ALLOCATED node id, not a hash; 0 = unassigned)              -> bits 5..2    0001
+  scope = 3  (auto — it round-trips, it is not collapsed on the wire)        -> bits 1..0    11
+
+  CAN ID = 0x143B2147
+
+Data (up to 8 bytes) — [BP-VALUE-CODEC], the SAME encoding UART and I2C use:
+  02 6f 6e     len=2, "on"          (a str is [len][UTF-8])
+
+  Contrast, for the same semantic value expressed differently:
+    True  -> 01                     (a bool is one byte)
+    1     -> 01                     (an int 0..255 is one byte — see the KNOWN
+                                     RESIDUAL in [BP-VALUE-CODEC]: one byte is
+                                     ambiguous between int, bool and enum index)
+```
+
+Round-trip check: `decode_arbitration_id(0x143B2147)` returns `(0xEC85, MessageType.STATE,
+"auto", 1)`. **`prio` is deliberately NOT returned** — it is the sender's opinion of its own
+urgency and no receiver may route on it ([BP-CAN-PRIORITY]).
+
+Note what is NOT in the frame. There is no flags byte, no `ttl_present`, no enum index and no
+12-bit CAN `seq`: the retired [BP-CAN-DATA] scheme is a design sketch (§1.5.2), and `ts` and `seq`
+do not ride a CAN frame at all ([BP-MSG-FIELDS]). The overhead is **zero payload bytes** — the
+identifier carries the routing fields and all 8 data bytes are available to the value.
+
+### 1.6 Message Type Wire Codes [BP-TYPE-CODES]
+
+Every binary transport (CAN, UART, I2C, and any future framed substrate) carries the message
+type as a **4-bit numeric code**, never as its JSON string. This section is the **single
+authoritative allocation** of those codes. Section 1.4's table, [BP-CAN-ID]'s `type` field,
+[BP-UART-FRAME]'s type nibble and [BP-I2C-ENCODING]'s type nibble all refer to THIS table; they
+do not restate it and MUST NOT diverge from it.
+
+| Code | Message type | Allocated by |
+|------|--------------|--------------|
+| 0 | `state` | [BP-TYPE-STATE] |
+| 1 | `event` | [BP-TYPE-EVENT] |
+| 2 | `config_push` | [BP-TYPE-CONFIG-PUSH] |
+| 3 | `config_request` | [BP-TYPE-CONFIG-REQ] |
+| 4 | `heartbeat` | [BP-TYPE-HEARTBEAT] |
+| 5 | `discovery` | [BP-TYPE-DISCOVERY] |
+| 6 | `time_sync` | [BP-TYPE-TIME-SYNC] |
+| 7 | `binding` | [BP-TYPE-BINDING] |
+| 8 | `ack` | [BP-TYPE-ACK] (01-amendment-critical-ack) |
+| 9 | `log_entry` | [BP-EXT-LOG] (01-amendment-bus-extensions) |
+| 10–15 | reserved | — |
+
+**REQUIREMENT — total round-trip.** A transport binding MUST encode and decode **every** message
+type in this table. `encode(msg).type == msg.type` for all allocated codes is a conformance
+requirement, not an aspiration. A transport whose framing cannot carry 4 bits of type is
+non-conformant and MUST NOT be shipped as a ComposeBus binding; it must widen the field, not
+narrow the type set.
+
+**REQUIREMENT — no silent fallback.** An unmappable type is a protocol fault and MUST be
+reported. On **encode**, a type with no allocated code is a programming error and MUST raise.
+On **decode**, an unallocated code (10–15, or a code a newer peer has been given) MUST be
+reported and the frame dropped. Substituting a default type — historically `state` — is
+FORBIDDEN: it silently converts an ack, a heartbeat or a log entry into a spurious state change,
+which is indistinguishable on the wire from a real one. (This rule was written because
+`transport_uart.py` and `transport_can.py` both did exactly that: `.get(type, 0)`, which turned
+every unmapped type into `state` with no log line.)
+
+**REQUIREMENT — one implementation.** This table is a wire contract shared by every binding, so
+in any one language it MUST exist exactly once and be reused by reference. Per-transport copies
+are the failure mode this section exists to prevent: on 2026-08-10 four independent copies
+(`transport_uart.py`, `transport_can.py`, `services/can_mqtt_bridge/bridge.py`, and the CH32V003
+firmware) each held a DIFFERENT subset of the table — 8, 2, 5 and 2 types respectively — so the
+same `BusMessage` decoded as a different type depending on which substrate carried it. In Python
+the one copy is `composeio.transport.MESSAGE_TYPE_WIRE_CODES` with the
+`wire_code_for_type()` / `message_type_for_wire_code()` accessors. Implementations in languages
+that cannot import it (firmware C) MUST cite this section by name where they declare their
+constants.
+
+---
+
+## 2. Message Types [BP-MSG-TYPES]
+
+### 2.1 `state` — State Engine Value Change [BP-TYPE-STATE]
+
+The primary message type. Published when a module's state engine transitions to a new value.
+
+- **Value**: The new state as a semantic string (JSON) or enum index (CAN)
+- **Delivery**: At-least-once. MQTT QoS 1 — retain is specified but NOT IMPLEMENTED ([BP-MQTT-QOS] §6.2.2). CAN standard frame (no retry beyond CAN's built-in arbitration)
+- **Idempotent**: Yes. Receiving the same state value twice has no effect
+- **Retained**: Yes — ⚠ **specified but NOT IMPLEMENTED**, so a new subscriber currently receives
+  NOTHING until the next publish. See the retain note in [BP-MQTT-QOS] §6.2.2
+- **Rate**: On-change only. Modules MUST NOT republish the same state value. (Note the interaction:
+  on-change publication plus unimplemented retain is what leaves a late subscriber empty
+  indefinitely for a value that rarely changes)
+
+```json
+{"ns": "office_lights", "type": "state", "val": "on", "src": "panel-1", "ts": 12345, "scope": "auto", "seq": 42}
+```
+
+### 2.2 `event` — One-Shot Event [BP-TYPE-EVENT]
+
+Transient occurrence. Not retained. Used for button presses, error notifications, scan completions.
+
+- **Value**: Event name as string. Examples: `"pressed"`, `"released"`, `"long_press"`, `"error_overcurrent"`, `"scan_complete"`
+- **Delivery**: At-most-once. MQTT QoS 0. CAN standard frame
+- **Idempotent**: No. Each event is meaningful
+- **Retained**: No. Late subscribers do not receive past events
+- **Rate**: As-needed. Modules SHOULD rate-limit events to prevent bus flooding (max 20 events/sec per namespace)
+
+```json
+{"ns": "ftl_arm", "type": "event", "val": "pressed", "src": "panel-1", "ts": 12345, "scope": "auto", "seq": 43}
+```
+
+### 2.3 `config_push` — Config Binary Delivery [BP-TYPE-CONFIG-PUSH]
+
+Delivers a compiled config binary to a module. Sent by bus storage in response to a `config_request`, or proactively after a `composeio push`.
+
+> **SUPERSEDED IN PART by [SPEC:CXC-CONFIG-BUS]** (`corpora/platform-specs/61-config-over-bus.lts`).
+> The URL-reference form below assumes a peer that can dereference a URL. A node with no IP — a
+> UART-slaved display, or a board behind a CH32V203 on CAN — cannot, so config also travels **as
+> content over the bus itself**: a header frame, sequenced data frames, then one binary ACK, sized
+> for a classic-CAN 8-byte frame. Which path applies is the device's selectable `config` strategy
+> (`bus` / `http` / `cached`), NOT a property of this message type. Read that spec before
+> implementing a `config_push` producer or consumer.
+
+- **Value**: For JSON transports, a `bus://` URL referencing the config binary in bus storage. Over
+  a framed binary transport, the value carries the config **content** in chunks per
+  [SPEC:CXC-CONFIG-BUS], because a URL is undereferenceable there
+- **Correlation ID**: `cid` is NOT IMPLEMENTED at the core-message level ([BP-MSG-OPT-FIELDS]). The
+  bus-config path correlates by **namespace and content hash** instead — `_device/{id}/config`
+  is both the address and the transfer identity — not by a correlation id
+- **Retained**: No
+- **I2C**: the "written directly to the module's config register space" path is part of the
+  unbuilt I2C design sketch (§6.5)
+
+```json
+{"ns": "_bus/config/panel-1", "type": "config_push", "val": "bus://config/panel-1.bin", "src": "hub-main", "ts": 12346, "scope": "global", "seq": 100, "cid": 7}
+```
+
+### 2.4 `config_request` — Module Requests Config [BP-TYPE-CONFIG-REQ]
+
+Sent by a module on boot (or when it detects a config version mismatch) to request its config from bus storage.
+
+> **SUPERSEDED IN PART by [SPEC:CXC-CONFIG-BUS].** Over the bus-config path a `config_request`
+> carries **nothing but its own namespace** — the request IS the address — and integrity is a
+> **CRC-16/CCITT content hash** carried in the transfer header, not a CRC-32 in the request. The
+> CRC-32-in-the-request handshake below is the HTTP-strategy shape.
+
+- **Value**: CRC-32 checksum of the module's currently cached config binary. `0x00000000` if no cached config
+- **Correlation ID**: `cid` is NOT IMPLEMENTED at the core-message level ([BP-MSG-OPT-FIELDS]);
+  this "MUST be set" is unenforced by any binding
+
+```json
+{"ns": "_bus/config/panel-1", "type": "config_req", "val": "0xA1B2C3D4", "src": "panel-1", "ts": 12340, "scope": "global", "seq": 1, "cid": 7}
+```
+
+Bus storage compares the checksum:
+- **Match**: Responds with `config_push` where `val` = `"current"` (no update needed)
+- **Mismatch or unknown**: Responds with `config_push` containing the URL to the new config binary
+
+### 2.5 `heartbeat` — Liveness Signal [BP-TYPE-HEARTBEAT]
+
+Periodic liveness signal. Published by bus master and by individual modules.
+
+- **Value**: Module status string. One of: `"alive"`, `"degraded"`, `"shutting_down"`
+- **Retained**: Yes (MQTT) — ⚠ **specified but NOT IMPLEMENTED** ([BP-MQTT-QOS] §6.2.2), so the last heartbeat status is NOT queryable by a late subscriber
+- **Rate**: Bus master: every 10 seconds. Modules: every 30 seconds. Configurable per-module
+
+```json
+{"ns": "_bus/heartbeat", "type": "heartbeat", "val": "alive", "src": "hub-main", "ts": 12345, "scope": "global", "seq": 500}
+```
+
+⛔ **THE RECEIVER WAS NOT IMPLEMENTED, AND THIS SECTION'S SILENCE ABOUT THAT IS WHY IT WAS BELIEVED BUILT.** Until 2026-08-15 `publish_heartbeat` had NO CALLER and no receiver existed anywhere in the repo — beats were neither sent nor counted — while this section, §5.2 and §9.2 all described the mechanism in the present tense with no banner, in a document that banners its other unbuilt behaviour seven-plus times. A reader's inference was therefore correct and the document was wrong. **A section that banners SOME unbuilt behaviour makes every unbannered section a positive claim of implementation.**
+
+**Status as of 2026-08-15** — the publisher is driven by the bus clock, and the RECEIVER (`HeartbeatReceiver`, per-node liveness at 3× the declared interval) now exists on the **Python tier only**. See `[SPEC:CXC-FRESHNESS]` (`corpora/platform-specs/72-freshness-receiver.lts`), which is the authoritative and implementable statement; this section is retained as narrative and is NOT the contract.
+
+⚠ **THREE DIVERGENCES between this prose and the shipped code**, listed rather than silently reconciled:
+- **Rate.** This section says bus master 10 s / modules 30 s. The code declares **5 s** (`BUS_HEARTBEAT_INTERVAL_S`), and the interval is now DECLARED per namespace and carried in the beat payload rather than fixed here.
+- **Value.** This section says a status string (`"alive"`/`"degraded"`/`"shutting_down"`). The code publishes a **dict** — `{node, uptime_s, interval_s}` — because a beat that does not name its node cannot mark a node dead.
+- **Degraded mode.** Automatic entry into degraded mode on missed beats is **NOT IMPLEMENTED**. The receiver computes per-node liveness and per-namespace staleness; nothing yet drives a module into a degraded STATE off the back of it.
+
+A module that misses 3 consecutive bus master heartbeats enters degraded mode: local bindings continue, global/remote subscriptions are marked stale. ⛔ **NOT IMPLEMENTED** — see the divergence list above.
+
+### 2.6 `discovery` — Module Announcement [BP-TYPE-DISCOVERY]
+
+Published by a module when it joins the bus, and periodically thereafter (every 60 seconds). Enables the bus master to maintain a device registry.
+
+- **Value**: JSON object with module capabilities
+
+```json
+{
+  "ns": "_bus/discovery",
+  "type": "discovery",
+  "val": {
+    "module_id": "panel-1",
+    "role": "button_matrix",
+    "hw": "ch32v003",
+    "fw_ver": "1.2.0",
+    "config_crc": "0xA1B2C3D4",
+    "namespaces": {
+      "publish": ["ftl_arm", "red_alert", "shields"],
+      "subscribe": ["_bus/time", "_bus/config/panel-1"]
+    },
+    "capabilities": ["button", "led", "state_engine"],
+    "uptime": 86400
+  },
+  "src": "panel-1",
+  "ts": 12345,
+  "scope": "global",
+  "seq": 44
+}
+```
+
+### 2.7 `time_sync` — Bus Time Publication [BP-TYPE-TIME-SYNC]
+
+⛔ **`_bus/time` IS NOT A TIME SOURCE.** It is PRODUCED and consumed by NOTHING. Do not build
+anything on it.
+
+**What is actually produced.** `Bus._publish_bus_time()` (`python/composeio/bus.py`) emits one
+`time_sync` message on `_bus/time` with `value = int(time.time())` — a Unix timestamp at **one-second
+granularity** — and it is called from exactly one place: `Bus.start()`, suppressible with
+`announce_time=False`. It is an announcement that a bus master has come up, not a clock. There is no
+60-second timer, and no other producer exists anywhere in the repo.
+
+**What consumes it: nothing.** Every touch-point in the codebase EXCLUDES it explicitly:
+
+| Site | Behaviour |
+|---|---|
+| `python/composeio/peer/frame.py` | `if msg.namespace == "_bus/time": return None` — never forwarded to a peer substream |
+| `python/composeio/peer/hub.py` | skipped when building the scoped state index |
+| `python/composeio/peer/canbridge.py` | `if msg.namespace == "_bus/time": return` — never egresses to CAN |
+
+⛔ **WHY IT MUST NOT BECOME ONE.** Even if something consumed it, it could not carry time:
+
+1. **One-second granularity.** The value is `int(time.time())`. Every event inside a second is
+   simultaneous, which is coarser than the ~10 ms latencies this bus is built to reason about
+2. **No delay compensation.** There is no round-trip estimate, no offset exchange, no NTP-style
+   correction — nothing measures or subtracts transport delay, so a receiver would adopt a time
+   already stale by an unmeasured amount
+3. **It cannot reach the substrates that need it.** `_bus/time` is explicitly dropped at the CAN and
+   peer bridges, and `ts` is not on the CAN or UART wire at all ([BP-MSG-FIELDS]) — so the modules
+   without an RTC, which are the entire justification for the mechanism, are exactly the ones it
+   cannot reach
+
+**The ratified alternative.** Freshness is **receiver-side age against a YAML-declared refresh
+contract** (`DEC-FRESHNESS-IS-RECEIVER-SIDE-AND-DECLARED-IN-YAML`): each receiver measures how long
+since IT last heard a value and compares that against the interval the publisher declared. This needs
+no synchronized clock and no timestamp on the wire, which is why it works on the 8-byte substrate.
+
+**Source**: only a bus master publishes to `_bus/time`; other modules MUST NOT publish `time_sync`.
+
+```json
+{"ns": "_bus/time", "type": "time_sync", "val": 1742169600, "src": "hub-main", "scope": "global"}
+```
+
+### 2.8 `binding` — Sensor-to-Actuator Binding Declaration [BP-TYPE-BINDING]
+
+Declares a namespace binding (DP-CIO-10). Published by the config system when a binding is activated. Other modules can observe active bindings for diagnostics.
+
+- **Value**: JSON object describing the binding
+
+```json
+{
+  "ns": "_bus/binding",
+  "type": "binding",
+  "val": {
+    "source_ns": "laser_power",
+    "target_ns": "vent_fan_speed",
+    "transform": {
+      "type": "threshold_map",
+      "map": [
+        {"above": 500, "val": "high"},
+        {"above": 100, "val": "low"},
+        {"above": 0, "val": "off"}
+      ]
+    },
+    "owner": "hub-main"
+  },
+  "src": "hub-main",
+  "ts": 12345,
+  "scope": "global",
+  "seq": 45
+}
+```
+
+Bindings can be owned by edge modules (local binding, survives host failure per DP-CIO-11) or by the bus master/service hub (global binding, requires host).
+
+---
+
+## 3. Namespace Resolution [BP-NS-RESOLUTION]
+
+### 3.1 Namespace Format [BP-NS-FORMAT]
+
+⛔ **CORRECTED 2026-08-14 — namespaces are HIERARCHICAL, not flat.** This section previously
+specified `[a-z0-9_]+` with "no dots, slashes, or hierarchical separators", treating `_bus/` as a
+lone exception. **That was false when written and is contradicted by this document's own sections**:
+[BP-WIRE-PRIORITY] assigns tiers to `throttle/*`, `dradis/*` and `_app/*`, and the whole
+device-tier identifier scheme ([SPEC:CXC-SUBFILTER], `root/group/leaf`) presumes three levels. A
+flat-namespace rule migrating alongside a hierarchical priority table would put two opposed claims
+into the graph as equally authoritative.
+
+- **Lowercase alphanumeric, underscore, hyphen, and `/` as the level separator**
+- Maximum 64 characters
+- **Hierarchical, up to three levels**: `root/group/leaf` (e.g. `bsg/dradis/contact`). A canonical
+  namespace of more than three levels has NO device-tier identifier and MUST be refused at
+  allocation time — never truncated or hashed ([SPEC:CXC-SUBFILTER])
+- **A prefix match is a level-boundary match**, never a substring one: `bus.py`'s rule is
+  `namespace == prefix or namespace.startswith(prefix + "/")`, so `dradis/*` matches `dradis` and
+  `dradis/contact` but never `dradis_extra`
+- Reserved roots: `_bus/` (infrastructure), `_device/` (per-device control and config),
+  `_app/` (application/display state)
+- Config channel namespaces use `_bus/config/{module_id}` on the HTTP path and
+  `_device/{device_id}/config` on the bus path ([SPEC:CXC-CONFIG-BUS])
+- Log channel namespaces use `_bus/log/{module_id}`
+
+⚠ **The only namespace validator in the tree is `ns_announce.py`'s `_NAME_RE`**
+(`^[A-Za-z0-9_][A-Za-z0-9_./:@+-]*$`), which is broader still — it admits uppercase, dots and
+colons. Nothing enforces the rule above at publish time. A binding MUST NOT assume a namespace has
+been validated.
+
+### 3.2 Auto-Resolution Algorithm [BP-NS-AUTO-RESOLVE]
+
+When a module publishes with `scope: "auto"`, the bus runtime resolves the scope using this algorithm:
+
+```
+1. Check local subscriber table
+   → If any local subscriber exists for this namespace: deliver locally
+   → AND continue to step 2 (local delivery does not prevent global)
+
+2. Check global transport availability
+   → If a global transport (CAN, MQTT) is connected: publish to global transport
+   → If no global transport: done
+
+3. Remote is NEVER auto-resolved
+   → Remote scope requires explicit declaration in config
+   → This prevents accidental cross-network traffic
+```
+
+Resolution is performed at publish time by the bus runtime on the publishing device. The result is cached in a scope resolution table until a topology change invalidates it (module join/leave, transport connect/disconnect).
+
+**Key behavior**: Auto-resolve delivers to ALL applicable scopes, not just the first match. A message to `office_lights` with a local subscriber AND a global transport is delivered both locally AND globally. This ensures all subscribers on all reachable scopes receive the message.
+
+> ⚠ **KNOWN OPEN DEFECT — THE REFERENCE IMPLEMENTATION DOES NOT DO THIS. The spec above is
+> CORRECT and is not to be relaxed to match the code.**
+>
+> `Bus._resolve_scope` (`python/composeio/bus.py`) is **first-match**: it returns `"local"` the
+> moment a namespace has any local subscriber, and `"global"` only otherwise. `_send_message` then
+> routes to the global transport only for scope in `("global", "auto")` — and by then `auto` has
+> already been collapsed to `"local"`. **A namespace with one local subscriber therefore stops
+> reaching the wire entirely**, silently, at the moment the first local subscriber appears.
+>
+> This is a **silent reachability bug**, not a design choice: nothing errors, nothing logs, and the
+> symptom is a remote panel that simply never updates. It was ratified for repair as
+> `DEC-SCOPE-AUTO-RESOLVE-IS-A-UNION-NOT-FIRST-MATCH` — **fix the code to union**, do not amend
+> this section. A binding written today MUST implement the union; [BP-C3] is a conformance
+> requirement and the reference implementation is currently non-conformant against it.
+
+### 3.3 Scope Resolution Table [BP-NS-SCOPE-TABLE]
+
+> ⚠ **NOT IMPLEMENTED.** No scope resolution table exists: `Bus._resolve_scope` recomputes from the
+> namespace's own declared scope and its local-subscriber count on every publish, and there is no
+> cache, no rebuild-on-discovery and no transport-connect invalidation. The design below is
+> retained as the target; a builder MUST NOT assume a table is present to read.
+
+Each bus participant maintains a scope resolution table:
+
+```
+namespace         → [local_subscribers, global_available, remote_configured]
+"ftl_arm"         → [true, true, false]
+"office_lights"   → [false, true, false]
+"_bus/time"       → [true, true, false]
+"vehicle_soc"     → [false, false, true]
+```
+
+The table is rebuilt on:
+- Module boot (from cached config + discovery)
+- Discovery message received (new module joined)
+- Transport connect/disconnect event
+- Config push (namespace list changed)
+
+### 3.4 Explicit Scope Override [BP-NS-SCOPE-OVERRIDE]
+
+A module's config can override auto-resolution for specific namespaces:
+
+```yaml
+namespaces:
+  - ns: ftl_arm
+    scope: local        # Never leaves this device, even if global transport exists
+  - ns: vehicle_soc
+    scope: remote       # Always forwarded to remote transport
+  - ns: office_lights
+    scope: global       # Always published globally, even if only local subscribers exist
+```
+
+---
+
+## 4. Scope Routing Rules [BP-SCOPE-ROUTING]
+
+### 4.1 Local Scope [BP-SCOPE-LOCAL]
+
+- **Transport**: in-process function call ([BP-TRANSPORT-INPROC]) or UART ([BP-TRANSPORT-UART]).
+  ⚠ The I2C mainboard ↔ daughterboard path this previously named first is a DESIGN SKETCH, not a
+  transport (§6.5)
+- **Delivery boundary**: Single device (one host MCU + its I2C peripherals)
+- **Bridge behavior**: Local messages are NEVER forwarded to global or remote transports by bridges
+- **Use case**: Intra-device communication. A button daughterboard and a relay daughterboard on the same mainboard
+
+### 4.2 Global Scope [BP-SCOPE-GLOBAL]
+
+- **Transport**: CAN bus or MQTT on local network
+- **Delivery boundary**: All devices on the local network segment
+- **Bridge behavior**: Global messages are forwarded to all global transport bridges, but NOT to remote bridges unless explicitly configured
+- **Use case**: Multi-device communication. A button panel on one CAN node controlling a relay on another CAN node
+
+### 4.3 Remote Scope [BP-SCOPE-REMOTE]
+
+- **Transport**: MQTT over VPN tunnel (WireGuard)
+- **Delivery boundary**: Explicitly configured remote peers
+- **Bridge behavior**: Remote messages are forwarded to the remote MQTT bridge only. They are also delivered locally and globally (remote implies global implies local)
+- **Use case**: Cross-network communication. Monitoring a vehicle's CAN bus from a home dashboard
+- **Explicit only**: Remote scope is NEVER auto-resolved. It must be declared in config
+
+### 4.4 Scope Hierarchy [BP-SCOPE-HIERARCHY]
+
+Scopes are inclusive. A wider scope includes all narrower scopes:
+
+```
+remote ⊃ global ⊃ local
+```
+
+A message with `scope: "remote"` is delivered to local subscribers, global subscribers, AND remote subscribers. A message with `scope: "global"` is delivered to local AND global subscribers. A message with `scope: "local"` is delivered only to local subscribers.
+
+### 4.5 Deduplication [BP-SCOPE-DEDUP]
+
+A subscriber that is reachable via multiple paths (e.g., both local in-process and via MQTT) MUST receive the message only once. The bus runtime deduplicates using `(src, seq)` tuples. A message with the same source and sequence number seen within the deduplication window (10 seconds) is silently dropped.
+
+---
+
+## 5. Bus Infrastructure Namespaces [BP-BUS-NS]
+
+All infrastructure namespaces use the reserved `_bus/` prefix. Application namespaces MUST NOT start with `_bus/`.
+
+### 5.1 `_bus/time` [BP-BUS-TIME]
+
+⛔ **NOT A TIME SOURCE — see [BP-TYPE-TIME-SYNC] §2.7 for the full statement and the ratified
+alternative.** This section is the namespace's registration only; it does not restate the contract.
+
+- **Published by**: bus master only
+- **Message type**: `time_sync`
+- **Value**: Unix timestamp, `int(time.time())` — **one-second granularity, no delay compensation**
+- **Rate**: **once, at `Bus.start()`** (suppressible via `announce_time=False`). There is no
+  periodic tick; the "every 60 seconds" this section previously specified was never implemented
+- **QoS**: MQTT QoS 0, **NOT retained** — `MQTTTransport` never passes `retain=True` ([BP-MQTT-QOS])
+- **Consumed by**: **nothing.** `peer/frame.py`, `peer/hub.py` and `peer/canbridge.py` each exclude
+  it explicitly
+- **Purpose**: an announcement that a bus master has come up. It does **not** deliver authoritative
+  time to RTC-less edge modules — it cannot reach them (it is dropped at the CAN bridge) and `ts` is
+  not on the CAN or UART wire at all
+- **Failure mode**: none, because nothing depends on it. No module holds a synced offset to drift
+  from; freshness is receiver-side age against a declared refresh contract
+
+### 5.2 `_bus/heartbeat` [BP-BUS-HEARTBEAT]
+
+- **Published by**: Bus master (to `_bus/heartbeat`) and each module (to `_bus/heartbeat/{module_id}`)
+- **Message type**: `heartbeat`
+- **Rate**: Bus master every 10s, modules every 30s
+- **Value**: `"alive"`, `"degraded"`, or `"shutting_down"`
+- **Timeout**: 3 missed intervals = presumed dead. ⚠ **The 3× is a J1939 CONVENTION, not a requirement** — CANopen and NMEA 2000 use comparable receiver-side timeouts and none derives the number from anything but experience. Implemented on the Python tier 2026-08-15 (`HeartbeatReceiver`); see `[SPEC:CXC-FRESHNESS]`.
+- **Degradation trigger**: When a module detects bus master heartbeat loss, it enters degraded mode (DP-CIO-11): local bindings continue, global subscriptions are marked stale, remote subscriptions are dropped. ⛔ **NOT IMPLEMENTED.** No code drives a module into a degraded STATE. What DOES exist is the liveness judgement this would have to be built on — `bus.node_is_alive(node)` and a per-namespace staleness verdict — and nothing consumes either to change a module's mode.
+- ⛔ **Rate and value here are STALE prose**: the code declares **5 s** and publishes a dict `{node, uptime_s, interval_s}`, not a status string. See §2.5's divergence list.
+
+### 5.3 `_bus/discovery` [BP-BUS-DISCOVERY]
+
+- **Published by**: Any module on join and every 60s
+- **Message type**: `discovery`
+- **Value**: Module capabilities object (see section 2.6)
+- **Retained**: Yes (MQTT) — ⚠ **specified but NOT IMPLEMENTED** ([BP-MQTT-QOS] §6.2.2), so a new participant does NOT receive the existing registry on subscribe. Bus master aggregates into namespace registry
+- **Purpose**: Enables auto-resolution (bus runtime knows which namespaces have subscribers), system diagnostics, and config validation
+
+### 5.4 `_bus/config/{module_id}` [BP-BUS-CONFIG]
+
+- **Subscribe**: The target module
+- **Publish**: Bus storage (bus master)
+- **Message types**: `config_request` (module → bus storage), `config_push` (bus storage → module)
+- **Flow** (the HTTP strategy — see the cross-reference below for the bus strategy):
+
+```
+Module boots
+  → Reads cached config CRC from flash
+  → Publishes config_request to _bus/config/{module_id} with CRC
+  → Bus storage compares CRC
+    → Match: responds config_push val="current"
+    → Mismatch: responds config_push val="bus://config/{module_id}.bin"
+  → Module fetches binary via HTTP if URL provided
+  → Module applies config, updates flash cache
+```
+
+> **CROSS-REFERENCE — [SPEC:CXC-CONFIG-BUS] supersedes this flow as one of several selectable
+> strategies** (`corpora/platform-specs/61-config-over-bus.lts`). The flow above is `config: http`,
+> and it presumes IP. Two things about it are not general:
+>
+> - **The fetch step requires an addressable peer.** Under `config: bus` the content streams over
+>   the bus itself and there is no HTTP GET at all
+> - **The namespace differs.** The bus-config path addresses a device at
+>   `_device/{device_id}/config`, not `_bus/config/{module_id}`
+>
+> `config: cached` is a third strategy: flash-provisioned, no fetch. The strategy is a DEPLOYMENT
+> property held in NVS — it cannot live in the scene YAML, because that YAML arrives BY the
+> strategy.
+
+### 5.5 `_bus/log/{module_id}` [BP-BUS-LOG]
+
+- **Published by**: Any module
+- **Message type**: `event`
+- **Value**: Log line string (max 192 chars to stay under 256-byte message limit)
+- **QoS**: MQTT QoS 0 (fire-and-forget)
+- **Purpose**: Centralized log collection. Bus master or service hub can subscribe to `_bus/log/+` (MQTT wildcard) to aggregate logs
+- **Not for**: Debug printf flooding. Modules SHOULD log at most 1 message/second in normal operation
+
+---
+
+## 6. Transport Bindings [BP-TRANSPORT]
+
+Each transport binding implements the bus protocol over a specific physical or logical medium. All bindings MUST preserve the same message semantics. A message published on one transport and bridged to another MUST be semantically identical on both sides.
+
+### 6.1 In-Process (Python) [BP-TRANSPORT-INPROC]
+
+The simplest transport. Used by the Python simulator, test harnesses, and single-process applications.
+
+- **Serialization**: None. Messages are Python dicts passed by reference
+- **Delivery**: Synchronous function call to subscriber callbacks. Published message is delivered to all matching subscribers before `publish()` returns
+- **Scope**: All messages are local. Global/remote scopes are no-ops unless an external transport bridge is attached
+- **Threading**: Single-threaded by default. Subscriber callbacks MUST NOT block. Long-running work MUST be dispatched to a worker thread
+- **Namespace matching**: Exact string match on `ns` field. No wildcards in application code (wildcards are a transport bridge concern)
+
+```python
+from composeio import Bus
+
+bus = Bus(transport="inproc")
+
+def on_ftl_arm(msg):
+    print(f"FTL arm is now {msg['val']}")
+
+bus.subscribe("ftl_arm", on_ftl_arm)
+bus.publish({"ns": "ftl_arm", "type": "state", "val": "on", "src": "sim-1"})
+# on_ftl_arm called synchronously before publish() returns
+```
+
+The `Bus` object auto-populates `ts`, `scope` (default `auto`), and `seq` if not provided by the caller.
+
+### 6.2 MQTT [BP-TRANSPORT-MQTT]
+
+Primary transport for WiFi/Ethernet networked devices and the remote loop.
+
+#### 6.2.1 Topic Mapping [BP-MQTT-TOPICS]
+
+```
+composeio/{scope}/{namespace}
+```
+
+Examples:
+- `composeio/global/ftl_arm`
+- `composeio/global/office_lights`
+- `composeio/remote/vehicle_soc`
+- `composeio/global/_bus/time`
+- `composeio/global/_bus/config/panel-1`
+- `composeio/global/_bus/heartbeat`
+
+The scope in the topic is the resolved scope (never `auto`). The bus runtime resolves `auto` before publishing to MQTT.
+
+#### 6.2.2 QoS Mapping [BP-MQTT-QOS]
+
+| Message Type | QoS | Retain | Rationale |
+|-------------|-----|--------|-----------|
+| `state` | 1 | Yes | State must not be lost; new subscribers get last value |
+| `event` | 0 | No | Events are transient; missed events are acceptable |
+| `config_push` | 1 | No | Config delivery must be reliable |
+| `config_req` | 1 | No | Config requests must be reliable |
+| `heartbeat` | 0 | Yes | Liveness is transient but last status should be queryable |
+| `discovery` | 1 | Yes | New bus participants need the full device registry |
+| `time_sync` | 0 | Yes | Latest time is always more relevant than reliability |
+| `binding` | 1 | Yes | Active bindings should be queryable |
+
+> ⚠ **THE RETAIN COLUMN IS NOT YET IMPLEMENTED.** It is the specified target and stays in this
+> table — it is not to be deleted to match the code — but nothing honours it today.
+> `MQTTTransport` never passes `retain=True`: both publish sites in
+> `python/composeio/transport_mqtt.py` call `self._client.publish(topic, payload, qos=qos)` with no
+> retain argument at all, so paho's default `retain=False` applies universally. **Every "Yes" in the
+> Retain column above is currently false on the wire**, including `state`, whose own semantics
+> ([BP-TYPE-STATE]) promise that "new subscribers receive the last published state." They do not.
+>
+> **The observable symptom**, and it is the mechanism exactly: a newly-opened widget shows nothing
+> until the value next changes — for a throttle, until someone physically moves the lever. A human
+> wiggling a control to populate a panel IS a manual retain.
+>
+> ⛔ **CONSTRAINT ON IMPLEMENTING IT — a retained message carries NO AGE.** The broker hands a late
+> subscriber the last value with no indication whether it is one second or three days old, and the
+> receiver's age counter starts at RECEIPT, so a stale retained value looks perfectly fresh at the
+> exact moment a subscriber is least able to detect it. **Retain MUST therefore be specified INSIDE
+> the freshness contract** (`DEC-FRESHNESS-IS-RECEIVER-SIDE-AND-DECLARED-IN-YAML`), not shipped as a
+> standalone MQTT fix — implemented naively it re-creates precisely the lie that contract exists to
+> prevent. Ratified as `DEC-IMPLEMENT-MQTT-RETAIN-WITH-AN-AGE-CONTRACT`. Preferred mechanism: MQTT
+> 5's Message Expiry Interval, which the broker decrements so a retained value arrives carrying its
+> own remaining staleness — **but first verify the paho/mosquitto path actually negotiates MQTT 5
+> rather than 3.1.1**, rather than assuming it.
+
+#### 6.2.3 MQTT Payload [BP-MQTT-PAYLOAD]
+
+JSON-serialized message (section 1.4). Compact (no whitespace). UTF-8 encoded.
+
+```
+Topic: composeio/global/ftl_arm
+Payload: {"ns":"ftl_arm","type":"state","val":"on","src":"panel-1","ts":12345,"scope":"global","seq":42}
+```
+
+#### 6.2.4 MQTT Bridge for Remote Loop [BP-MQTT-REMOTE]
+
+The remote loop is an MQTT bridge over a WireGuard VPN tunnel (DP-CIO-9).
+
+- Local MQTT broker at each site
+- WireGuard tunnel connects site brokers
+- MQTT bridge forwards messages on topics matching `composeio/remote/#`
+- Bridge decrements TTL. Messages with TTL=0 are not forwarded
+- Bridge adds its own `src` hash to a dedup filter to prevent echo loops
+
+Configuration (on each site's MQTT broker):
+```
+# mosquitto bridge config
+connection remote_site_a
+address 192.0.2.1:1883
+topic composeio/remote/# both 1
+bridge_cafile /etc/wireguard/ca.crt
+```
+
+### 6.3 CAN Bus [BP-TRANSPORT-CAN]
+
+Primary transport for wired multi-device systems.
+
+#### 6.3.1 CAN Configuration [BP-CAN-CONFIG]
+
+- **Standard**: CAN 2.0B (extended 29-bit identifier)
+- **Bitrate**: 250 kbps default (configurable: 125, 250, 500, 1000 kbps)
+- **Frame format**: Extended frame, 8-byte data payload
+- **No CAN FD**: FD is not required. The 8-byte constraint enforces message discipline (DP-CIO-18)
+
+#### 6.3.2 CAN Arbitration and Priority [BP-CAN-PRIORITY]
+
+CAN arbitration is bit-level: lower ID wins. Under [BP-CAN-ID] v2 the **most significant field is
+`prio`** (bits 28..26), so arbitration is decided by a declared design decision rather than by a
+hash:
+
+- **`prio` DOES decide arbitration.** It is a real 3-bit field at the top of the identifier, eight
+  tiers, 0 most urgent. It is assigned by the rule in [BP-WIRE-PRIORITY] —
+  `composeio.transport.priority_for` in Python, `bus_priority_for()` in `cyd/src/bus_wire_codes.h`
+  — and every implementation MUST use that one rule
+- **The namespace hash no longer sits at the top.** `ns_id` is at bits 21..6, below `type`, so it
+  breaks ties *within* a tier and cannot reorder tiers. Infrastructure namespaces (`_bus/*`) still
+  hash across the full 16-bit range; that is now harmless
+- ⛔ **DO NOT choose namespace strings that hash low.** That workaround is the exact anti-pattern
+  [BP-WIRE-PRIORITY] was ratified to eliminate: under v1 it made arbitration a pseudo-random
+  function of a signal's NAME, so `shields` (0xCC50) lost to console bounding boxes and renaming a
+  signal silently re-ranked it. Priority is a protocol concern with a declared rule; it is not a
+  deployment trick, and a namespace MUST be named for what it means
+- **`prio` is sender-side only.** Nothing decodes it and no receiver may route on it —
+  `decode_arbitration_id` deliberately does not return it. Its whole effect is on the wire, during
+  arbitration
+- The retired [BP-CAN-DATA] `priority` nibble in byte 0 is gone. It never affected arbitration
+  (it was in the payload), which is precisely why the field moved into the identifier
+
+#### 6.3.3 CAN-to-MQTT Bridge [BP-CAN-BRIDGE]
+
+A CAN-to-MQTT bridge is a bus participant (typically on an ESP32 or RPi with a CAN transceiver) that:
+
+1. Receives CAN frames, decodes the binary format, converts to JSON
+2. Publishes to MQTT topic `composeio/{scope}/{namespace}` — the scope comes OFF THE WIRE ([BP-CAN-ID] v2 bits 1..0) and MUST NOT be rewritten to `global`. That rewrite was a v1 artifact of having no scope field, and it leaked every `local` message upstream
+3. Subscribes to MQTT topics, encodes to CAN binary format, transmits on CAN bus
+4. Maintains a namespace hash → string lookup table (populated from discovery messages)
+5. ⚠ **Cannot deduplicate by `(src, seq)`.** `seq` is not on the CAN wire and `src` is a 4-bit node id, not a source hash ([BP-MSG-FIELDS]) — so [BP-SCOPE-DEDUP]'s mechanism is unavailable across this hop. Loop safety is provided instead by a **provenance guard**: the bridge does not re-forward traffic it sourced from CAN
+
+The bridge is bidirectional and transparent. Modules on CAN and modules on MQTT interoperate without knowing the other transport exists.
+
+**One layout, imported not restated.** `services/can_mqtt_bridge/bridge.py` imports its shifts from `composeio.transport_can` rather than re-deriving them. That is a REQUIREMENT ([BP-CAN-ID]): the divergence in §6.3.4 existed because the bridge held its own copy.
+
+#### 6.3.4 CLOSED — the CAN identifier divergence [BP-CAN-ID-DIVERGENCE]
+
+**CLOSED 2026-08-13 by [BP-CAN-ID] v2. It is closed and must stay closed** — the same words
+§1.5.1 uses, because a divergence recorded as open in one section and closed in another is worse
+than either state alone.
+
+**All three implementations now speak v2 identically**, `prio(3) | type(4) | ns_id(16) | src(4) |
+scope(2)`:
+
+| Implementation | Status |
+|---|---|
+| `python/composeio/transport_can.py` (`CANTransport`) | v2. The **only** declaration of the shifts; the other two derive from it |
+| `cyd/src/bus_can_id.h` | v2, cites [BP-CAN-ID] by name where it declares its constants |
+| `services/can_mqtt_bridge/bridge.py` | v2, importing `_TYPE_SHIFT` from `transport_can` rather than re-deriving it |
+
+**Parity proof, not assertion.** `env:native_can_id` compares the firmware encoder against the
+Python one across **all 29 bits** (under v1 the corpus covered 20 of 29 and masked the rest, which
+is how the divergence survived), and `python/tests/test_can_wire_format_v2.py` pins the Python
+side. A layout change that does not move both is a test failure, not a review comment.
+
+**The historical divergence (pre-2026-08-13), retained because the reasoning is the guard.** Two
+shipped implementations packed the identifier differently — the bridge as `[ns_hash 16][type 4]
+[src_hash 9]` and `CANTransport` as `[type 4][scope 2][ns_hash 16][seq 7]` — and could not
+interoperate on one wire. `CANTransport` carried scope in the identifier because v1 gave it
+nowhere else to put it; v2 makes that a designed field at bits 1..0 rather than an improvisation.
+The v1 layouts are **retired**: no implementation may emit or accept them, and the restriction
+that `CANTransport` was loopback-only is lifted with them.
+
+`CANTransport` still omits the [BP-CAN-DATA] flags/seq bytes — but that is no longer a divergence,
+because [BP-CAN-DATA] is itself marked NOT IMPLEMENTED (§1.5.2) and the payload is the generic
+[BP-VALUE-CODEC] encoding on every binary substrate by design.
+
+### 6.4 HTTP (Bus Storage) [BP-TRANSPORT-HTTP]
+
+HTTP is not a real-time message transport. It provides the REST API for bus storage (DP-CIO-23). Real-time messages flow over MQTT or CAN; HTTP is for config, assets, state queries, and system management.
+
+See section 7 for the complete REST API.
+
+### 6.5 I2C (Local Loop) [BP-TRANSPORT-I2C]
+
+> ⛔ **DESIGN SKETCH — NOT BUILT. The whole of §6.5 is non-normative**, on the same footing as
+> §1.5.2 [BP-CAN-DATA] and §1.5.4 [BP-CAN-ENUM].
+>
+> **No implementation exists anywhere.** There is no I2C bus transport in `python/composeio/`, none
+> in `services/`, and none in `cyd/src/`. The register map below — `STATUS`, `MSG_LEN`, `MSG_DATA`,
+> `CMD`, `CMD_LEN`, `CMD_DATA`, `MODULE_ID`, `CONFIG_CRC`, `FW_VERSION` — does not appear in a
+> single source file in this repository. Neither does the 100 Hz polling loop, and no daughterboard
+> firmware implements the slave side.
+>
+> **Do not mistake the I2C that DOES exist for this.** The codebase speaks I2C to **peripheral
+> chips** — a touch controller, an I2C mux, a PN532 — through the peripheral HAL
+> (`python/composeio/hal/`). That is device-driver I2C: a mainboard talking to a sensor. **§6.5
+> specifies something else entirely** — a mainboard MCU exchanging whole ComposeBus MESSAGES with
+> peer MCUs over a register protocol. Nothing implements that.
+>
+> **What this means for a builder.** Every claim elsewhere in this spec that rests on I2C being a
+> live transport is a claim about a design, not a system: [BP-SCOPE-LOCAL]'s "Transport: I2C
+> (mainboard ↔ daughterboard)", [BP-TYPE-CONFIG-PUSH]'s I2C config-register path, and §10.1
+> Example 1 in full. The **local** scope is real; it is served by the in-process transport
+> ([BP-TRANSPORT-INPROC]), not by I2C.
+>
+> **The substrate that actually fills this role is UART** ([BP-TRANSPORT-UART], §6.6), which is
+> built, byte-parity-tested and proven end-to-end on hardware. A new local-loop link SHOULD use it.
+> A builder needing this design MUST specify it properly first — in particular §6.5.3's value
+> encoding cites the retired [BP-CAN-DATA] codes and would need rebasing onto [BP-VALUE-CODEC].
+>
+> Retained rather than deleted because the register-map shape is a reasonable starting point and
+> deleting it would invite reinventing it worse.
+
+Sketch follows. I2C connects a mainboard MCU to daughterboard MCUs within a single device.
+
+#### 6.5.1 I2C Roles [BP-I2C-ROLES]
+
+- **Mainboard**: I2C master. Runs the local bus runtime. Polls daughterboards for outbound messages, pushes inbound messages to daughterboards
+- **Daughterboard**: I2C slave. Manages its own hardware (buttons, LEDs, relays). Communicates with mainboard via register-based protocol
+
+#### 6.5.2 I2C Register Map [BP-I2C-REGISTERS]
+
+Each daughterboard exposes a standardized register interface:
+
+| Register | Address | R/W | Size | Description |
+|----------|---------|-----|------|-------------|
+| STATUS | 0x00 | R | 1 | Bit 0: message ready. Bit 1: config dirty. Bit 2: error |
+| MSG_LEN | 0x01 | R | 1 | Length of pending outbound message (0 if none) |
+| MSG_DATA | 0x02 | R | N | Outbound message bytes (read MSG_LEN bytes). Compact binary encoding |
+| CMD | 0x10 | W | 1 | Command register. 0x01=deliver message, 0x02=push config, 0x03=reset |
+| CMD_LEN | 0x11 | W | 1 | Length of incoming data |
+| CMD_DATA | 0x12 | W | N | Incoming message or config bytes |
+| MODULE_ID | 0x20 | R | 16 | Module ID string (null-padded) |
+| CONFIG_CRC | 0x24 | R | 4 | CRC-32 of current cached config |
+| FW_VERSION | 0x28 | R | 4 | Firmware version (major.minor.patch as 3 bytes + reserved) |
+
+#### 6.5.3 I2C Message Encoding [BP-I2C-ENCODING]
+
+Messages over I2C use a compact binary encoding (not JSON, not CAN format). This minimizes I2C transfer time.
+
+```
+Byte 0:    namespace length (N)
+Bytes 1–N: namespace string (UTF-8, no null terminator)
+Byte N+1:  type (4 bits) | scope (2 bits) | priority (2 bits)
+Byte N+2:  seq high byte
+Byte N+3:  seq low byte
+Byte N+4:  value encoding type (same codes as CAN, section 1.5.2)
+Bytes N+5+: value payload (variable, up to 200 bytes)
+```
+
+The mainboard fills in `src` and `ts` when bridging to other transports (daughterboards don't need to know their own bus-level identity or time).
+
+#### 6.5.4 I2C Polling Protocol [BP-I2C-POLLING]
+
+The mainboard polls each daughterboard on a fixed schedule:
+
+```
+Every 10ms (100 Hz):
+  For each daughterboard address:
+    1. Read STATUS register (1 byte)
+    2. If bit 0 (message ready):
+       a. Read MSG_LEN (1 byte)
+       b. Read MSG_DATA (MSG_LEN bytes)
+       c. Decode message, inject into local bus
+    3. If pending inbound message for this daughterboard:
+       a. Write CMD = 0x01
+       b. Write CMD_LEN
+       c. Write CMD_DATA
+```
+
+Polling rate is configurable. 100 Hz provides <10ms latency for button presses, well within human perception.
+
+### 6.6 UART (Point-to-Point Edge Link) [BP-TRANSPORT-UART]
+
+UART connects a host to a single edge MCU over a serial line — the CH32V003 development path and
+the fallback when a device has no CAN transceiver. It is point-to-point, so there is no
+arbitration and no addressing: framing and integrity are the whole protocol.
+
+Documented here because it was NOT: `python/composeio/transport_uart.py` and
+`firmware/ftl_jump_button/src/main.cpp` have spoken this frame format to each other since the
+first CH32V003 bring-up with the layout recorded only in a Python module docstring. A wire format
+that two independent implementations must agree on, held in one implementation's comments, is a
+format the next implementation gets wrong.
+
+#### 6.6.1 UART Frame Layout [BP-UART-FRAME]
+
+```
+[0xC1][len][ns_hash_hi][ns_hash_lo][type_scope][value...][crc8]
+```
+
+| Field | Bytes | Description |
+|-------|-------|-------------|
+| sync | 1 | `0xC1`, the ComposeIO frame marker. A receiver resynchronizes by scanning for it |
+| len | 1 | Payload length: `3 + len(value)`. Bounds the frame at 255 payload bytes |
+| ns_hash | 2 | CRC-16/CCITT of the namespace, big-endian — the SAME hash as [BP-CAN-HASH]. UART carries no namespace string, so a receiver resolves the name from its own registry or reports the hash |
+| type_scope | 1 | Bits 7..4 message type ([BP-TYPE-CODES]), bits 3..2 scope, bits 1..0 reserved (0). Same nibble packing as [BP-I2C-ENCODING] |
+| value | 0..N | Value bytes, encoded per state engine (shared encoder with the CAN binding) |
+| crc8 | 1 | CRC-8/MAXIM (poly 0x31) over `len` through the last value byte. A frame failing CRC is DROPPED and logged, never partially applied |
+
+Scope bits are the [BP-MSG-FIELDS] scope enum: `0=local, 1=global, 2=remote, 3=auto`. All four
+round-trip; `auto` is carried as `auto` and resolved by the receiving runtime, not collapsed on
+the wire.
+
+The type nibble is 4 bits and therefore carries the FULL [BP-TYPE-CODES] allocation (0–9). A UART
+binding MUST round-trip every one of them and MUST NOT substitute a default for an unallocated
+code — see the two REQUIREMENTs in [BP-TYPE-CODES].
+
+#### 6.6.2 Value Encoding [BP-VALUE-CODEC]
+
+**ONE value encoding for every binary substrate** (UART, CAN, I²C), so an MCU speaks one
+dialect wherever it is wired. The reference implementation is
+`composeio.transport_uart.encode_value` / `decode_value`; the firmware mirror is
+`bus_value_encode_*` / `bus_value_decode` in `cyd/src/bus_frame.cpp`, byte-parity-tested by
+`env:native_frame` against a corpus generated from the Python encoder.
+
+| Python type | Wire bytes |
+|-------------|------------|
+| `None` | *(empty)* |
+| `bool` | 1 byte, `0x00` / `0x01` |
+| `int` 0..255 | 1 byte |
+| `int` otherwise | `[0xFE][4 bytes little-endian signed int32]` |
+| `float` | `[0xFF][4 bytes little-endian IEEE-754 float32]` |
+| `str` | `[len][UTF-8]`, truncated at 200 bytes |
+| `bytes` | verbatim, no prefix — the frame's own length delimits it (config chunks) |
+
+**THE VALUE IS SELF-DESCRIBING. This is a REQUIREMENT, not an optimisation.**
+`DEFECT-VALUE-DECODED-FROM-BINARY-WIRE-EACAE9`: until 2026-08-13, int32 and float32 both
+encoded to four bytes with no discriminator, so every decoder had to guess. The canonical
+decoder guessed float (`1000` → 1.4e-42, `-5` → `nan`); `can_mqtt_bridge` guessed int
+(`42.0` → 1109917696). **Negative integers were wrong under both**, so converging the two
+decoders would have moved which values corrupt rather than stopping the corruption.
+
+The tag is **in-band**, not a spare bit in `type_scope`: [BP-CAN-ID] v2 sums to exactly 29
+bits with none spare, so a header bit would work on UART and not on CAN, and two mechanisms
+on two substrates is precisely the fork that [BP-TYPE-CODES] and this clause both exist to
+prevent. In-band also makes `decode(encode(x)) == x` a property of the codec alone.
+`type_scope` bits 1..0 remain reserved.
+
+`0xFE`/`0xFF` cannot collide with a string's length prefix because strings are truncated at
+200 bytes.
+
+**REQUIREMENT — no guessing.** An **untagged** value of four bytes MUST NOT be read as a
+float32. It MUST be surfaced as opaque/raw so that a frame from a peer speaking the retired
+encoding is visibly undecodable rather than invisibly wrong. Tagged and untagged peers do
+not interoperate; a fleet moves in one coordinated reflash.
+
+**KNOWN RESIDUAL, recorded not hidden.** A single `0x00` byte is still ambiguous between
+`int 0`, `False`, enum index 0 and `""` — `encode_value("")` and `encode_value(0)` produce
+identical bytes and both decode as `0`. Tagging it would cost a byte on the most common
+value on the bus (all live throttle traffic is 0..255). Pinned by
+`python/tests/test_value_codec_type_ambiguity.py::test_one_byte_width_is_ambiguous_too`.
+
+---
+
+## 7. Bus Storage REST API [BP-STORAGE-API]
+
+Bus storage is an HTTP service running on the bus master (DP-CIO-23). It stores configs, assets, namespace registry, and workload definitions. All endpoints return JSON unless otherwise noted.
+
+Base URL: `http://{bus_master}:8420/api/v1`
+
+**Port is 8420**, from `COMPOSEIO_PORT` (`services/bus_storage/server.py`), defaulting to 8420. The
+`5100` this section specified until 2026-08-14 was never the port the service listens on.
+
+**This section is reconciled against `services/bus_storage/server.py` as of 2026-08-14.** Where the
+implementation and the previously-specified shape differed, the IMPLEMENTATION is recorded as
+normative and the divergence is named, because a client written against the old text fails at
+runtime rather than at review.
+
+### 7.1 Config Endpoints [BP-STORAGE-CONFIG]
+
+#### `GET /api/v1/config/{module_id}`
+
+Returns the compiled config binary for a module.
+
+- **Response 200**: Config binary (`application/octet-stream`)
+- **Response 404**: `{"error": "No config for module '{module_id}'"}`
+- ⛔ **No `X-Config-CRC` header is set.** The header this section specified does not exist; a client
+  wanting the checksum MUST call the checksum endpoint below
+
+#### `PUT /api/v1/config/{module_id}`
+
+Uploads a compiled config binary.
+
+- **Body**: Config binary (`application/octet-stream`)
+- **Optional header**: `X-ComposeIO-Metadata` — stored verbatim as `{module_id}.meta.json`
+- **Response 201**: `{"status": "ok", "module": "{module_id}", "size": 1024}` — note the status is
+  **201, not 200**; there is **no `crc` field**; and the `module` field is returned but was
+  previously undocumented
+- ⛔ **NO SIDE EFFECT. The documented "publishes `config_push` on PUT" DOES NOT HAPPEN.**
+  `_handle_config_put` writes the file and returns; it holds no bus handle and publishes nothing.
+  **A module is NOT notified of a new config by this call.** It learns on its next boot
+  ([BP-CONFIG-BOOT]) or via the bus-side push path ([SPEC:CXC-CONFIG-BUS]) — which is a different
+  mechanism on a different transport, not this one. Any flow that assumes an HTTP PUT reaches a
+  live module is wrong
+
+#### `DELETE /api/v1/config/{module_id}`
+
+Removes a module's config (and its metadata sidecar) from bus storage.
+
+- **Response 200**: `{"status": "deleted", "module": "{module_id}"}`
+- **Not 404**: deleting a config that does not exist succeeds idempotently
+
+#### `GET /api/v1/config/{module_id}/checksum`
+
+Returns only the CRC-32 checksum (lightweight check for config currency).
+
+- ⛔ **The path is `/checksum`, NOT `/crc`.** `/crc` returns 404
+- **Response 200**: a **bare lowercase hex string** as `text/plain`, zero-padded to 8 digits —
+  e.g. `a1b2c3d4`. **NOT** `{"crc": "0xA1B2C3D4"}`, not JSON, and with no `0x` prefix
+- **Response 404**: `{"error": "No config for module '{module_id}'"}`
+
+### 7.2 Namespace Endpoints [BP-STORAGE-NS]
+
+The namespace registry is a **passive store**: bus storage persists whatever a client PUTs and
+returns it verbatim. It does **not** observe the bus, so it does not derive publishers, subscribers,
+current values or history. The rich response shapes this section previously specified described a
+service that observes traffic; that service does not exist.
+
+#### `GET /api/v1/namespaces`
+
+Lists all registered namespaces.
+
+- **Response 200**: a **bare JSON array** of registry entries — `[{...}, {...}]`. ⛔ **NOT** wrapped
+  in a `{"namespaces": [...]}` object
+- **Entry shape**: whatever was PUT, plus a `name` key set by the server. There is no fixed schema
+  and no server-computed field
+
+#### `GET /api/v1/namespaces/{namespace}`
+
+Returns the stored registry entry for a single namespace, verbatim.
+
+- **Response 200**: the entry as stored, with `name`. **No `publishers` / `subscribers` /
+  `current_val` / `bindings` / `history`** are computed or returned unless a client stored them
+- **Response 404**: `{"error": "Namespace '{namespace}' not found"}`
+
+#### `PUT /api/v1/namespaces/{namespace}`  *(previously undocumented)*
+
+Creates or replaces a namespace registry entry. **This route exists and ships**; it was missing from
+this section entirely, which made the registry look read-only and left no specified way to populate
+it.
+
+- **Body**: a JSON object. The server overwrites/sets `name` to `{namespace}`
+- **Response 201**: `{"status": "ok", "namespace": "{namespace}"}`
+- Writes are serialised under a registry lock; last write wins
+
+#### `DELETE /api/v1/namespaces/{namespace}`
+
+⛔ **Does not exist.** Returns 404. There is no route to remove a namespace entry.
+
+### 7.3 Asset Endpoints [BP-STORAGE-ASSETS]
+
+#### `GET /api/v1/assets/{path}`
+
+Fetches an asset (image, audio, firmware binary, etc.).
+
+- **Path**: Hierarchical. Example: `/api/v1/assets/album_art/current.jpg`
+- **Response 200**: Asset bytes with appropriate Content-Type header
+- **Response 404**: Asset not found
+
+#### `GET /api/v1/assets?prefix={prefix}`  *(previously undocumented)*
+
+Lists assets **one level** under `prefix` (not recursive). **This route exists and ships**; it was
+missing from this section entirely.
+
+- **Query**: `prefix` — omit or leave empty for the assets root
+- **Response 200**: `{"entries": [...]}` — directories first, then files, each group sorted
+  case-insensitively by name. Each entry carries `name`, the slash-joined `path` from the assets
+  root, and `kind` (`"dir"` / `"file"`); files also carry `size`
+- **A prefix that does not exist is a valid EMPTY listing** — 200 with `entries: []`, never 404
+- **Response 403**: prefix escapes the assets root (`../`)
+- **Response 400**: malformed prefix (e.g. an embedded NUL)
+- Dotfiles are skipped, which also excludes the `.{name}.tmp.{pid}.{tid}` temp files atomic writes
+  create — so a listing never shows a torn asset
+
+#### `PUT /api/v1/assets/{path}`
+
+Uploads an asset. Written atomically (`os.replace`), so a concurrent GET never observes a torn file;
+parent directories are created as needed.
+
+- **Body**: Asset bytes
+- **Response 201**: `{"status": "ok", "path": "album_art/current.jpg", "size": 45000}` — status is
+  **201, not 200**, and there is **no `url` field**. A caller needing a `bus://` URL constructs it
+  from `path`
+- `Content-Type` on the request is **not** required or stored; GET guesses the type from the file
+  extension
+
+#### `DELETE /api/v1/assets/{path}`
+
+⛔ **Does not exist.** Returns 404. There is no route to remove an asset.
+
+### 7.4 Workload Endpoints [BP-STORAGE-WORKLOADS]
+
+#### `GET /api/v1/workloads`
+
+Lists all stored workload definitions.
+
+- **Response 200**: a **bare JSON array** of the stored definitions — ⛔ **NOT** wrapped in
+  `{"workloads": [...]}`
+- **No runtime fields.** `status`, `hub` and `uptime` are **not** returned: bus storage stores
+  definitions and has no knowledge of what is running. Liveness is the service hub's to report
+
+```json
+[
+  {
+    "id": "camera_frame_server",
+    "runtime": "python",
+    "namespaces": {
+      "publishes": ["camera_front_frame_ready"],
+      "subscribes": ["camera_select"]
+    }
+  }
+]
+```
+
+#### `PUT /api/v1/workloads/{id}`
+
+Pushes or updates a workload definition.
+
+- **Body**: JSON workload definition
+```json
+{
+  "id": "camera_frame_server",
+  "runtime": "python",
+  "entry": "server.py",
+  "requirements": "requirements.txt",
+  "restart": "always",
+  "namespaces": {
+    "publishes": ["camera_front_frame_ready", "camera_rear_frame_ready"],
+    "subscribes": ["camera_select", "camera_ptz"]
+  }
+}
+```
+- **Response 201**: `{"status": "ok", "workload": "camera_frame_server"}` — status is **201, not
+  200**, and the key is **`workload`, not `id`**. The server does set `id` inside the STORED
+  document
+- ⛔ **No side effect from this call.** Bus storage writes the JSON file and returns; it does not
+  notify or start anything. A service hub that runs the workload must be polling or otherwise
+  triggered — this endpoint does not reach it
+
+#### `DELETE /api/v1/workloads/{id}`
+
+⛔ **Does not exist.** Returns 404. There is no route to remove a workload, and therefore no
+specified way to stop one through this API.
+
+### 7.5 System Endpoints [BP-STORAGE-SYSTEM]
+
+#### `GET /api/v1/status`
+
+**A STORAGE-SERVICE status, not a system overview.** It reports what bus storage holds on disk. It
+does **not** report module liveness, transport health or bus time — bus storage does not observe the
+bus and cannot know any of those. The nested `modules` / `transports` / `workloads` health object
+this section previously specified describes a service that does not exist; a dashboard built on it
+would render fields the server never sends.
+
+- **Response 200** (the actual shape):
+```json
+{
+  "service": "composeio-bus-storage",
+  "version": "0.1.0",
+  "uptime_seconds": 86400,
+  "configs": 5,
+  "namespaces": 12,
+  "workloads": 2,
+  "storage_bytes": 2411724,
+  "disk_free_bytes": 128849018880,
+  "data_dir": "/var/lib/composeio",
+  "modules": ["panel-1", "relay-2"]
+}
+```
+
+- `modules` is a **list of module ids that have a stored config** — derived from filenames, not from
+  liveness. A module in this list may be powered off
+- `namespaces` / `configs` / `workloads` are **counts**, not objects
+
+#### `GET /health`  *(previously undocumented)*
+
+Liveness probe. Returns `200` with the bare body `ok` as `text/plain`. Note it is **not** under
+`/api/v1`.
+
+---
+
+## 8. Config Versioning [BP-CONFIG-VERSION]
+
+### 8.1 Checksum Algorithm [BP-CONFIG-CRC]
+
+CRC-32 (ISO 3309, polynomial 0x04C11DB7) computed over the entire compiled config binary. This is the same CRC-32 used by zlib, PNG, and Ethernet.
+
+### 8.2 Config Lifecycle [BP-CONFIG-LIFECYCLE]
+
+```
+Builder edits YAML
+  → composeio push validates YAML against schema
+  → Compiler produces compact binary
+  → CRC-32 computed over binary
+  → Binary uploaded to bus storage: PUT /api/v1/config/{module_id}
+  → ⛔ NO NOTIFICATION IS SENT. Bus storage publishes nothing on PUT (§7.1)
+  → Module discovers the change on its next boot, or by the bus-config path
+  → Module fetches binary: GET /api/v1/config/{module_id}
+  → Module verifies CRC-32 matches header
+  → Module writes binary + CRC to flash
+  → Module reconfigures from new binary
+  → Module publishes discovery with updated config_crc
+```
+
+> ⛔ **THE NOTIFICATION STEP DOES NOT EXIST.** `_handle_config_put` in
+> `services/bus_storage/server.py` writes the file and returns; it holds no bus handle. A `composeio
+> push` therefore does **not** reach a running module — the lifecycle above completes only across a
+> reboot, unless something else polls.
+>
+> **CROSS-REFERENCE — [SPEC:CXC-CONFIG-BUS]** supplies the live-update path this lifecycle assumed:
+> the head may push an **unsolicited transfer** when bus storage changes, and boot-time pull becomes
+> the degenerate case rather than a separate mechanism. Note the capability difference it records:
+> `config: http` **cannot receive live updates at all** — that is a real capability boundary, not an
+> implementation gap. Integrity there is a **CRC-16/CCITT whole-payload hash** carried in the
+> transfer header (chosen so a 2 KB-class part needs no second polynomial), not the CRC-32
+> [BP-CONFIG-CRC] specifies for the HTTP path.
+
+### 8.3 Boot Sequence [BP-CONFIG-BOOT]
+
+```
+Module powers on
+  → Reads config binary from flash
+  → If flash empty (first boot):
+      → Publishes config_request with crc=0x00000000
+      → Waits up to 10 seconds for config_push
+      → If no response: enters discovery-only mode (publishes discovery, waits)
+  → If flash has config:
+      → Applies cached config immediately (no network dependency — DP-CIO-11)
+      → Publishes config_request with cached CRC
+      → If bus storage responds with new config: applies update
+      → If bus storage responds "current": done
+      → If no response within 5 seconds: continues with cached config
+```
+
+> **CROSS-REFERENCE — [SPEC:CXC-CONFIG-BUS] supersedes the retry and failure behaviour here.** Two
+> differences a builder MUST honour, both ratified there and both bench-verified:
+>
+> - **Retry is exponential with jitter and never stops** — base 1 s, ×2, ceiling 30 s, ±25% jitter
+>   on every wait, as PROTOCOL CONSTANTS rather than deployment settings. The fixed "waits up to 10
+>   seconds / 5 seconds and continues" above gives up. The jitter is load-bearing: it is what stops
+>   a rack of boards that lost their head together from returning in LOCKSTEP and re-creating the
+>   outage the moment it clears
+> - ⛔ **A board with no config MUST SAY SO** — on the bus if it can, and on its own glass if it
+>   cannot. "Enters discovery-only mode and waits" is silent, and a dark or stale panel is
+>   indistinguishable from a working one. Silence is the one unacceptable response
+>
+> Also: booting from cache while re-requesting is resilient, but it can render a months-old scene
+> and look perfectly healthy. **Cache MUST be paired with a visible staleness indication.**
+
+### 8.4 Config Binary Size Constraint [BP-CONFIG-SIZE]
+
+Compiled config binaries MUST be less than 4 KB for CH32V003 targets (2 KB flash budget after firmware) and less than 32 KB for ESP32/RP2040 targets. The `composeio push` tool validates this constraint before uploading.
+
+---
+
+## 9. Bus Master Election [BP-BUS-MASTER]
+
+### 9.1 Single Master Model [BP-MASTER-SINGLE]
+
+ComposeIO v1 uses a single, statically configured bus master. The bus master is the device running bus storage and publishing infrastructure namespaces (`_bus/time`, `_bus/heartbeat`, `_bus/discovery`).
+
+Typically the bus master is an RPi or similar Linux host. In single-device systems, the Arduino/ESP32 host is the bus master. In the Python simulator, the `Bus` object itself is the bus master.
+
+### 9.2 Master Failure [BP-MASTER-FAILURE]
+
+⛔ **THIS ENTIRE SEQUENCE IS NOT IMPLEMENTED.** It is a design narrative written in the present tense, and it carried no banner while seven-plus other sections of this document did — which is precisely why the heartbeat/degraded-mode machinery was believed to be built. Step 1's DETECTION exists on the Python tier as of 2026-08-15 (`[SPEC:CXC-FRESHNESS]`); **steps 2 and 3 do not exist at all** — nothing enters degraded mode, nothing exits it, and no module re-publishes discovery on master recovery.
+
+When the bus master fails:
+1. Modules detect missing heartbeats after 3 missed intervals. ✅ **Detection implemented** (Python tier, `HeartbeatReceiver`) — ⚠ at the DECLARED 5 s cadence, not the 30 s this section's arithmetic assumes.
+2. Modules enter degraded mode — ⛔ **NOT IMPLEMENTED**, no code path exists:
+   - Local bindings continue operating (DP-CIO-11)
+   - Global CAN/MQTT messages continue flowing between modules (the bus master is not a router)
+   - Config requests go unanswered (modules use cached config)
+   - Time sync stops (modules drift on local crystal)
+   - Bus storage API is unavailable
+   - Workloads on the service hub stop if the bus master is also the service hub
+3. When bus master recovers — ⛔ **NOT IMPLEMENTED**, no code path exists:
+   - Publishes heartbeat → modules exit degraded mode
+   - Modules re-publish discovery → bus master rebuilds namespace registry
+   - Modules send config_request → bus master delivers any pending updates
+
+### 9.3 Future: Multi-Master [BP-MASTER-FUTURE]
+
+Multi-master with automatic election is deferred to v2. The protocol is designed to support it: heartbeat messages carry a `role` field, and the election algorithm (Raft-like, based on uptime and capability) can be layered on without protocol changes.
+
+---
+
+## 10. Wire Protocol Summary [BP-WIRE-SUMMARY]
+
+### 10.1 Message Flow Examples [BP-WIRE-EXAMPLES]
+
+#### Example 1: Button Press → Relay Toggle (Local, I2C)
+
+⛔ **SKETCH — this path is NOT BUILT.** It walks the unimplemented I2C register protocol (§6.5) and
+the retired `enum_u8` encoding (§1.5.2). It is retained as an illustration of local-scope semantics,
+not as a flow anything performs. The built local-loop equivalent is [BP-TRANSPORT-UART].
+
+```
+1. Button daughterboard (I2C addr 0x20) detects press
+2. Button module runs state engine: off → on
+3. Button module writes to STATUS register: message ready
+4. Mainboard polls STATUS, reads message:
+   [len=7] "ftl_arm" [type=state|scope=auto|pri=normal] [seq=0042] [enum_u8=1]
+5. Mainboard local bus: auto-resolve "ftl_arm"
+   → Local subscriber found (relay daughterboard at 0x21)
+   → No global transport configured
+6. Mainboard writes to relay daughterboard CMD registers:
+   [cmd=0x01] [len=7] "ftl_arm" [type=state|scope=local|pri=normal] [seq=0042] [enum_u8=1]
+7. Relay module receives, applies state: turns on relay
+```
+
+Latency: <10ms (one I2C poll cycle).
+
+#### Example 2: Button Press → Relay Toggle (Global, CAN + MQTT)
+
+```
+1. Button module on CAN node A (allocated `src` = 1) publishes state change
+2. CAN frame transmitted ([BP-CAN-ID] v2, computed by the reference encoder):
+   ID: prio=5 | type=0 (state) | ns_id=0x7264 ("office_lights") | src=1 | scope=3 (auto)
+       = 0x141C9907
+   Data: 02 6f 6e   — the string "on" per [BP-VALUE-CODEC]. No flags byte, no seq, no ts
+3. CAN-to-MQTT bridge on the bus receives CAN frame
+4. Bridge decodes, publishes to MQTT:
+   Topic: composeio/global/office_lights
+   Payload: {"ns":"office_lights","type":"state","val":"on","src":"panel-1","ts":12345,"scope":"auto","seq":43}
+   NOTE: `ts` and `seq` were NOT on the CAN wire ([BP-MSG-FIELDS]) — the bridge stamps `ts` at
+   receive time and assigns `seq` itself. `scope` DOES come off the wire (v2 bits 1..0) and is
+   NOT rewritten to "global"; that rewrite was a v1 artifact of having no scope field
+5. Relay module on CAN node B: also received the CAN frame directly (CAN is a broadcast bus)
+6. Relay module applies state: turns on relay
+7. Additionally: MQTT subscriber (e.g., HA adapter, dashboard) receives the JSON message
+```
+
+#### Example 3: Config Push
+
+```
+1. Builder runs: composeio push panel-1.yaml
+2. CLI tool validates YAML, compiles to binary (847 bytes), computes CRC-32 = 0xDEADBEEF
+3. CLI uploads: PUT http://hub:8420/api/v1/config/panel-1  [847 bytes]
+   → 201 {"status":"ok","module":"panel-1","size":847}
+4. ⛔ NOTHING IS PUBLISHED. Bus storage writes the file and returns (§7.1). The
+   config_push notification this example previously showed does not happen:
+   Topic: composeio/global/_bus/config/panel-1        <- NOT SENT
+   Payload: {...,"type":"config_push",...}            <- NOT SENT
+5. panel-1 therefore learns nothing now. It picks the change up on its next boot,
+   or over the bus-config path ([SPEC:CXC-CONFIG-BUS]), which is a different
+   mechanism on a different transport
+6. panel-1 fetches: GET http://hub:8420/api/v1/config/panel-1
+7. panel-1 verifies CRC-32, writes to flash, reconfigures
+8. panel-1 publishes discovery with updated config_crc
+```
+
+#### Example 4: Remote Monitoring (Vehicle SOC)
+
+```
+1. ESP32 on vehicle CAN bus reads SOC from OBD-II
+2. ESP32 publishes to local MQTT:
+   Topic: composeio/remote/vehicle_soc
+   Payload: {"ns":"vehicle_soc","type":"state","val":"78","src":"fiat-obd","ts":56000,"scope":"remote","seq":200}
+3. Local MQTT broker bridges to home MQTT broker via WireGuard tunnel
+4. Home MQTT broker delivers to subscribers:
+   - HA adapter maps to sensor.fiat_soc
+   - Dashboard widget displays "78%"
+   - Gauge module on home CAN bus receives via MQTT-to-CAN bridge
+```
+
+---
+
+## 11. Compliance Requirements [BP-COMPLIANCE]
+
+A compliant ComposeIO bus implementation MUST:
+
+1. **[BP-C1]** Implement all seven mandatory message fields (section 1.1)
+2. **[BP-C2]** Support all **ten** message types — codes 0–9, the full [BP-TYPE-CODES]
+   allocation. (Section 2 documents eight; `ack` and `log_entry` are allocated by the amendments
+   and are equally mandatory)
+3. **[BP-C3]** Implement scope auto-resolution per section 3.2 — the **UNION** of applicable
+   scopes. ⚠ The Python reference implementation is currently NON-CONFORMANT here (first-match);
+   see the open-defect note in §3.2
+4. **[BP-C4]** Enforce the 256-byte message size limit
+5. **[BP-C5]** Implement deduplication via `(src, seq)` tuples
+6. **[BP-C6]** Support the `_bus/` infrastructure namespace prefix
+7. **[BP-C7]** Implement the config versioning handshake (section 8)
+8. **[BP-C8]** Degrade gracefully on bus master failure (section 9.2)
+
+A compliant transport binding MUST:
+
+9. **[BP-C9]** Preserve all mandatory message fields across serialization/deserialization
+10. **[BP-C10]** Implement scope routing per section 4
+11. **[BP-C11]** Bridge between transports transparently (a CAN module and an MQTT module on the same namespace MUST interoperate)
+
+---
+
+## 12. Reserved Values [BP-RESERVED]
+
+### 12.1 Reserved Namespace Prefixes
+
+| Prefix | Reserved For |
+|--------|-------------|
+| `_bus/` | Bus infrastructure (time, heartbeat, discovery, config, log) |
+| `_diag/` | Future: diagnostics and debug namespaces |
+| `_test/` | Test harness namespaces (ignored in production) |
+
+### 12.2 Reserved Source Module Names
+
+| Name | Reserved For |
+|------|-------------|
+| `hub-main` | Primary bus master |
+| `hub-backup` | Future: backup bus master |
+| `bridge-*` | Transport bridge modules |
+| `sim-*` | Simulator instances |
+
+### 12.3 Reserved Message Type Codes
+
+**Codes 10–15 are reserved.** Codes 0–9 are ALLOCATED — [BP-TYPE-CODES] §1.6 is the single
+authoritative allocation and this section does not restate it. In particular 8 (`ack`) and 9
+(`log_entry`) are allocated AND implemented; an earlier version of this section reserved 8–15 and
+therefore contradicted §1.6 about two types that ship.
+
+A reserved code is not a free code: on decode, 10–15 MUST be reported and the frame dropped, never
+substituted with a default ([BP-TYPE-CODES], REQUIREMENT — no silent fallback).
+
+JSON type strings starting with `_` are reserved.
+
+---
+
+**Version**: 0.2
+**Created**: 2026-03-17
+**Corrected**: 2026-08-14 — reconciled against the implementation ahead of migration into the
+FactLattice graph. Three internal self-contradictions closed ([BP-CAN-ID-DIVERGENCE] open vs closed,
+[BP-CAN-PRIORITY] vs [BP-WIRE-PRIORITY], §12.3 vs [BP-TYPE-CODES]); v1 CAN worked examples rebased
+onto v2; §7 reconciled against `services/bus_storage/server.py`; and every section describing an
+unbuilt mechanism now says so at the top rather than reading as shipped behaviour.
+
+**Status**: Draft — protocol defined; implemented in part. **Read the NOT IMPLEMENTED / DESIGN
+SKETCH banners as normative**: [BP-CAN-DATA] §1.5.2, [BP-CAN-ENUM] §1.5.4, [BP-TRANSPORT-I2C] §6.5,
+the `ttl` / `cid` rows of [BP-MSG-OPT-FIELDS], and the Retain column of [BP-MQTT-QOS] describe a
+target, not the wire. Two known open defects are recorded against the reference implementation and
+are the CODE's to fix, not this document's: first-match scope auto-resolution ([BP-NS-AUTO-RESOLVE]
+/ [BP-C3]) and unimplemented MQTT retain ([BP-MQTT-QOS]).

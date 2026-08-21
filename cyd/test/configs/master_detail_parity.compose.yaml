@@ -1,0 +1,63 @@
+# Master/detail-parity test scene ([CXC-PRIM-TIER-PARITY]) — exercises the
+# two-region `master_detail` nav viewer ported to the embedded tier (port
+# of master_detail.py) so a board capture can be pixel-crosschecked against
+# the Skia reference for the LEFT nav column + selection chrome.
+#
+# Each section is a TEXT LEAF ({label:, type: label, text:}): the parser
+# (_build_master_detail) makes the section a label widget inside the detail
+# container, so the Skia reference renders the SAME nav label + the SAME
+# section text.  On this flat pixel_stack tier the detail body is
+# text_wrap-wrapped (the child-container layout the Skia detail pane uses
+# is the documented deferred seam — see widgets/master_detail.h); the NAV
+# COLUMN (draw_card panel, accent-dim selected wash + 2.5px accent bar,
+# ellipsized labels) is verbatim the Skia geometry, and is the surface
+# under parity review.
+#
+# EIGHT sections overflow the nav viewport (8 * (42+4) = 368 > ~300), so
+# the shared ScrollList substrate reports a thumb + the tap-zone gutter
+# (page-scroll) — the SAME substrate checklist consumes.
+#
+#   Reference:  cd python && python scripts/cyd_config_crosscheck.py \
+#                 ../cyd/test/configs/master_detail_parity.compose.yaml <capture.bmp>
+
+design:
+  title: Master/Detail Parity
+  width: 240
+  height: 320
+  background: "#070A0F"
+
+widgets:
+  - type: master_detail
+    id: md_main
+    x: 0
+    y: 10
+    w: 240
+    h: 300
+    nav_width: 96
+    initial_tab: 0
+    nav_namespace: "_app/config/section"
+    sections:
+      - label: Overview
+        type: label
+        text: "System nominal. All reactive bindings live and publishing to the bus on schedule."
+      - label: Sensors
+        type: label
+        text: "Fuel 82 percent, charge 61 percent. Touch panel calibrated. Band renderer verified."
+      - label: Network
+        type: label
+        text: "WiFi associated. MQTT broker linked. Config re-poll every 60 seconds keeps scenes fresh."
+      - label: Power
+        type: label
+        text: "Bus rail 5.01V, draw 340mA. Reactive core holding. No brownout events recorded."
+      - label: Radio
+        type: label
+        text: "Uplink locked. Downlink margin nominal. Contacts overlay steady on the DRADIS scope."
+      - label: Storage
+        type: label
+        text: "Document store reachable. Assets cached. Sprite frames baked and resident."
+      - label: Diagnostics
+        type: label
+        text: "Self test clean. Heap headroom healthy. No withheld bindings this session."
+      - label: About
+        type: label
+        text: "ComposeUX embedded tier. One Canvas contract, pixel-identical across backends."

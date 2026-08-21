@@ -1,0 +1,117 @@
+# ComposeUX Widget Primitive — progress_bar_indeterminate
+# [SPEC:CXC-PRIM] [CXC-PRIM-CATALOG] (progress_bar "Variants: determinate +
+# indeterminate (a looping behavior)") + [CXC-PRIM-WHY] (composites, not code
+# widgets)
+#
+# A forkable COMPONENT, not a code widget: a track rect + a sweep rect, wired
+# entirely declaratively. Unlike the determinate progress_bar there is NO
+# bound value — the fill is INDETERMINATE. A single ENGINE-OWNED looping
+# behaviour (`pulse`, [CXC-RM-BEHAVIORS] / behaviors.py) triangle-waves the
+# sweep block's pixel-stack x between from/to forever, giving the classic
+# "barber-pole" / sweeping-segment busy indicator. The loop is bus-SILENT:
+# no frames stream over the bus and no namespace drives it — it is a pure
+# function of elapsed time ([CXC-BIND-C6] determinism), so it renders
+# identically on every backend for free ([CXC-PRIM-C9] define-once).
+#
+# Clone this file and restyle to fork the look — keep the ratified tokens
+# (accent / track-deep / radius, [CXC-PRIM-TOKENS]) for family consistency.
+#
+#   sweep.stack_x  = pulse(from .. to) at period_ms   -- a looping behavior,
+#                    NOT a bound value (this is what makes it indeterminate)
+#   sweep.w        = a fixed sweep-block width (the moving segment)
+#
+# WHY from/to stay >= 2px: a *plain* (unbound) pixel_stack `x` in [0,1] is
+# read as a FRACTION of the parent (the pixel-stack shorthand); the pulse
+# interpolates stack_x as an absolute float, so keeping from/to >= 2 keeps
+# the animated value clear of that reserved [0,1] fraction range. `to` is
+# tuned to the default width — a forked instance with a different width
+# should retune `to` (no load-time arithmetic in a component param in v1,
+# [CXC-PRIM-REPEAT] "no arithmetic engine"; the runtime DSL does math, but a
+# behavior param is a literal).
+#
+# Run:
+#   cd python/composeio/render/examples/components
+#   python3 -m composeio.render.engine.runtime progress_bar_indeterminate.compose.yaml
+# Nothing to publish — it sweeps on its own (that is the point of an
+# indeterminate bar: "busy, duration unknown").
+
+app:
+  id: demo-progress-bar-indeterminate
+
+design:
+  title: "progress_bar_indeterminate"
+  width: 420
+  height: 200
+  theme: dark
+
+components:
+  progress_bar_indeterminate:
+    params: [id, width, height, radius, color, sweep_w, period_ms, from_x, to_x]
+    defaults:
+      id: pbi
+      width: 220
+      height: 10
+      radius: 4
+      color: "#34c3d0"        # ratified accent (dark); fork for light: #159aa8
+      sweep_w: 60             # the moving segment's width
+      period_ms: 1400
+      from_x: 2               # >= 2 to stay clear of the [0,1] fraction range
+      to_x: 158               # tuned for width=220 - sweep_w (220-60-2); retune on a fork
+    widget:
+      # sub-widget ids are prefixed with {{id}} (unique-by-construction across
+      # instances) rather than fixed strings — two indeterminate bars in the
+      # SAME tree would otherwise collide on widget_id ([CXC-PRIM-C2] forkable
+      # implies safe multi-instantiation).
+      type: pixel_stack
+      id: "{{id}}_bar_indet"
+      width: "{{width}}"
+      height: 20
+      children:
+        # track — inset surface, always visible, never the accent
+        - type: rect
+          id: "{{id}}_track"
+          x: 0
+          y: 5
+          w: "{{width}}"
+          h: "{{height}}"
+          corner_radius: "{{radius}}"
+          fill_color: "#2a3542"          # ratified track-deep (dark)
+        # sweep — the ONE animated rect; a looping `pulse` behavior owns its
+        # pixel-stack x. No `when:` namespace — `always` runs it unconditionally
+        # (an indeterminate bar is busy for as long as it is shown).
+        - type: rect
+          id: "{{id}}_sweep"
+          x: 2
+          y: 5
+          w: "{{sweep_w}}"
+          h: "{{height}}"
+          corner_radius: "{{radius}}"
+          fill_color: "{{color}}"
+          behaviors:
+            - when: always
+              do:
+                behavior: pulse
+                target: stack_x
+                period_ms: "{{period_ms}}"
+                from: "{{from_x}}"
+                to: "{{to_x}}"
+
+widgets:
+  - type: stack
+    id: demo_column
+    direction: column
+    gap: 22
+    padding: [24, 20, 24, 20]
+    children:
+      - type: label
+        id: heading
+        text: "progress_bar_indeterminate — a looping (barber-pole) busy bar"
+        font_size: 15
+        color: "#e6ecf3"
+        height: 24
+      # default sweep
+      - { use: progress_bar_indeterminate, id: default, width: 300, to_x: 238 }
+      # a forked instance: wider track, faster sweep, warm accent — still the
+      # same tokens/composition, only params changed ([CXC-PRIM-C2] forkable).
+      - { use: progress_bar_indeterminate, id: fast, width: 300, to_x: 238,
+          period_ms: 700, sweep_w: 48, color: "#159aa8" }

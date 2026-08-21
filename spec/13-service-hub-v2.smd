@@ -1,0 +1,355 @@
+---
+scope: "Service hub v2 — extends the workload supervisor (DP-CIO-24) to host ComposeApp-class applications alongside simple workloads, with Docker container support, .compose.yaml parsing, and dual-bus provisioning"
+audience: "Builder agents (implementation), deployer agents (deployment to mqtt-broker.local)"
+boundary: "IN: Workload supervision (existing), ComposeApp hosting (new), Docker container lifecycle, .compose.yaml integration, transport provisioning. OUT: ComposeApp framework itself (08-composeio-app-framework.smd), bus protocol (01), config schema (02)"
+not-this: "Not the ComposeApp framework spec (that's 08). Not a container orchestrator (no scheduling, no multi-node). The hub runs on one machine and supervises what's deployed to it."
+depends-on: [08-composeio-app-framework.smd, 00-composeio-design-principles.smd, 02-composeio-config-schema.smd]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# Service Hub v2 [SPEC:CIO-SERVICE-HUB-V2]
+
+> The service hub (DP-CIO-24) today supervises simple Python workloads — scripts that subscribe to a namespace, do one thing, publish the result. This spec extends the hub to also host ComposeApp-class applications: programs with dual-bus architecture, internal module decomposition, Docker containers, and selective namespace export. The two tiers coexist — a currency converter and a board manager run on the same hub with different hosting models.
+
+---
+
+## 1. Design Principles
+
+### [SH-DP-1] Two Tiers, One Supervisor
+
+> The hub hosts two kinds of work: **workloads** (simple scripts, single bus, supervised processes) and **ComposeApps** (complex applications, dual bus, Docker containers). Both are first-class. The hub supervises both. The choice between tiers is made by the deployer, not discovered at runtime.
+
+### [SH-DP-2] Docker for ComposeApps, Processes for Workloads
+
+> Workloads run as supervised Python processes (existing behavior, unchanged). ComposeApps run as Docker containers. Docker provides the isolation, port binding, volume persistence, and dependency management that complex apps need without the hub reimplementing those concerns.
+
+### [SH-DP-3] The Hub Provisions, the App Runs
+
+> The hub's job for ComposeApps is provisioning: build/pull the image, start the container with correct networking and volumes, wire MQTT transport credentials, monitor health, restart on failure. The ComposeApp manages its own internal architecture (modules, internal bus, crossover). The hub does not reach into the app's internals.
+
+### [SH-DP-4] Config Is the Deployment Artifact
+
+> A ComposeApp's `.compose.yaml` declares everything the hub needs: app ID, transport config, exported namespaces, Docker build context, port bindings, volume mounts. The hub reads this file and provisions accordingly. No out-of-band configuration.
+
+---
+
+## 2. Architecture
+
+### [SH-ARCH] Hub Architecture v2
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Service Hub v2                                              │
+│                                                              │
+│  ┌──────────────────────┐  ┌──────────────────────────────┐  │
+│  │  Workload Supervisor │  │  ComposeApp Supervisor       │  │
+│  │  (existing)          │  │  (new)                       │  │
+│  │                      │  │                              │  │
+│  │  currency_converter  │  │  board_manager (Docker)      │  │
+│  │  png_to_jpg          │  │  nexus_terminus (Docker)     │  │
+│  │  exchange_rate_feed  │  │  biometric_tester (Docker)   │  │
+│  │                      │  │                              │  │
+│  │  [Python subprocess] │  │  [Docker container]          │  │
+│  │  [venv per workload] │  │  [image per app]             │  │
+│  │  [restart on crash]  │  │  [restart policy]            │  │
+│  └──────────────────────┘  └──────────────────────────────┘  │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────────┐│
+│  │  Registry                                                ││
+│  │  - Workload configs (from bus storage, JSON)             ││
+│  │  - ComposeApp configs (from bus storage, .compose.yaml)  ││
+│  │  - Container status, health, restart counts              ││
+│  └──────────────────────────────────────────────────────────┘│
+│                                                              │
+│  ┌──────────────────────────────────────────────────────────┐│
+│  │  Hub API (HTTP)                                          ││
+│  │  GET  /api/v1/status         — full hub status           ││
+│  │  GET  /api/v1/workloads      — list workloads            ││
+│  │  GET  /api/v1/apps           — list ComposeApps          ││
+│  │  POST /api/v1/apps/{id}/deploy  — deploy a ComposeApp   ││
+│  │  POST /api/v1/apps/{id}/stop    — stop a ComposeApp     ││
+│  │  POST /api/v1/apps/{id}/restart — restart a ComposeApp  ││
+│  └──────────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────────┘
+```
+
+### [SH-ARCH-TIERS] Tier Comparison
+
+| Aspect | Workload (simple) | ComposeApp (complex) |
+|--------|-------------------|----------------------|
+| Runtime | Python subprocess + venv | Docker container |
+| Bus topology | Single bus (all namespaces public) | Dual bus (internal + external, app manages) |
+| Config format | Minimal JSON/YAML (workload, runtime, entry, restart) | Full `.compose.yaml` (app, namespaces, transports, docker) |
+| Namespace visibility | All public | `_app/` private by default, explicit export/import |
+| Internal modules | None (single entry point) | AppModule classes (app manages) |
+| Persistence | Workload manages its own files | Docker volumes declared in config |
+| Port binding | None (bus-only communication) | Declared in config (web UI, MCP, etc.) |
+| Examples | Currency converter, PNG resizer, exchange rate feed | Board Manager, Nexus Terminus, BSG game |
+
+### [SH-ARCH-DECISION] When to Use Which Tier
+
+The deployer chooses the tier. The test: does the app need to hide internal state from the bus, decompose into modules that talk privately, or expose ports? If yes, ComposeApp. If it's request → process → respond on public namespaces with no internal complexity, workload.
+
+---
+
+## 3. ComposeApp Deployment
+
+### [SH-DEPLOY-CONFIG] ComposeApp Deployment Config
+
+A ComposeApp's `.compose.yaml` includes a `docker` section that the hub reads for provisioning:
+
+```yaml
+app:
+  id: board-manager
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+docker:
+  build: .                          # Build context (Dockerfile in this dir)
+  # OR image: ghcr.io/740dave/board-manager:latest
+  container_name: board-manager
+  ports:
+    - "8889:8889"                   # Web UI
+  volumes:
+    - board-manager-data:/app/data  # SQLite persistence
+  restart: always
+  environment:
+    COMPOSEIO_APP_ID: board-manager
+    COMPOSEIO_MQTT_BROKER: mqtt-broker.local
+    COMPOSEIO_MQTT_PORT: "1883"
+
+namespaces:
+  - name: _app/board/tasks
+    state_engine: json
+    # Private — internal state changes
+  - name: _app/board/activity
+    state_engine: json
+    # Private — activity log
+  - name: board/nexus/tasks
+    state_engine: json
+    export: true
+    label: "Nexus Board Tasks"
+  - name: board/nexus/activity
+    state_engine: json
+    export: true
+    label: "Nexus Board Activity"
+```
+
+### [SH-DEPLOY-FLOW] Deployment Flow
+
+1. **Push config**: `.compose.yaml` pushed to bus storage (`PUT /api/v1/apps/{id}`) or placed in the hub's local apps directory
+2. **Hub reads config**: Parses the `docker` section for container provisioning, `app` section for identity, `namespaces` section for registry
+3. **Build/pull image**: If `docker.build` is set, run `docker build` in the build context. If `docker.image` is set, `docker pull`.
+4. **Start container**: `docker run` with ports, volumes, environment, restart policy from config. MQTT credentials injected via environment variables.
+5. **Register in hub**: Container ID, status, namespace declarations stored in hub registry
+6. **Health monitoring**: Hub polls `docker inspect` on a 5-second cycle. Restart policy handled by Docker (hub monitors but Docker manages restarts).
+
+### [SH-DEPLOY-TRANSPORT] Transport Provisioning
+
+The hub provisions MQTT transport for ComposeApps by injecting environment variables:
+
+| Variable | Source | Purpose |
+|----------|--------|---------|
+| `COMPOSEIO_APP_ID` | `app.id` from config | App identity on the bus |
+| `COMPOSEIO_MQTT_BROKER` | `app.transports[type=mqtt].broker` | MQTT broker hostname |
+| `COMPOSEIO_MQTT_PORT` | `app.transports[type=mqtt].port` | MQTT broker port |
+| `COMPOSEIO_STORAGE_URL` | Hub's bus storage URL | Bus storage API endpoint |
+
+The ComposeApp reads these at startup and connects its external bus to MQTT. The hub does not manage the MQTT connection — the app does, using the ComposeApp framework's `connect_transport()`.
+
+### [SH-DEPLOY-VOLUMES] Volume Management
+
+Docker volumes declared in the config are created automatically by Docker on first run. The hub does not manage volume contents — that's the app's responsibility. Volumes persist across container restarts and image rebuilds.
+
+For apps that need pre-seeded data (e.g., migrating from a standalone Docker deployment), the hub supports a `volumes_from` directive that mounts an existing named volume:
+
+```yaml
+docker:
+  volumes:
+    - board-manager-data:/app/data    # Reuse existing volume if it exists
+```
+
+---
+
+## 4. Workload Tier (Unchanged)
+
+### [SH-WORKLOAD] Existing Workload Behavior
+
+The workload tier is unchanged from v1. Workloads are Python scripts supervised as subprocesses with venv isolation, restart policies, and log forwarding.
+
+| Aspect | Behavior |
+|--------|----------|
+| Config | Minimal JSON: `{workload, runtime, entry, requirements, restart, namespaces}` |
+| Runtime | Python subprocess in isolated venv |
+| Restart | Hub manages: `always` (max 10, 5s delay) or `never` |
+| Bus access | Via `ComposeIOBus` Python library, single bus |
+| Logs | stdout/stderr forwarded to hub logger |
+
+No changes to the workload tier. Existing workloads continue to work without modification.
+
+---
+
+## 5. Hub API
+
+### [SH-API] HTTP API
+
+The hub exposes an HTTP API for status and management. Port: 8890 (configurable via `COMPOSEIO_HUB_PORT`).
+
+### [SH-API-STATUS] GET /api/v1/status
+
+Returns full hub status — both workloads and ComposeApps.
+
+```json
+{
+  "service": "composeio-service-hub",
+  "version": "2.0.0",
+  "workloads": {
+    "currency_converter": {"running": true, "pid": 1234, "restart_count": 0},
+    "png_to_jpg": {"running": true, "pid": 1235, "restart_count": 1}
+  },
+  "apps": {
+    "board-manager": {
+      "running": true,
+      "container_id": "abc123",
+      "image": "board-manager:latest",
+      "ports": ["8889:8889"],
+      "health": "healthy",
+      "restart_count": 0,
+      "exported_namespaces": ["board/nexus/tasks", "board/nexus/activity"]
+    }
+  }
+}
+```
+
+### [SH-API-APPS] ComposeApp Management Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/apps` | GET | List all ComposeApps with status |
+| `/api/v1/apps/{id}` | GET | Single app status + namespace details |
+| `/api/v1/apps/{id}/deploy` | POST | Deploy or redeploy (build + start) |
+| `/api/v1/apps/{id}/stop` | POST | Stop container (graceful SIGTERM, then SIGKILL) |
+| `/api/v1/apps/{id}/restart` | POST | Restart container |
+| `/api/v1/apps/{id}/logs` | GET | Last N lines of container logs (default 100) |
+
+---
+
+## 6. Health Monitoring
+
+### [SH-HEALTH] Container Health Checks
+
+The hub monitors ComposeApp containers on a 5-second cycle:
+
+| Check | Method | Action on Failure |
+|-------|--------|-------------------|
+| Container running | `docker inspect --format '{{.State.Running}}'` | Log warning, Docker restart policy handles restart |
+| Container exit | `docker inspect --format '{{.State.ExitCode}}'` | Log error with exit code. If restart policy is `always`, Docker restarts automatically. Hub increments restart counter. |
+
+The hub does NOT implement its own restart logic for Docker containers — Docker's `--restart=always` policy handles that. The hub monitors and reports.
+
+For workloads, the existing 2-second supervision loop with hub-managed restarts continues unchanged.
+
+---
+
+## 7. Hub Deployment
+
+### [SH-HUB-DEPLOY] The Hub Itself
+
+The service hub runs on mqtt-broker.local as a systemd service (not Docker — it needs Docker socket access to manage containers).
+
+```bash
+# /etc/systemd/system/composeio-hub.service
+[Unit]
+Description=ComposeIO Service Hub
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=davidleeburnett
+Environment=COMPOSEIO_HUB_DIR=/var/lib/composeio/hub
+Environment=COMPOSEIO_STORAGE_URL=http://localhost:8420
+Environment=COMPOSEIO_HUB_PORT=8890
+ExecStart=/usr/bin/python3 /opt/composeio/service_hub/hub.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### [SH-HUB-DIRS] Directory Structure
+
+```
+/var/lib/composeio/hub/
+├── workloads/              # Simple workload scripts + configs
+│   ├── currency_converter/
+│   │   ├── workload.json
+│   │   ├── main.py
+│   │   └── requirements.txt
+│   └── png_to_jpg/
+│       ├── workload.json
+│       └── main.py
+├── apps/                   # ComposeApp build contexts
+│   ├── board-manager/
+│   │   ├── board_manager.compose.yaml
+│   │   ├── Dockerfile
+│   │   └── board_manager.py
+│   └── nexus-terminus/
+│       ├── nexus-terminus.compose.yaml
+│       ├── Dockerfile
+│       └── ...
+└── venvs/                  # Python venvs for workloads
+    ├── currency_converter/
+    └── png_to_jpg/
+```
+
+---
+
+## 8. Migration
+
+### [SH-MIGRATION] Migrating Existing Docker Deployments
+
+ComposeApps currently deployed as standalone Docker containers (e.g., OPPM tracker on :8889) migrate to the service hub:
+
+1. Write a `.compose.yaml` with the `docker` section
+2. Move the build context (Dockerfile, source) to the hub's apps directory
+3. Deploy via hub API: `POST /api/v1/apps/{id}/deploy`
+4. The hub builds the image and starts the container
+5. Existing Docker volumes are reused if the volume names match
+
+The existing `deploy/build-and-deploy.sh` scripts are replaced by the hub's deploy flow.
+
+---
+
+## 9. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| SH-C1 | Existing workloads continue working unchanged | Deploy v1 workload → starts, runs, restarts on crash — no config changes |
+| SH-C2 | ComposeApp deploys via .compose.yaml | Push config with docker section → hub builds image, starts container |
+| SH-C3 | MQTT credentials injected via environment | Container env contains COMPOSEIO_MQTT_BROKER and COMPOSEIO_MQTT_PORT |
+| SH-C4 | Port bindings from config | Config declares port 8889 → container accessible on host:8889 |
+| SH-C5 | Volume persistence | Container restart → data in mounted volume survives |
+| SH-C6 | Hub API returns status for both tiers | GET /api/v1/status → response includes workloads and apps sections |
+| SH-C7 | Container health monitoring | Stop a container manually → hub detects and logs within 10 seconds |
+| SH-C8 | Deploy/stop/restart via API | POST to each endpoint → container state changes accordingly |
+| SH-C9 | Hub survives container crash | ComposeApp crashes → hub stays running, reports the crash |
+| SH-C10 | Docker restart policy honored | Container with restart=always crashes → Docker restarts it automatically |
+
+---
+
+## Relationships
+
+- depends-on: [SPEC:CIO-APP] (ComposeApp framework — defines dual bus, modules, crossover)
+- depends-on: [SPEC:CIO-PRINCIPLES] (DP-CIO-24 — service hub concept)
+- impl-note: extends services/service_hub/hub.py
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-29
+**Status**: Draft — ready for review

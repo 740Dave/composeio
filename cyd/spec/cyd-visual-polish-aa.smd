@@ -1,0 +1,223 @@
+---
+scope: "CYD ESP32 visual polish — geometric anti-aliasing, gauge text offset normalization, font atlas coverage for gauge labels"
+audience: "Builder subagent implementing changes to CYD firmware"
+boundary: "canvas_esp32.cpp drawing primitives, gauge.cpp text positioning, font atlas generation"
+not-this: "Not new widgets, not WiFi/MQTT, not touch input"
+depends-on: [15-composeux-embedded-display.smd]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# CYD Visual Polish: Anti-Aliasing + Gauge Normalization [IMPL:CYD-AA]
+
+> Three targeted changes to the CYD Phase 1b firmware to achieve visual parity with the desktop Skia renderer: (1) coverage-based anti-aliasing on geometric primitives, (2) gauge text offset normalization with desktop, (3) font atlas size coverage for gauge subtitle text.
+
+**All three are now BUILT.** This document was written as a work order and has been
+brought current to the code it describes; read it as a record of a completed change, not
+as instructions to execute.
+
+## Drift Correction Record [CYD-AA-DRIFT]
+
+A drift audit on 2026-08-14 measured this document against the firmware at commit
+`153b050` and found one dangerous divergence and one stale inventory. Baseline:
+`[DEC-SPEC-DRIFT-BASELINE-CYD-2026-08]`.
+
+| Section | Verdict | What changed |
+|---------|---------|--------------|
+| §1 `[CYD-AA-GEOM]` | KEPT | Body unchanged. Status note added at §1.1 recording that §1 is implemented and that `draw_line()` exceeds what §1.3 asked. Note added at §1.5 that C4's "16 scanlines" is now build-env-dependent. |
+| §2 `[CYD-AA-GAUGE]` | **REWRITTEN** | Previously claimed C++ (`0.58`/`0.78`) and Python (`0.32`/`0.50`) diverged and told a builder to change the C++ to `0.32f`/`0.50f`. **Both are `0.58`/`0.78`; following the old text would have broken existing parity.** Now records the parity as achieved, with evidence. |
+| §3 `[CYD-AA-FONT]` | CORRECTED | §3.1's atlas inventory said "sizes 10, 12, 14, 16px" and knew of one weight. Measured: regular + bold at 6, 7, 8, 10, 12, 14, 16 plus a COMMP family. §3.2/§3.3 unchanged. |
+| §4 `[CYD-AA-BUILD]` | CORRECTED | The `src/gauge.cpp` row prescribed the edit §2 has now retracted. |
+
+Citations in the corrected sections are `file:line` **at commit `153b050`** — line numbers
+in `cyd/src/` move constantly, so resolve them with `git show 153b050:<path>` if they no
+longer land where stated. Function and identifier names are the durable anchors.
+
+---
+
+## 1. Geometric Anti-Aliasing [CYD-AA-GEOM]
+
+### 1.1 Current State [CYD-AA-GEOM-CURRENT]
+
+> **STATUS 2026-08-14 — §1 IS BUILT.** The paragraph below describes the state *before*
+> the AA work and is retained as the problem statement; it is no longer a description of
+> the code. Verified at commit `153b050`: `fill_circle()` is the scanline rasterizer §1.4
+> asked for, computing exact floating-point x-intercepts per row and applying
+> `cov = 0.5 - dist` coverage to the edge pixels (`canvas_esp32.cpp:1027`, formula at
+> `:1086`); `fill_rect()` precomputes per-side fractional edge coverage (`:673`, values at
+> `:690-694`); `fill_round_rect()` applies fractional corner coverage (`:793`, at `:812`);
+> `stamp_stroke_disc()` (`:1555`) is the round-cap stroking primitive, and
+> `stroke_round_rect()` (`:934`), `stroke_rect()` (`:762`) and `stroke_circle()` (`:1172`)
+> all reach AA through it — `stroke_circle` is a one-line delegation to `stroke_arc`
+> (`:1174`), and `stroke_round_rect` draws its four corners with `stroke_arc` and its four
+> straight edges with `fill_rect` strips (`:956-959`), so no primitive carries its own
+> duplicate rasterizer. `fill_arc()` AA's the circular rim (`:1186`, coverage at `:1219`)
+> and documents its two straight sector edges as a known hard-edged AA delta versus Skia
+> (`:1177-1184`). `draw_line()` (`:1417`) **exceeds** §1.3, which asked
+> only for perpendicular distance: thin strokes (`sw <= 1.5`) take a Xiaolin Wu path
+> (`:1437-1446`) and wide strokes take a coverage-parallelogram path (`:1502`). §1.2's SDF
+> formula is the one implemented, unchanged. No edit was needed to §1.2-§1.4.
+
+`canvas_esp32.cpp` uses integer rasterization for all geometric primitives. `canvas_esp32.cpp:put_pixel` already implements full 8-bit alpha blending. The font atlas already provides 8-bit antialiased glyphs. Text rendering already blends glyph alpha with fill alpha. The gap is exclusively in geometric edge rendering.
+
+### 1.2 Coverage-Based AA Approach [CYD-AA-GEOM-APPROACH]
+
+For each geometric primitive, edge pixels compute a coverage value (0.0-1.0) representing what fraction of the pixel area the shape covers. This coverage multiplies the fill/stroke alpha and passes through the existing `put_pixel()` blend path.
+
+**Signed distance field (SDF) method**: For each edge pixel, compute the signed distance from pixel center to the geometric boundary. Map distance to coverage:
+
+```
+coverage = clamp(0.5 - distance, 0.0, 1.0)
+```
+
+Where `distance` is in pixel units, negative = inside shape, positive = outside. This produces a 1-pixel-wide anti-aliased edge.
+
+### 1.3 Primitives Requiring AA [CYD-AA-GEOM-PRIMITIVES]
+
+| Primitive | Function | SDF Calculation |
+|-----------|----------|-----------------|
+| Filled circle | `fill_circle()` | `distance = sqrt((px-cx)^2 + (py-cy)^2) - radius` |
+| Stroked circle | `stroke_circle()` | `distance = abs(sqrt((px-cx)^2 + (py-cy)^2) - radius) - half_thickness` |
+| Filled rect | `fill_rect()` | Edge coverage at 4 borders (1D distance) |
+| Stroked rect | `stroke_rect()` | Edge coverage at inner and outer boundaries |
+| Stroke disc stamp | `stamp_stroke_disc()` | Same as filled circle — this is the round-cap stroking primitive used by `stroke_arc()` |
+| Lines | `draw_line()` | Perpendicular distance from pixel center to line segment |
+
+### 1.4 Implementation Notes [CYD-AA-GEOM-IMPL]
+
+- Use integer-approximated SDF where possible. The `sqrt()` in circle SDF can use the existing integer distance comparison (`dx*dx + dy*dy` vs `r*r`) with a 1-pixel band around the boundary for AA computation. Only edge pixels pay the `sqrt()` cost.
+- `fill_circle()` currently uses the midpoint circle algorithm. Replace with a scanline rasterizer that, for each row, computes the exact floating-point x-intercepts of the circle edge and applies coverage to the first and last pixel of each scanline.
+- `stamp_stroke_disc()` is called many times per arc stroke. Performance matters here. Consider: precompute the disc coverage as a small lookup once per radius, then stamp from the lookup.
+- Band rendering compatibility: all AA changes operate within the existing `in_band()` / `put_pixel()` pipeline. No architectural changes to band rendering.
+- Color format: RGB565. Alpha blending happens at 8-bit precision in `put_pixel()`, then quantizes to 565 on write. This is already correct for AA — the blended result just gets quantized.
+
+### 1.5 Compliance [CYD-AA-GEOM-COMPLIANCE]
+
+### [CYD-AA-C1] Filled circles render with anti-aliased edges (no stairstepping visible at 240x320)
+### [CYD-AA-C2] Stroked arcs render with anti-aliased edges via `stamp_stroke_disc()` AA
+### [CYD-AA-C3] Filled and stroked rectangles render with anti-aliased edges
+### [CYD-AA-C4] No increase in band buffer size (still 16 scanlines, 7,680 bytes)
+### [CYD-AA-C5] Dashboard demo remains visually functional — no regression in layout or color
+
+> **NOTE 2026-08-14 — C4's parenthetical is now build-dependent.** The AA work did not
+> enlarge the band buffer and C4 is SATISFIED, but "16 scanlines" is no longer a universal
+> constant: `kBandHeight` is `CXC_BAND_HEIGHT`, which defaults to 16
+> (`src/canvas_esp32.h:35-38`, giving 240x16x2 = 7,680 bytes on the classic CYD) and is
+> raised to a full frame with `-DCXC_BAND_HEIGHT=320` on the PSRAM-bearing build env
+> (`src/CMakeLists.txt:331`). Read C4 as "AA introduced no per-band memory growth", which
+> is what it was measuring. The rest of §1 is verified CURRENT as of this date — see the
+> note at §1.1.
+
+---
+
+## 2. Gauge Text Offset Parity — RESOLVED [CYD-AA-GAUGE]
+
+> **CORRECTED 2026-08-14 — this section was DRIFTED and actively dangerous.**
+> It previously asserted that C++ and Python diverged (C++ `0.58`/`0.78` vs Python
+> `0.32`/`0.50`) and instructed a builder to edit `gauge.cpp` to `0.32f`/`0.50f`.
+> **Both renderers now use `0.58`/`0.78` — they are already identical.** A builder
+> following the previous text would have BROKEN the parity that exists. The divergence
+> was resolved in the opposite direction from the one this spec prescribed: the C++
+> (embedded) values became canonical and the desktop renderer moved to match, not the
+> reverse. Drift baseline: `[DEC-SPEC-DRIFT-BASELINE-CYD-2026-08]`.
+
+### 2.1 The Requirement [CYD-AA-GAUGE-REQ]
+
+The two renderers must place gauge value text and label text at the **same** fraction of
+`outer_r` below the arc center. A gauge drawn on the CYD and the same gauge drawn by the
+desktop Skia renderer must be comparable pixel-for-pixel; a divergent text offset makes
+the desktop crosscheck PNG useless as a reference, which is the mechanism [CYD-AA-BUILD]
+§4.2 depends on for visual validation.
+
+### 2.2 Achieved State [CYD-AA-GAUGE-ACHIEVED]
+
+Parity holds. Measured 2026-08-14 at commit `153b050`:
+
+| Offset | C++ (`cyd/src/gauge.cpp`) | Python (`python/composeio/render/widgets/gauge.py`) |
+|--------|---------------------------|------------------------------------------------------|
+| Value text Y | `cy + outer_r * 0.58f` — `gauge.cpp:308` | `cy + outer_r * 0.58` — `gauge.py:424` |
+| Label text Y | `cy + outer_r * 0.78f` — `gauge.cpp:314` | `cy + outer_r * 0.78` — `gauge.py:430` |
+
+The surrounding font sizing agrees on the same terms and is part of the same parity
+surface: value font `outer_r * 0.22` bold (`gauge.cpp:306` / `gauge.py:422`), label font
+`outer_r * 0.13` regular (`gauge.cpp:312` / `gauge.py:428`), hub radius `outer_r * 0.06`
+(`gauge.cpp:297` / `gauge.py:416`), inner radius `outer_r * 0.72` (`gauge.cpp:199` /
+`gauge.py:345`).
+
+**Why `0.58`/`0.78` and not the original `0.32`/`0.50`:** the larger offsets were adopted
+during Phase 1b to clear the needle hub on small (115x115) gauges, where `0.32` put the
+value text on top of the hub. That constraint is real on the embedded tier and harmless on
+the desktop, so the embedded value won and the desktop renderer adopted it.
+
+### 2.3 Compliance [CYD-AA-GAUGE-COMPLIANCE]
+
+### [CYD-AA-C6] Gauge value text Y offset is identical in both renderers (`0.58 * outer_r`) — SATISFIED
+### [CYD-AA-C7] Gauge label text Y offset is identical in both renderers (`0.78 * outer_r`) — SATISFIED
+### [CYD-AA-C9] Any future change to a gauge geometry constant is made in BOTH `gauge.cpp` and `gauge.py` in the same change, whichever tier motivates it
+
+---
+
+## 3. Font Atlas — Gauge Label Pre-rendering [CYD-AA-FONT]
+
+### 3.1 Current State [CYD-AA-FONT-CURRENT]
+
+> **CORRECTED 2026-08-14 — size list drifted.** This paragraph previously said the atlas
+> contained "sizes 10, 12, 14, 16px" and knew of only one weight. The atlas has since
+> grown three small sizes, a bold family, and a separate COMMP family. Measured below at
+> commit `153b050`. The requirement in §3.2 and its compliance criterion were unaffected
+> and are unchanged. Drift baseline: `[DEC-SPEC-DRIFT-BASELINE-CYD-2026-08]`.
+
+The atlas generator (`fonts/generate_atlas.py`) uses FreeType with 8-bit grayscale
+antialiasing, and now emits three families:
+
+| Family | Sizes (px) | Source of truth |
+|--------|-----------|-----------------|
+| Regular | 6, 7, 8, 10, 12, 14, 16 | `fonts/generate_atlas.py:438-439` (`--sizes` default) |
+| Bold | 6, 7, 8, 10, 12, 14, 16 | same `--sizes` list, rendered from the bold face |
+| COMMP (Common Pixel) | 12, 14, 16, 20, 24 | `fonts/generate_atlas.py:446-447` (`--commp-sizes` default) |
+
+The generated header restates the list it was built from (`src/font_atlas.h:6-9`), so the
+atlas is self-describing — read it there rather than trusting this table if the two ever
+disagree. Selection at draw time goes through `font_atlas_find_styled(commp, bold, size)`
+(`canvas_esp32.cpp:1867,1898`), not the size-only `font_atlas_find()`
+(`font_atlas.h:4752`); weight and family are part of the lookup key.
+
+Gauge text selects its size from the widget's radius, so the sizes actually demanded are
+continuous, not from a fixed list: value text at `outer_r * 0.22` bold and label text at
+`outer_r * 0.13` regular (`gauge.cpp:306,312`). On a 115x115 gauge (`outer_r` ~57.5) that
+is ~12.6px bold and ~7.5px regular — both inside the generated range, which is why the
+6/7/8px additions exist.
+
+### 3.2 Requirement [CYD-AA-FONT-REQ]
+
+Verify that the gauge subtitle text ("Coolant Temp", "Oil Pressure") renders cleanly at its target font size. If the gauge uses a size not in the atlas (e.g., 8px or 9px), `font_atlas_find()` returns the nearest match (10px) and the text gets nearest-neighbor scaled, producing artifacts.
+
+If any gauge text renders at a size not in the atlas, add that size to the atlas generation. Run `python3 fonts/generate_atlas.py` with the updated size list and regenerate `src/font_atlas.h`.
+
+### 3.3 Compliance [CYD-AA-FONT-COMPLIANCE]
+
+### [CYD-AA-C8] All text visible in the dashboard demo renders from a pre-generated atlas at its exact target size (no nearest-neighbor scaling between sizes)
+
+---
+
+## 4. Build Instructions [CYD-AA-BUILD]
+
+### 4.1 Files to Modify
+
+| File | Changes |
+|------|---------|
+| `src/canvas_esp32.cpp` | AA in `fill_circle()`, `stamp_stroke_disc()`, `fill_rect()`, `stroke_rect()`, `draw_line()` — DONE |
+| `src/gauge.cpp` | ~~Text offset normalization (2 lines)~~ — **RETRACTED 2026-08-14.** No edit is required or wanted: the two renderers already agree at `0.58`/`0.78`. Making this edit would break parity. See §2. |
+| `fonts/generate_atlas.py` | Add any missing font sizes — DONE (6, 7, 8 added; bold and COMMP families added) |
+| `src/font_atlas.h` | Regenerated if sizes added — DONE |
+
+### 4.2 Validation
+
+Compile with `pio run` from the project root (`~/Dropbox/Maker/composeio/cyd/`). The build must succeed with zero errors. The dashboard demo (`main.cpp`) is unchanged — visual validation is done by the human comparing CYD display output with the desktop crosscheck PNG.
+
+---
+
+**Version**: 1.1
+**Created**: 2026-03-30
+**Revised**: 2026-08-14 — drift correction against commit `153b050` (see [CYD-AA-DRIFT]). §2 rewritten, §3.1 and §4.1 corrected, §1 verified current.
+**Status**: Implemented

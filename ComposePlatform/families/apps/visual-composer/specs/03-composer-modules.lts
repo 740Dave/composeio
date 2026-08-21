@@ -1,0 +1,661 @@
+---
+scope: "Implementation contracts for every Composer module — palette, canvas, property editor, binding editor, namespace inspector, bus monitor, preview, history, connection, toolbar"
+audience: "Composer module developers"
+boundary: "Module contracts and behavior; internal bus namespace details in 02-composer-internal-bus.lts; preview rendering pipeline in 05-composer-preview-system.lts"
+not-this: "Not pixel-level UI specifications; not the internal bus protocol"
+depends-on: ["00-composer-design-principles.lts", "01-composer-architecture.lts", "02-composer-internal-bus.lts"]
+confidentiality: internal-only
+artifact-readiness: code-generation
+domain: PLT.CUX
+---
+# ComposeIO Composer Module Contracts [SPEC:CXC-MODULES]
+
+> Implementation contracts for every Composer module. Each module is a `CTkFrame` subclass communicating via the internal ComposeIO bus. This document defines what each module does, what it subscribes to, what it publishes, and its behavioral contract.
+
+---
+
+## 1. Module Base Contract [CXC-MOD-BASE]
+
+Every Composer module inherits from a common base:
+
+```python
+class ComposerModule(ctk.CTkFrame):
+    MODULE_NAME: str                    # Human-readable name
+    MODULE_MANIFEST: dict               # Declared subscriptions and publications
+
+    def __init__(self, master, internal_bus, design_bus, design_state, **kwargs):
+        ...
+
+    def on_bus_ready(self):             # Called after all modules instantiated
+        ...
+
+    def on_design_loaded(self, design): # Called when a design file is loaded
+        ...
+
+    def destroy(self):                  # Unsubscribes from bus, cleans up
+        ...
+```
+
+- `internal_bus`: The `composer-internal` bus for tool communication.
+- `design_bus`: The live design bus for widget testing. May be None if module declares `design_bus: False` in manifest.
+- `design_state`: Read-only reference to the `DesignDocument` data model. Modules read from it; mutations flow through bus commands only.
+
+---
+
+## 2. Palette Module [CXC-MOD-PALETTE]
+
+### Contract
+
+- role: Display the widget type catalog. Let the builder select a widget type for placement.
+- class: `PaletteModule`
+- position: Left sidebar (configurable).
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": ["composer/tool/mode", "composer/palette/catalog_changed"],
+    "publishes": ["composer/palette/selected", "composer/palette/drag_start", "composer/palette/drag_end"],
+    "design_bus": False,
+}
+```
+
+### Behavior
+
+| Trigger | Action |
+|---|---|
+| Startup | Query widget registry, populate catalog grouped by category |
+| User clicks widget type | Publish `composer/palette/selected` with widget type name; switch tool mode to `place` |
+| User drags widget type | Publish `composer/palette/drag_start`; on release, publish `composer/palette/drag_end` with drop coordinates |
+| `composer/tool/mode` changes away from `place` | Deselect current palette selection |
+| `composer/palette/catalog_changed` received | Refresh catalog from registry |
+
+### Widget Registry Integration
+
+The palette reads from the widget registry (`composer.widgets.registry`), which provides:
+
+```python
+@dataclass
+class WidgetTypeInfo:
+    type_name: str                      # "ButtonWidget", "GaugeWidget", etc.
+    display_name: str                   # "Button", "Gauge"
+    category: str                       # "input", "display", "container", "monitor"
+    icon: str                           # Icon path or identifier
+    default_properties: dict            # Default property values
+    property_schema: dict               # Editable properties with types and constraints
+    namespace_slots: list               # How many namespaces this widget consumes/produces
+    preview_class: type                 # The actual CTkFrame class to instantiate in preview
+    config_role: str                    # ComposeIO role this maps to (button-matrix, gauge-driver, etc.)
+```
+
+### Categories
+
+| Category | Widgets | Description |
+|---|---|---|
+| Input | ButtonWidget, CoordinateEntryWidget | User interaction controls |
+| Display | GaugeWidget, RelayWidget | State visualization |
+| Monitor | BusMonitorWidget | Diagnostic / debugging |
+| Container | Module Frame, ScrollableFrame | Layout grouping |
+| ZB Widgets | SliderWithLabel, MetricsCardWidget, LogWidget, etc. | Plugin: zb_widgets library |
+
+---
+
+## 3. Canvas Module [CXC-MOD-CANVAS]
+
+### Contract
+
+- role: Visual layout surface. Display widget slots, module frames, binding connections. Handle drag, drop, resize, selection, and spatial arrangement.
+- class: `CanvasModule`
+- position: Center (main area).
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": [
+        "composer/palette/selected", "composer/palette/drag_end",
+        "composer/tool/mode", "composer/tool/snap_enabled", "composer/tool/grid_size",
+        "composer/tool/show_bindings",
+        "composer/config/widget_changed", "composer/config/module_changed",
+        "composer/binding/created", "composer/binding/modified", "composer/binding/removed",
+    ],
+    "publishes": [
+        "composer/selection/type", "composer/selection/widget_id",
+        "composer/selection/module_id", "composer/selection/multi",
+        "composer/selection/binding_id",
+        "composer/canvas/widget_added", "composer/canvas/widget_removed",
+        "composer/canvas/widget_moved", "composer/canvas/widget_resized",
+        "composer/canvas/module_added", "composer/canvas/module_removed",
+        "composer/canvas/layout_changed", "composer/canvas/viewport",
+        "composer/command/execute",
+    ],
+    "design_bus": False,
+}
+```
+
+### Visual Elements
+
+| Element | Representation | Interaction |
+|---|---|---|
+| Widget slot | Rounded rectangle with icon, type name, namespace label, and LED indicator color | Click to select, drag to move, corner handles to resize |
+| Module frame | Container rectangle with header bar (module name, role badge) | Click header to select module, drag header to move module, edge handles to resize |
+| Binding arrow | Directed curve from source widget to target widget, labeled with transform type | Click to select binding, delete key to remove |
+| Grid overlay | Dotted lines at `grid_size` intervals | Shown when `snap_enabled` is on |
+| Alignment guide | Solid colored line appearing during drag | Snap feedback when widget edge aligns with another |
+
+### Canvas Coordinate System
+
+- origin: Top-left of the canvas content area.
+- units: Logical pixels (1:1 with screen pixels at 100% zoom).
+- zoom: Canvas supports zoom via scroll wheel. Viewport published to `composer/canvas/viewport`.
+- pan: Pan via middle-mouse-drag or `pan` tool mode.
+- infinite canvas: No fixed boundary. Scrollable in all directions.
+
+### Grid Snap Behavior
+
+When `composer/tool/snap_enabled` is on:
+- Widget positions snap to nearest grid intersection on drop/move.
+- Widget sizes snap to nearest grid multiple on resize.
+- Module frame positions snap to grid.
+- Grid size controlled by `composer/tool/grid_size` (default: 10px).
+
+### Module Frame Rules
+
+| Rule | Description |
+|---|---|
+| Widgets must be inside a module | Dropping a widget on bare canvas creates a default module frame first |
+| Modules cannot overlap | Dragging a module into another's space is blocked or auto-adjusts |
+| Widgets cannot span modules | A widget belongs to exactly one module |
+| Module layout is grid-based | Widgets within a module use grid layout (row/col) |
+| Design layout is grid-based | Modules within the design use grid layout with configurable weights |
+
+---
+
+## 4. Property Editor Module [CXC-MOD-PROPERTY]
+
+### Contract
+
+- role: Display and edit properties of the currently selected object (widget, module, binding, or namespace).
+- class: `PropertyEditorModule`
+- position: Right sidebar (configurable).
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": [
+        "composer/selection/type", "composer/selection/widget_id",
+        "composer/selection/module_id", "composer/selection/binding_id",
+    ],
+    "publishes": [
+        "composer/config/widget_changed", "composer/config/module_changed",
+        "composer/config/namespace_changed",
+        "composer/command/execute",
+    ],
+    "design_bus": False,
+}
+```
+
+### Property Editor Modes
+
+The property editor's content changes based on `composer/selection/type`:
+
+#### Mode: `none` (Design Properties)
+
+| Property | Type | Description |
+|---|---|---|
+| Design name | text | Human-readable design name |
+| Target platform | enum: [desktop, cyd_320x240, cyd_480x320, custom] | Target display resolution |
+| Bus config | group | Default scope, authority settings |
+
+#### Mode: `widget` (Widget Properties)
+
+Dynamically populated from the selected widget's `property_schema`. Common properties across all widget types:
+
+| Property | Type | Editor | Description |
+|---|---|---|---|
+| widget_id | text (auto-generated, editable) | Text field | Unique identifier |
+| namespace | namespace picker | Dropdown + create new | Primary namespace for this widget |
+| label | text | Text field | Display label |
+| state_engine | engine picker | Dropdown + custom enum editor | State engine for this widget's namespace |
+| input_type | enum: [toggle, momentary, hold_and_ramp, rotary] | Dropdown | Input mechanic (input widgets only) |
+| led_behavior | enum: [follow_state, blink_500ms, while_pressed, solid, off] | Dropdown | LED indicator behavior (input widgets only) |
+| scope | enum: [local, global, remote, auto] | Dropdown | Namespace scope |
+
+Widget-type-specific properties are appended below common properties, sourced from the widget's `property_schema`.
+
+#### Mode: `module` (Module Properties)
+
+| Property | Type | Editor | Description |
+|---|---|---|---|
+| module_id | text | Text field | Module identifier |
+| module_type | text (read-only) | Label | Module role type |
+| role | enum per [SPEC:CIO-CONFIG-SCHEMA] | Dropdown | ComposeIO role (button-matrix, relay-controller, etc.) |
+| scope | enum: [local, global, auto] | Dropdown | Default scope for all widgets in module |
+| columns | integer | Spinner | Number of grid columns within the module |
+| padding | dimension | Spinner | Internal padding |
+
+#### Mode: `binding` (Binding Properties)
+
+Varies by binding type (simple, compound, event_triggered). See [SPEC:CIO-CONFIG-SCHEMA] for full binding config.
+
+| Property | Type | Editor | Description |
+|---|---|---|---|
+| binding_id | text | Text field (read-only) | Auto-generated ID |
+| type | enum: [simple, compound, event_triggered] | Dropdown | Binding type |
+| input_namespace(s) | namespace picker | Dropdown(s) | Source namespace(s) |
+| output_namespace | namespace picker | Dropdown | Target namespace |
+| transform | transform editor | Visual chain builder | Transform pipeline |
+| conditions | condition editor | Visual rule cards (compound only) | Conditional rules |
+
+### Editor Types
+
+| Editor Type | Widget | Used For |
+|---|---|---|
+| Text field | `CTkEntry` | Strings, identifiers |
+| Dropdown | `CTkOptionMenu` | Enum values, fixed choices |
+| Spinner | `CTkEntry` + increment/decrement buttons | Integers, dimensions |
+| Color picker | Swatch button + color dialog | LED colors, theme colors |
+| Namespace picker | Dropdown of registered namespaces + "create new" option | Namespace assignment |
+| State engine picker | Dropdown (binary, tri_level, etc.) + custom enum editor | State engine selection |
+| Transform chain builder | Vertical stack of transform cards with add/remove | Transform pipelines |
+| Condition card editor | Vertical stack of when/value pairs | Compound binding conditions |
+
+### Property Change Protocol
+
+1. User modifies a value in the editor.
+2. Editor validates the new value against the property's type constraints.
+3. If valid: publish `composer/config/widget_changed` (or `module_changed`, `namespace_changed`) with old and new values.
+4. Simultaneously publish `composer/command/execute` with undo data.
+5. If invalid: show inline validation error; do not publish.
+
+---
+
+## 5. Binding Editor Module [CXC-MOD-BINDING]
+
+### Contract
+
+- role: Create, edit, and visualize namespace bindings (simple, compound, event-triggered).
+- class: `BindingEditorModule`
+- position: Bottom panel or tab alongside Property Editor.
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": [
+        "composer/selection/type", "composer/selection/widget_id",
+        "composer/selection/binding_id",
+        "composer/canvas/widget_added", "composer/canvas/widget_removed",
+        "composer/config/namespace_changed",
+    ],
+    "publishes": [
+        "composer/binding/created", "composer/binding/modified",
+        "composer/binding/removed",
+        "composer/command/execute",
+    ],
+    "design_bus": False,
+}
+```
+
+### Binding Creation Modes
+
+#### Visual Drag-Connect (Canvas Integration)
+
+1. User switches to `connect` tool mode.
+2. User clicks source widget on canvas → source namespace highlighted.
+3. User drags to target widget → binding arrow drawn.
+4. On release: Binding Editor opens pre-populated with source and target namespaces.
+5. User configures transform/conditions → publishes `composer/binding/created`.
+
+#### Binding List Mode
+
+1. Binding Editor shows all bindings in the design as a scrollable list.
+2. Each binding is a card showing: source → transform → target.
+3. Click card to select and edit.
+4. "Add Binding" button opens blank binding form.
+
+### Binding Types
+
+#### Simple Binding Card
+
+```
+┌─────────────────────────────────────────────┐
+│  Simple Binding                    [Delete] │
+│                                             │
+│  Source: [sublight_engines    ▼]            │
+│  Target: [gauge_power         ▼]            │
+│                                             │
+│  Transform:                                 │
+│  ┌─────────────────────────────┐            │
+│  │ map: off→0, half→50, full→100│  [Edit]  │
+│  └─────────────────────────────┘            │
+│  [+ Add Transform Step]                     │
+└─────────────────────────────────────────────┘
+```
+
+#### Compound Binding Card
+
+```
+┌─────────────────────────────────────────────┐
+│  Compound Binding                  [Delete] │
+│                                             │
+│  Output:   [ftl_jump_led      ▼]           │
+│  Requires: [ftl_arm == "on"      ]          │
+│  Default:  [off               ▼]           │
+│                                             │
+│  Conditions:                                │
+│  ┌─────────────────────────────────────┐    │
+│  │ WHEN ftl_cap_charge < 50            │    │
+│  │ VALUE: blink_fast              [x]  │    │
+│  ├─────────────────────────────────────┤    │
+│  │ WHEN ftl_cap_charge >= 50           │    │
+│  │  AND ftl_coord_status == committed  │    │
+│  │ VALUE: solid                   [x]  │    │
+│  └─────────────────────────────────────┘    │
+│  [+ Add Condition]                          │
+└─────────────────────────────────────────────┘
+```
+
+#### Event-Triggered Binding Card
+
+```
+┌─────────────────────────────────────────────┐
+│  Event-Triggered Binding           [Delete] │
+│                                             │
+│  Trigger: [ftl_jump.event == "jump"  ]      │
+│  Output:  [ftl_jump_led      ▼]            │
+│  Set to:  [off               ▼]            │
+│                                             │
+│  Side Effects:                              │
+│  ┌─────────────────────────────────────┐    │
+│  │ SET ftl_arm = off              [x]  │    │
+│  │ SET ftl_cap_charge = 0         [x]  │    │
+│  │ SET ftl_coord_status = dark    [x]  │    │
+│  └─────────────────────────────────────┘    │
+│  [+ Add Side Effect]                        │
+└─────────────────────────────────────────────┘
+```
+
+### Transform Editor
+
+Available transform types (from [SPEC:CIO-CONFIG-SCHEMA]):
+
+| Transform | Editor | Description |
+|---|---|---|
+| `map` | Key-value table | Map discrete values: `{"off": 0, "on": 255}` |
+| `scale` | Min/max fields | Linear scale: `{min: 0, max: 100, out_min: 0, out_max: 255}` |
+| `threshold` | Value + above/below fields | Binary threshold |
+| `deadzone` | Center + range fields | Ignore small changes around center |
+| `debounce` | Duration field | Suppress rapid changes |
+| `invert` | Toggle | Reverse value |
+
+Transforms are chained vertically. Output of one feeds input of next.
+
+---
+
+## 6. Namespace Inspector Module [CXC-MOD-NAMESPACE]
+
+### Contract
+
+- role: Display all namespaces in the design, their state engines, current values (from design bus), publishers, and subscribers.
+- class: `NamespaceInspectorModule`
+- position: Bottom panel or tab.
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": [
+        "composer/canvas/widget_added", "composer/canvas/widget_removed",
+        "composer/config/namespace_changed",
+        "composer/binding/created", "composer/binding/modified", "composer/binding/removed",
+        "composer/connection/discovery",
+    ],
+    "publishes": [
+        "composer/selection/type", "composer/selection/binding_id",
+        "composer/config/namespace_changed",
+    ],
+    "design_bus": True,  # Subscribes to all design bus namespaces for live values
+}
+```
+
+### Display
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Namespaces                                                  [+New] │
+│                                                                     │
+│  Name              Engine          Value     Publishers  Subscribers │
+│  ─────────────────────────────────────────────────────────────────── │
+│  ftl_arm           binary          off       btn_001     relay_001  │
+│  ftl_cap_charge    continuous      0         (timer)     gauge_001  │
+│  ftl_coord_status  enum(5)         dark      coord_001   bind_002   │
+│  ftl_jump          (event)         —         btn_005     bind_003   │
+│  ftl_jump_led      enum(4)         off       bind_002    relay_002  │
+│  sublight_engines  tri_level       off       btn_002     bind_001   │
+│  gauge_power       continuous      0         bind_001    gauge_002  │
+│  ⚡ red_alert      binary          off       [hardware]  —          │
+│                                                                     │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+- live-values: The "Value" column updates in real-time from the design bus. When hardware is connected, values reflect actual hardware state.
+- hardware-namespaces: Namespaces discovered from hardware modules (via `discovery` messages) are marked with a lightning bolt icon. These are read-only in the inspector — they're defined by hardware config, not the Composer.
+- click-to-select: Clicking a namespace row publishes `composer/selection/type = namespace` and populates the Property Editor with namespace config.
+
+---
+
+## 7. Bus Monitor Module [CXC-MOD-BUSMON]
+
+### Contract
+
+- role: Display live message stream from the design bus. Diagnostic tool for debugging bindings and state behavior.
+- class: `BusMonitorModule`
+- position: Bottom panel or tab. Can be popped out to separate window.
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": [
+        "composer/connection/status",
+    ],
+    "publishes": [],
+    "design_bus": True,  # Subscribes to all messages via bus.on_message()
+}
+```
+
+### Behavior
+
+- Reuses the existing `BusMonitorWidget` from the ComposeIO simulator — same color coding, same message formatting, same scrollback behavior.
+- message-filter: Toggles for each message type (state, event, binding, heartbeat, discovery).
+- namespace-filter: Optional filter to show only messages for specific namespaces.
+- max-lines: 150 (configurable). Oldest messages roll off.
+- pop-out: Button to detach into separate `CTkToplevel` window for side-by-side use.
+
+---
+
+## 8. Preview Module [CXC-MOD-PREVIEW]
+
+### Contract
+
+- role: Render live, interactive ComposeIO widgets connected to the design bus. The preview is a running ComposeIO application, not a static mockup.
+- class: `PreviewModule`
+- position: Bottom panel, separate tab, or detached window.
+
+Detailed specification in [SPEC:CXC-PREVIEW].
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": [
+        "composer/canvas/widget_added", "composer/canvas/widget_removed",
+        "composer/canvas/widget_moved", "composer/canvas/widget_resized",
+        "composer/canvas/module_added", "composer/canvas/module_removed",
+        "composer/canvas/layout_changed",
+        "composer/config/widget_changed", "composer/config/module_changed",
+        "composer/binding/created", "composer/binding/modified", "composer/binding/removed",
+        "composer/connection/status",
+    ],
+    "publishes": [],
+    "design_bus": True,  # Full participant: subscribes AND publishes (widget interactions)
+}
+```
+
+---
+
+## 9. History Module [CXC-MOD-HISTORY]
+
+### Contract
+
+- role: Maintain the undo/redo command stack. Execute undo and redo operations by publishing reverse commands.
+- class: `HistoryModule`
+- position: Non-visual (no UI frame). Runs as a bus-connected service module.
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": [
+        "composer/command/execute",
+        "composer/command/undo", "composer/command/redo",
+        "composer/file/loaded", "composer/file/saved",
+    ],
+    "publishes": [
+        "composer/history/stack_changed",
+        "composer/file/dirty",
+        # Also re-publishes the reverse of undone commands to their original namespaces
+    ],
+    "design_bus": False,
+}
+```
+
+### Command Stack
+
+- max-depth: 100 commands (configurable).
+- batch-awareness: Commands with the same `batch_id` are grouped as a single entry on the stack. Undoing the batch reverses all commands in reverse order.
+- dirty-tracking: Publishes `composer/file/dirty = on` on first command after save. Publishes `off` on save or when undo stack returns to saved state.
+
+### Undo Execution
+
+1. `composer/command/undo` received.
+2. Pop last command from undo stack.
+3. Read `undo` field from command data.
+4. Publish the undo action to the original namespace (e.g., `composer/config/widget_changed` with the old value).
+5. Push command to redo stack.
+6. Publish `composer/history/stack_changed` with updated can_undo/can_redo flags.
+
+---
+
+## 10. Connection Module [CXC-MOD-CONNECTION]
+
+### Contract
+
+- role: Manage design bus transport connections. Add/remove MQTT, UART, CAN transports. Display connection status.
+- class: `ConnectionModule`
+- position: Toolbar area or status bar.
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": [],
+    "publishes": [
+        "composer/connection/status",
+        "composer/connection/transport_added", "composer/connection/transport_removed",
+        "composer/connection/discovery",
+    ],
+    "design_bus": True,  # Manages the design bus's transport layer
+}
+```
+
+### Connection UI
+
+```
+┌──────────────────────────────────────────────────┐
+│  Design Bus Connection                           │
+│                                                  │
+│  Status: ● Connected (MQTT)                      │
+│                                                  │
+│  Transports:                                     │
+│  ┌────────────────────────────────────────────┐  │
+│  │ ✓ In-process (always on)                   │  │
+│  │ ✓ MQTT: broker.local:1883        [Disconnect] │
+│  │ ○ UART: /dev/tty.usbserial-*    [Connect]  │ │
+│  │ ○ CAN: can0                      [Connect]  │ │
+│  └────────────────────────────────────────────┘  │
+│                                                  │
+│  Discovered Modules: 3                           │
+│  ftl-panel (button-matrix) | relay-board-1       │
+│  gauge-driver-1                                  │
+└──────────────────────────────────────────────────┘
+```
+
+- in-process: Always active. Cannot be disconnected.
+- mqtt-config: Broker URL, port, optional username/password, QoS level.
+- uart-config: Serial port path, baud rate (default: 115200).
+- can-config: Interface name, bitrate.
+- auto-reconnect: On transport failure, attempt reconnect every 5 seconds. Publish `composer/connection/status = error` immediately, `connecting` on retry, `connected` on success.
+
+---
+
+## 11. Toolbar Module [CXC-MOD-TOOLBAR]
+
+### Contract
+
+- role: File operations (new, open, save, export), mode switching, undo/redo buttons, view toggles.
+- class: `ToolbarModule`
+- position: Top bar.
+
+### Manifest
+
+```python
+MODULE_MANIFEST = {
+    "subscribes": [
+        "composer/history/stack_changed",
+        "composer/file/dirty", "composer/file/path",
+        "composer/connection/status",
+    ],
+    "publishes": [
+        "composer/tool/mode", "composer/tool/snap_enabled",
+        "composer/tool/grid_size", "composer/tool/show_bindings",
+        "composer/command/undo", "composer/command/redo",
+        "composer/file/loaded", "composer/file/saved", "composer/file/path",
+    ],
+    "design_bus": False,
+}
+```
+
+### Toolbar Layout
+
+```
+[New] [Open] [Save] [Export YAML] | [Select] [Place] [Connect] [Pan] | [Undo] [Redo] | [Grid ✓] [Bindings ✓] | ● Connected
+```
+
+- file-operations: New clears design state and publishes `composer/file/loaded`. Open reads YAML and publishes `composer/file/loaded`. Save writes YAML and publishes `composer/file/saved`. Export generates deployment-ready ComposeIO YAML.
+- mode-buttons: Toggle group — only one active at a time. Publishes `composer/tool/mode`.
+- undo-redo: Enabled/disabled based on `composer/history/stack_changed`. Publishes `composer/command/undo` or `composer/command/redo`.
+- connection-indicator: Shows design bus status from `composer/connection/status`. Clickable to open Connection module.
+
+### Keyboard Shortcuts
+
+| Shortcut | Action | Bus Message |
+|---|---|---|
+| Cmd+Z | Undo | `composer/command/undo` |
+| Cmd+Shift+Z | Redo | `composer/command/redo` |
+| Cmd+S | Save | `composer/file/saved` |
+| Cmd+O | Open | File dialog → `composer/file/loaded` |
+| V | Select mode | `composer/tool/mode = select` |
+| P | Place mode | `composer/tool/mode = place` |
+| C | Connect mode | `composer/tool/mode = connect` |
+| Space (hold) | Temporary pan | `composer/tool/mode = pan` (revert on release) |
+| Delete | Delete selected | `composer/canvas/widget_removed` or `composer/binding/removed` |
+| G | Toggle grid | `composer/tool/snap_enabled` toggle |
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-27
+**Status**: Draft

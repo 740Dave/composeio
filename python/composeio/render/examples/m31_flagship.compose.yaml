@@ -1,0 +1,82 @@
+# M31 flagship testbed — bus:// ImageWidget + data-bound CalloutOverlayWidgets
+# in a pixel-stack composite ([CXC-RM-M2] step 1; the gap flagged in
+# 00-composer-overview [CXC-FEAT-PALETTE]).
+#
+#   python -m composeio.render.run_compose m31_flagship.compose.yaml
+#
+# The callouts are namespace-bound: publish {"text": ..., "x": ..., "y": ...}
+# to m31/callout_soc (JSON) and the annotation moves/relabels live.
+app:
+  id: m31-flagship
+  transports: []
+
+design:
+  target: desktop
+  title: "M31 Flagship — Image + Callouts"
+  theme: dark
+  width: 560
+  height: 470
+
+namespaces:
+  - {name: m31/callout_soc,  state_engine: json, export: false, label: "SoC callout"}
+  - {name: m31/callout_cap,  state_engine: json, export: false, label: "Cap callout"}
+  - {name: m31/board_status, state_engine: stop_light, export: false, label: "Board status"}
+
+widgets:
+  - type: label
+    text: "M31 — annotated board view"
+    font_size: 16
+    font_weight: medium
+    align: center
+
+  - type: pixel_stack
+    id: board_composite
+    width: 520
+    height: 360
+    background: "#151519"
+    border: "#3A3A50"
+    corner_radius: 8
+    clip: true
+    children:
+      - type: image
+        id: board_photo
+        src: bus://assets/m31/board.png
+        x: 20
+        y: 20
+        w: 480
+        h: 320
+        fit: contain
+
+      - type: callout
+        id: co_soc
+        text: "Atom E3825 SoC"
+        namespace: m31/callout_soc
+        x: 20
+        y: 20
+        w: 480
+        h: 320
+        target: [0.25, 0.375]
+        offset: [40, -14]
+
+      - type: callout
+        id: co_cap
+        text: "bulk cap"
+        namespace: m31/callout_cap
+        color: "#FFA726"
+        x: 20
+        y: 20
+        w: 480
+        h: 320
+        target: [0.815, 0.72]
+        offset: [-110, -40]
+
+  - type: stack
+    direction: row
+    gap: 12
+    justify: center
+    children:
+      - type: relay
+        id: board_ok
+        namespace: m31/board_status
+        state_engine: stop_light
+        label: "Board"

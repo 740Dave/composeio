@@ -1,0 +1,106 @@
+# Part catalog entry — 4-channel bidirectional logic level converter (BSS138 x4).
+#
+# The SparkFun BOB-12009 / Adafruit #757 / generic "4 channel IIC I2C logic
+# level converter bi-directional" board.  Four independent channels, each the
+# canonical Philips AN97055 cell: an N-channel BSS138 with GATE tied to LV,
+# SOURCE on the low side, DRAIN on the high side, and a 10 kOhm pull-up on EACH
+# side.
+#
+# ⛔ WHY THIS PART AND NOT A 74LVC TRANSLATOR.  It is bidirectional AND
+# OPEN-DRAIN in both directions.  That is not a nicety for the TM1637 — the
+# chip pulls DIO LOW ITSELF to ACK on the 8th falling clock (V2.4 p.3) and the
+# driver READS that ACK, so DIO carries traffic in BOTH directions in EVERY
+# transaction.  A 74LVC1T45/2T45 is PUSH-PULL with a direction pin: it cannot
+# pass an open-drain ACK without the host flipping DIR inside the 9th-clock
+# window, which is fragile and re-opens the output-stage contention the
+# open-drain discipline exists to prevent.  Losing the ACK is not a cosmetic
+# loss — it is the ONLY per-module presence signal a multi-display panel has,
+# and a driver that ignores it "reports success against a DISCONNECTED part
+# forever" ([CXC-TM1637-MACHINE-EVIDENCE] nak-is-reported).
+#
+# ⛔ WHY NOT A TXS0102/TXS0108E, the purpose-built bidirectional translator.
+# The TXS family drives through weak (~10 kOhm) internal sources with edge-rate
+# accelerators and TI specifies it for buses with NO or WEAK external pull-ups.
+# Four TM1637 modules on a shared CLK put 4 x 10 kOhm in PARALLEL = 2.5 kOhm on
+# that line, which is well outside the TXS recommended range and fights the
+# accelerator.  The discrete BSS138 cell has no such constraint.
+#
+# NOTE ON THE STOCK PULL-UPS.  These breakouts ship 10 kOhm on BOTH sides.  The
+# HV-side resistor lands in parallel with the TM1637 modules' own fitted
+# pull-ups (2.5 kOhm at N=4 becomes 2.0 kOhm), raising low-side sink from
+# 2.0 mA to 2.5 mA.  Harmless, and stated rather than silently inherited.  This
+# is NOT a licence to add pull-ups on the module side — those are already
+# fitted and must not be doubled.
+
+bss138-4ch-levelshift:
+  description: >-
+    4-channel bidirectional open-drain logic level converter (BSS138 x4,
+    BOB-12009 / Adafruit 757 layout) — 3.3 V LV side to 5 V HV side, passes
+    open-drain traffic in both directions.
+
+  # Canonical pin map — the netlist (hookup.wires) speaks EXACTLY these names.
+  # Two 6-pin 0.1" rows.  The two GND pads are the SAME net (the board ties
+  # them); they are named separately so a diagram can ground each side locally.
+  pins:
+    - LV               # low-side rail reference — 3.3 V.  ALSO the FET gate bias.
+    - LV1
+    - LV2
+    - LV3
+    - LV4
+    - GND-LV
+    - HV               # high-side rail reference — 5 V
+    - HV1
+    - HV2
+    - HV3
+    - HV4
+    - GND-HV
+
+  # No adc_pins: a passive translator, not an MCU.
+
+  channel_pairing: "LV1<->HV1, LV2<->HV2, LV3<->HV3, LV4<->HV4 — independent, order-free"
+  onboard_pullup_ohms: 10000   # per side, per channel — FITTED on the stock breakout
+  rail_note: >-
+    ⛔ BOTH rail pins must be fed or the part does nothing useful.  LV is not
+    merely a reference — it is the GATE BIAS for all four FETs, so with LV
+    unpowered every channel is off.  HV must be the SAME 5 V the TM1637 modules
+    run from, or the high side pulls to the wrong rail.
+  unpowered_host_behaviour: >-
+    With LV at 0 V the gate is at 0, the FET is off, and the body diode's anode
+    sits on the LOW side — so a 5 V high side REVERSE-biases it and no current
+    reaches the 3.3 V GPIO.  This is why the shifter also removes the
+    power-sequencing hazard that a direct clamp-diode connection carries.
+  speed_note: >-
+    Rise is RC-limited by the pull-ups, not by the FET.  On the shared CLK at
+    N=4 (2.0 kOhm effective, ~590 pF): tau = 1.18 us and rise to the TM1637's
+    V_IH is ~1.4 us, against the driver's 5 us half-period — roughly 3.5x
+    margin at the default 100 kHz.  ARITHMETIC, not measured.
+
+  # ---- Hookup-SVG art (S3) -------------------------------------------------
+  fritzing: bss138-4ch-levelshift.svg
+  fritzing_part: "4-channel bidirectional level converter (BSS138 x4), 0.60 x 0.55 in"
+  fritzing_source: >-
+    HAND-AUTHORED 2026-08-15 in the Fritzing breadboard convention, NOT sourced
+    from a community .fzpz.  Geometry is the BOB-12009 layout: two 6-pin 0.1"
+    rows, LV row and HV row.
+  fritzing_connectors:
+    "LV": connector0
+    "LV1": connector1
+    "LV2": connector2
+    "LV3": connector3
+    "LV4": connector4
+    "GND-LV": connector5
+    "HV": connector6
+    "HV1": connector7
+    "HV2": connector8
+    "HV3": connector9
+    "HV4": connector10
+    "GND-HV": connector11
+  fritzing_note: >-
+    ⚠ BOARD-CONFIRM: pad ORDER within each row varies between clones — some put
+    GND at the LEFT end rather than the right, and some label the rails LV/HV
+    versus LV/HV plus a separate VCC.  Read the silkscreen.  The channel
+    PAIRING (LVn opposite HVn) is universal on this layout.
+
+  kicad:
+    symbol: "Transistor_FET:BSS138"
+    footprint: "Module:LevelShifter_4ch_BOB-12009"

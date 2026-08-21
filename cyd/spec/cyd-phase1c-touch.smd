@@ -1,0 +1,405 @@
+---
+scope: "CYD Phase 1c — XPT2046 touch input wired through engine hit testing to widget dispatch. Adds touch as a second SPI device on the shared HSPI bus with sequenced access."
+audience: "Builder agents implementing touch input on CYD ESP32"
+boundary: "Touch driver, hit test loop, widget dispatch. Does not add new widgets, bus integration, or MQTT."
+not-this: "Not gesture recognition (pinch/drag/scroll). Not multi-touch. Not bus-published touch events (Phase 2)."
+depends-on: [15-composeux-embedded-display.smd, 12-composeux-render-engine.smd]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# CYD Phase 1c — Touch Input [SPEC:CYD-TOUCH]
+
+> XPT2046 resistive touch on shared HSPI bus, calibrated to screen coordinates, dispatched to widgets via hit testing.
+
+**This is BUILT and shipping.** The document was written as a work order; it has been
+brought current to the code and should be read as a description, not as instructions.
+
+## Drift Correction Record [CYD-TOUCH-DRIFT]
+
+A drift audit on 2026-08-14 measured this document against the firmware at commit
+`153b050`. Most of it is solid; two sections had gone materially wrong. Baseline:
+`[DEC-SPEC-DRIFT-BASELINE-CYD-2026-08]`.
+
+| Section | Verdict | What changed |
+|---------|---------|--------------|
+| §1.1 `[CYD-TOUCH-SPI]` | KEPT | CS GPIO 33 and 2.5 MHz confirmed (`cyd_pins.h:26,106`). |
+| §1.2 `[CYD-TOUCH-READ]` | KEPT | Command bytes `0xD0`/`0x90`/`0xB0`/`0xC0` (`touch_xpt2046.cpp:40-43`), median-of-3 (`:164,208-218`), and the `TouchReading` struct (`touch_xpt2046.h:20-25`) all verified verbatim. |
+| §1.3 `[CYD-TOUCH-SEQUENCE]` | CORRECTED | Ordering claim still holds; "explicit mutex is not required" no longer does — the loop runs under `capture_http_lock()`. Note added; sketch retained as rationale. |
+| §2 `[CYD-TOUCH-CAL]` | **REWRITTEN** | Previously described calibration as generic math applied wherever touch is read. It moved behind the `[CXC-RM-M5]` board-profile seam; `BoardProfile`/`TouchDriver`/`TouchPoint` went entirely unmentioned. Now describes the seam as built. |
+| §3 `[CYD-TOUCH-STATE]` | CORRECTED | State machine, thresholds and timings verified. The **poll-rate row** was stale ("~3 Hz at current 340ms/frame") — the R3 render policy is event-driven and an idle loop paints nothing. Parameter table gained citations. |
+| §4.1 `[CYD-TOUCH-REGISTRY]` | CORRECTED | `kMaxWidgets` is 32, not 16. Registration is derived from the scene, not hand-written, and is re-derived on visibility flips and scene swaps. |
+| §4.2-§4.4 | KEPT | `hit_test()`'s reverse-z-order loop (`touch_dispatch.cpp:52-62`), local-coordinate dispatch (`:145-153`), and the on-tap table (`gauge.cpp:772`, `led.cpp:150`, default no-op at `widget.h:42`) verified as written. |
+| §5 `[CYD-TOUCH-MAIN]` | **REWRITTEN** | Previously handed a builder literal code that no longer exists: a `static XPT2046`, four hardcoded `register_widget()` rects, and a bare `while(true){read; render; delay}` loop. Replaced with a description of the real mechanism plus citations — deliberately **no code sample**, since a snippet is what rotted. |
+| §6 `[CYD-TOUCH-COMPLIANCE]` | KEPT | Criteria remain valid as written. |
+
+Citations added by this pass are `file:line` **at commit `153b050`**; `cyd/src/` line
+numbers move constantly, so resolve with `git show 153b050:<path>` if one no longer lands.
+Identifier names are the durable anchors.
+
+---
+
+## 1. XPT2046 SPI Driver [CYD-TOUCH-DRIVER]
+
+### 1.1 SPI Device Registration [CYD-TOUCH-SPI]
+
+Add XPT2046 as second device on `SPI2_HOST` (shared with ILI9341 display). The SPI bus is already initialized by `ILI9341::init_spi()`.
+
+| Parameter | Value |
+|-----------|-------|
+| Host | `SPI2_HOST` (same as display) |
+| CS | GPIO 33 (`CYD_TOUCH_CS`) |
+| Clock | 2.5 MHz (`CYD_SPI_TOUCH_FREQ_HZ`) |
+| SPI Mode | 0 |
+| Queue size | 1 |
+
+The driver exposes a `spi_device_handle_t` for touch transactions. The display already holds its own handle from `spi_bus_add_device`. Both devices share the bus — ESP-IDF's SPI master driver handles CS arbitration.
+
+### 1.2 Touch Read Protocol [CYD-TOUCH-READ]
+
+XPT2046 command bytes:
+
+| Channel | Command byte | Notes |
+|---------|-------------|-------|
+| X position | `0xD0` | 12-bit ADC, differential mode |
+| Y position | `0x90` | 12-bit ADC, differential mode |
+| Z1 pressure | `0xB0` | For touch-down detection |
+| Z2 pressure | `0xC0` | For touch-down detection |
+
+Read sequence per sample:
+1. Send command byte, read 2 bytes (12-bit result in bits 11:0, MSB first)
+2. Take 3 samples per axis, use median (reject noise)
+3. Compute pressure: `z = z1 > 0 ? (x_raw * (z2/z1 - 1)) : 0`
+
+Files: `src/touch_xpt2046.cpp`, `include/touch_xpt2046.h`
+
+```cpp
+struct TouchReading {
+    uint16_t raw_x;     // 0-4095
+    uint16_t raw_y;     // 0-4095
+    uint16_t pressure;  // 0 = no touch
+    bool touched;       // pressure > threshold
+};
+
+class XPT2046 {
+public:
+    void init();  // spi_bus_add_device on SPI2_HOST
+    TouchReading read();  // median-of-3 raw reading
+};
+```
+
+### 1.3 Bus Sequencing [CYD-TOUCH-SEQUENCE]
+
+Touch reads and display DMA transfers share HSPI. ESP-IDF's SPI master driver serializes transactions by device handle, so explicit mutex is not required. However, touch reads must not occur during `render_frame()` band DMA. The sequencing:
+
+```
+while (true) {
+    touch = xpt2046.read();           // SPI touch transaction
+    process_touch(touch);              // hit test + dispatch
+    canvas.render_frame(draw_scene);   // 20 band DMA transactions
+    vTaskDelay(pdMS_TO_TICKS(10));
+}
+```
+
+Touch read happens **before** `render_frame()` in each loop iteration. No concurrent access.
+
+> **CORRECTED 2026-08-14 — the sketch above is the Phase 1c loop and is retained only as
+> the sequencing rationale; it is not the loop that exists.** Two claims need qualifying:
+>
+> - **The ordering claim still holds.** Touch is still sampled before the render step in
+>   each pass, now as a burst — `main.cpp:675-682` (poll) precedes `:694-727` (render).
+> - **"Explicit mutex is not required" is no longer true.** ESP-IDF still serializes by
+>   device handle, but the loop is no longer the only renderer: the HTTP capture server
+>   pull-renders on its own task, sharing the band buffer and the SPI bus. The whole loop
+>   body therefore runs under an explicit render lock, `capture_http_lock()` /
+>   `capture_http_unlock()` (`main.cpp:662,729`; declared `capture_http.h:35-36`, taken by
+>   the server at `capture_http.cpp:139,181`), and the scene-swap path takes it separately
+>   (`main.cpp:750,756`).
+>
+> The real loop is described in §5.3. Drift baseline:
+> `[DEC-SPEC-DRIFT-BASELINE-CYD-2026-08]`.
+
+---
+
+## 2. Calibration — Owned by the Board Profile [CYD-TOUCH-CAL]
+
+> **REWRITTEN 2026-08-14 — this section described a seam that has since moved.**
+> It previously presented calibration as generic math to be applied wherever touch is
+> read, and left axis inversion as a "test empirically and adjust the sign" instruction
+> with no home. Calibration is now a **board property**, owned by the board profile behind
+> the `[CXC-RM-M5]` seam. `touch_dispatch.cpp:76-78` states this at the point where the
+> code used to be: *"Calibration moved to the board profile ([CXC-RM-M5] seam):
+> `boards/classic_cyd.cpp` owns raw-ADC -> screen-px mapping; this dispatcher receives
+> calibrated `TouchPoint`s."* The arithmetic below is unchanged from the original; where
+> it LIVES is the correction. Drift baseline: `[DEC-SPEC-DRIFT-BASELINE-CYD-2026-08]`.
+
+### 2.1 The Seam [CYD-TOUCH-CAL-SEAM]
+
+`include/board_profile.h` defines the whole board-specific surface. Touch enters through
+`TouchDriver` (`board_profile.h:107-112`), whose one output type is `TouchPoint`
+(`:100-105`) carrying **screen pixels**, not ADC counts:
+
+- `TouchDriver::read()` returns a calibrated `TouchPoint{float x, float y, uint16_t pressure, bool touched}`.
+- `BoardProfile::touch()` (`board_profile.h:125`) returns `nullptr` on a board with no touch input — the absence of touch is a profile answer, not a `#ifdef`.
+- The header states the rule directly (`board_profile.h:94-98`): the profile owns the raw-ADC-to-pixel mapping "because that mapping is a board property, not an engine property."
+
+Everything above the seam — `main.cpp`, the band-rendering canvas, the config-driven scene
+builder, and `touch_dispatch.cpp` — sees only calibrated `TouchPoint`s. Nothing above the
+seam knows the panel has an ADC.
+
+### 2.2 The Classic CYD Mapping [CYD-TOUCH-CAL-CLASSIC]
+
+`boards/classic_cyd.cpp` is the reference profile. `ClassicCydTouch` (`:28-62`) wraps the
+raw `XPT2046` driver and does the conversion in `read()` (`:32-58`), in this order:
+
+1. **Early out** — an untouched reading returns `{0, 0, pressure, false}` without mapping (`:35`).
+2. **Axis swap**, compile-time on `CYD_TOUCH_SWAP_XY` (`:38-44`): on this board raw X drives screen Y and raw Y drives screen X.
+3. **Linear range map** to pixels (`:45-48`), the same arithmetic this section always carried.
+4. **Axis inversion**, compile-time on `CYD_TOUCH_INVERT_X` / `CYD_TOUCH_INVERT_Y` (`:49-54`) — `s = SCREEN_DIM - 1 - s`. This is what the old "adjust the sign empirically" instruction became: a board constant, not a code edit.
+5. **Clamp** to `[0, CYD_SCREEN_W-1]` / `[0, CYD_SCREEN_H-1]` via `std::max`/`std::min` (`:55-56`).
+
+The constants remain in `cyd_pins.h` — the profile's data sheet — measured 2026-03-31
+(`cyd_pins.h:88-94`):
+
+| Constant | Value |
+|----------|-------|
+| `CYD_TOUCH_CAL_X_MIN` / `_X_MAX` | 353 / 3760 |
+| `CYD_TOUCH_CAL_Y_MIN` / `_Y_MAX` | 300 / 3862 |
+| `CYD_TOUCH_SWAP_XY` | 1 |
+| `CYD_TOUCH_INVERT_X` / `_INVERT_Y` | 0 / 1 |
+
+### 2.3 What This Buys [CYD-TOUCH-CAL-WHY]
+
+Porting to a different panel is a new `boards/<name>.cpp` and nothing else — exactly one
+profile translation unit is linked per firmware build (compile-time selection, the ESPHome
+model) and it defines `board_profile()` (`board_profile.h:128-132`,
+`classic_cyd.cpp:84-87`). The tree already carries three more profiles alongside the
+classic one, and between them they exercise both ends of the seam:
+
+| Profile | Touch | Evidence |
+|---------|-------|----------|
+| `boards/classic_cyd.cpp` | XPT2046 resistive, ADC + full calibration | `:28-62` |
+| `boards/hosyond_s3.cpp` | FT6336G capacitive — **no calibration at all**, orientation only | `:284-287`, `:350` |
+| `boards/qualia_rgb666.cpp` | none — `touch()` returns `nullptr` | `:372` |
+| `boards/waveshare_c6_lcd147.cpp` | none — `touch()` returns `nullptr` | `:343` |
+
+The Hosyond profile is the test the seam was built to pass: `HosyondTouch` is a
+`TouchDriver` (`hosyond_s3.cpp:287`) wrapping a raw `FT6336` (`:331`, driver at
+`include/touch_ft6336.h:62`) — a different wire protocol, no ADC, and therefore no
+`CAL_MIN`/`CAL_MAX` concept — and nothing above the seam changed to accept it. Note the
+layering: `XPT2046` and `FT6336` are both *raw* device drivers; neither derives from
+`TouchDriver`. The profile supplies the adapter, which is where the board-specific mapping
+belongs.
+
+---
+
+## 3. Touch State Machine [CYD-TOUCH-STATE]
+
+Debounce and tap detection:
+
+```
+         pressure > threshold
+IDLE  ─────────────────────────►  DOWN
+  ▲                                 │
+  │          pressure < threshold   │  held < 500ms
+  │          for 50ms               │  then released
+  │◄────────────────────────────────┤
+  │          (RELEASE → IDLE)       │
+  │                                 ▼
+  │◄──────────────────────────── TAP (fire on_tap)
+```
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Pressure threshold | 200 | XPT2046 typical, tune empirically — `touch_xpt2046.h:18` (`kTouchPressureThreshold`) |
+| Debounce time | 50ms | Reject noise, prevent double-tap — `touch_dispatch.cpp:100` (`kDebounceUs`) |
+| Max tap duration | 500ms | Distinguish tap from long-press — `touch_dispatch.cpp:101` (`kMaxTapUs`) |
+| Poll interval | **10 ms within a poll burst** — see correction below | `main.cpp:675-682` |
+
+> **CORRECTED 2026-08-14 — the poll-rate row was stale.** It previously read
+> *"Between frames (~3 Hz at current 340ms/frame render time)"*. That number was a
+> consequence of a render-every-pass loop that no longer exists. Under the R3 policy
+> (`main.cpp:647-654`) a static scene paints **nothing** when idle, so there is no
+> per-frame cost to sample between: touch is sampled once per 10 ms `vTaskDelay` inside an
+> explicit poll burst — 10 samples per pass on a static scene, 2 on an animated one — and
+> the burst is cut short by a queued bus arrival (`main.cpp:680`). Frame time no longer
+> gates the touch sample rate. Drift baseline: `[DEC-SPEC-DRIFT-BASELINE-CYD-2026-08]`.
+
+The threshold comparison lives in the driver, not the state machine: `TouchReading.touched`
+is set as `pressure > kTouchPressureThreshold` (`touch_xpt2046.cpp:229`), the board profile
+carries it through onto `TouchPoint.touched` unchanged (`classic_cyd.cpp:34`), and
+`process_touch()` branches only on that boolean (`touch_dispatch.cpp:120,134`). A profile
+whose controller has no pressure reading (capacitive — §2.3) satisfies the same contract by
+setting `touched` however its hardware reports contact.
+
+State is tracked in the main loop, not in an ISR. The IRQ pin (GPIO 36, `cyd_pins.h:27`) is
+available for interrupt-driven wakeup but is not used.
+
+---
+
+## 4. Hit Testing and Widget Dispatch [CYD-TOUCH-HIT]
+
+### 4.1 Widget Registry [CYD-TOUCH-REGISTRY]
+
+The scene callback already draws widgets at known Rects. A static registry maps widgets to their layout rects for hit testing:
+
+```cpp
+struct WidgetEntry {
+    Widget* widget;
+    Rect rect;
+};
+
+static constexpr int kMaxWidgets = 16;
+static WidgetEntry widget_registry[kMaxWidgets];
+static int widget_count = 0;
+
+void register_widget(Widget* w, const Rect& r);
+void clear_registry();
+```
+
+The registry is a flat array. **`kMaxWidgets` is 32, not the 16 this section originally
+stated** (`touch_dispatch.h:25`; corrected 2026-08-14 — the limit was raised as scenes grew,
+and a stale "16 entries max" comment survives at `touch_dispatch.cpp:7`, which is a code
+comment defect, not a spec one). Overflow is handled by refusing the registration with a
+warning naming the widget, never by overrunning (`touch_dispatch.cpp:32-36`).
+
+`register_widget()` is not called by hand. Registration is derived from the scene by
+`scene_register_touch()` and re-derived when visibility flips or the scene is swapped — see
+§5.2 for the three call sites.
+
+### 4.2 Hit Test [CYD-TOUCH-HITTEST]
+
+On TAP event:
+
+```cpp
+Widget* hit_test(float sx, float sy) {
+    // Reverse order: last registered = topmost (z-order)
+    for (int i = widget_count - 1; i >= 0; i--) {
+        Rect& r = widget_registry[i].rect;
+        if (sx >= r.x && sx < r.x + r.w &&
+            sy >= r.y && sy < r.y + r.h) {
+            return widget_registry[i].widget;
+        }
+    }
+    return nullptr;
+}
+```
+
+### 4.3 Widget Dispatch [CYD-TOUCH-DISPATCH]
+
+When hit test finds a widget, call `widget->on_tap(local_x, local_y)` where local coordinates are relative to the widget's Rect origin:
+
+```cpp
+local_x = screen_x - widget_rect.x;
+local_y = screen_y - widget_rect.y;
+widget->on_tap(local_x, local_y);
+```
+
+### 4.4 Widget on_tap Implementations [CYD-TOUCH-WIDGET-TAP]
+
+Override `on_tap()` in existing widgets for Phase 1c demo:
+
+| Widget | on_tap Behavior |
+|--------|----------------|
+| GaugeWidget | Set value to tapped position mapped to min/max range. Tap left side = lower, right side = higher. |
+| LEDWidget | Toggle state: Off→On, On→Off, Warning→Off, Danger→Off |
+| LabelWidget | No action (labels are not interactive) |
+| RectangleWidget | No action |
+
+---
+
+## 5. Main Loop Integration [CYD-TOUCH-MAIN]
+
+> **REWRITTEN 2026-08-14 — this section handed a builder code that no longer exists.**
+> It previously showed `app_main` constructing a `static XPT2046 touch`, calling
+> `register_widget(&gauge_temp, {5.0f, 30.0f, 115.0f, 115.0f})` and three siblings with
+> hardcoded rects, and running a bare
+> `while(true){ touch.read(); process_touch(); render_frame(); vTaskDelay(10); }`.
+> **None of that is how the firmware works.** The touch driver comes from the board
+> profile (§2), widget registration is derived from a YAML-configured scene tree, and the
+> loop is event-driven with a render lock. Per the correction discipline this section now
+> **describes the mechanism and cites source** rather than reproducing a snippet — a
+> snippet is exactly what rotted here. Drift baseline:
+> `[DEC-SPEC-DRIFT-BASELINE-CYD-2026-08]`. Line numbers are at commit `153b050`.
+
+### 5.1 Touch Bring-Up [CYD-TOUCH-MAIN-INIT]
+
+`app_main` does not construct a touch driver. It asks the board profile for one —
+`board.touch()` — and initializes it only if the board has one (`main.cpp:641-645`); a
+`nullptr` is a normal answer (§2.3) and every later use is guarded by the same pointer
+(`main.cpp:677`).
+
+**Ordering is load-bearing and is a board quirk, not a preference.** Touch init happens
+*after* display init and after the first renders, because the ILI9341 init sequence
+corrupts the shared SPI bus state for touch (`main.cpp:638-640`).
+
+### 5.2 Registration Is Derived, Not Written [CYD-TOUCH-MAIN-REGISTER]
+
+There are no hardcoded `register_widget` calls in `main.cpp`. The scene is built from
+configuration and registration is derived from it in one call, `scene_register_touch(scene)`
+(`main.cpp:609`, implementation `compose_scene.cpp:1649-1657`), which:
+
+1. clears the registry, then
+2. walks the scene's entries and registers **only those that are both `interactive` and `visible`**, with the rect the layout gave them.
+
+`interactive` is a per-entry flag set by the scene builder when it instantiates a widget
+type that responds to taps (`compose_scene.cpp:795,809,819,958,990`; field at
+`compose_scene.h:64`). A builder adding an interactive widget therefore edits the scene
+builder's widget table, never `main.cpp`.
+
+**Registration is re-derived, not one-shot.** The old text's "call during scene setup,
+before the render loop" is now only the first of three sites:
+
+| When | Site |
+|------|------|
+| Initial scene build | `main.cpp:609` |
+| A bus arrival flipped an interactive widget's visibility | `main.cpp:688-689`, gated on `scene_touch_dirty(scene)` (`compose_scene.cpp:1725`; the flag is set at `:324`) |
+| A live config swap replaced the whole scene | `main.cpp:753`, inside the render lock |
+
+`scene_free()` also clears the registry (`compose_scene.cpp:1668`), so a swapped-out scene
+cannot leave dangling `Widget*` entries behind.
+
+### 5.3 The Loop Is Event-Driven [CYD-TOUCH-MAIN-LOOP]
+
+The loop lives at `main.cpp:659-759`. Its render policy is R3, stated in the code at
+`main.cpp:647-654`: animated scenes keep a continuous full-frame cadence because sprites
+need it; **static scenes are event-driven** — a bus arrival repaints only the dirty
+band(s), a dispatched tap repaints the full frame (a tap may mutate state anywhere), and
+**an idle loop paints nothing.**
+
+Each pass, in order:
+
+1. **Take the render lock** — `capture_http_lock()` (`main.cpp:662`). This serializes the whole loop body against the capture server's pull-render, which shares the band buffer and the SPI bus. This is the mutex §1.3 originally said was unnecessary; it became necessary when the HTTP capture server gained the ability to render on its own task.
+2. **Touch poll burst** (`main.cpp:675-682`) — 2 iterations on an animated scene, 10 on a static one, each one `touch->read()` -> `process_touch()` then a 10 ms `vTaskDelay`. The burst exists because rendering blocks the loop and a short tap would otherwise fall between frames. **A queued bus arrival cuts the burst short** (`main.cpp:680`, `bus.pending()`); before that check existed, an arrival could wait 100 ms behind touch polling for a repaint that costs far less than that. One 10 ms tick always elapses regardless, so the loop can never spin.
+3. **Drain the bus** — `drain_bus(scene, &arrivals)` (`main.cpp:687`, defined `:347`) returns a dirty-band mask; then re-register touch if visibility flipped (`:688-689`).
+4. **Detect a tap** by comparing `tap_serial()` against the previous pass (`main.cpp:691-692`). `tap_serial()` is a monotonic counter bumped by the dispatcher on every dispatched tap (`touch_dispatch.cpp:155`, accessor `:112`) — the loop learns "a tap happened" without the dispatcher calling back into it.
+5. **Render, or do not**: animated -> full frame every pass (`main.cpp:694-711`); else dirty -> `repaint_dirty_bands()` for the affected bands only (`:712-724`); else tapped -> full frame (`:725-727`); else **nothing is painted**.
+6. **Release the lock** (`main.cpp:729`), then check for a config swap outside it, since a network fetch must not block the capture server (`:731-758`).
+
+### 5.4 Consequence For Touch Latency [CYD-TOUCH-MAIN-LATENCY]
+
+Touch responsiveness is now bounded by the poll burst (10 ms per sample) rather than by
+frame time, which is what made [CXC-R-C9]'s "responds from frame 1" claim
+(`main.cpp:644`) achievable. See the corrected poll-rate row in §3.
+
+---
+
+## 6. Compliance [CYD-TOUCH-COMPLIANCE]
+
+| ID | Requirement | Verification |
+|----|-------------|-------------|
+| TC-C1 | XPT2046 reads valid raw coordinates when screen is touched | Serial log shows raw_x, raw_y, pressure values on touch |
+| TC-C2 | Calibrated coordinates map to correct screen position | Touch corners of display, verify coordinates match ±5px |
+| TC-C3 | Tap on gauge widget fires on_tap and changes displayed value | Visual: gauge needle moves to tapped position |
+| TC-C4 | Tap on LED widget toggles state | Visual: LED color changes |
+| TC-C5 | Tapping empty area (no widget) produces no effect | No crash, no spurious widget activation |
+| TC-C6 | Touch reads do not corrupt display output | Display renders cleanly during continuous touch polling |
+| TC-C7 | Debounce prevents double-tap from single press | Log shows single TAP event per finger press |
+| TC-C8 | Spec 15 ED-C2 — dispatch touch tap to correct widget | Hit test selects topmost widget at touch coordinates |
+
+---
+
+**Version**: 1.1
+**Created**: 2026-03-30
+**Revised**: 2026-08-14 — drift correction against commit `153b050` (see [CYD-TOUCH-DRIFT]). §2 and §5 rewritten; §1.3, §3 and §4.1 corrected; the driver, state machine, hit test and dispatch sections verified current and left untouched.
+**Status**: Implemented

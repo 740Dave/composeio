@@ -1,0 +1,72 @@
+# ComposeIO / ComposeUX — runtime dependencies
+#
+# Created 2026-08-08. Until now the repo declared its dependencies NOWHERE — no
+# requirements.txt, pyproject.toml, setup.py, or Pipfile. Everything imported
+# because it happened to be present in site-packages, which means a fresh machine
+# had no reproducible way to stand the stack up, and an accidental uninstall would
+# surface as an unrelated-looking crash. That gap was found while adding pydantic
+# (below): there was no file to add it to.
+#
+# Versions are pinned to what is CURRENTLY INSTALLED AND WORKING on the dev host
+# (macOS, Python 3.13) — an observed-good set, not an aspirational one. Loosen a
+# pin deliberately, not by default.
+#
+#   python3 -m pip install -r requirements.txt
+
+# --- bus transport ---------------------------------------------------------
+# The MQTT client every ComposeBus peer speaks. `composeio/transport_mqtt.py`
+# plus the intelligence data sources.
+paho-mqtt
+
+# --- render engine (Skia/SDL) ----------------------------------------------
+# The current rendering surface. `pysdl2-dll` ships the SDL2 binaries pysdl2
+# binds; without it pysdl2 imports but cannot open a window.
+pysdl2==0.9.17
+pysdl2-dll==2.32.10
+skia-python==144.0.post2
+
+# --- config + data ---------------------------------------------------------
+PyYAML==6.0.1
+numpy==2.2.3
+Pillow==11.3.0
+
+# --- envelope / schema validation ------------------------------------------
+# Added 2026-08-08 (David) for the BusMessage envelope model — Phase 2a step 1
+# of the bus-connection collapse. 16 sites under intelligence/ hand-frame the
+# `{ns,type,src,ts,scope,seq,val}` wire envelope; a declared model makes that
+# fork structurally impossible instead of merely discouraged.
+#
+# SCOPE NOTE, deliberately narrow: pydantic is for the ENVELOPE (transport
+# shape) only. Namespace VALUES stay owned by the existing state engines
+# (binary/numeric/enum). Typing values in both places would create two competing
+# typing systems for one concept — the fork-divergence class that is this repo's
+# dominant defect family.
+pydantic==2.12.5
+
+# --- terminal emulation ----------------------------------------------------
+# Added 2026-08-10 with the escape-sequence census ([SPEC:CXC-TERM] ·
+# [CXC-TERM-CENSUS]), which is the first code in the tree to import it. Pure
+# Python, no dependencies of its own. VERIFIED on THIS interpreter (macOS,
+# CPython 3.13.2): imports, and a HistoryScreen + Stream were driven with the
+# real captured byte streams — the pin is an observed-good one, not a latest
+# release number ([CXC-TERM-EMULATOR]).
+#
+# SCOPE NOTE + THREE MEASURED HAZARDS, so nobody adopts it believing it is
+# complete (the census drove the library to find these — they are not readable
+# off its docs):
+#   1. It RAISES. `\x1b[?6n` (DECDSR) -> TypeError: report_device_status() got
+#      an unexpected keyword argument 'private'. Claude Code emits it. An
+#      unguarded stream.feed() therefore CRASHES on real input.
+#   2. It MISAPPLIES private-marker sequences. Only `?` is recognized for h/l;
+#      `CSI < u` (kitty keyboard pop) dispatches to restore_cursor and MOVES THE
+#      CURSOR, and `OSC 133;A` is parsed as OSC **1** (set icon name) because
+#      pyte reads only the first character of the OSC code.
+#   3. It DROPS silently — including `?1049h`/`?2004h`/mouse modes, which it
+#      stores in `screen.mode` and then implements NO behaviour for. pyte 0.8.2
+#      has NO alternate screen buffer.
+# All three are why [CXC-TERM-SEQTABLE]'s pre-scan sits UPSTREAM of the emulator.
+pyte==0.8.2
+
+# --- hardware / fleet ------------------------------------------------------
+pyserial==3.5
+aiohttp

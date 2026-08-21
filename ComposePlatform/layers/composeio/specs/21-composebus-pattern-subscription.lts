@@ -1,0 +1,103 @@
+---
+scope: "The ComposeBus pattern-subscription primitive and its per-transport filtering model — register a prefix pattern, receive only matching traffic, with the filter pushed to the most efficient tier each transport offers (in-process registry, MQTT broker wildcards, CAN hardware acceptance masks)."
+audience: "ComposeBus / transport implementers, MCU firmware developers, render-engine + Flow-mode developers"
+boundary: "IN: the logical subscribe-pattern primitive, the transport bindings (in-process / MQTT / CAN), and the CAN encoding requirements. OUT: the Flow-mode UI that uses it ([SPEC:CXC-FLOW]); Headless Widgets ([SPEC:CXC-HEADLESS]); the keyword/discovery filter (a Composer tool convenience, [CXC-PS-DISCOVERY-VS-SUB])."
+not-this: "Not an arbitrary-pattern matching engine; a hierarchy-aware prefix subscription deliberately constrained to what every transport can filter natively. Not MQTT-specific — MQTT is one binding of three."
+depends-on: [02-composer-internal-bus.lts, 16-composeux-bindings-behaviors.lts]
+domain: PLT.CIO
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# ComposeBus Pattern Subscription & Transport Filtering [SPEC:CXC-PATSUB]
+
+> A subscriber registers "I want traffic of this shape" (`jumpdrive/*`) and receives *only* matches. The filter is a **bus primitive**, not a client-side discard — a constrained device must not receive the whole bus to throw most of it away. The primitive is transport-agnostic; each transport implements it at the most efficient tier it offers, and **when the transport is CAN-bus, that tier is the CAN controller's hardware acceptance mask.**
+
+---
+
+## 1. Intent
+
+### [CXC-PS-INTENT] Filter at the Bus, Not the Widget
+
+- definition: a subscriber registers a namespace *pattern*; the bus delivers only namespaces (and their values) that match. Filtering is the bus's job, transport-side — never "deliver everything, let the subscriber discard."
+- rationale: receive-then-discard is a non-starter on a constrained MCU (it would parse the whole bus to keep 2%). Push the filter as close to the wire as the transport allows.
+- key-insight: ComposeBus is a *logical* bus over **pluggable transports** — in-process, MQTT, and CAN — so it is **not always CAN**. The subscription primitive is defined once, logically; each transport binding satisfies it natively. The point of this spec is to make the primitive's shape one that *every* transport can push to its own native filter.
+- status: operational (in-process + MQTT); CAN binding = design, pending a CAN transport.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 2. The Primitive
+
+### [CXC-PS-PRIMITIVE] Trailing-Glob Prefix Subscription
+
+- as-built: `ComposeIOBus.subscribe_pattern(pattern, callback)` — **trailing-glob only**: `prefix/*` matches the prefix and its subtree, `*` matches all; a *mid-pattern* glob raises. The callback receives the *actual member namespace* (not the pattern) and fires per publish (liveness), including family members that appear *after* the subscription was authored.
+- why trailing-glob only (the load-bearing constraint): a **prefix** pattern is the subset that maps to *every* transport's native filter — an MQTT topic wildcard AND a CAN acceptance mask. An arbitrary mid-pattern glob (`*/readiness`, `jump*drive`) maps to *neither*. Constraining the primitive to prefixes is what keeps it portable and hardware-pushable; richer matching, if ever needed, is a client-side refinement ([CXC-PS-CAN] fallback), never a transport requirement.
+- test: `subscribe_pattern("jumpdrive/*", cb)` receives every `jumpdrive/...` publish incl. later members; a mid-pattern glob raises; `*` receives all.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 3. Transport Bindings
+
+### [CXC-PS-TRANSPORT] One Contract, Native Filtering Per Transport
+
+- **in-process:** the subscription registry prefix-matches in memory; only matching subscribers are invoked. (Filter tier: process memory.)
+- **MQTT:** maps 1:1 to a native broker wildcard — `subscribe_pattern("jumpdrive/*")` → `composeio/+/jumpdrive/#`. The **broker** filters; the subscriber's socket only ever receives matches. (Filter tier: broker.)
+- **CAN-bus:** maps to a **hardware acceptance filter + mask** on the CAN controller. (Filter tier: silicon — the most efficient of all; see [CXC-PS-CAN].)
+- principle: the same logical subscription is filtered at progressively-lower tiers as the transport allows — memory → broker → hardware — with the subscriber's contract ("I only get matches") identical throughout.
+- test: the identical `.compose.yaml` subscription produces only-matching delivery over each transport, filtered at that transport's native tier.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 4. CAN-Bus
+
+### [CXC-PS-CAN] When the Transport Is CAN, the Filter Is a Hardware Mask
+
+- definition: CAN is a broadcast multi-drop bus — every node sees every frame on the wire — but every CAN controller has **hardware acceptance filters**: load an arbitration-ID mask and non-matching frames are dropped *by the silicon before they reach the CPU*. A ComposeBus prefix subscription becomes a loaded acceptance mask; the "I only want this shape" contract is honored in hardware.
+- REQUIREMENT — hierarchical namespace→CAN-ID encoding: the namespace hierarchy (`jumpdrive/readiness`) must be encoded into the arbitration-ID **bit-fields**, so that a prefix pattern is a *contiguous ID range* expressible as a single mask. This is the whole reason trailing-glob is the primitive's shape. Precedent is mature: **J1939 PGNs and CANopen** already allocate IDs hierarchically. (Use 29-bit extended IDs; namespaces↔IDs via a registry/allocation.)
+- MCU fit (David 2026-07-07): MCU devices riding ComposeBus benefit from *real* CAN hardware — and notably **some ESP32 variants ship an on-board TWAI (CAN 2.0) controller**, so an ESP32 can be a *native* CAN node doing hardware-filtered subscription. For a local device mesh that is far better than MQTT-over-WiFi: no WiFi stack, no broker round-trip, deterministic timing, and the filter in silicon. CAN is the natural ComposeBus transport for an MCU fleet.
+- nuances (all tractable, graceful):
+  - **finite filter banks** — an ESP32 TWAI has ~one acceptance filter+mask; STM32 bxCAN has ~14–28. A node wanting *many* distinct patterns loads a **broad hardware mask + a fine software pass** on the residue; the subscriber still only *sees* matches — a few extra frames cost one cheap software check. Degrades gracefully, never breaks the contract.
+  - **payload size** — classic CAN = 8-byte frames, CAN-FD = 64; a `json`-engine or large value needs segmentation (ISO-TP / J1939-TP).
+  - **ID space** — namespaces↔IDs need an allocation registry; the hierarchical bit-field layout is the schema.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 5. Discovery Is a Different Filter
+
+### [CXC-PS-DISCOVERY-VS-SUB] Subscription (Bus) vs. Keyword Search (Tool)
+
+- distinction: two "filters" must not be conflated. The **runtime pattern subscription** is this bus primitive (transport-side, hierarchy-aware prefix). The **authoring keyword/substring filter** — the Flow-mode search box ("find anything containing `fuel`") — is a *Composer tool* convenience that filters the *display* of observed namespaces (client-side); it is NOT a bus subscription and carries no transport cost. Arbitrary substring search belongs there; the bus primitive stays prefix-only.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 6. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-PS-C1 | Only matches delivered | `subscribe_pattern("p/*")` receives every `p/...` publish and nothing else |
+| CXC-PS-C2 | Prefix-only enforced | a mid-pattern glob raises; `p/*` and `*` are accepted |
+| CXC-PS-C3 | Liveness | family members created AFTER the subscription still deliver |
+| CXC-PS-C4 | MQTT native | the subscription maps to a broker wildcard; the socket receives only matches |
+| CXC-PS-C5 | In-process native | the registry delivers only to matching subscribers |
+| CXC-PS-C6 | CAN mask (design) | given hierarchical IDs, a prefix pattern maps to one acceptance mask; non-matching frames dropped in hardware |
+| CXC-PS-C7 | Graceful HW fallback | more patterns than filter banks → broad mask + software refinement; subscriber still sees only matches |
+| CXC-PS-C8 | Discovery ≠ subscription | the Flow keyword filter is tool-side and creates no bus subscription |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-PATSUB] IMPLEMENTS [CXC-FL-PATTERN]
+[SPEC:CXC-FLOW] DEPENDS_ON [SPEC:CXC-PATSUB]
+[SPEC:CXC-HEADLESS] DEPENDS_ON [SPEC:CXC-PATSUB]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-07-07
+**Status**: Draft — ComposeBus pattern-subscription primitive + transport filtering (in-process + MQTT operational; CAN binding designed)

@@ -1,0 +1,579 @@
+# Unified board bring-up descriptor — SINGLE SOURCE for this board.
+# Schema shared byte-for-byte with cyd/qualia/hosyond-s3/esp32c3/waveshare-c6/ch32v203
+# (same keys, same order). The markdown recipe (rack_triple_gauge.md) is the human view;
+# the app consumes THIS file.
+# LOCAL-FIRST: eyeball before pushing. Not on the bus yet (future home: doc://board_profiles/*).
+#
+# ⛔ THIS BOARD DOES NOT EXIST YET. It is designed and not fabbed. EVERY row below is a
+# BUILD-AHEAD: a design value, a datasheet figure, or an arithmetic result. NOTHING here
+# has run on silicon, and the `verify:` block says so row by row. Read `status:` before
+# believing any number.
+#
+# ⛔ THIS IS THE FLEET'S FIRST NON-RASTER REALIZATION BACKEND
+# ([CXC-VISION-SEMANTIC-REALIZATION]). It has no glass, no PanelGeometry, no
+# DisplayDriver and no touch. It implements RealizationBackend (cyd/include/realization.h),
+# which is a PEER of BoardProfile, not a subclass of it. Do not look for a display row.
+
+board_id: rack_triple_gauge
+name: "rack_triple_gauge — 3x x27.168 stepper needle gauges + 3x 12V backlight, ESP32-C3 (David's first custom PCB)"
+
+chip:
+  part: esp32-c3             # ESP32-C3 Super Mini, SOCKETED on 2x 1x8 headers (replaceable)
+  arch: riscv32              # RV32IMAC — single core, 160MHz. NO FPU (irrelevant here: see quirk no-fpu-does-not-matter-here)
+  flash_kb: 4096             # 4MB; the shared partitions.csv applies unchanged
+  ram_kb: 0                  # NO PSRAM — and no framebuffer to want it for
+
+connect:
+  bus: usb
+  kind: native-usb-cdc        # C3 Super Mini native USB-Serial-JTAG; flash + monitor share one port
+  port_glob: "/dev/cu.usbmodem*"     # ⚠ NOT PINNED — no board exists, and a guessed port is a loaded gun
+  baud: 115200
+
+flash:
+  tool: esptool               # via PlatformIO / ESP-IDF
+  cmd: "cd cyd && pio run -e rack_triple_gauge -t upload"
+  enter_bootloader: auto      # native-USB auto-download
+  retries:
+    - errno6-native-usb        # transient native-USB CDC re-enumeration; retry the upload ONCE (same as every C3/S3/Qualia sibling)
+  notes: >
+    Build wiring layers sdkconfig.defaults -> sdkconfig.c3.defaults, plus -DCXC_RACK_TRIPLE_GAUGE=1
+    (a CMake CACHE VAR selecting the branch in src/CMakeLists.txt). That cache var NEVER reaches the
+    compiler; CXC_RACK_TRIPLE_GAUGE_APP, CXC_DEVICE_PREFIX="gauge3" and CXC_BUS_TRANSPORT_DEFAULT="mqtt"
+    are minted separately as target_compile_definitions in that branch. platformio.ini build_flags do
+    NOT reach ESP-IDF component compiles (see the hosyond-s3 descriptor's pio-build-flags-dropped quirk)
+    — VERIFIED for this env in .pio/build/rack_triple_gauge/compile_commands.json 2026-08-14.
+    NO main.cpp, NO canvas, NO widget TUs are compiled: gauge_main.cpp is the app shell and
+    boards/rack_triple_gauge.cpp is the backend. ALL board constants live in
+    cyd/include/rack_triple_gauge_panel.h — the ONE place to retune.
+    ⚠ IDENTITY BEFORE FLASHING: match the FULL USB serial with `ioreg -r -c IOUSBHostDevice -l -w0`.
+    `esptool chip-id` is NOT an identity check — it resets the board, which is the harm being prevented.
+    AA:BB:CC:DD:EE:FF is the LIVE dual-throttle controller; AA:BB:CC:DD:EE:FF is the c3lcd/c3can board.
+
+config_source: "bus://assets/displays/{device_id}.compose.yaml"   # HTTP from bus_storage — RULED, the Qualia's path, not config-over-bus
+
+requires:
+  - ref: "bus://assets/displays/{device_id}.compose.yaml"
+    kind: scene-config
+    status: absent
+    note: >
+      device_id = gauge3-XXXXXX (last 3 MAC octets — unknown until a module is seated). The FIRST
+      VALIDATION BINDING is ruled: gauge 1 <- throttle/left, gauge 2 <- throttle/right (both
+      continuous_0_255, scope global), gauge 3 <- self/context_pct (0-100, the architect's own context
+      level). Physical assignment is DOCUMENT ORDER of `type: gauge` widgets — see quirk
+      instance-order-is-document-order. All three namespaces ALREADY EXIST on the fleet; this device is
+      a new PEER on established vocabulary, not new vocabulary.
+  - ref: null
+    kind: firmware
+    status: placeholder
+    note: "no bus-hosted image; built locally from cyd/ (-DCXC_RACK_TRIPLE_GAUGE=1)"
+  - ref: null
+    kind: rollback-image
+    status: absent
+    note: >
+      ⚠ THERE IS NO FACTORY IMAGE AND THERE NEVER WILL BE. A custom board has no as-shipped firmware to
+      back up — the fleet's usual `esptool read-flash` safety net does not exist here. The recovery path
+      is a DIFFERENT one and it must be understood BEFORE the first flash: the ESP32-C3 Super Mini is a
+      SOCKETED module on 2x 1x8 headers, so the recovery path is PULL THE MODULE and flash it out of
+      circuit, or on a second module. That is the whole safety net, and it is why the socket matters more
+      than it looks. Second net: GPIO9 (BOOT) is on J_ESP_R pin 4, so a hardware download-boot entry
+      exists even if native USB is broken by firmware.
+  - ref: "~/Dropbox/Maker/pcb/rack_triple_gauge/generate_pcb.py"
+    kind: schematic
+    status: present
+    note: >
+      THE hardware ground truth — there is no .kicad_sch; the board is emitted programmatically. Every
+      pin fact in this descriptor was read from its NETS/*_NETS tables and CONFIRMED against the pad->net
+      assignments in the emitted rack_triple_gauge.kicad_pcb. ⚠ Where they DISAGREED the .kicad_pcb won —
+      see quirk pcb-generator-dead-routing.
+
+verify:
+  machine:
+    - check: build
+      expect: "pio run -e rack_triple_gauge -> SUCCESS"
+      note: >
+        VERIFIED 2026-08-14 on a CLEAN build (.pio/build/rack_triple_gauge removed first): 998 compile
+        steps in 24.4 s, of which 21 are this app's own TUs and 257 are in esp_wifi/mbedtls/freertos/lwip
+        — i.e. the whole component tree really was rebuilt. The step count is quoted rather than the
+        duration because a 3-second SUCCESS is an incremental no-op that compiled nothing, and duration
+        alone cannot tell those apart. RAM 13.5% (44,084 of 327,680 B), flash 25.8% (1,083,928 of
+        4,194,304 B).
+    - check: build
+      expect: "pio run -e native_gauge && .pio/build/native_gauge/program -> 'RESULT: PASS', exit 0"
+      note: >
+        VERIFIED 2026-08-14. THE ONLY EXECUTABLE EVIDENCE IN THIS DELIVERABLE, because there is no board.
+        Eight groups: the half-step ring is legal/non-repeating/one-coil-at-a-time; a target is REFUSED
+        before homing; the homing sweep completes and leaves position 0 with a 270 half-step (45.0 deg)
+        margin over travel; full-scale slew reaches 1890; the port packing leaves the J_EXP_MCP nibble
+        clean; the binder normalises 0..255 and 0..100 onto the same unit interval and CLAMPS overrange;
+        the channel-set precedence holds; a 4th gauge is dropped AND COUNTED.
+        ⚠ NEGATIVE CONTROL, ACTUALLY RUN 2026-08-14 — a suite that has never been SEEN to fail is not a
+        suite, and this fleet has already shipped a drop counter that was structurally pinned at zero.
+        The code was deliberately broken FIVE ways and each break produced its intended message:
+          (a) homing sweep shortened to 1800  -> "homing commanded 1800 steps, expected 2160"
+          (b) travel raised to 2400 > sweep   -> "*** HOMING SWEEP (2160) IS NOT LONGER THAN TRAVEL
+                                                  (2400) — a needle starting at full scale would never
+                                                  reach the stop and zero would be a fiction. ***"
+                                                  (margin reported as -240 half-steps / -40.0 deg)
+          (c) the pre-home gate deleted       -> "*** A TARGET WAS ACCEPTED BEFORE HOMING (900) ***"
+          (d) the overrange clamp deleted     -> "overrange 400 on 0..255 -> unit 1.568627; it must
+                                                  CLAMP, or a needle is driven past its stop"
+          (e) channel precedence inverted     -> "*** legacy `namespace:` bound DESPITE an explicit
+                                                  channels.value ***"
+        All five were reverted and the suite returned to RESULT: PASS.
+    - check: build
+      expect: "pio run -e rack_triple_gauge_selftest -> SUCCESS"
+      note: >
+        VERIFIED 2026-08-15 on a CLEAN build (.pio/build/rack_triple_gauge_selftest removed first): 979
+        compile steps in 22.8 s. RAM 3.1% (10,008 B), flash 5.1% (215,110 B) — ONE TWENTIETH of the real
+        firmware's flash, because the SRCS list is TWO FILES (gauge_diag.cpp + build_stamp.cpp). That
+        minimality is the design: no WiFi, no MQTT, no NVS, no config fetch, no scene, no announcer,
+        none of which can be a reason this build misbehaves because none is present.
+        ⚠ mcp23017.cpp is DELIBERATELY ABSENT — gauge_diag.cpp re-implements bus recovery and register
+        access rather than linking the driver under test. A diagnostic that runs the driver under test
+        reads the answer back through the same assumption that wrote it: [CXC-VISION-EPISTEMICS]
+        rule-self-verification. Board NUMBERS are still single-sourced from rack_triple_gauge_panel.h.
+        REGRESSION: rack_triple_gauge and native_gauge both still SUCCESS after the CMakeLists edit.
+    - check: compile-definitions
+      expect: "CXC_G3_DIAG_APP on gauge_diag.cpp; CXC_RACK_TRIPLE_GAUGE_APP absent from the whole DB"
+      note: >
+        VERIFIED 2026-08-15 by reading .pio/build/rack_triple_gauge_selftest/compile_commands.json (892
+        entries): -DCXC_G3_DIAG_APP is present on gauge_diag.cpp, and CXC_RACK_TRIPLE_GAUGE_APP appears
+        on ZERO entries. The second half is the load-bearing one — it is what keeps gauge_main.cpp's
+        app_main() out of this link. CXC_G3_DIAG is a CMake CACHE VARIABLE that selects the branch and
+        never reaches the compiler, so the guard the source reads had to be minted separately, same as
+        every other branch in src/CMakeLists.txt.
+    - check: compile-definitions
+      expect: "CXC_RACK_TRIPLE_GAUGE_APP + CXC_DEVICE_PREFIX + CXC_BUS_TRANSPORT_DEFAULT on every board TU"
+      note: >
+        VERIFIED 2026-08-14 by reading .pio/build/rack_triple_gauge/compile_commands.json (911 entries):
+        all three -D flags are present on gauge_main.cpp, boards/rack_triple_gauge.cpp, x27168.cpp and
+        mcp23017.cpp. This check exists because platformio.ini build_flags are SILENTLY DROPPED for
+        framework=espidf and have already cost this tree three defects.
+    - check: serial-token
+      expect: "backend: rack_triple_gauge (ESP32-C3, 3x x27.168 + 3x 12V backlight)"
+      note: "UNVERIFIED — no board. Ladder rung 2."
+    - check: serial-token
+      expect: "MCP23017 @0x20 ready — IODIRA=00 IODIRB=F0 (GPB4-7 left as INPUTS: they are J_EXP_MCP)"
+      note: >
+        UNVERIFIED — no board. Ladder rung 3. The IODIR READBACK is the one check on this board that does
+        not read a value back through the same assumption that wrote it: a NAK, a wrong address, a
+        half-powered part and a floating SDA all make the readback DISAGREE, whereas
+        "i2c_master_transmit returned ESP_OK" is equally true of anything on the bus that happens to ACK.
+    - check: serial-token
+      expect: "HOMING all three needles: 2160 half-steps (360 deg commanded into a 315 deg range) at 400 half-steps/s = 5400 ms"
+      note: "UNVERIFIED — no board. Ladder rung 6."
+    - check: serial-token
+      expect: "HOMED in ~5400 ms. Zero is now 18 half-steps off the mechanical stop."
+      note: >
+        UNVERIFIED — no board. ⚠ AND THIS LINE PROVES NOTHING ABOUT THE NEEDLES. It reports that 2160
+        step commands were issued and 2160 I2C writes returned ESP_OK. A needle whose coil is
+        open-circuit, whose connector is on the wrong JST, or whose motor is not fitted produces this
+        message identically. See the human block.
+    - check: serial-token
+      expect: "dropped N bus value(s) so far — backend NOT READY"
+      note: >
+        UNVERIFIED — no board, but this is the token that PROVES THE GATE WORKS, so it must be looked for
+        deliberately during rung 8 rather than treated as noise. Publish `throttle/left` DURING the 5.4 s
+        homing window and this line must appear. If values arrive during homing and this line does NOT
+        appear, the gate is broken and every subsequent reading is suspect.
+    - check: serial-token
+      expect: "Device id: gauge3-XXXXXX"
+      note: "UNVERIFIED — no board. CXC_DEVICE_PREFIX=\"gauge3\" is set as a CMake definition (verified above)."
+    - check: capture-pixel-diff
+      expect: null
+      note: >
+        NOT APPLICABLE AND NEVER WILL BE — this board has no framebuffer. The row is kept rather than
+        deleted so the absence is a stated fact rather than a gap somebody later tries to fill. THE
+        CONSEQUENCE IS THE POINT: on every other board in this fleet `GET /capture.bmp` is a
+        second (if self-confirming) channel. Here there is NO machine channel of any kind that observes
+        the output. Human acceptance is not the last resort on this board; it is the ONLY resort.
+  human: >
+    ⛔ NOT SATISFIED — THE BOARD DOES NOT EXIST. This block is the acceptance bar to run when it does,
+    and it is written as specific falsifiable rows because "does it look right" is not a question.
+    Ask about PARTICULARS.
+    ⛔ ROWS (0a)-(0d) COME FIRST AND ARE THE METER'S, NOT THE FIRMWARE'S. Prove POWER AT THE PART, then
+    the SUBSTRATE, then the PROTOCOL — on 2026-08-12 three rounds of protocol diagnostics ran against a
+    transceiver that had no supply. A SHORT IS A MULTIMETER QUESTION; A MARGINAL LOGIC LEVEL IS A
+    FIRMWARE QUESTION, and this board has a known one (see quirk mcp23017-vih-margin). Neither
+    instrument substitutes for the other: flashing anything into a board with a 5V/GND short is how an
+    ESP32-C3 is lost, and no meter can see a register write that fails one time in ten thousand.
+    (0a) THE MULTIMETER PASS: docs/board-bringup/rack_triple_gauge-PREFLIGHT.md, §A-§C, POWER NEVER
+        APPLIED. Shorts (each rail to GND and to each other rail); continuity of SDA/SCL from the ESP
+        header through the 4k7 pull-ups to U1 pins 13/12; all twelve MCP->L293D lines; all twelve L293D
+        outputs to J_MOT; the three 150R base paths; orientation of D1, the regulator, the electrolytics,
+        the sockets and the 2N2222s (⚠ the footprint assumes EBC — verify the part in hand with diode
+        mode, some TO-92 "2N2222" are ECB). ⚠ §B6 checks each motor harness for two ISOLATED ~280R
+        coils ON THE EXPECTED PINS — a transposed harness still steps, still homes, still reports
+        perfect health, and runs BACKWARDS forever.
+    (0b) THE TWO MODS, DECIDED BEFORE POWERING: PREFLIGHT §D. MOD A moves U1 pin 9 AND pin 18 to +3V3
+        (RESET must move too, or an ESD clamp forward-biases). MOD B is the heatsink or the switcher.
+        MOD C is a marker pen on J_EXP_ESP pins 1 and 4.
+    (0c) THE ROM BANNER on GPIO21 = J_ESP_R pin 1 (NOT GPIO20 — see quirk
+        uart0-is-free-and-is-an-instrument), 115200, before any firmware of ours exists on the part.
+    (0d) THE ON-TARGET DIAGNOSTIC, BEFORE THE REAL FIRMWARE:
+        pio run -e rack_triple_gauge_selftest -t upload && pio device monitor -e ...
+        It drives NO needle to a position and does NOT home. Its rungs 5 and 6 hand you two NEEDS-EYES
+        rows that nothing else asks: WHICH needle twitched for each of the twelve NAMED coil lines, and
+        WHICH strip lit for each of the three NAMED backlight channels. "The backlights work" cannot
+        distinguish a swapped pair. ⚠ Unplug J_EXP_MCP first — rung 4 briefly drives GPB4-7.
+    (1) POWER, BEFORE ANY MCU: with 12V applied and the ESP32-C3 module NOT SEATED, does J_PWR_TAP read
+        11.0-11.6 / 4.80-5.20 / 0.00 V on pins 1/2/3? (pin 3 is +3V3 and the ONLY source of that rail is
+        the seated module, so 0 V there is CORRECT at this stage and 3.3 V would mean a short — THE
+        FAILURE THAT LOOKS LIKE A PASS. ⚠ The ~11.3 V on pin 1 is D1's forward drop and is CORRECT;
+        expecting 12.0 V there is a false alarm.)
+    (2) THERMAL: after 10 minutes idle with the module seated, is the LM7805 tab hot to hold? Design
+        figure is 1.96 W typical — a bare TO-220 in free air would be at thermal shutdown. If the tab is
+        too hot to touch, STOP: the heatsink is inadequate. Measure it.
+    (3) HOMING, THE ONE THAT MATTERS: at power-on, do ALL THREE needles sweep counter-clockwise and come
+        to rest just BELOW the printed zero on the dial, and stay there? A needle that arrives at some
+        other angle, or that does not move, means zero is fiction and every reading afterwards is wrong
+        by that offset with every machine signal green.
+    (4) SWEEP, the negative control: flash env:rack_triple_gauge_sweep. Does every needle reach the
+        printed FULL-SCALE mark and return exactly to zero? A needle that falls short is losing steps at
+        the slew rate (800 half-steps/s is a DESIGN VALUE, not a measurement) — lower
+        kG3SlewHalfStepsPerSec until it does not.
+    (5) IDENTITY: publish 255 to `throttle/left` only. Does the LEFTMOST gauge move — the one you
+        intend to be gauge 1? Document order decides physical order and nothing checks it.
+    (6) DIRECTION: publish 0 then 255. Does the needle move CLOCKWISE for increasing values? If it
+        sweeps the wrong way, the gauge face is mounted mirrored relative to the homing direction and
+        the fix is the homing direction constant, not the coil wiring.
+    (7) BACKLIGHTS: are all three strips lit at power-on, at full brightness, and does each one belong
+        to the gauge next to it? (v1 is ON/OFF held on; per-gauge assignment is untested wiring.)
+    (8) AUDIBLE: during homing, is there a soft ticking that STOPS when the needle reaches the stop and
+        then continues as a quieter slip? A loud rattle for the whole 5.4 s means the needle never
+        reached the stop.
+    (9) RANGE: publish 128 to `throttle/left`. Does the needle sit at MID-SCALE on the printed dial? The
+        x27.168's 315 deg sweep is a datasheet figure; if mid-scale is visibly off-centre, this gauge
+        face is not a 315 deg face and kG3SweepDegrees needs the real number.
+
+quirks:
+  - id: gpio013-are-not-strapping-pins
+    value: "GPIO2 / GPIO8 / GPIO9"
+    resolved: true
+    note: >
+      ⚠ THE HEADLINE FINDING, AND IT IS A REFUTATION. The brief that produced this board's firmware
+      asserted "GPIO0 IS A STRAPPING PIN on the ESP32-C3", wired to a 2N2222 base through 150R, and asked
+      whether it could hold the part in the wrong boot mode. IT CANNOT, BECAUSE IT IS NOT A STRAPPING
+      PIN. The ESP32-C3's boot straps are GPIO2, GPIO8 and GPIO9 — ONLY those three (ESP32-C3 datasheet
+      §2.4). This is independently corroborated inside this fleet: [SPEC:CXC-BOARD-HW]
+      `strapping-and-uart-caveats` states "GPIO2, GPIO8 and GPIO9 are boot-mode straps" and was
+      owner-confirmed on THIS EXACT MODULE during the 2026-08-12 bring-up, and `pin-occupancy` on the
+      same board marks 2/8/9 STRAPPING and 0/1/3 as ordinary display pins.
+      GPIO0 IS the boot strap on the classic ESP32, and GPIO0/GPIO46 are on the S3 — which is exactly why
+      the assumption was reasonable and exactly why it was wrong. It is the same shape as the fleet's
+      UART-crosses/CAN-does-not collision: a habit from the last part carried into the next one.
+      VERDICT: LED1/LED2/LED3 on GPIO0/GPIO1/GPIO3 are BOOT-SAFE. Do not respin for this.
+      Second-order check, also clear: at reset the C3's GPIOs are high-Z inputs, so no base current
+      flows, the 2N2222s are off and the strips are dark until LEDC claims the pins. Nothing on this
+      board pulls any strap in either direction.
+  - id: exp-header-exposes-two-straps
+    value: "J_EXP_ESP pin 1 = GPIO2, pin 4 = GPIO9"
+    resolved: false
+    note: >
+      ⚠ WHAT THE STRAPPING CHECK DID FIND, and it is worth a pre-fab silkscreen change. J_EXP_ESP breaks
+      out SIX ESP32-C3 GPIOs (pin1=GPIO2, pin2=GPIO6, pin3=GPIO7, pin4=GPIO9, pin5=GPIO10, pin6=GPIO20)
+      and TWO OF THEM ARE BOOT STRAPS, unlabelled: GPIO2 must be HIGH at reset for SPI boot, and GPIO9
+      LOW at reset forces download boot. Anything a future user hangs on pin 1 or pin 4 that presents a
+      low impedance to ground at reset — an LED to GND, an NPN base, a switch — prevents normal boot.
+      SEVERITY: not a defect in the board as designed (nothing on-board touches a strap), but a LATENT
+      TRAP, and the probability is not low: this board's own design language is "GPIO -> 150R -> NPN base
+      -> GND" repeated three times, so a fourth channel on J_EXP_ESP pin 1 is the obvious next move and
+      it bricks boot.
+      FIX A (pre-fab, free): silkscreen pin 1 as `GPIO2 *STRAP*` and pin 4 as `GPIO9 *STRAP*`.
+      FIX B (respin): 10k pull-ups to +3V3 on GPIO2 and GPIO9 so they default boot-safe and any expansion
+      load has to overcome a pull-up — turning a silent brick into a visible design decision.
+      SAFE USE PATTERN, already recorded in the corpus and worth repeating here: I2C IDLES HIGH, so a
+      pulled-up second I2C bus on GPIO2/GPIO9 SATISFIES the strap constraint instead of fighting it
+      ([SPEC:CXC-BOARD-HW] `touch-recovery-path`). Those two pins are fine for I2C and hostile to a
+      low-side switch.
+  - id: mcp23017-vdd-is-5v-with-3v3-pullups
+    value: "VIH 3.5 V required, 3.3 V supplied"
+    resolved: false
+    note: >
+      ⚠ PRE-FAB ELECTRICAL DEFECT — THE MOST VALUABLE THING IN THIS DESCRIPTOR AFTER THE STRAP VERDICT,
+      because it is a MARGINAL fault and marginal faults are the ones that pass on the bench and fail in
+      the rack.
+      AS DESIGNED: U1 pin 9 (VDD) -> net 4 (+5V), and R_SDA/R_SCL (4k7) pull to net 5 (+3V3).
+      THE NUMBERS: the MCP23017 datasheet specifies SDA and SCL as I2C-level Schmitt inputs with
+      VIH = 0.7 x VDD. At VDD = 5.0 V that is 3.5 V. The bus can only ever reach 3.3 V. THE HIGH LEVEL IS
+      200 mV BELOW THE GUARANTEED INPUT-HIGH THRESHOLD.
+      WHY IT IS DANGEROUS RATHER THAN FATAL: the real Schmitt threshold on a typical part is ~2.5-3 V, so
+      it will very often WORK — at 25 C, on this lot, on this bench. It is a design with no margin, and
+      when it fails the failure is a CORRUPTED REGISTER WRITE with every I2C transaction returning
+      ESP_OK. That is a needle driving the wrong coil pattern while the whole stack reports health:
+      textbook [CXC-VISION-EPISTEMICS].
+      THE FIX IS FREE AND IT IS PRE-FAB: move the MCP23017 to the 3.3 V rail.
+        generate_pcb.py: U1_NETS[9] = 5 (VDD), U1_NETS[18] = 5 (RESET), R_RST_NETS = {1: 5, 2: 5}.
+      ⚠ RESET MUST MOVE TOO — leaving pin 18 on +5 V while VDD is 3.3 V puts V_pin above VDD+0.3 and
+      forward-biases the ESD diode. That is what makes it a TWO-net change, not one, and it is the part
+      an eager fix would miss.
+      AND IT COSTS NOTHING DOWNSTREAM: the expander then drives the L293D inputs at 3.3 V, and the L293D
+      datasheet gives VIH = 2.3 V max for Vcc1 = 4.5-7 V. 3.3 V clears it with 1.0 V of margin.
+      DO NOT "FIX" IT THE OTHER WAY: moving the pull-ups to +5 V would put 5 V on the ESP32-C3's GPIO4/5,
+      which are NOT 5 V tolerant. That fix is strictly worse than the defect.
+  - id: no-absolute-position-feedback
+    value: "x27.168 — none, at any price"
+    resolved: true
+    note: >
+      ⛔ THE BOARD'S DEFINING SILENT-FAILURE MODE, and the reason homing is a HARD GATE rather than a
+      best effort. The x27.168 has no encoder, no index pulse and no limit switch; the only position
+      reference in the entire part is the internal mechanical stop at each end of its 315 deg sweep. At
+      power-on the firmware does not know and CANNOT ASK where the needle is.
+      Without homing: a needle sitting at 40 is driven as though it were at 0. Every I2C write returns
+      ESP_OK. Every step is counted correctly. The transport reports healthy. `_device/<id>/health` is
+      green. And the gauge reads 40 units high, forever. There is NO instrument on this hardware, at any
+      price, that catches it — other than a human looking at the dial.
+      THE DESIGN: RealizationBackend::ready() (a method on the SEAM, not in gauge code, so every future
+      backend with a calibration phase inherits it) returns false until all three needles have homed, and
+      gauge_main.cpp DROPS AND COUNTS every bus value that arrives before then. Dropping is VISIBLE (the
+      needle stays at zero); honouring is INVISIBLE (the needle reads plausibly and is wrong). That
+      asymmetry is the whole argument.
+      X27168::set_target() also REFUSES rather than QUEUES a pre-homing target — a queued target would be
+      applied against a zero that does not exist yet.
+  - id: homing-sweep-is-360-degrees
+    value: 2160
+    resolved: true
+    note: >
+      THE STEP COUNT AND ITS JUSTIFICATION. 2160 half-steps = 360.0 deg commanded into a 315 deg
+      mechanical range. Arithmetic: x27.168 sweeps 315 deg at 1/3 deg per FULL step; this firmware
+      HALF-steps, so 1/6 deg per quantum and 1890 quanta of full travel.
+        worst-case start   1890   needle parked hard against the FAR stop
+        pointer press-fit  +180   the pointer is HAND-fitted to the shaft at assembly
+        unit sweep tol.     +90   15 deg on the 315 spec
+        ----------------------
+        total              2160   = exactly one full revolution
+      Sized this way DELIBERATELY against this fleet's first named failure shape — "a limit sized exactly
+      for today" (kMaxPersist was 4 for a control plane of exactly 4, and the whole symptom was one WARN
+      line). At N+1 — a 270 deg gauge, a 20 deg pointer offset, a replacement motor from another lot —
+      2160 still covers it, and the fix is one constant in one header.
+      The overtravel is not wasted motion, it IS the guarantee: once the needle reaches the stop the
+      remaining commands SLIP, harmlessly, and that slip is precisely how an unknown start becomes a
+      known zero. This is the SwitecX25 `zero()` method and it is accepted practice for this motor family.
+      ⚠ THE MARGIN IS ASSERTED IN THE HOST SUITE: `2160 > travel` is a CHECK, not a comment, and
+      shortening the sweep below travel makes the suite fail with a named message.
+      AFTER HOMING: back off 18 half-steps (3.0 deg) and call THAT zero — a coil energised against a hard
+      stop is where this motor buzzes and heats, and the offset leaves the needle somewhere to GO below
+      the printed zero so an under-range value is VISIBLE rather than clipped invisibly against the stop.
+      ALL THREE NEEDLES HOME CONCURRENTLY: the twelve coil lines are two bytes at one I2C address, so a
+      step for one gauge costs the same transaction as a step for three. Boot cost is 5.4 s, not 16.2 s.
+  - id: step-rates-are-design-values-not-measurements
+    value: "home 400 Hz / slew 800 Hz (half-steps/s)"
+    resolved: false
+    note: >
+      ⇢MEASURE. Neither number has been measured and the true pull-in rate of THESE motors behind THIS
+      driver is a bench figure (ladder rung 6/7).
+      WHY CONSERVATIVE: the coils see ~3.2 V, not 5 V. The L293D is a BJT bridge dropping ~1.8 V total
+      out of the +5 V rail it is fed from (U2/U3/U4 pin 8 VS -> net 4 = +5V, NOT +12V), and across a
+      ~280 ohm coil that is ~11.4 mA against a ~20 mA rating — roughly 57% of rated torque, which LOWERS
+      the achievable step rate. The datasheet's speed figures do not apply to this drive.
+      WHY HOMING IS SLOWER THAN SLEWING, and it is not caution for its own sake: a step lost while
+      SLEWING costs one quantum and is corrected at the next re-home. A step lost while HOMING corrupts
+      the definition of zero for the whole session and nothing downstream can detect it. Different risks,
+      different rates. Homing also runs FLAT with no acceleration ramp, so that during bring-up the ramp
+      is never a second live suspect.
+      RESPIN OPTION IF SPEED MATTERS: a DRV8833 in place of the L293D drops ~0.3 V instead of ~1.8 V,
+      giving ~16.8 mA and near-rated torque. Not a defect; a headroom decision.
+  - id: lm7805-heatsink-is-mandatory
+    value: "1.96 W typical / 3.93 W peak"
+    resolved: false
+    note: >
+      ⇢MEASURE at ladder rung 1. Load arithmetic on +5 V: ESP32-C3 ~120 mA avg (~350 mA WiFi TX peak) +
+      3x L293D quiescent ~87 mA (~138 mA max) + six energised coils ~72 mA + MCP23017 ~1 mA
+      = ~280 mA typical, ~561 mA peak. LM7805 dissipation = (12-5) x I = 1.96 W typ, 3.93 W peak.
+      A BARE TO-220 IN FREE AIR IS ~65 C/W: 1.96 W is a 127 C rise, i.e. a junction at ~152 C against a
+      150 C shutdown — IT WOULD THERMAL-CYCLE AT IDLE. With a clip-on sink at <=25 C/W total it settles
+      near 78 C typical and ~131 C at peak. The heatsink is not optional and it must be sized.
+      ⚠ FEED IT REGULATED 12 V. A 13.8 V "12 V" bench or automotive supply raises typical to 2.46 W and
+      peak to 4.9 W, beyond a small clip sink.
+      BEST PRE-FAB FIX, and it is a BOM change with NO PCB change: replace the LM7805 with a drop-in
+      TO-220/SIP-3 switching regulator (Recom R-78E5.0-1.0 class, In/GND/Out, 1 A, ~90% efficient).
+      Dissipation falls from ~2 W to ~0.15 W and the heatsink disappears entirely. VERIFY the body
+      outline and pin pitch against the TO-220 footprint before ordering — the pinout matches, the
+      mechanical envelope is what to check.
+  - id: l293d-enables-are-hard-tied
+    value: "EN12 + EN34 -> +5V"
+    resolved: true
+    note: >
+      U2/U3/U4 pins 1 and 9 go straight to net 4, so the output stages are ALWAYS enabled and there is no
+      hardware way to float the coils. TWO CONSEQUENCES, and neither is a defect:
+      (1) at power-on, before firmware configures the expander, all twelve MCP23017 GPIOs are INPUTS, so
+          all twelve L293D inputs FLOAT (the L293D has no internal pull-downs) and coil drive is
+          undefined until firmware runs. Worst case is ~72 mA and a twitching needle. Harmless, AND it is
+          a second independent reason homing is mandatory.
+      (2) firmware CAN still de-energise: IN1=IN2=0 shorts the coil through the low-side transistors —
+          no current, and a mild dynamic brake that helps the needle hold against vibration. So 0x00 is
+          the safe pattern and is what init writes first.
+      THE ORDERING THAT MATTERS: mcp23017_init() writes OLAT=0x00 BEFORE IODIR, so the pins go
+      float -> driven-LOW. The other order is float -> whatever the latch held, which on a cold part is
+      0x00 but on a WARM esp_restart() is the PREVIOUS step pattern — a coil kicking at the instant of
+      reset.
+      RESPIN NICETY: routing EN12/EN34 to GPB4/5/6 (free, on J_EXP_MCP) would allow a true low-power
+      state. Not needed; recorded so the option is known.
+  - id: iodirb-is-f0-not-00
+    value: "IODIRB = 0xF0"
+    resolved: true
+    note: >
+      GPB4-7 leave the chip on J_EXP_MCP. Declaring the whole B port an output would have this firmware
+      actively driving four pins belonging to whatever a user plugs in — a contention the user could not
+      see and this firmware would never report. GPB0-3 are outputs (gauge 3's coil lines); GPB4-7 stay
+      INPUTS (high-Z) until something claims them. x27_pack_ports() also keeps the top nibble of the
+      GPIOB byte at zero, and the host suite ASSERTS it.
+  - id: no-mcp23017-reset-path
+    value: "RESET hard-tied; R_RST has both ends on +5V"
+    resolved: false
+    note: >
+      U1 pin 18 (RESET) is tied to the supply rail and R_RST_NETS = {1: 4, 2: 4} — a resistor with BOTH
+      ENDS on the same net, i.e. a decorative pull-up across a hard tie (the generator source says so in
+      as many words). So a wedged expander can only be cleared by a POWER CYCLE, which on a rack-mounted
+      board means physical access.
+      SOFTWARE MITIGATION, implemented: mcp23017_bus_recover() bit-bangs nine SCL clocks BEFORE the I2C
+      driver is installed, releasing a slave stuck mid-byte. It reports honestly — "SDA already idle
+      HIGH — nothing stuck" when there was nothing to fix, so a recovery that did not happen never reads
+      like a repair that did. It CANNOT fix a wedged master or a latched-up expander; do not sell it as a
+      reset.
+      RESPIN: route RESET to GPIO10 (free, non-strapping, already on J_ESP_R pin 3 and J_EXP_ESP pin 5).
+  - id: base-resistor-is-12x-overdrive
+    value: "150R -> 17.3 mA base"
+    resolved: false
+    note: >
+      IMPROVEMENT, NOT A DEFECT, and stated with numbers so it is not mistaken for either. Ib =
+      (3.3 - 0.7) / 150 = 17.3 mA per channel, 52 mA across all three. The ESP32-C3's absolute-max per-pin
+      output current is 40 mA, so this is legal but at ~87% of the recommended 20 mA, and it is roughly
+      12x more base drive than a 2N2222 needs to saturate a few-hundred-mA LED strip.
+      SUGGESTED BOM CHANGE (no PCB change): 470R -> 5.5 mA base -> ~300 mA collector at a forced beta of
+      55, comfortably inside the 2N2222's hFE at that current. 1k (2.6 mA) is too thin for a 300 mA strip.
+      The 150R is inherited verbatim from the lego_dots BC337 board, where the same reasoning applies.
+  - id: no-fuse-on-12v
+    value: "1N5401 (3 A) is the only series element"
+    resolved: false
+    note: >
+      A shorted LED cable or a shorted stepper harness is limited only by the 1N5401's 3 A rating and the
+      supply. Cheap pre-fab fix: a polyfuse in series with the 12 V input. Low priority — the diode
+      survives a lot and the connectors are keyed — but recorded because a rack board's cables get moved.
+  - id: pcb-generator-dead-routing
+    value: "emit_traces() disagrees with the pad net tables"
+    resolved: false
+    note: >
+      ⚠ A SOURCE-OF-TRUTH DEFECT IN generate_pcb.py. LOW URGENCY, HIGH NASTINESS. The board as emitted is
+      CORRECT — it was rerouted with Freerouting (.dsn/.ses present, 377 segments, DRC reports 0
+      unconnected pads and 51 violations all of which are footprint-library/padstack/silk warnings) — so
+      the pad->net assignments are what got routed and this descriptor's pin map is trustworthy.
+      BUT the hand-routing block in emit_traces() was never updated when the header pinout was fixed, and
+      it now contradicts the authoritative *_NETS tables: it routes SDA from J_ESP_L pin 7 (which the pad
+      table assigns to GND), SCL from J_ESP_L pin 8 (which is +5V; SCL is on J_ESP_R pin 8), 3V3 from
+      J_ESP_R pin 2 (which is GPIO20), the three LED nets from left pins 3/4/6 (the table says 1/2/4),
+      and GPIO10 from "J_ESP_L pin 9" — A 1x8 HEADER HAS NO PIN 9.
+      THE HAZARD: regenerating the board from this source WITHOUT re-running Freerouting would produce a
+      PCB whose hand-routed traces short SDA to GND and SCL to +5V. Nothing announces it; the generator
+      runs clean.
+      FIX: delete the dead emit_traces() block, or assert every (header, pin) -> net against the *_NETS
+      tables at generation time. The second is better — a convention nothing checks will collide again.
+  - id: instance-order-is-document-order
+    value: "first `type: gauge` in the scene == physical gauge 1"
+    resolved: false
+    note: >
+      A CONVENTION with exactly one fragility: REORDERING THE SCENE SILENTLY REWIRES THE RACK. There is
+      no `slot:` key yet, and nothing detects the swap — three needles all moving plausibly is what a
+      correctly-wired board and a permuted one both look like.
+      MITIGATIONS TODAY: the hook is in gauge_bind.cpp, and ladder rung 8 asks the operator WHICH needle
+      moved rather than whether a needle moved. A future `slot: 1` key on the gauge widget should
+      override document order; write it before there is a second gauge board.
+  - id: channel-set-shape-settled-here
+    value: "value (required) + illum (optional), unit-normalised at the seam"
+    resolved: true
+    note: >
+      [CXC-VISION-SEMANTIC-REALIZATION] carries a DEADLINE: "Settle the channel-set shape BEFORE the
+      first non-raster backend ships. Retrofitting a second channel means touching every backend, and
+      there is currently exactly one." THIS BOARD IS THAT FIRST BACKEND, so the shape is settled here and
+      documented in full at the head of cyd/include/realization.h [DD-G3-CHANNELS]. Four rules:
+      R1 channel names are SEMANTIC and widget-kind-scoped — `illum` not `backlight`, `value` not
+         `needle_position`. A channel name that encodes a realization has already leaked.
+      R2 the DOMAIN belongs to the BINDING (`min:`/`max:` in the scene); the seam carries a UNIT float in
+         [0,1]; the backend maps unit onto 1890 half-steps or an 8-bit duty or two 7-segment digits.
+         THAT MAPPING IS THE MECHANISM behind "one value, many realizations" — it is why 0..255 throttle
+         and 0..100 percent can drive the same rack, and the host suite proves both land identically.
+      R3 realizes() is THREE-valued: Realized / NotApplicable (a raster gauge has no `illum` — silent, it
+         is a design) / Unknown (LOUD, once, at bind time — a scene/firmware mismatch). Two values would
+         collapse "I chose not to" with "I do not understand you" and only the second is a defect.
+      R4 ready() GATES the backend and lives on the SEAM, so every future backend with a calibration
+         phase inherits the homing gate instead of reinventing it.
+      MIGRATION: a bare `namespace:` remains sugar for `channels.value`, so every existing scene keeps
+      working and NO raster backend changes. An explicit `channels.value` WINS — stated precedence,
+      because two sources for one fact without one is a defect nobody can attribute.
+  - id: hal-vocabulary-still-missing
+    value: "no `stepper` kind, no `motor/position`"
+    resolved: false
+    note: >
+      [PCB-GAUGE3] stress S4 records that [SPEC:CXC-HAL-DECLARE]'s nine kinds have no `stepper` and no
+      position actuator — only `motor/{speed,direction}` — and stress S3 that a gauge is a COMPOUND
+      peripheral the schema can only spell as scattered atomic entries. NOT FIXED HERE, deliberately:
+      fixing HAL vocabulary and bringing up a board are two changes whose blast radii would compound.
+      WHAT THE FIRMWARE NEEDS, stated precisely so a later declaration can be written against a real
+      consumer rather than guessed (full form at the head of realization.h):
+        kind: stepper, driver: l293d (an H-bridge PAIR per motor),
+        on: i2c{addr:0x20, driver:mcp23017}  <- stress S2's expander as a PORT PROVIDER, not a sensor,
+        pins: [in1,in2,in3,in4] as EXPANDER pin indices, sequence: half,
+        travel_steps: 1890, slew_rate_hz: 800,
+        home: {method: hard-stop, direction: down, steps: 2160, rate_hz: 400, rest_offset: 18},
+        namespace: gauge/{n}/value   <- the absent `motor/position`
+      and that `gauge` is ONE object with TWO channels, not two atomic entries sharing an index.
+  - id: v1-backlights-are-on-off
+    value: "held ON"
+    resolved: true
+    note: >
+      A SCOPING DECISION, NOT THE CONTRACT — and the firmware is written so the distinction is real. Each
+      gauge has its own transistor on its own GPIO, so the second channel exists in COPPER; only the
+      binding is absent. LEDC is configured from day one (5 kHz, 8-bit, low-speed mode — the C3 has no
+      high-speed group) at full duty, `illum` answers Realized, and set_channel() already maps a unit
+      onto duty. Turning this into real dimming is ADDING AN `illum:` NAMESPACE TO THE SCENE: a change
+      of VALUE, not a change of SHAPE. Nothing in realization.h, gauge_bind.cpp, the app shell or this
+      board file has to move.
+  - id: no-fpu-does-not-matter-here
+    value: "RV32IMAC"
+    resolved: true
+    note: >
+      The C3 has no FPU, which on the fleet's OTHER RISC-V boards is THE defining performance fact (dial
+      gauges 892.9 ms/frame vs led_bar 31.2 ms on the C6, same binary, scene authoring alone). HERE IT IS
+      IRRELEVANT and that is worth stating so nobody re-derives the worry: there is no canvas, no
+      rasterizer and no per-pixel float. The only floats on this board are one unit normalisation per
+      arriving bus value — a few per second, soft-emulated, unmeasurable. The step scheduler is integer
+      throughout.
+  - id: uart0-is-free-and-is-an-instrument
+    value: "GPIO21 = U0TXD (J_ESP_R pin 1), GPIO20 = U0RXD (J_ESP_R pin 2, also J_EXP_ESP pin 6)"
+    resolved: true
+    note: >
+      ⛔ CORRECTED 2026-08-15. This row read "GPIO20 = TX, GPIO21 = RX" and that is BACKWARDS: on the
+      ESP32-C3, U0TXD = GPIO21 and U0RXD = GPIO20. The .md pin map and ladder rung 2 carried the same
+      reversal and sent the operator to probe the RECEIVE pin for a transmit banner. Silence is what
+      that yields, and rung 2's stated failure action is "that is a power, ground or module-seating
+      fault" — SO A CORRECT BOARD WOULD HAVE BEEN CONDEMNED BY ITS OWN BRING-UP DOCUMENT. The repo's
+      esp32c3-supermini-st7796.md had it right ("GPIO21 is UART0 TX"); this board's files drifted from
+      it. Recorded rather than silently patched: rung 2 exists to be the ONE check that involves no
+      code of ours, and it was aimed at a pin that cannot answer. See rack_triple_gauge.md §4.6.
+      Unlike the c3lcd board (where every GPIO is spoken for and UART0 can only be freed by surrendering
+      the console), GPIO20/21 are UNUSED here. THE ESP32 ROM BOOTLOADER PRINTS ON UART0 TX AT 115200 ON
+      EVERY RESET regardless of the app's console config — so on a board that has never run any
+      firmware, a reset produces a banner that proves TX, ground and baud with NO CODE OF OURS
+      INVOLVED. That is ladder rung 2 and it is free.
+      ⚠ GPIO21 is NOT broken out on J_EXP_ESP (that header carries GPIO20/RX on pin 6, not 21), so the
+      solder side of J_ESP_R pin 1 is the only access. ⚠ UART crosses; CAN does not.
+      It also means this board COULD be UART-slaved later without giving anything up — the transport
+      control plane (`_device/<id>/transport`) is already compiled in.
+  - id: no-rail-is-readable-by-the-mcu
+    value: "J_PWR_TAP reaches no GPIO; the only free ADC pin on the C3 is GPIO2, a boot strap"
+    resolved: true
+    note: >
+      Found 2026-08-15 while building env:rack_triple_gauge_selftest rung 7. J_PWR_TAP (+12V/+5V/+3V3/
+      GND) is a HEADER FOR A METER and connects to no GPIO. On the ESP32-C3 the ADC-capable pins are
+      ADC1 CH0-4 = GPIO0..4 and ADC2 CH0 = GPIO5; this board uses GPIO0/1/3 for backlights, GPIO4 for
+      SDA and GPIO5 for SCL. THE ONLY FREE ADC PIN IS GPIO2, WHICH IS A BOOT STRAP and is brought out
+      unlabelled on J_EXP_ESP pin 1 — i.e. hanging a divider there IS the exp-header-exposes-two-straps
+      hazard, realised by us. So rung 7 reports NO MEASUREMENT rather than inventing one.
+      THE ONE RAIL SIGNAL THAT DOES EXIST is esp_reset_reason() == ESP_RST_BROWNOUT, reported at rung 1
+      and treated as a hard FAIL. It sees the 3V3 rail AT THE MODULE ONLY, and only when it sags far
+      enough to reset. ⚠ A +5V rail sagging to 4.0V is invisible to it AND WOULD MAKE THE
+      mcp23017-vih-margin DEFECT PASS FOR THE WRONG REASON, by lowering 0.7 x VDD to 2.8V. Two faults
+      cancelling is not a pass. Respin fix: an ADS1115 at 0x48 on the existing I2C bus reads all three
+      rails and costs no pins. See rack_triple_gauge.md §4.5.
+
+variants: []   # single physical board

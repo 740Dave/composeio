@@ -1,0 +1,193 @@
+# ComposeUX Render Engine — M0+M1 acceptance composition.
+#
+# Exercises: flex + grid + pixel-stack layout, namespace binding
+# (bus value -> widget within one frame), tap -> publish round-trip,
+# z-ordered overlapping children in a pixel-stack composite, and an
+# image widget on the asset pipeline.
+#
+# Run live:      python -m composeio.render.engine.runtime examples/render_demo.compose.yaml
+# Pixel-verify:  ... --headless /tmp/render_demo_ref.png
+
+app:
+  id: render-demo
+  transports: []          # in-process bus; add mqtt + --transports for live infra
+
+design:
+  target: desktop
+  title: "ComposeUX Render Engine — M0+M1"
+  theme: dark
+  width: 960
+  height: 620
+
+namespaces:
+  - {name: engine_temp,   state_engine: json, export: true, label: "Engine Temp"}
+  - {name: engine_rpm,    state_engine: json, export: true, label: "Engine RPM"}
+  - {name: system_status, state_engine: json, export: true, label: "System Status"}
+  - {name: status_text,   state_engine: json, export: true, label: "Status Line"}
+
+widgets:
+  - type: label
+    id: title
+    text: "ComposeUX Render Engine — live window, Layer-2 engine, pixel-stack"
+    font_size: 18
+    font_weight: bold
+    color: [0x26, 0xA6, 0x9A]
+    align: center
+    height: 30
+
+  - type: stack
+    id: main_row
+    direction: row
+    gap: 16
+    align: start
+
+    children:
+      # ── left: flex column of bus-bound widgets ──
+      - type: stack
+        id: telemetry_col
+        direction: column
+        align: center
+        gap: 12
+        padding: 12
+        background: [0x28, 0x28, 0x3C, 230]
+        border: [0x3A, 0x3A, 0x50]
+        corner_radius: 10
+        width: 240
+
+        children:
+          - type: label
+            text: "Telemetry (bus-bound)"
+            font_size: 13
+            font_weight: medium
+            color: [0xAA, 0xAA, 0xBB]
+            height: 18
+          - type: gauge
+            id: temp_gauge
+            namespace: engine_temp
+            min_val: 0
+            max_val: 120
+            value: 20
+            unit: "°C"
+            label: "Coolant"
+            warning_threshold: 95
+            danger_threshold: 105
+            width: 200
+            height: 200
+          - type: led
+            id: status_led
+            namespace: system_status
+            publish_namespace: system_status   # tap -> toggle via the bus
+            state: "off"
+            label: "tap me (bus round-trip)"
+          - type: label
+            id: status_label
+            namespace: status_text
+            text: "waiting for bus…"
+            font_size: 12
+            color: [0xFF, 0xA7, 0x26]
+            height: 18
+
+      # ── center: THE pixel-stack composite (overlapping, z-ordered) ──
+      - type: pixel_stack
+        id: composite
+        width: 420
+        height: 420
+        background: [0x14, 0x14, 0x20]
+        border: [0x3A, 0x3A, 0x50]
+
+        children:
+          # z0 — backdrop field
+          - type: rect
+            id: z0_field
+            x: 0
+            y: 0
+            w: 420
+            h: 420
+            fill_color: [0x1A, 0x1A, 0x2A, 255]
+          # z1 — big circle, will be overlapped by everything above
+          - type: circle
+            id: z1_circle
+            x: 30
+            y: 40
+            w: 220
+            h: 220
+            fill_color: [0x42, 0xA5, 0xF5, 130]
+          # z2 — translucent panel overlapping the circle
+          - type: rect
+            id: z2_panel
+            x: 120
+            y: 120
+            w: 240
+            h: 200
+            fill_color: [0x26, 0xA6, 0x9A, 90]
+            stroke_color: [0x26, 0xA6, 0x9A, 255]
+            stroke_width: 1.5
+            corner_radius: 12
+          # z3 — live gauge ON TOP of the panel + circle, bus-bound
+          - type: gauge
+            id: z3_rpm
+            namespace: engine_rpm
+            x: 140
+            y: 135
+            w: 180
+            h: 180
+            min_val: 0
+            max_val: 8000
+            value: 0
+            unit: "RPM"
+            label: "Engine"
+          # z4 — interactive LED overlapping the gauge's corner
+          - type: led
+            id: z4_led
+            namespace: system_status
+            publish_namespace: system_status
+            x: 290
+            y: 110
+            w: 56
+            h: 56
+            state: "off"
+          # z5 — caption overlapping everything (topmost)
+          - type: label
+            id: z5_caption
+            text: "pixel-stack composite - z-order bottom to top"
+            x: 20
+            y: 380
+            w: 380
+            h: 20
+            font_size: 12
+            color: [0xE0, 0xE0, 0xE0]
+            align: left
+
+      # ── right: grid + asset pipeline ──
+      - type: stack
+        id: right_col
+        direction: column
+        gap: 12
+
+        children:
+          - type: grid
+            id: shape_grid
+            gap: 10
+            padding: 12
+            background: [0x28, 0x28, 0x3C, 230]
+            border: [0x3A, 0x3A, 0x50]
+            corner_radius: 10
+            children:
+              - {type: rect,   row: 0, column: 0, width: 90, height: 60,
+                 fill_color: [0x26, 0xA6, 0x9A, 200], corner_radius: 8}
+              - {type: rect,   row: 0, column: 1, width: 90, height: 60,
+                 fill_color: [0xFF, 0xA7, 0x26, 180], corner_radius: 0}
+              - {type: circle, row: 1, column: 0, width: 60, height: 60,
+                 fill_color: [0xEF, 0x53, 0x50, 200]}
+              - {type: circle, row: 1, column: 1, width: 60, height: 60,
+                 fill_color: [0xAB, 0x47, 0xBC, 200]}
+          - type: image
+            id: asset_demo
+            src: "bus://assets/render-demo/logo.png"   # falls back to placeholder if absent
+            width: 200
+            height: 120
+          - type: label
+            text: "grid + doc/bus asset pipeline"
+            font_size: 11
+            color: [0x66, 0x66, 0x78]
+            height: 16

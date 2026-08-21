@@ -1,0 +1,63 @@
+# ComposeUX chat_thread CYD parity config ([SPEC:CXC-IC]).
+#
+# The static `messages:` list is the CYD render default (the checklist `tasks:`
+# idiom): the embedded parser (cyd/src/compose_scene.cpp) reads it and the
+# on-device ChatThreadWidget (cyd/src/chat_thread.cpp) renders these voices with
+# word-wrapped bubbles.  Each turn carries an explicit `voice:` — the static-
+# tier analog of the desktop widget's (topic, from) -> voice resolution.
+#
+# The chat_thread is 320px wide: content_w = 320 - 2*18 = 284, cap =
+# min(284*0.78, 560) = 221.5, so the bubble inner (wrap) width is 221.5 - 28 =
+# 193.5 px.  The bubble bodies below are the SAME strings the wrap-parity corpus
+# pins at body_w 193.5 (python/scripts/gen_chat_wrap_corpus_header.py), so their
+# line breaks are PROVEN byte-identical on the desktop (ChatThreadWidget's own
+# _wrap_runs) and on the CYD (text_wrap wrap_lines_display) by
+# env:native_chat_wrap.  Render the desktop reference:
+#
+#   python3 python/scripts/render_chat_thread_parity.py
+#
+# (which injects these `messages:` into the desktop widget and prints the
+# wrapped lines both tiers produce).
+
+design:
+  width: 360
+  height: 420
+  title: chat_thread — CYD parity
+  background: [7, 10, 15]
+
+widgets:
+  - type: chat_thread
+    id: console
+    x: 20
+    y: 20
+    width: 320
+    height: 380
+    font_size: 12
+    max_messages: 200
+    # Static thread (CYD render default) — bodies shared with the wrap corpus.
+    messages:
+      - voice: reply
+        sender: architect
+        stamp: "13:15 on Jul 22"
+        text: "Both CYD substrates are landed and proven: text_wrap and scroll_list."
+      - voice: david
+        sender: david
+        stamp: "13:16 on Jul 22"
+        text: "Nice work. Does the wrap line-break match the desktop widget exactly?"
+      - voice: narration
+        sender: architect
+        stamp: "13:16 on Jul 22"
+        text: "checking the corpus: text_wrap equals wrap_lines, and layout_body equals wrap_lines for plain prose, so the break is transitive."
+      - voice: reply
+        sender: architect
+        stamp: "13:17 on Jul 22"
+        text: "see https://mqtt-broker.local:8420/assets/displays for the config"
+      - voice: harness
+        sender: harness
+        kind: report
+        stamp: "13:17 on Jul 22"
+        text: "READY fuel=42 charge=60 systems nominal OK to launch on your mark"
+      - voice: david
+        sender: david
+        stamp: "13:18 on Jul 22"
+        text: "ack"

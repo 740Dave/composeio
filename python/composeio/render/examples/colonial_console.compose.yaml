@@ -1,0 +1,49 @@
+# ComposeUX demo — the Colonial Console SHELL ([SPEC:CXC-CIC])
+#
+# The CIC console shell: the amber-framed layer stack, two-level nav (7
+# consoles x their sub-tabs, parsed from the menu file), the DRADIS console
+# dropping in, and a placeholder screen for every un-built (console, sub-tab).
+#
+#   python3 -m composeio.render.engine.runtime colonial_console.compose.yaml
+#
+# Then, from any bus peer (control-is-a-peer — touch / rotary / Intelligence
+# all publish the SAME indices):
+#   publish colonial_console/station-0/console = {"index": 0}   # HELM (DRADIS)
+#   publish colonial_console/station-0/console = {"index": 2}   # FTL (placeholder)
+#   publish colonial_console/station-0/subtab  = {"index": 1}   # HEADING
+#   publish colonial_console/station-0/status  = {"id_number": "04", "label": "PLANETARY SURVEY ACTIVE"}
+
+# `colonial_console` is PROJECT-LOCAL to BSG ([CXC-PROJECT-WIDGETS]); declare the
+# BSG widget module so the parser imports + self-registers it before resolving
+# the `type:` below.
+widget_modules:
+  - compose_projects.bsg.widgets
+
+app:
+  id: demo-colonial-console
+
+design:
+  title: "Colonial Console"
+  width: 1280
+  height: 960
+  padding: 0
+  gap: 0
+  background: "#000000"
+
+widgets:
+  - type: colonial_console
+    id: cic
+    # theme is the SEMANTIC front door ([DD-CIC-THEME]); `cic` -> the landed
+    # amber #762400 / #CD671D.  Bind `theme: sickbay` for a re-themed station.
+    theme: cic
+    # a single default duty station is enough for this build; the scoping is
+    # present so a multi-station build never cross-wires ([CXC-CIC-DUTY-STATION]).
+    station: cic.1.helm
+    # the menu file is the SOURCE OF TRUTH for the tab labels — edit it and the
+    # tabs re-drive with no code change ([CXC-CIC-NAV]).  Omit to use the
+    # tracked BSG default.
+    firmware: "COLONIAL FLEET OS v0.1"
+    # boot to STD (index 1 of DRADIS/STD/EXT/CHRONO): DRADIS (0) has no art yet,
+    # so defaulting to DRADIS would boot to a placeholder ([CXC-CIC-RADIO-MODE]).
+    # Revert to 0 once dradis_mode.svg is authored + published.
+    radio_selected: 1

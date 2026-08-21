@@ -1,0 +1,454 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# intelligence_pane — ONE Intelligence's whole collaboration surface, as a COMPOSITE
+# [SPEC:CXC-FLEET] [CXC-FC-COMPOSITE], [CXC-FC-PANE-MODES], [CXC-FC-IDENTITY-ON-GLASS]
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ZERO ENGINE CODE.  A rasterising widget class for the pane is FORBIDDEN, and here it
+# would be a spec violation rather than a shortcut: `components:` + `{use: ...}` +
+# `expand_components()` are BUILT, TESTED and already carrying eight widgets (dropdown,
+# keyboard, numpad, slider, switch, segment_bar and two progress bars).  A class would
+# duplicate a working mechanism and put the pane outside the authoring surface every
+# other widget lives in ([CXC-FC-ANTI]).
+#
+# THE TWO-PHASE SPLIT is what makes this work at all (COMP-3, `components.py:17-19`):
+#   {{param}}  resolved at LOAD, by the expander, type-preservingly
+#   ${ns}      left untouched, resolved at RUNTIME
+# so `intelligence/{{instance_id}}/out` becomes a concrete topic per pane BEFORE the
+# widget factory ever sees it, and the factory never learns what a component is.
+#
+# THE COLLISION PROBLEM WAS ALREADY SOLVED.  `segment_bar.compose.yaml:52` defaults
+# `id_prefix: seg` with the stated purpose "unique id root per instance (avoids id
+# clash)"; every generated id is `{{id_prefix}}_...`.  This pane follows that precedent
+# exactly — which is why two panes in one scene produce zero duplicate widget ids.
+#
+# THE UNIT IS THE PAIR ([CXC-FC-UNIT]).  `instance_id` is axis 2 of [CXC-FC-THREE-AXES]
+# (topics, telemetry, locks, voice); `role` is axis 1 (memory, bootstrap tier, agent
+# registration).  Neither is derivable from the other: `resolve_meta_manifest(id, role)`
+# takes role as a PARAMETER because chain leg 2 MISSES for every child that is not
+# hand-curated.  `role` has NO DEFAULT here on purpose — an undeclared role would
+# silently mis-key the project dir, and therefore the MEMORY STORE
+# ([CXC-FC-PROJECT-DIR]), instead of refusing.
+#
+# IDENTITY IS ON THE GLASS, ALWAYS ([CXC-FC-IDENTITY-ON-GLASS]).  The header names the
+# instance id AND the role, unconditionally and in both modes.  This is not polish: a
+# surface that renders two Intelligences without distinguishing them is the
+# report-a-state-the-system-is-not-in failure in UX form.  The 2026-08-12 chimera is the
+# worked example — the chat pane showed the CHILD while every gauge showed the HOST, and
+# every individual element rendered correctly while the composition was a lie.
+#
+# ⚠ THE HUMAN GATE IS NOT DISCHARGED BY THIS FILE.  A render test can assert that both
+# strings are present and non-empty; it cannot see that they are illegible, truncated,
+# or attached to the wrong pane.  FC-C13's glass leg is David's, and it is mandatory.
+
+# ⚠ THIS FILE IS BOTH THE LIBRARY AND ITS PROOF SURFACE.  It DEFINES `intelligence_pane`
+# (the `components:` map below) and it also RENDERS two of them, so the composite ships
+# with its own two-instance demonstration and cannot rot unnoticed.
+#
+# THE PRODUCTION CONSOLE IMPORTS THIS FILE — it does not copy it.  `console.compose.yaml`
+# carries `components_from: [<this file>]` and instantiates `{use: intelligence_pane}`
+# twice.  ONE definition, two scenes.  That import mechanism did not exist when this
+# composite was first authored (measured 2026-08-12: all eight shipped composites were
+# defined and used in one file, and no `components_from:`/`include:` key existed), and its
+# absence was not a footnote — it made FC-C1/FC-C12/FC-C13 provable only against THIS
+# scene, so the surface David actually launches could not satisfy its own mandatory glass
+# legs.  `render/engine/component_imports.py` closes it; composeux-architect ratified the
+# mechanism as in scope by implication, 2026-08-12.
+#
+# ⚠ IF YOU EDIT THE COMPOSITE, YOU ARE EDITING THE CONSOLE.  Render both surfaces.
+
+design:
+  title: "Fleet Console — two Intelligences, one shell, ONE composite"
+  width: 1010
+  height: 720
+  theme: dark
+  background: [0x07, 0x0A, 0x0F]
+  background_grid: {color: [120, 150, 190, 9], size: 40}
+
+app:
+  id: fleet-console-two-up
+  # ⚠ TRANSPORT MUST BE DECLARED, NOT JUST FLAGGED.  A scene launched with `--transports`
+  # that declares no `app.transports:` comes up LOCAL-ONLY, and the first foreign publish
+  # logs "no global transport — foreign frame to 'intelligence/<id>/in' NOT DELIVERED.
+  # This bus is local-only".  The flag connects what the scene declares; it does not
+  # invent a broker.  (Observed on `terminal_session.compose.yaml`, 2026-08-12.)
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+# ══ THE DECLARED FLEET ([CXC-FC-UNIT], [DD-FC-PANE-SOURCE]) ═══════════════════
+# Panes are DECLARED, not discovered: deterministic, testable, goldens stable, no
+# surprise windows.  Roster-DRIVEN pane visibility is an additive second step explicitly
+# outside this build's acceptance — [CAP-BINDABLE-ORDER] already makes it mechanically
+# possible, which is why declaring here forecloses nothing.
+#
+# WHAT THESE TWO DELIBERATELY DO **NOT** SHARE: channel topics, telemetry namespaces,
+# pane mode, composer-send trigger, and every widget id (rooted at `{{id_prefix}}`).
+# WHAT TWO PANES OF THE SAME ROLE WOULD SHARE — and this is the part most easily built
+# backwards: their MEMORY STORE.  These two carry DIFFERENT roles, so they get different
+# stores.  `architect` + `architect-hosted` would share
+# `~/compose-instances/composeux-architect/memory/` BY DESIGN ([DD-FC-MEMORY-GRAIN]).
+instances:
+  - {id: architect-hosted, role: composeux-architect}
+  - {id: hardware,         role: composeio-hardware-architect}
+
+namespaces:
+  # ── the ONE roster ([CXC-FC-S3-ROSTER]) — one computation, one topic, N readers.
+  # Declared LITERALLY and deliberately: the roster is scene-self and must NOT multiply
+  # by instance ([CXC-FC-SPLIT-RULE] — could its correct value differ between two
+  # Intelligences?  No: it is the list OF them).
+  - {name: fleet/roster, state_engine: json, export: true, label: "Fleet roster"}
+
+# ══ THE PER-INSTANCE TOPIC SET — STAMPED, NOT REPEATED ════════════════════════
+# One template, stamped once per entry in `instances:` above (the SAME mechanism the
+# production console uses, exercised here so the demo cannot drift from it).  Written
+# out per id this was five near-identical lines times N, and adding an Intelligence
+# stopped being ONE edit — the same fork class as two sources for one binding, failing
+# later and less visibly as a topic nobody DECLARED.
+#
+# `scope: global` on `/compose` PINS it to the MQTT leg — the auto has-local-subscribers
+# heuristic would otherwise downgrade it to an in-process send the bridge never sees, and
+# David's message would die LOOKING SENT.
+instance_namespaces:
+  - {name: "intelligence/{{instance_id}}/out", state_engine: json, export: true, label: "Replies · {{instance_id}}"}
+  - {name: "intelligence/{{instance_id}}/in", state_engine: json, export: true, label: "Inbound · {{instance_id}}"}
+  - {name: "intelligence/{{instance_id}}/compose", state_engine: json, export: true, scope: global, label: "Composer · {{instance_id}}"}
+  - {name: "intelligence/{{instance_id}}/channel/alive", state_engine: json, export: true, label: "Heartbeat · {{instance_id}}"}
+  - {name: "thread/{{instance_id}}/narration", state_engine: json, export: true, label: "Narration · {{instance_id}}"}
+  - {name: "_app/{{instance_id}}/pane_mode", state_engine: json, export: true, scope: local, initial: "engage", label: "Pane mode · {{instance_id}}"}
+  - {name: "_app/{{instance_id}}/link_state", state_engine: json, export: true, scope: local, label: "Link state · {{instance_id}}"}
+
+# --------------------------------------------------------------------------
+# The composite
+# --------------------------------------------------------------------------
+components:
+  intelligence_pane:
+    # `role` is DECLARED, never defaulted — see the header note.
+    params: [instance_id, role]
+    defaults:
+      id_prefix: pane          # unique id root per instance (avoids id clash) — the
+                               # segment_bar precedent, applied to a whole pane
+      # GEOMETRY IS PARAMETERISED because the two call sites need different shapes: the
+      # proof surface below wants two fixed 460x660 panes side by side, and the PRODUCTION
+      # console wants panes that GROW to fill the read column ([CXC-ICP-S1-RESIZE]).  A
+      # composite whose size only suited its own demo would have forced the console to
+      # copy it, which is the fork this component exists to prevent.
+      pane_w: 460
+      pane_h: 660
+      pane_grow: 0
+      body_grow: 0
+      thread_h: 470
+      composer_h: 72
+      composer_lines: 2
+      accent: "#4EA8FF"
+      ink: "#E0E4EC"
+      faint: "#6D7C92"
+      panel: "#0D121B"
+      border: "#1B2432"
+    widget:
+      type: stack
+      id: "{{id_prefix}}_{{instance_id}}_root"
+      direction: column
+      gap: 8
+      padding: 10
+      width: "{{pane_w}}"
+      height: "{{pane_h}}"
+      grow: "{{pane_grow}}"
+      background: "{{panel}}"
+      border: "{{border}}"
+      corner_radius: 12
+      children:
+        # ── IDENTITY, ALWAYS ON THE GLASS ([CXC-FC-IDENTITY-ON-GLASS]) ───────────
+        # Two labels, not one interpolated string: the id and the role are separate
+        # facts on separate axes, and a single "architect-hosted (composeux-architect)"
+        # line invites reading one as a decoration of the other.
+        - type: stack
+          id: "{{id_prefix}}_{{instance_id}}_identity"
+          direction: row
+          gap: 10
+          align: center
+          children:
+            - type: label
+              id: "{{id_prefix}}_{{instance_id}}_id"
+              text: "{{instance_id}}"
+              font_family: monospace
+              font_size: 14
+              font_weight: bold
+              color: "{{accent}}"
+              height: 18
+            - type: label
+              id: "{{id_prefix}}_{{instance_id}}_role"
+              text: "role {{role}}"
+              font_family: monospace
+              font_size: 11
+              color: "{{faint}}"
+              height: 14
+            # LINK HEALTH for THIS instance's channel — a heartbeat that stops
+            # arriving means the channel MCP is down while the bus may still be up,
+            # which is the silent-send failure (the message echoes to the thread and
+            # never reaches the Intelligence).
+            - type: link_health
+              id: "{{id_prefix}}_{{instance_id}}_link"
+              namespace: intelligence/{{instance_id}}/channel/alive
+              # THE VERDICT IS PER-INSTANCE.  The console published one
+              # `console/link/state` for its single channel; with N panes that is a
+              # per-instance reading wearing a console-wide name, and one Intelligence
+              # going dark would grey out the other's SEND button.
+              state_namespace: _app/{{instance_id}}/link_state
+              fresh_threshold_s: 12
+              width: 60
+              height: 14
+
+        # ── MODE TOGGLE — ENGAGE / CONFIGURE ([CXC-FC-PANE-MODES]) ───────────────
+        # PER-PANE state, never global: two panes may be in different modes at once,
+        # because the reason to configure one Intelligence is rarely a reason to
+        # configure the other.  The topic is id-scoped for exactly that reason.
+        - type: stack
+          id: "{{id_prefix}}_{{instance_id}}_modebar"
+          direction: row
+          gap: 6
+          children:
+            - type: stack
+              id: "{{id_prefix}}_{{instance_id}}_mode_engage"
+              direction: row
+              padding: [4, 10, 4, 10]
+              corner_radius: 7
+              publish_namespace: _app/{{instance_id}}/pane_mode
+              publish_value: engage
+              background:
+                expr: "ns('_app/{{instance_id}}/pane_mode') == 'configure' ? '#141C27' : '#1E3A5F'"
+              children:
+                - type: label
+                  id: "{{id_prefix}}_{{instance_id}}_mode_engage_l"
+                  text: "ENGAGE"
+                  font_family: monospace
+                  font_size: 10
+                  font_weight: bold
+                  color: "{{ink}}"
+                  height: 12
+            - type: stack
+              id: "{{id_prefix}}_{{instance_id}}_mode_configure"
+              direction: row
+              padding: [4, 10, 4, 10]
+              corner_radius: 7
+              publish_namespace: _app/{{instance_id}}/pane_mode
+              publish_value: configure
+              background:
+                expr: "ns('_app/{{instance_id}}/pane_mode') == 'configure' ? '#1E3A5F' : '#141C27'"
+              children:
+                - type: label
+                  id: "{{id_prefix}}_{{instance_id}}_mode_configure_l"
+                  text: "CONFIGURE"
+                  font_family: monospace
+                  font_size: 10
+                  font_weight: bold
+                  color: "{{ink}}"
+                  height: 12
+
+        # ── THE MODE BODY — the two modes are Z-STACKED, not column-stacked ─────
+        # ⚠ FOUND ON THE GLASS, not by a test.  Both modes were siblings in the column,
+        # each `visible:`-gated — and `visible: false` HIDES a widget without releasing
+        # its layout box, so the hidden CONFIGURE panel still consumed 470px and pushed
+        # the composer off the bottom of the pane.  Every machine assertion still passed:
+        # the widgets existed, the bindings were right, the ids were unique.  Only a
+        # human looking at the render could see that the pane had no composer
+        # ([PRINCIPLE-MACHINE-GREEN-IS-NOT-GLASS-GREEN], in miniature).
+        #
+        # `pixel_stack` is the fix and it is the console's own idiom (`thread_stack`):
+        # both modes occupy the SAME rect, so exactly one is visible and the pane's
+        # height is the height of one mode, whichever is showing.
+        - type: pixel_stack
+          id: "{{id_prefix}}_{{instance_id}}_body"
+          width: "100%"
+          height: "{{thread_h}}"
+          grow: "{{body_grow}}"
+          children:
+            # ── ENGAGE: the conversation surface ────────────────────────────────
+            # Both legs are THIS instance's.  The 2026-08-12 chimera happened because
+            # the chat leg and the telemetry leg wore different ids with nothing on the
+            # glass saying so; in a pane they are one parameter by construction.
+            - type: chat_thread
+              id: "{{id_prefix}}_{{instance_id}}_thread"
+              x: 0
+              y: 0
+              w: "100%"
+              h: "100%"
+              # THREE legs, ALL on this instance's id.  Voice resolves by topic SUFFIX
+              # (endswith `narration`/`out`/`in`), so the scoped topics map unchanged.
+              #
+              # ⚠ THE NARRATION LEG IS THE ONE THAT USED TO BE MIS-KEYED, and it is worth
+              # naming.  The console's bespoke thread subscribed
+              # `thread/architect/narration` (the HOST) alongside
+              # `compose_projects/intelligence/$chat_id/{out,in}` (the CHILD) — deliberately, and the
+              # comment said so: repointing narration at $chat_id "would subscribe a
+              # topic nobody publishes and the narration voice would go silent."  True,
+              # and it is the 2026-08-12 chimera in one widget: one pane showing one
+              # Intelligence's narration next to another's conversation.  In a PANE the
+              # legs cannot disagree — they are one parameter.  The narration voice for
+              # an instance with no telemetry set yet is simply quiet, which is honest;
+              # a voice attributed to the wrong Intelligence is not.
+              #
+              # QUOTED: `{{` opens a YAML flow mapping inside a flow sequence, so the
+              # unquoted form is a parse error, not a template.
+              namespaces: ["thread/{{instance_id}}/narration",
+                           "intelligence/{{instance_id}}/out",
+                           "intelligence/{{instance_id}}/in"]
+              max_messages: 200
+              font_size: 12
+              accent: [0x9E, 0xC9, 0xFF]
+              dim: [0x6D, 0x7C, 0x92]
+              harness: [0xF5, 0xA6, 0x23]
+              neutral: [0xE0, 0xE4, 0xEC]
+              width: "100%"
+              height: "{{thread_h}}"
+              # UNSET reads as ENGAGE on purpose: `!= 'configure'` is true for a
+              # namespace with no value yet, so a pane is usable before its first
+              # mode publish rather than blank until someone clicks.
+              visible:
+                expr: "ns('_app/{{instance_id}}/pane_mode') != 'configure'"
+
+            # ── CONFIGURE: this agent's own dials ───────────────────────────────
+            # [CXC-FC-SPLIT-RULE]: any dial whose correct value could DIFFER between
+            # two Intelligences belongs to the PANE.  Every topic below is already
+            # per-id today — it is the console TAB that assumes one
+            # ([CXC-FC-CONFIG-TAB]).
+            - type: stack
+              id: "{{id_prefix}}_{{instance_id}}_config"
+              x: 0
+              y: 0
+              w: "100%"
+              h: "100%"
+              direction: column
+              gap: 6
+              padding: 8
+              width: "100%"
+              height: "{{thread_h}}"
+              background: "#0A0F16"
+              corner_radius: 8
+              visible:
+                expr: "ns('_app/{{instance_id}}/pane_mode') == 'configure'"
+              children:
+                - type: label
+                  id: "{{id_prefix}}_{{instance_id}}_cfg_title"
+                  text: "CONFIGURE · {{instance_id}}"
+                  font_family: monospace
+                  font_size: 11
+                  font_weight: bold
+                  color: "{{accent}}"
+                  height: 14
+                - type: label
+                  id: "{{id_prefix}}_{{instance_id}}_cfg_role"
+                  text: "role manifest   {{role}}"
+                  font_family: monospace
+                  font_size: 10
+                  color: "{{faint}}"
+                  height: 13
+                # THE MEMORY SCOPE, NAMED ON THE GLASS.  `~/compose-instances/<role>/memory/`
+                # is where this Intelligence's facts live ([CXC-FC-PROJECT-DIR]); showing it
+                # is how a human can SEE that two instances of one role share a store on
+                # purpose, rather than discovering it from a defect.
+                - type: label
+                  id: "{{id_prefix}}_{{instance_id}}_cfg_mem"
+                  text: "memory scope    ~/compose-instances/{{role}}/memory/"
+                  font_family: monospace
+                  font_size: 10
+                  color: "{{faint}}"
+                  height: 13
+                - type: label
+                  id: "{{id_prefix}}_{{instance_id}}_cfg_home"
+                  text: "project dir     ~/compose-instances/{{role}}/"
+                  font_family: monospace
+                  font_size: 10
+                  color: "{{faint}}"
+                  height: 13
+                - type: label
+                  id: "{{id_prefix}}_{{instance_id}}_cfg_topics"
+                  text: "channel         intelligence/{{instance_id}}/*"
+                  font_family: monospace
+                  font_size: 10
+                  color: "{{faint}}"
+                  height: 13
+                - type: label
+                  id: "{{id_prefix}}_{{instance_id}}_cfg_telemetry"
+                  text: "telemetry       self/{{instance_id}}/*"
+                  font_family: monospace
+                  font_size: 10
+                  color: "{{faint}}"
+                  height: 13
+
+        # ── COMPOSER — this pane's send path ────────────────────────────────────
+        # The commit topic is ID-SCOPED (`_app/<id>/composer_send`).  The console's
+        # single-pane scene used the literal `_app/console/composer_send`, which is a
+        # per-instance binding wearing a per-console name: two panes on that topic
+        # would fire each other's SEND button.
+        - type: stack
+          id: "{{id_prefix}}_{{instance_id}}_composer"
+          direction: row
+          gap: 8
+          align: end
+          padding: 6
+          width: "100%"
+          height: "{{composer_h}}"
+          background: "#0D121B"
+          border: "{{border}}"
+          corner_radius: 10
+          children:
+            - type: text_input
+              id: "{{id_prefix}}_{{instance_id}}_composer_field"
+              namespace: intelligence/{{instance_id}}/compose
+              chrome: console
+              clear_on_commit: true
+              commit_namespace: _app/{{instance_id}}/composer_send
+              placeholder: ""
+              grow: 1
+              min_lines: "{{composer_lines}}"
+              max_lines: "{{composer_lines}}"
+            - type: stack
+              id: "{{id_prefix}}_{{instance_id}}_send"
+              direction: row
+              padding: [6, 14, 6, 14]
+              background: [0x4E, 0xA8, 0xFF, 255]
+              corner_radius: 8
+              publish_namespace: _app/{{instance_id}}/composer_send
+              children:
+                # SEND while healthy; OFFLINE (in crit/warn ink) while THIS instance's
+                # link is down — the human sees the send is futile AS he types, not
+                # after.  Restored deliberately: the console's bespoke composer had this
+                # and an early cut of the pane dropped it to a literal "SEND", which is a
+                # button that lies for as long as the channel is out.
+                - type: label
+                  id: "{{id_prefix}}_{{instance_id}}_send_label"
+                  font_family: monospace
+                  font_size: 10
+                  font_weight: bold
+                  height: 12
+                  text:
+                    namespace: _app/{{instance_id}}/link_state
+                    default: "SEND"
+                    map: {engaged: "SEND", channel_offline: "OFFLINE", bus_offline: "OFFLINE"}
+                  color:
+                    namespace: _app/{{instance_id}}/link_state
+                    default: [0x0A, 0x0F, 0x16]
+                    map: {engaged: [0x0A, 0x0F, 0x16], channel_offline: [0xFF, 0x3B, 0x5C], bus_offline: [0xF5, 0xA6, 0x23]}
+
+# --------------------------------------------------------------------------
+# THE TWO-INSTANCE PROOF (FC-C1) — two panes, ONE composite, stamped twice.
+#
+# ⚠ THE NESTED `widgets:` DIALECT, NOT `modules:`.  `build_leaf` builds a LEAF and the
+# `modules:` path never descends into `children:`, so a composite whose widget is a
+# container renders as its root and NOTHING ELSE — silently, with a correct-looking
+# widget count.  `segment_bar` uses this dialect for the same reason; a composite that is
+# more than one leaf must too.
+# --------------------------------------------------------------------------
+widgets:
+  - type: stack
+    id: fleet_row
+    direction: row
+    gap: 12
+    padding: 8
+    children:
+      # ONE generator, N panes, from the ONE `instances:` list above — the same form the
+      # production console uses.  Hand-written `use:` sites would make the list and this
+      # tree two declarations of one fact.
+      - for_each_instance: intelligence_pane
+        id_prefix_base: pane

@@ -1,0 +1,134 @@
+# ComposeUX widget primitive — dropdown ([SPEC:CXC-PRIM] [CXC-PRIM-POPUP])
+#
+# A FORKABLE composite ([CXC-PRIM-WHY]).  The closed field is a pure
+# pixel-stack (interactive background + bound value label + chevron).  The
+# only new interaction is the popup item list, which REUSES the existing
+# overlay layer — the same DialogWidget the Command arm-confirm and the
+# BusMonitor pop-out use ([CXC-R-DIALOG]) — now in list-select mode:
+#
+#   * field tap  -> publishes `on` to the open/close namespace -> the
+#     DialogWidget (bound to it) shows its full-surface scrim + item list.
+#   * item tap   -> publishes the value to `selected_ns` and dismisses.
+#   * outside tap / dismiss -> closes, selection UNCHANGED ([CXC-PRIM-C7]).
+#
+# The overlay is a full-surface layer (that is why the composite fills the
+# canvas): the scrim must capture a tap ANYWHERE to dismiss.  An Intelligence
+# can publish `ship/selected` directly — the field label follows identically.
+#
+#   cd python/composeio/render/examples/components
+#   python3 -m composeio.render.engine.runtime dropdown.compose.yaml
+
+app:
+  id: demo-dropdown
+
+design:
+  title: "dropdown"
+  width: 300
+  height: 220
+  theme: dark
+
+namespaces:
+  - name: ship/selected
+    state_engine: json
+  - name: ship/menu_open
+    state_engine: binary
+
+components:
+
+  dropdown:
+    params: [selected_ns, open_ns, options]
+    defaults:
+      placeholder: "Select ship"
+      max_visible: 6
+      field_x: 24
+      field_y: 24
+      field_w: 200
+      field_h: 34
+      anchor: null                 # [x, y, w] popup placement; null -> centered
+      field_bg: "#161c24"          # card
+      border: "#283340"
+      accent: "#34c3d0"
+      ink: "#e6ecf3"
+    widget:
+      type: pixel_stack
+      width: 300
+      height: 220
+      children:
+        # -- the closed field (a positioned sub-stack, local coords) --------
+        - type: pixel_stack
+          id: field
+          x: "{{field_x}}"
+          y: "{{field_y}}"
+          w: "{{field_w}}"
+          h: "{{field_h}}"
+          children:
+            - type: rect
+              id: field_bg
+              x: 0
+              y: 0
+              w: "{{field_w}}"
+              h: "{{field_h}}"
+              fill_color: "{{field_bg}}"
+              stroke_color: "{{border}}"
+              corner_radius: 4
+              publish_namespace: "{{open_ns}}"
+              publish_value: "on"       # tap opens the popup
+            - type: label
+              id: field_value
+              x: 12
+              y: 9
+              font_size: 13
+              color: "{{ink}}"
+              text:
+                namespace: "{{selected_ns}}"
+                default: "{{placeholder}}"
+            - type: label
+              id: chevron
+              x: "{{field_w}}"
+              y: 9
+              align: right
+              font_size: 12
+              color: "{{accent}}"
+              text: " v"
+        # -- the popup item list (REUSES DialogWidget, [CXC-PRIM-POPUP]) -----
+        - type: dialog
+          id: popup
+          x: 0
+          y: 0
+          w: "100%"
+          h: "100%"
+          dismissible: true
+          scrim_color: [0, 0, 0, 90]
+          namespace: "{{open_ns}}"          # open/close bit
+          select_namespace: "{{selected_ns}}"
+          options: "{{options}}"
+          max_visible: "{{max_visible}}"
+          anchor: "{{anchor}}"
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 300
+    height: 220
+    background: "#0d1117"           # bg
+    children:
+      - type: label
+        id: caption
+        x: 24
+        y: 6
+        text: "Jump target"
+        font_size: 12
+        color: "#808c9b"
+      - use: dropdown
+        selected_ns: ship/selected
+        open_ns: ship/menu_open
+        options: ["Colonial One", "Galactica", "Pegasus", "Raptor 312"]
+        field_x: 24
+        field_y: 28
+        field_w: 200
+        field_h: 34
+        anchor: [24, 66, 200]        # under the field: [x, field_y+field_h+4, w]
+        x: 0
+        y: 0
+        w: "100%"
+        h: "100%"

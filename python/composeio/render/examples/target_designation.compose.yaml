@@ -1,0 +1,112 @@
+# ComposeUX demo — Target Designation lock-on
+# ([SPEC:CXC-BIND] [CXC-BIND-STATES] + [CXC-BIND-TRANSITION] + [CXC-RM-GESTURE])
+#
+# Operator drags on the DRADIS scope to designate a contact for the main
+# gun.  The reticle fades in over the cursor (`acquiring`), tracks the drag,
+# and on release LOCKS onto the contact with a snappy cubic-bezier
+# scale-settle + amber -> threat-red, and PULSES while locked.  An
+# Intelligence performs the identical designation by publishing
+# `fire_control/lock` — one state path, two producers (control is a peer).
+#
+#   python3 -m composeio.render.engine.runtime target_designation.compose.yaml
+#
+# Then, from any bus peer, drive it exactly as a finger would:
+#   publish fire_control/lock = acquiring | tracking | none
+
+app:
+  id: demo-target-designation
+
+design:
+  title: "Target Designation"
+  width: 480
+  height: 480
+  theme: tactical
+  reduced_motion: false
+  background: "#05090C"
+
+namespaces:
+  - { name: fire_control/lock, state_engine: json, external: true, initial: none }
+  - { name: reticle/x, state_engine: json, initial: 204 }
+  - { name: reticle/y, state_engine: json, initial: 204 }
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 480
+    height: 480
+    children:
+      # --- the scope: recognizes the gesture, publishes semantic state ---
+      #     A full-surface interactive circle IS the DRADIS scope hit area.
+      - type: circle
+        id: scope
+        radius: 232
+        x: 8
+        y: 8
+        fill_color: "#08131A"
+        stroke_color: "#12303B"
+        stroke_width: 2
+        gestures:
+          - on: long_press                    # tap-and-hold begins designation
+            publish: { namespace: fire_control/lock, value: acquiring }
+          - on: pan                           # drag steers the designation
+            publish:
+              - { namespace: reticle/x, value: "@pointer_x" }
+              - { namespace: reticle/y, value: "@pointer_y" }
+          - on: pan_end                       # release commits the lock
+            publish: { namespace: fire_control/lock, value: tracking }
+          - on: double_tap                    # double-tap clears designation
+            publish: { namespace: fire_control/lock, value: none }
+
+      # inner range ring (static chrome)
+      - type: circle
+        id: range_ring
+        radius: 120
+        x: 120
+        y: 120
+        fill_color: [0, 0, 0, 0]
+        stroke_color: "#12303B"
+        stroke_width: 1
+
+      # --- the reticle: pure state-on-bus consumer, tweened transitions ---
+      - type: circle
+        id: reticle
+        radius: 36
+        w: 72
+        h: 72
+        # follows the designation cursor (ordinary attr bindings on x, y)
+        x: { namespace: reticle/x }
+        y: { namespace: reticle/y }
+        fill_color: [0, 0, 0, 0]
+        stroke_width: 5
+
+        states:
+          none:      { opacity: 0.0, scale: 1.8,  stroke_color: "#3FB0FF" }
+          acquiring: { opacity: 0.9, scale: 1.25, stroke_color: "#FFCC00" }
+          tracking:  { opacity: 1.0, scale: 1.0,  stroke_color: "#FF3B30" }
+
+        state:
+          namespace: fire_control/lock
+          map: { none: none, acquiring: acquiring, tracking: tracking }
+          default: none
+
+        transitions:
+          # fade + color: gentle on every edge
+          - animate: [opacity, stroke_color]
+            duration_ms: 180
+            easing: ease_out
+          # scale: fast, decisive settle ONLY on the lock (into `tracking`)
+          - animate: [scale]
+            to: tracking
+            duration_ms: 130
+            easing: cubic-bezier(0.2, 0.9, 0.1, 1.0)
+          # scale on the way IN (acquiring): softer
+          - animate: [scale]
+            to: acquiring
+            duration_ms: 200
+            easing: ease_in_out
+
+        # a locked reticle also PULSES — states + behaviors compose
+        behaviors:
+          - when: { namespace: fire_control/lock, is: tracking }
+            do:  { behavior: pulse, target: opacity, from: 0.75, to: 1.0,
+                   period_ms: 900, easing: ease_in_out }

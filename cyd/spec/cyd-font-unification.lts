@@ -1,0 +1,317 @@
+---
+scope: "Cross-platform font unification — make the desktop Skia renderer draw text from the SAME pre-rendered bitmap font atlas the CYD ESP32 renderer uses, eliminating text rendering as the single largest source of cross-tier pixel divergence. Covers the atlas generator's second (JSON) output and its schema, the desktop BitmapFontAtlas module, the SkiaCanvas integration and its opt-in switch, the glyph blitting arithmetic that must match the firmware exactly, and the crosscheck wiring."
+audience: "Builder agents implementing the atlas-based text renderer on the desktop tier."
+boundary: "IN: the text rendering path on the desktop renderer, the atlas generator's JSON export, and the crosscheck harness wiring. OUT: geometric primitives, widget layout, and the CYD firmware text renderer, which is the REFERENCE implementation here and is not modified."
+not-this: "Not a new font format — the JSON is a transcription of the atlas the generator already builds. Not adding new font sizes (that is [SPEC:CXC-CYD-BOLD-ATLAS]). Not changing the CYD text renderer; the desktop moves to meet the firmware, never the reverse."
+depends-on: [cyd-visual-polish-aa.lts]
+elements: [CXC-CYD-FONT-*]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+created: 2026-03-30
+converted-from: cyd/spec/cyd-font-unification.smd
+---
+# CYD Cross-Platform Font Unification [SPEC:CXC-CYD-FONT-UNIFY]
+
+> The desktop Skia renderer and the CYD firmware draw the same scene, and text is where they diverge
+> most: a measured maximum pixel delta of 200 in text areas. The cause is that the two tiers use two
+> different text engines — Skia's native typeface rasteriser on the desktop, a pre-rendered bitmap atlas
+> on the ESP32. This spec removes the divergence by removing the second engine: the desktop adopts the
+> CYD's atlas. The direction is deliberate and one-way. The CONSTRAINED tier's renderer is the
+> reference, and the capable tier moves to meet it, because only the constrained tier has no choice.
+> The load-bearing consequence is that "pixel-identical across tiers" becomes checkable by a byte
+> comparison instead of a tolerance.
+
+---
+
+## 1. Atlas export
+
+### [CXC-CYD-FONT-EXPORT] One generator run emits both the C header and a Python-readable atlas
+
+- file: cyd/fonts/generate_atlas.py
+- requirement: produce TWO outputs from a single invocation — the existing C header for the firmware, and
+  a new JSON atlas for the desktop.
+- output-c: `cyd/src/font_atlas.h` — static arrays and struct initialisers, the existing firmware format.
+- output-json: `python/composeio/render/font_atlas_data.json` — the same glyph data with hex-encoded bitmaps.
+- rationale: a single generator run is what makes the two tiers provably the same data. Two generators,
+  or one generator run twice, reintroduce exactly the skew this spec exists to remove.
+- requirement-every-family: EVERY family/weight group the run emits to the C header MUST also be emitted to
+  the JSON. "Both outputs" is not "both files exist" — it is "both files carry the same family set". A run
+  that writes a group to one output and not the other produces two files with one timestamp and two
+  contents, which defeats the single-run guarantee more quietly than two runs would.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+### [CXC-CYD-FONT-EXPORT-SCHEMA] The JSON atlas schema, and the hex bitmap encoding
+
+- definition: a top-level object carrying generator provenance plus a `sizes` array, one entry per atlas
+  size, each holding per-size metrics and a `glyphs` array.
+- provenance-keys: `generator`, `font_source` (the TTF path actually used), `dpi`, `char_range`
+- size-keys: `size`, `ascent`, `descent`, `line_height`, `glyphs`
+- glyph-keys: `char_code`, `width`, `height`, `bearing_x`, `bearing_y`, `advance`, `bitmap_hex`
+- encoding: `bitmap_hex` is the glyph's 8-bit alpha bitmap as a contiguous hex string — two hex
+  characters per byte, row-major, exactly `width * height` bytes.
+- empty-glyph: a glyph with no coverage (the space character) carries `bitmap_hex` as the empty string,
+  not a run of zeroes.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+### [CXC-CYD-FONT-EXPORT-REGEN] Regeneration is atomic across both outputs
+
+- requirement: running `generate_atlas.py` regenerates BOTH outputs; the `--sizes` flag applies to both.
+- default-sizes: `8 10 12 14 16`, matching the CYD atlas at the time of writing.
+- constraint: the two outputs can never be regenerated independently. A C header and a JSON atlas built
+  from different runs would satisfy every test in this spec and still diverge on the glass.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+---
+
+## 2. The desktop bitmap font renderer
+
+### [CXC-CYD-FONT-RENDERER-CLASS] BitmapFontAtlas — glyph lookup and text measurement
+
+- file: python/composeio/render/bitmap_font.py
+- definition: a new module holding the desktop-side atlas reader; it loads the JSON atlas and provides
+  glyph lookup plus text measurement.
+- api: `__init__(json_path)`; `find_atlas(target_size) -> FontSizeData`;
+  `measure_text(text, font_size) -> TextMetrics`; `get_glyph(char_code, atlas) -> GlyphData | None`
+- constraint: `measure_text` MUST reproduce `ESP32Canvas::measure_text` exactly — find the best atlas
+  size, scale by `font_size / atlas.size`, and sum `advance * scale` for the width.
+- consequence: measurement is what drives alignment and layout. A measurement that disagrees with the
+  firmware misplaces text even when every glyph is byte-identical, which is the harder failure to see.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+### [CXC-CYD-FONT-RENDERER-INTEGRATE] Atlas mode is an explicit opt-in on SkiaCanvas
+
+- file: python/composeio/render/skia_backend.py
+- api: `enable_bitmap_atlas(atlas_path: str) -> None` — switches text rendering to bitmap atlas mode.
+- behaviour-set-font: `set_font(family, size, weight)` records `size` for atlas lookup, `weight` for the
+  bold group, and `family` for the family group — see [CXC-CYD-FONT-FAMILY-REGISTRY].
+- drift-note: v1.1 of this node said `family` and `weight` "are ignored because the atlas carries one
+  family and one weight". Both clauses are now FALSE and were false in the code before they were false in
+  the spec: [SPEC:CXC-CYD-BOLD-ATLAS] added the bold group, and the COMMP ("Common Pixel") family was added
+  to `generate_atlas.py` + `cyd/src/font_atlas.h` on the firmware side without ever reaching this spec or
+  the desktop. A reimplementation built from the old text would have re-dropped both — which is precisely
+  what happened to COMMP on the desktop tier.
+- behaviour-measure: `measure_text(text)` delegates to `BitmapFontAtlas.measure_text()`.
+- behaviour-draw: `draw_text(text, x, y, align)` decodes each glyph's hex bitmap to an alpha array,
+  creates a single-channel Skia image, and draws it with the fill colour modulated by alpha. Alignment
+  logic is unchanged from the native path.
+- constraint: with atlas mode DISABLED, `SkiaCanvas` must behave exactly as before. This is what keeps
+  the change reversible and lets the crosscheck render both ways for comparison.
+- supersedes-note: the `weight` argument stops being ignorable once [SPEC:CXC-CYD-BOLD-ATLAS] adds a
+  bold weight group; that spec is what makes it load-bearing again.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+### [CXC-CYD-FONT-RENDERER-BLIT] Glyph blitting must use the firmware's integer arithmetic
+
+- definition: the per-glyph blit sequence inside `draw_text`, which is the critical path for pixel
+  fidelity and the place where a plausible-looking floating-point rewrite silently breaks equivalence.
+- step-lookup: look up the glyph in the atlas using the same `font_atlas_find` / `font_atlas_glyph`
+  logic as the firmware.
+- step-scale: compute `scale = font_size / atlas.size`.
+- step-position: `gx = draw_x + bearing_x * scale`; `gy = draw_y + (ascent - bearing_y) * scale`.
+- step-resample: scale the glyph bitmap by NEAREST NEIGHBOUR, matching the firmware's
+  `src_row = py * glyph_h / sh` integer expression.
+- step-blend: for each non-zero alpha pixel, blend `fill_color` at `alpha * fill_alpha / 255`.
+- reference: `cyd/src/canvas_esp32.cpp` lines 1408-1431 are the normative implementation.
+- constraint: the scaling and blending must use the SAME INTEGER ARITHMETIC as the firmware. Integer
+  truncation is part of the contract here, not an artefact to be improved away.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+---
+
+## 2b. Family routing — the named family is part of the semantic value
+
+> `[CXC-VISION-SEMANTIC-REALIZATION]` says one semantic value has many physical realizations. A scene's
+> `font_family:` is part of that semantic value, not a rendering hint. If the tiers disagree about what a
+> family NAME denotes, the same scene is two different scenes and the claim is false on the typography
+> axis. Nothing in v1.1 of this spec said what a family name means, which is why the two tiers grew
+> different answers without either one being wrong against the text.
+
+### [CXC-CYD-FONT-FAMILY-REGISTRY] There is ONE declared family set, and every tier realizes all of it
+
+- definition: the platform declares a CLOSED set of font family names. Today: `sans-serif` (IBM Plex Sans,
+  regular/medium/bold), `monospace` (IBM Plex Mono), `Tiny5` (Colonial-OS pixel font),
+  `commp` / `Common Pixel` (the COMMP pixel font).
+- requirement: the family set is declared ONCE and consumed by reference. The atlas generator's family
+  list, the firmware's `font_family_is_*` selectors, and the desktop's family routing table are three
+  READERS of one declaration — never three hand-maintained enumerations.
+- anti-pattern: `python/composeio/render/fonts.py::classify_family` and the generated
+  `font_atlas.h::font_family_is_commp` were exactly such a pair. `Tiny5` was hand-added to the desktop
+  table in a819a5f; `commp` was hand-added to the firmware generator and never to the desktop table. Same
+  fork, two families, opposite directions. The second one is the defect this node exists to close.
+- consequence: adding a family is one edit to the declaration plus a per-tier realization; a tier that
+  cannot yet realize a declared family says so out loud ([CXC-CYD-FONT-FAMILY-NO-SILENT-FALLBACK]).
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+### [CXC-CYD-FONT-FAMILY-ONE-DIRECTORY] Font FILES live in one directory, and it is `<repo>/fonts/`
+
+- requirement: every font file the platform declares lives in `<repo>/fonts/` — the one directory
+  `composeio.render.fonts.resolve_font_path` searches — and every consumer reads it FROM THERE. The
+  CYD atlas generator is a consumer, not an owner.
+- rationale: `COMMP___.TTF` sat in `cyd/fonts/` — the FIRMWARE BUILD directory — next to
+  `generate_atlas.py`, which consumed it. The desktop font resolver had no reason to look there, so the
+  font was PRESENT IN THE REPOSITORY the entire time and the desktop still could not draw it. "Where do
+  fonts live" had two answers, which is the same fork as "what does a family name mean" wearing
+  different clothes.
+- correction-note (2026-08-16): the first pass at this defect declared `commp` UNREALIZABLE on the
+  desktop on the claim the TTF was absent from the filesystem. **That claim was false.** It came from a
+  `find /` that was killed at a timeout, whose empty output was read as an empty result set — a SEARCH
+  FAILURE reported as a fact about the world. The file was at `cyd/fonts/COMMP___.TTF`. The defect was
+  never absence; it was DISTRIBUTION.
+- verified-same-source: `fonts/COMMP___.TTF` is the file the compiled firmware atlas was generated
+  from — 475 glyph metrics across sizes 12/14/16/20/24 and 435 glyph BITMAPS compared byte-for-byte
+  against `cyd/src/font_atlas.h`, zero mismatches. Desktop FreeType and device atlas therefore draw
+  COMMP from ONE source, which is what makes the parity claim checkable rather than hopeful.
+- open-gap-distribution: `bus://assets/fonts/` serves only the five IBM Plex faces + the OFL licence.
+  **Neither COMMP nor Tiny5 is on the bus.** `resolve_font_path`'s 4th step (fetch from
+  `bus://assets/fonts/`) therefore cannot resolve either one, so a DEPLOYED surface with no repo
+  checkout still renders the wrong face — silently before this spec, reported after it. Publishing both
+  TTFs to bus_storage is the remaining work; it is a live shared service and belongs to the architect.
+- open-gap-licence: `compose_projects/bsg/assets/manifest.md` flags COMMP with "verify redistribution
+  licence before OSS release", and unlike Plex (`LICENSE-OFL.txt`) and Tiny5 (`Tiny5-OFL.txt`) it ships
+  with no licence file. Moving it into `fonts/` puts it beside two OFL faces, which makes settling this
+  more urgent, not less.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+### [CXC-CYD-FONT-EXPORT-TOOLCHAIN] Regeneration is only equivalent on the toolchain that produced the outputs
+
+- premise: [CXC-CYD-FONT-EXPORT-REGEN] forbids regenerating the two outputs INDEPENDENTLY. It does not
+  say — and it must — that regenerating them TOGETHER on a different FreeType produces a different atlas.
+- measured-2026-08-16: re-running `generate_atlas.py` on the current dev machine and diffing glyph
+  bitmaps against the committed `cyd/src/font_atlas.h`:
+  **COMMP (pixel font, own hints, >=12px): 435 bitmaps, 0 differ. IBM Plex (antialiased, 6..16px): 658
+  bitmaps, 658 differ — 100%.**
+- consequence: "just regenerate the atlas" silently rewrites every Plex text pixel on every device. The
+  COMMP family is grid-exact and toolchain-stable; the antialiased Plex glyphs are not.
+- constraint: an atlas regeneration is a REVIEWED artifact change, pinned to a recorded FreeType
+  version — never a build step someone runs to close a test.
+- consequence-for-this-defect: `font_atlas_data.json` still carries no `commp` group. It cannot be
+  closed here, because regenerating to add it would rewrite the Plex glyphs too. The desktop's LIVE text
+  path is FreeType (`ft_text`), which now reads the COMMP TTF directly, so the reported defect is fixed;
+  the ATLAS path (crosscheck + conformance) remains COMMP-less until a pinned-toolchain rebuild.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+### [CXC-CYD-FONT-FAMILY-DEFAULT] An omitted `font_family:` resolves to `sans-serif` on EVERY tier
+
+- requirement: a scene element that carries `font_size:` but no `font_family:` renders in `sans-serif`.
+  This is the resolved default at the CONTRACT level, not a per-backend fallback.
+- current-implementations: `python/composeio/render/engine/parser.py` (`spec.get("font_family",
+  "sans-serif")`) and `cyd/src/compose_scene.cpp` (`gets(s, spec, "font_family", "sans-serif")`) already
+  AGREE. This node ratifies that agreement so a reimplementation of either side cannot silently pick a
+  different default — the invariant lived only in two source lines and nothing tested that they matched.
+- consequence: omitting `font_family:` is legal authoring and is NOT a parity defect. 64 of 140 text
+  elements across the scene corpus omit it (measured 2026-08-16); every one of them is well-defined.
+- non-consequence: this node does NOT make omission stylistically advisable. A scene that names a family
+  on some elements and omits it on others gets TWO families on a tier that realizes both and ONE family on
+  a tier that realizes neither — legible on both, identical on neither. That is an authoring finding, not
+  a contract violation.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+### [CXC-CYD-FONT-FAMILY-NO-SILENT-FALLBACK] A family a tier cannot realize is REPORTED, never substituted
+
+- requirement: when a scene names a family the running tier cannot realize, the tier MUST report it
+  (a diagnostic the harness and the lint can read) before falling back. Rendering must not stop — a
+  panel that goes blank is worse than a panel in the wrong face — but the substitution must be VISIBLE
+  in a machine-readable place.
+- rationale: this is the whole failure mode. `commp` on the desktop resolved through
+  `classify_family("commp") -> "sans"` to `IBMPlexSans-Regular.ttf`, measured to the SAME advance width as
+  `sans-serif` (129.0 px for "ENGINE THRUST" at 16px bold — byte-identical, not merely similar). The text
+  drew, no error was raised, no log line appeared, and the scene was wrong on the glass. A silent
+  substitution is indistinguishable from a correct render to every machine signal there is.
+  AFTER the fix the same measurement reads 142.0 px for `commp` against 129.0 px for `sans-serif` — two
+  faces, which is what the device has drawn all along.
+- constraint: `classify_family` returning a best-effort class is fine; returning it WITHOUT recording that
+  the name was unknown is what this node forbids.
+- verify: an unknown/unrealizable family name appears in the tier's unresolved-family report; a declared
+  and realizable one does not.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+---
+
+## 3. Crosscheck
+
+### [CXC-CYD-FONT-CROSSCHECK-UPDATE] The crosscheck harness enables atlas mode after canvas construction
+
+- file: cyd/scripts/cyd_dashboard_crosscheck.py
+- requirement: immediately after `canvas = SkiaCanvas()`, resolve the atlas path under
+  `composeio/render/font_atlas_data.json` and call `canvas.enable_bitmap_atlas(atlas_path)`.
+- consequence: every subsequent widget `draw()` routes text through the atlas renderer with no
+  per-widget change, because the switch is on the canvas rather than in the widgets.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+### [CXC-CYD-FONT-CROSSCHECK-SCREENSHOTS] Crosscheck output is archived as a timestamped progression
+
+- directory: cyd/screenshots/progression/
+- artifact-atlas: `YYYYMMDD-HHMMSS-desktop-atlas.png` — desktop render with the bitmap atlas.
+- artifact-native: `YYYYMMDD-HHMMSS-desktop-native.png` — desktop render with Skia native text, kept for
+  comparison.
+- artifact-report: `YYYYMMDD-HHMMSS-comparison-report.txt` — the `pixel_comparison.py` output.
+- requirement: copy any CYD captures retrieved from document_store into the same directory, so one
+  timestamped set holds every tier's view of the same scene.
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+---
+
+## 4. Acceptance
+
+### [CXC-CYD-FONT-COMPLIANCE] The compliance contract
+
+- definition: seven acceptance criteria, each with the verification that settles it.
+- headline-target: the text-area pixel delta drops from 200 to under 10 (FU-C4). That number is the
+  whole point of the spec and the one to re-measure if anything here is changed.
+- verify-human: the crosscheck PNG and the CYD photograph show text of the same weight, position and
+  shape at every size in the scene; a byte-level pass with visibly different text means the comparison
+  region is wrong, not that the spec is met.
+
+| ID | Requirement | Verification |
+|----|-------------|-------------|
+| FU-C1 | `generate_atlas.py` produces both the C header and the JSON from a single invocation | Run the generator; verify both files exist and contain the same glyph count |
+| FU-C2 | JSON atlas byte data matches C header byte data for every glyph | Automated comparison: parse both outputs, assert bitmap equality |
+| FU-C3 | `BitmapFontAtlas.measure_text()` returns metrics identical to the CYD for all test strings | Unit test with known strings at sizes 8/10/12/14/16 |
+| FU-C4 | `SkiaCanvas` with the atlas enabled produces text visually matching the CYD | Pixel comparison: text area delta drops from 200 to under 10 |
+| FU-C5 | `SkiaCanvas` without the atlas behaves identically to current behaviour | The existing 122 render engine tests pass unchanged |
+| FU-C6 | Nearest-neighbour scaling in Python matches the CYD integer arithmetic | Unit test: render "82C" at size 14 in Python, compare pixel-by-pixel with the CYD atlas reference |
+| FU-C7 | Screenshots are saved to `cyd/screenshots/progression/` with timestamps | Verify files created after a crosscheck run |
+
+- part-of: [SPEC:CXC-CYD-FONT-UNIFY]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-CYD-FONT-UNIFY] DEPENDS_ON [SPEC:CXC-CYD-AA]
+- [SPEC:CXC-CYD-FONT-UNIFY] PRECONDITION_FOR [SPEC:CXC-CYD-BOLD-ATLAS]
+- [CXC-CYD-FONT-EXPORT] PRECONDITION_FOR [CXC-CYD-FONT-EXPORT-SCHEMA]
+- [CXC-CYD-FONT-EXPORT-SCHEMA] PRECONDITION_FOR [CXC-CYD-FONT-RENDERER-CLASS]
+- [CXC-CYD-FONT-EXPORT-REGEN] RELATED_TO [CXC-CYD-FONT-EXPORT]
+- [CXC-CYD-FONT-RENDERER-CLASS] PRECONDITION_FOR [CXC-CYD-FONT-RENDERER-INTEGRATE]
+- [CXC-CYD-FONT-RENDERER-INTEGRATE] CONTAINS [CXC-CYD-FONT-RENDERER-BLIT]
+- [CXC-CYD-FONT-RENDERER-INTEGRATE] PRECONDITION_FOR [CXC-CYD-FONT-CROSSCHECK-UPDATE]
+- [CXC-CYD-FONT-CROSSCHECK-UPDATE] PRECONDITION_FOR [CXC-CYD-FONT-CROSSCHECK-SCREENSHOTS]
+- [CXC-CYD-FONT-RENDERER-BLIT] CAUSES [CXC-CYD-FONT-COMPLIANCE]
+
+- [SPEC:CXC-CYD-FONT-UNIFY] CONTAINS [CXC-CYD-FONT-EXPORT-REGEN]
+- [SPEC:CXC-CYD-FONT-UNIFY] CONTAINS [CXC-CYD-FONT-FAMILY-REGISTRY]
+- [CXC-CYD-FONT-FAMILY-REGISTRY] CONTAINS [CXC-CYD-FONT-FAMILY-DEFAULT]
+- [CXC-CYD-FONT-FAMILY-REGISTRY] CONTAINS [CXC-CYD-FONT-FAMILY-NO-SILENT-FALLBACK]
+- [CXC-CYD-FONT-FAMILY-REGISTRY] PRECONDITION_FOR [CXC-CYD-FONT-EXPORT]
+- [CXC-CYD-FONT-FAMILY-REGISTRY] PRECONDITION_FOR [CXC-CYD-FONT-RENDERER-INTEGRATE]
+- [CXC-CYD-FONT-FAMILY-REGISTRY] CONTAINS [CXC-CYD-FONT-FAMILY-ONE-DIRECTORY]
+- [CXC-CYD-FONT-EXPORT-REGEN] CONTAINS [CXC-CYD-FONT-EXPORT-TOOLCHAIN]
+---
+
+**Version**: 1.3 — COMMP is REALIZED on the desktop: fonts.py routes the family and
+`COMMP___.TTF` moved cyd/fonts/ -> fonts/ (the one directory the resolver searches), verified to be the
+source of the compiled firmware atlas (475 metrics + 435 bitmaps, 0 mismatches).
+[CXC-CYD-FONT-FAMILY-ONE-DIRECTORY] and [CXC-CYD-FONT-EXPORT-TOOLCHAIN] added. CORRECTS v1.2, which
+declared commp unrealizable on a false claim that the TTF was absent — that claim came from a `find /`
+killed at a timeout and read as an empty result. The gap was DISTRIBUTION, not absence.
+**Version**: 1.2 — §2b Family routing added ([CXC-CYD-FONT-FAMILY-REGISTRY] / -DEFAULT /
+-NO-SILENT-FALLBACK); [CXC-CYD-FONT-RENDERER-INTEGRATE] `behaviour-set-font` corrected (the "family and
+weight are ignored" clause was drift — the firmware grew both a bold group and a COMMP family);
+[CXC-CYD-FONT-EXPORT] gains `requirement-every-family`. Driven by defect
+`font_family: commp` renders IBM Plex Sans on the desktop tier and the COMMP pixel atlas on the device.
+**Version**: 1.1 — converted to FactLattice from `cyd/spec/cyd-font-unification.smd` (v1.0, 2026-03-30).
+**Status**: Draft

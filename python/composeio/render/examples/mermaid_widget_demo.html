@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<!--
+  ComposeUX Mermaid Widget — standalone LIVE demo ([SPEC:CXC-IC] [CXC-IC-CANVAS])
+
+  The thesis at its purest: STATE ON THE BUS, BEHAVIOR IN THE WIDGET.
+  A tiny mock "bus" publishes mermaid TEXT to `thread/diagram` on a timer; the
+  widget SUBSCRIBES that namespace and re-renders the diagram on every change —
+  with NO round-trip through any model.  This is exactly what an Intelligence
+  does in the Console (emit once, the widget owns every redraw), proven here
+  without a real broker.
+
+  Self-contained / OFFLINE: mermaid.js is the VENDORED, pinned bundle
+  (../widgets/mermaid/assets/mermaid.min.js, v11.16.0) — never a CDN.  Open
+  this file directly in a browser (file://) from inside the repo tree.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComposeUX · Mermaid Widget (live from bus)</title>
+<!-- VENDORED mermaid.js — pinned v11.16.0, sets window.mermaid. No CDN. -->
+<script src="../widgets/mermaid/assets/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg:#0b0e14; --panel:#14141e; --edge:#2a3542; --ink:#d0d4e0;
+    --dim:#66667a; --teal:#26a69a; --accent:#34c3d0;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    padding:24px; min-height:100vh;
+  }
+  h1 { font-size:16px; margin:0 0 4px; letter-spacing:.3px; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:18px; }
+  .sub code { color:var(--accent); }
+  .wrap { display:grid; grid-template-columns:1fr 1fr; gap:16px; max-width:960px; }
+  @media (max-width:760px) { .wrap { grid-template-columns:1fr; } }
+  .card {
+    background:var(--panel); border:1px solid var(--edge); border-radius:10px;
+    overflow:hidden; display:flex; flex-direction:column;
+  }
+  .head {
+    display:flex; justify-content:space-between; align-items:center;
+    padding:9px 12px; border-bottom:1px solid var(--edge);
+    font-size:12px; font-weight:600;
+  }
+  .head .ns { color:var(--dim); font-weight:400; font-family:ui-monospace,monospace; }
+  .head .teal { color:var(--teal); }
+  /* the widget surface — mermaid.js injects an <svg> here */
+  .diagram { flex:1; display:grid; place-items:center; padding:16px; min-height:280px; }
+  .diagram svg { max-width:100%; height:auto; }
+  .mermaid-error { color:#ef5350; font-family:ui-monospace,monospace; font-size:12px; }
+  /* the raw bytes on the bus — the source panel (== the Canvas-tier fallback) */
+  .source { flex:1; margin:0; padding:16px; font-family:ui-monospace,monospace;
+            font-size:12px; color:var(--ink); white-space:pre; overflow:auto;
+            min-height:280px; }
+  .bar {
+    max-width:960px; margin-top:16px; padding:10px 14px; background:var(--panel);
+    border:1px solid var(--edge); border-radius:8px; font-size:12px;
+    color:var(--dim); display:flex; justify-content:space-between; gap:12px;
+    flex-wrap:wrap;
+  }
+  .bar b { color:var(--accent); font-family:ui-monospace,monospace; }
+  .pulse { color:var(--teal); }
+  button {
+    background:var(--edge); color:var(--ink); border:1px solid var(--dim);
+    border-radius:6px; padding:5px 12px; font-size:12px; cursor:pointer;
+  }
+  button:hover { border-color:var(--accent); }
+</style>
+</head>
+<body>
+  <h1>ComposeUX · Mermaid Widget</h1>
+  <div class="sub">
+    A mock bus publishes to <code>thread/diagram</code> every few seconds.
+    The widget subscribes and re-renders — <b>state on the bus, behavior in the
+    widget</b>, no model round-trip. mermaid.js is vendored (offline, no CDN).
+  </div>
+
+  <div class="wrap">
+    <div class="card">
+      <div class="head">
+        <span class="teal">mermaid · rendered</span>
+        <span class="ns">thread/diagram</span>
+      </div>
+      <!-- the LIVE widget surface (web tier) -->
+      <div id="mermaid-canvas" class="diagram"></div>
+    </div>
+
+    <div class="card">
+      <div class="head">
+        <span>the bytes on the bus</span>
+        <span class="ns">thread/diagram · source</span>
+      </div>
+      <!-- the SOURCE panel == what the Canvas tier shows on a JS-less backend -->
+      <pre id="source-panel" class="source"></pre>
+    </div>
+  </div>
+
+  <div class="bar">
+    <span>bus · <b>thread/diagram</b> · emit #<b id="seq">0</b>
+      · <span class="pulse" id="next">next in 4s…</span></span>
+    <span>
+      <button id="step">emit next now</button>
+      diagram <b id="which">1</b>/3
+    </span>
+  </div>
+
+<script>
+// ---------------------------------------------------------------------------
+// The mermaid widget (web tier) — the browser twin of the Python
+// MermaidWidget.render_html() fragment: it subscribes ONE namespace and
+// re-renders on every change.  Pure widget behavior; no model in the loop.
+// ---------------------------------------------------------------------------
+(function () {
+  if (!window.mermaid) {
+    document.getElementById('mermaid-canvas').innerHTML =
+      '<pre class="mermaid-error">vendored mermaid.min.js failed to load — ' +
+      'open this file from inside the repo tree so the relative path resolves.</pre>';
+    return;
+  }
+  window.mermaid.initialize({ startOnLoad:false, theme:'dark', securityLevel:'strict' });
+
+  var host = document.getElementById('mermaid-canvas');
+  var srcPanel = document.getElementById('source-panel');
+  var seqEl = document.getElementById('seq');
+  var whichEl = document.getElementById('which');
+  var seq = 0;
+
+  // on_bus_state: a new value on thread/diagram re-renders. This is the whole
+  // thesis — emit once, every redraw is the widget's own behavior.
+  function onBusState(text) {
+    seq += 1;
+    seqEl.textContent = seq;
+    srcPanel.textContent = text;                 // the Canvas-tier source view
+    window.mermaid.render('mermaid-canvas-svg-' + seq, text).then(function (r) {
+      host.innerHTML = r.svg;
+    }).catch(function (e) {
+      host.innerHTML = '<pre class="mermaid-error">' + String(e && e.message || e) + '</pre>';
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // A tiny MOCK BUS: a namespace store + subscribe/publish, no broker.
+  // -------------------------------------------------------------------------
+  var subs = {};
+  var bus = {
+    subscribe: function (ns, fn) { (subs[ns] = subs[ns] || []).push(fn); },
+    publish: function (ns, value) { (subs[ns] || []).forEach(function (fn) { fn(value); }); }
+  };
+  bus.subscribe('thread/diagram', onBusState);
+
+  // The Intelligence's emissions — 3 different diagrams cycled on a timer.
+  var DIAGRAMS = [
+    "graph TD\n" +
+    "  A[Intelligence] -->|emit mermaid| B(thread/diagram)\n" +
+    "  B --> C{widget subscribes}\n" +
+    "  C -->|renders| D[diagram appears]\n" +
+    "  C -->|no model round-trip| E[state on bus, behavior in widget]",
+
+    "sequenceDiagram\n" +
+    "  participant D as David\n" +
+    "  participant A as Architect\n" +
+    "  participant W as Mermaid Widget\n" +
+    "  A->>W: publish thread/diagram (mermaid text)\n" +
+    "  W-->>D: renders — I never asked for the panel\n" +
+    "  Note over W: re-renders on every emit, locally",
+
+    "stateDiagram-v2\n" +
+    "  [*] --> ENGAGED\n" +
+    "  ENGAGED --> REFLECT: context >= 90%\n" +
+    "  REFLECT --> HANDOFF: mint dusk gifts\n" +
+    "  HANDOFF --> ENGAGED: successor re-registers\n" +
+    "  HANDOFF --> [*]"
+  ];
+
+  var i = 0;
+  var PERIOD = 4000;
+
+  function emitNext() {
+    i = (i % DIAGRAMS.length);
+    whichEl.textContent = (i + 1);
+    bus.publish('thread/diagram', DIAGRAMS[i]);   // <-- state onto the bus
+    i += 1;
+  }
+
+  // countdown chrome
+  var nextEl = document.getElementById('next');
+  var remaining = 0;
+  function tick() {
+    remaining -= 1;
+    if (remaining <= 0) { emitNext(); remaining = PERIOD / 1000; }
+    nextEl.textContent = 'next in ' + remaining + 's…';
+  }
+
+  document.getElementById('step').addEventListener('click', function () {
+    emitNext(); remaining = PERIOD / 1000;
+  });
+
+  emitNext();                                     // first diagram immediately
+  remaining = PERIOD / 1000;
+  setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>

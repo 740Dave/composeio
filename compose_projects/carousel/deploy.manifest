@@ -1,0 +1,112 @@
+# deploy.manifest — the DECLARED, AUDITABLE asset closure for the rpi5 carousel
+# kiosk.  This file is the single source of truth for "what deploys".  Each
+# non-comment line is a path relative to the repo root (…/composeio); a trailing
+# slash means a directory (synced recursively).  `deploy_rpi5.sh` reads this and
+# rsyncs each entry (preserving path structure) to
+# davidleeburnett@pi.example.local:~/maker/composeio/.
+#
+# WHY A MANIFEST: the kiosk once shipped the python package but NOT the
+# compose_projects/ authoring tree, so the CIC nav (cic_menu_structure.md) was
+# missing and both consoles' tab rows blanked (defect 2026-07-31).  A file-copy
+# deploy that isn't declared drifts silently.  This manifest makes the closure
+# reviewable: if a running scene references an asset, it MUST be listed here.
+#
+# ── THE VERIFIED RUNTIME CLOSURE (what the carousel kiosk actually loads) ──
+# kiosk.py spawns `run_compose <scene> --fullscreen --transports` (cwd = repo
+# root) for two scenes, both under compose_projects/carousel/:
+#   • launcher.compose.yaml → tile icons are BUS ASSETS
+#       (bus://assets/icons/carousel/{fiat_logo,bsg_shield,power_off}.png) the
+#       render engine resolves BY REFERENCE from the store at draw time — NOT
+#       file-copied here (2026-08-04; scripts/publish_carousel_assets.py).
+#   • bsg_app.compose.yaml   → the colonial_console 2-up.  It declares
+#       `widget_modules: [compose_projects.bsg.widgets]`, so the kiosk imports
+#       the PROJECT-LOCAL BSG widget cluster ([CXC-PROJECT-WIDGETS]) — that
+#       subtree (+ its package-init chain) MUST ship or the import fails and both
+#       consoles render placeholders.  The CIC chrome / EXT view / nav are BUS
+#       ASSETS (bus://assets/cic/…) resolved BY REFERENCE from the store.
+# Fonts load from fonts/ (COMPOSEIO_FONT_DIR).
+#
+# ── CIC ART IS NOT DEPLOYED — THE STORE SERVES IT (2026-08-04) ──
+# The colonial_console chrome/EXT/nav are published to the bus asset store
+# (scripts/publish_cic_assets.py → bus://assets/cic/{chrome,ext}.svg + menu.md +
+# icons/cic/planet.jpg) and resolved by reference (svg_art.CHROME_URI/EXT_URI,
+# menu.MENU_URI).  This retires the prior file-copy of cic_menu_structure.md.
+# The package's bundled OFFLINE-fallback copies now live WITH the project-local
+# widget cluster — compose_projects/bsg/widgets/cic/{colonial_console_chrome.svg,
+# colonial_console_ext.svg,cic_menu_default.md} — so a store-unreachable kiosk
+# still draws the frame + tab rows (never blank).  ([CXC-PROJECT-WIDGETS] moved
+# this cluster out of python/ where the deploy used to pick it up; hence the
+# explicit widgets entries below.)
+
+# The render engine + generic widgets.
+python/
+
+# The two kiosk scenes, kiosk.py supervisor, and this tooling.  The tile icon
+# PNGs under carousel/resources/ are AUTHORING sources served from the store —
+# excluded from the sync in deploy_rpi5.sh (RSYNC_EXCLUDES).
+compose_projects/carousel/
+
+# The PROJECT-LOCAL BSG widget cluster ([CXC-PROJECT-WIDGETS]) the 2-up scene
+# imports via `widget_modules:` — the colonial_console shell, cic_tab_row, and
+# the CIC bundled OFFLINE-fallback art (widgets/cic/).  MUST ship WITH its
+# package-init chain so `import compose_projects.bsg.widgets` resolves: rsync -R
+# ships only files UNDER a listed dir, so the parent __init__.py markers are
+# listed explicitly (they are safe/lazy — bsg/__init__.py defers BSGApp so no CTk
+# import is dragged onto the headless kiosk).
+compose_projects/__init__.py
+compose_projects/bsg/__init__.py
+compose_projects/bsg/widgets/
+
+# The CIC composition-model surfaces the compositing slice reads DIRECTLY at
+# runtime ([SPEC:CXC-COMP]; colonial_console.py -> cic/composite.py resource_svg):
+# colonial_base_ux.svg + <mode>_mode.svg are the SINGLE SOURCE now (superseding the
+# bus-baked-chrome / EXT-only model — the runtime reads these local files). ~960K,
+# all small; ships the whole dir so David's evolving mode SVGs + cic_assets.yaml
+# ride along. The EXT rotation IMAGES stay bus-resolved (bus://assets/cic/screens/).
+compose_projects/bsg/resources/screen_base_layout/
+
+# The engine-thrust panel SCENE ([DD-MENU-SLOT-SCENE-GRAMMAR] Arm A) —
+# std-helm-heading.svg's `slot:scene@engine-thrust` mounts this
+# `.compose.yaml` BY REFERENCE at colonial_console build time
+# (cic/composite.py mount_scene() -> SCENE_FIXTURES -> parse_compose_yaml),
+# so it is now a RUNTIME dependency of the 2-up, not just device-config for a
+# separate service.  Scoped to the ONE sub-directory the mount path reads —
+# NOT the whole game_hardware/ tree (still omitted below).
+compose_projects/bsg/game_hardware/__init__.py
+compose_projects/bsg/game_hardware/engine_thrust_panel/
+
+# Typography (COMPOSEIO_FONT_DIR).
+fonts/
+
+# ── DELIBERATELY OMITTED (not referenced by the carousel kiosk scenes) ──
+# Listed here so the omission is a decision, not an oversight.  If a future
+# kiosk scene references any of these, ADD it above (that is the whole point of
+# the manifest) — do not deploy out-of-band.
+#   compose_projects/carousel/resources/*.png      the launcher tile icons —
+#       AUTHORING sources, PUBLISHED to bus://assets/icons/carousel/… and
+#       resolved by reference; the kiosk is always store-reachable, so they are
+#       excluded from the sync (deploy_rpi5.sh RSYNC_EXCLUDES).  The generic
+#       image widget has no bundled-fallback slot (only a placeholder swatch),
+#       so none is shipped — re-publish with scripts/publish_carousel_assets.py.
+#   compose_projects/bsg/{world,engine,client}/ + most of game_hardware/ + most
+#       of resources/ stay omitted (game code/content) — but bsg/widgets/ + the
+#       two parent __init__.py markers now SHIP (listed above): the 2-up imports
+#       the project-local widget cluster.
+#   compose_projects/bsg/resources/sfx/            47M mp3 — game audio, no kiosk scene uses it
+#   compose_projects/bsg/resources/screens/        game backdrops — not in the 2-up
+#   compose_projects/bsg/world|engine|client/  game sim code — runs elsewhere
+#   compose_projects/bsg/game_hardware/  device configs for separate services —
+#       EXCEPT engine_thrust_panel/ (now SHIPS, listed in the active section
+#       above): std-helm-heading.svg's `slot:scene@engine-thrust` drop-in reads
+#       engine_thrust.compose.yaml directly at colonial_console build time, so
+#       it is a runtime dependency of the 2-up now, unlike every other
+#       game_hardware/ device config.
+#   compose_projects/bsg/resources/{characters,locations,ships,missions}/  game content
+#   (screen_base_layout/ now SHIPS — listed in the active section above.  Superseded
+#       2026-08-05 by the compositing slice [SPEC:CXC-COMP]: colonial_console.py reads
+#       the authoring base+mode SVGs DIRECTLY at runtime via cic/composite.py, so the
+#       kiosk must carry them.  The old "chrome baked into the package + ext resolved
+#       from the bus, screen_base_layout never read locally" model is retired.  The
+#       chrome/ext bus assets + the rotation images [bus://assets/cic/screens/*.jpg]
+#       stay bus-resolved — the local SVGs are the composition source, the bus serves
+#       the referenced raster assets.)

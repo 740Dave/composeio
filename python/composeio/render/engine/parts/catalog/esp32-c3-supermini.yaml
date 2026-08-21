@@ -1,0 +1,106 @@
+# Part catalog entry — ESP32-C3 SuperMini (the tiny USB-C dev board).
+#
+# Maker-project-flow design lock §4: multi-target part definition, one def with
+# N consumers.  A `part:` reference in a scene's `hookup.parts` resolves here;
+# wires in `hookup.wires` speak the canonical `pins` below.
+#
+# The SuperMini differs from the ESP32-C3-DevKitM/MINI-1: no EN pin on the header,
+# no GPIO18/19 broken out (they are the USB D-/D+ lines internally), and a much
+# smaller two-row footprint.  Pins verified against the common SuperMini silkscreen:
+#   one side: 5V, G(GND), 3V3, GPIO4, GPIO3, GPIO2, GPIO1, GPIO0
+#   other side: GPIO5, GPIO6, GPIO7, GPIO8, GPIO9, GPIO10, GPIO20(RX), GPIO21(TX)
+# NOTE (honest, for physical wiring): the pin NAMES + the electrical connections are
+# canonical; the exact silkscreen ORDER varies slightly by clone — confirm against
+# your actual board when wiring. The generated footprint is a connection guide, not
+# a photo of the board.
+
+esp32-c3-supermini:
+  description: Espressif ESP32-C3 RISC-V SoC on the tiny USB-C SuperMini dev board.
+
+  # ---- the bring-up descriptor this pin map is CHECKED against -------------
+  # One source, three consumers (descriptor / catalog / netlist).  The pin map
+  # below and the descriptor's `pin_contract:` used to be two hand-maintained
+  # lists that nothing compared; hookup_descriptor.py::check_pin_parity now
+  # asserts they agree, and a netlist that wires a pad the descriptor RESERVES
+  # (GPIO2/8/9 — strapping) fails.  See that module for why this is a repo-time
+  # check and not a parse-time one.
+  descriptor: esp32c3-supermini-can.descriptor.yaml
+
+  # Canonical pin map — the netlist (hookup.wires) speaks EXACTLY these names.
+  # A wire endpoint naming a pin not in this list is a hard parse error (S2).
+  pins:
+    - 5V
+    - GND
+    - 3V3
+    - GPIO0
+    - GPIO1
+    - GPIO2
+    - GPIO3
+    - GPIO4
+    - GPIO5
+    - GPIO6
+    - GPIO7
+    - GPIO8
+    - GPIO9
+    - GPIO10
+    - GPIO20   # U0RXD
+    - GPIO21   # U0TXD
+
+  # MCU capability hint for the config-emitter (S4): the pins that back an ADC
+  # channel and can read an analog `publishes:` slot.  ESP32-C3: ADC1 = CH0..CH4
+  # on GPIO0..GPIO4 (same silicon as the MINI-1).
+  adc_pins:
+    - GPIO0
+    - GPIO1
+    - GPIO2
+    - GPIO3
+    - GPIO4
+
+  # Hookup-SVG art (S3).  SOURCED 2026-07-26 (David-supplied `esp32-c3-super-mini-tht.fzpz`,
+  # a community through-hole part) -> cached breadboard SVG at
+  # `render/engine/parts/svg/esp32-c3-supermini.svg` (self-contained, 709x958 viewBox).
+  # The .fzp names connectors POSITIONALLY (connector0..connector15 = "Pin 1".."Pin 16");
+  # geometry (transform-resolved): connector0..7 = LEFT column top->bottom (cx≈54.7),
+  # connector8..15 = RIGHT column BOTTOM->TOP (cx≈654.7 after resolving scale(-1)).
+  fritzing: esp32-c3-supermini.svg
+  fritzing_part: "ESP32-C3 SuperMini (THT)"
+  fritzing_source: "David-supplied esp32-c3-super-mini-tht.fzpz (community THT part), 2026-07-26"
+  # pin -> breadboard connector id, DERIVED FROM THE ART'S OWN SILKSCREEN (2026-07-26
+  # compositing pass): the footprint SVG prints "5V" beside connector15 (top-right),
+  # "G" -> connector14, "3.3" -> connector13, "0" beside connector8 (bottom-right) and
+  # "21" beside connector7 (bottom-left).  Those five anchor both column identities +
+  # directions; the 11 unlabeled pads interpolate by the standard SuperMini sequence
+  # (right col top->bottom 5V G 3.3 4 3 2 1 0; left col top->bottom 5 6 7 8 9 10 20 21).
+  # Cross-check: the rotated "BOOT" silkscreen resolves beside connector4 = GPIO9 (the
+  # real C3 BOOT pin).  (An earlier draft map assumed 5V at connector0 — MIRRORED vs the
+  # art; corrected here.)  ⚠ STILL FLAGGED for board-confirmation: the interpolated 11
+  # are positional and clone silkscreens vary — confirm against the physical board.
+  fritzing_connectors:
+    "5V": connector15
+    "GND": connector14
+    "3V3": connector13
+    "GPIO4": connector12
+    "GPIO3": connector11
+    "GPIO2": connector10
+    "GPIO1": connector9
+    "GPIO0": connector8
+    "GPIO5": connector0
+    "GPIO6": connector1
+    "GPIO7": connector2
+    "GPIO8": connector3
+    "GPIO9": connector4
+    "GPIO10": connector5
+    "GPIO20": connector6
+    "GPIO21": connector7
+  fritzing_note: >-
+    Real community THT footprint (David-supplied .fzpz, cached). S3's compositing pass
+    places this SVG and anchors wires to the connectorNpin terminals via
+    `fritzing_connectors` above (transform-resolved through the engine's SVG model).
+    The map is anchored by the art's own silkscreen labels (5V/G/3.3/0/21) with the
+    remaining pads interpolated positionally — FLAGGED for board-confirmation.
+
+  # Future KiCad interpreter target (documented; not built).  No official SuperMini
+  # footprint in KiCad stock libs; the module symbol + a community/hand footprint apply.
+  kicad:
+    symbol: "RF_Module:ESP32-C3-MINI-1"
+    footprint: "Module:ESP32-C3-SuperMini"

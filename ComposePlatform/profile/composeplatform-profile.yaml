@@ -1,0 +1,44 @@
+# ComposePlatform — taxonomy profile (the machine-readable registry)
+#
+# Phase-A analogue of Nexus's 99-*.nexus-profile.yaml (see /Users/davidleeburnett/nexus/
+# proposals/lts-cutover-steps.md). Registers the domains, the layer/family axes, and the
+# per-corpus prefix map so MAGMA can partition + filter. Source of truth for the taxonomy is
+# [DEC-COMPOSEPLATFORM-REFRAME]. This is the additive target-state registry; nothing in the live
+# ux_composer/specs pool is touched until David sequences the cutover.
+
+taxonomy_version: 1
+tld: ComposePlatform
+
+# The cascade ([DEC-COMPOSEPLATFORM-REFRAME]): LAYERS (substrate) + PROJECT FAMILIES (built on them).
+axes:
+  layer:   [composeio, composeux]                    # the substrate
+  family:  [apps, services, widgets]                 # the projects built on the substrate
+
+# MAGMA multi-corpus partition model (Nexus D5/step-7): ONE graph_index.json per corpus, filtered
+# by the domain suffix which already encodes the corpus. IDs are unique WITHIN a corpus, never
+# globally — independent prefix registries, so a merged single graph would clobber. Cross-corpus
+# edges become a thin routing layer, not a rebuilt core.
+domains:
+  # domain-suffix        corpus root (relative to ComposePlatform/)          purpose
+  plt:      { root: platform,                              desc: "platform-wide: foundation, design-excellence, principles, insights, glossary, conventions" }
+  io:       { root: layers/composeio,                      desc: "ComposeIO — semantic bus + state engines + bus://doc:// + Intelligence-as-peer (the origin)" }
+  ux:       { root: layers/composeux,                      desc: "ComposeUX — Canvas contract + render engine + widgets + .compose.yaml" }
+  app.console:  { root: families/apps/intelligence-console, desc: "the Intelligence Console app" }
+  app.composer: { root: families/apps/visual-composer,      desc: "the Visual Composer app" }
+  app.monitor:  { root: families/apps/headless-monitor,     desc: "the Headless Monitor app" }
+  svc:      { root: families/services,                     desc: "ComposeBus Services — FactLattice, bus_storage, document_store, MAGMA, deliverable daemons" }
+  wid:      { root: families/widgets,                      desc: "Reactive Widgets — BSG DRADIS, gauges, button_matrix, WLED/Car-Thing" }
+
+# Each corpus dir holds up to three sub-corpora ([DEC-SPEC-LTS-CONVERSION]: separate specs /
+# decisions / artifacts per project, not one flat pool). MAGMA reads them as a multi-root corpus
+# (store.py already supports a List of roots) filtered by domain.
+corpus_layout:
+  subdirs: [specs, decisions, artifacts]
+  note: "a project's specs+decisions+artifacts are ONE queryable corpus with three roots; the
+         domain suffix selects the project."
+
+# The numbered-layering convention (SMD exemplar ~/.claude/zerocontext/*.smd + Nexus 99-conventions):
+# within a corpus, 00 = foundation/overview, 0x = architecture/substrate, ... , 99 = conventions,
+# and a glossary node per corpus. Conventions live as a normal readable .lts (Nexus D8), pointing
+# at THIS yaml as the machine-readable registry.
+conventions_spec: platform/99-composeplatform-conventions.lts

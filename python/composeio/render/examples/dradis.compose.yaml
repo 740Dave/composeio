@@ -1,0 +1,66 @@
+# ComposeUX demo — Dradis Sweep ([SPEC:CXC-BIND] [CXC-BIND-C3])
+#
+# A rotate behavior on the bindable `rotation` transform: publish
+# dradis/scanning = on and the needle sweeps continuously at
+# $sweep_rate deg/s, engine-owned, on the animation loop.  Release the
+# trigger and the needle reverts to its base rotation ([CXC-BIND-C5]).
+#
+#   python3 -m composeio.render.engine.runtime dradis.compose.yaml
+#
+# Then, from any bus peer:  publish dradis/scanning = on | off
+
+app:
+  id: demo-dradis
+
+design:
+  title: "Dradis"
+  width: 320
+  height: 240
+
+variables:
+  sweep_rate: 90              # degrees per second
+
+namespaces:
+  - name: dradis/scanning
+    state_engine: binary
+
+widgets:
+  - type: pixel_stack
+    id: dish
+    width: 320
+    height: 240
+    background: "#0A0F0A"
+    children:
+      - type: circle          # outer ring
+        id: ring_outer
+        radius: 90
+        stroke_color: "#1F5A2E"
+        stroke_width: 2
+        fill_color: "#0E1A10"
+        x: 70
+        y: 30
+      - type: circle          # inner ring
+        id: ring_inner
+        radius: 55
+        stroke_color: "#1F5A2E"
+        stroke_width: 1
+        fill_color: [0, 0, 0, 0]
+        x: 105
+        y: 65
+      - type: rect            # the needle: thin diameter line, rotates
+        id: needle            # about its own center == dish center
+        x: 158
+        y: 32
+        w: 4
+        h: 176
+        fill_color: "#3BE06B"
+        behaviors:
+          - when: { namespace: dradis/scanning, is: on }
+            do:   { behavior: rotate, target: rotation, deg_per_s: $sweep_rate }
+      - type: label
+        id: caption
+        text: "DRADIS"
+        font_size: 12
+        color: "#3BE06B"
+        x: 140
+        y: 218

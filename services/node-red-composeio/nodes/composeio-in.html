@@ -1,0 +1,120 @@
+<script type="text/javascript">
+    RED.nodes.registerType('composeio-in', {
+        category: 'ComposeIO',
+        color: '#4DB6AC',
+        defaults: {
+            name: { value: '' },
+            config: { value: '', type: 'composeio-config', required: true },
+            namespace: { value: '', required: true },
+            scope: { value: 'global' },
+            messageTypes: { value: ['state'] },
+            outputFormat: { value: 'parsed' },
+            onlyOnChange: { value: true }
+        },
+        inputs: 0,
+        outputs: 1,
+        icon: 'bridge-dash.svg',
+        label: function () {
+            return this.name || this.namespace || 'composeio in';
+        },
+        paletteLabel: 'composeio in',
+        labelStyle: function () {
+            return this.name ? 'node_label_italic' : '';
+        },
+        outputLabels: ['ComposeIO message'],
+        oneditprepare: function () {
+            var msgTypesVal = this.messageTypes || ['state'];
+            // Build checkboxes state
+            $('#node-input-msgtype-state').prop('checked', msgTypesVal.indexOf('state') !== -1 || msgTypesVal.indexOf('all') !== -1);
+            $('#node-input-msgtype-event').prop('checked', msgTypesVal.indexOf('event') !== -1 || msgTypesVal.indexOf('all') !== -1);
+            $('#node-input-msgtype-log').prop('checked', msgTypesVal.indexOf('log_entry') !== -1 || msgTypesVal.indexOf('all') !== -1);
+        },
+        oneditsave: function () {
+            var types = [];
+            if ($('#node-input-msgtype-state').prop('checked')) types.push('state');
+            if ($('#node-input-msgtype-event').prop('checked')) types.push('event');
+            if ($('#node-input-msgtype-log').prop('checked')) types.push('log_entry');
+            if (types.length === 3) types = ['all'];
+            if (types.length === 0) types = ['state'];
+            this.messageTypes = types;
+        }
+    });
+</script>
+
+<script type="text/html" data-template-name="composeio-in">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-config"><i class="fa fa-cogs"></i> Config</label>
+        <input type="text" id="node-input-config">
+    </div>
+    <div class="form-row">
+        <label for="node-input-namespace"><i class="fa fa-bookmark"></i> Namespace</label>
+        <input type="text" id="node-input-namespace" placeholder="e.g. ftl_arm, nexus/#, +">
+    </div>
+    <div class="form-row">
+        <label for="node-input-scope"><i class="fa fa-sitemap"></i> Scope</label>
+        <select id="node-input-scope">
+            <option value="global">global</option>
+            <option value="local">local</option>
+            <option value="remote">remote</option>
+            <option value="any">any (all scopes)</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label><i class="fa fa-filter"></i> Message Types</label>
+        <div style="margin-left: 105px; display: inline-block;">
+            <label style="width: auto; margin-right: 15px;">
+                <input type="checkbox" id="node-input-msgtype-state" style="width: auto; margin-right: 4px;">state
+            </label>
+            <label style="width: auto; margin-right: 15px;">
+                <input type="checkbox" id="node-input-msgtype-event" style="width: auto; margin-right: 4px;">event
+            </label>
+            <label style="width: auto;">
+                <input type="checkbox" id="node-input-msgtype-log" style="width: auto; margin-right: 4px;">log_entry
+            </label>
+        </div>
+    </div>
+    <div class="form-row">
+        <label for="node-input-outputFormat"><i class="fa fa-code"></i> Output</label>
+        <select id="node-input-outputFormat">
+            <option value="parsed">Parsed (msg.payload = value)</option>
+            <option value="raw">Raw (msg.payload = JSON string)</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label for="node-input-onlyOnChange"><i class="fa fa-exchange"></i> Only on Change</label>
+        <input type="checkbox" id="node-input-onlyOnChange" style="width: auto;">
+        <span>Only output when state value changes</span>
+    </div>
+</script>
+
+<script type="text/html" data-help-name="composeio-in">
+    <p>Subscribes to a ComposeIO namespace and outputs messages when state
+    changes or events arrive on the bus.</p>
+
+    <h3>Outputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">string | number | object</span></dt>
+        <dd>The ComposeIO value (<code>val</code> field) - directly chainable with standard Node-RED nodes.</dd>
+        <dt>topic <span class="property-type">string</span></dt>
+        <dd>The full MQTT topic (e.g. <code>composeio/global/ftl_arm</code>).</dd>
+        <dt>composeio <span class="property-type">object</span></dt>
+        <dd>Full ComposeIO metadata: namespace, type, value, source, timestamp, scope, sequence, label, stateEngine.</dd>
+    </dl>
+
+    <h3>Details</h3>
+    <p><b>Namespace</b> supports MQTT-native wildcards: <code>+</code> matches any single
+    topic level, <code>#</code> matches subtrees. Glob-style partial wildcards are NOT supported.</p>
+    <p><b>Only on Change</b>: For state messages, the node only outputs when the value
+    differs from the previous value, matching ComposeIO's on-change-only semantics.</p>
+    <p><b>Message Types</b>: Filter which ComposeIO message types pass through. State
+    messages are subscribed at QoS 1 (to receive retained messages), events at QoS 0.</p>
+
+    <h3>References</h3>
+    <ul>
+        <li><a href="https://github.com/composeio">ComposeIO Bus Protocol</a> - Message format specification</li>
+    </ul>
+</script>

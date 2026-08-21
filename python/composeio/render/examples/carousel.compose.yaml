@@ -1,0 +1,81 @@
+# [CXC-PRIM-CAROUSEL] Cover-flow carousel demo — the launcher/BSG-program shell.
+#
+# A touch-driven horizontal scale-carousel: drag/flick to scroll, the centered
+# tile renders full-size and lifted, side tiles shrink to half, a dot row tracks
+# the centered index.  Tap the centered tile to fire its launch intent.
+#
+# Two tile kinds, ONE uniform scale path ([CXC-PRIM-CAROUSEL-SCALE]):
+#   * static IMAGE tiles ({image: ...})
+#   * LIVE-WIDGET tiles ({widget: ...}) — a hosted child that keeps updating on
+#     the bus while it rides the carousel (any project supplies its own tiles).
+#
+# Bus surface ([CXC-PRIM-CAROUSEL-BIND]):
+#   * publishes the centered index to  launcher/index  on every settle
+#   * consumes an index on              launcher/goto   (snap, control-is-a-peer)
+#   * a center-tap fires               _app/<target>/open
+#
+#   $ python -m composeio.render examples/carousel.compose.yaml
+
+design:
+  width: 1280
+  height: 560
+  title: Carousel
+  background: [10, 12, 18]
+  background_wash: {color: [52, 195, 208, 26], cx: 0.5, cy: 0.35, r: 0.7}
+
+widgets:
+  - type: carousel
+    id: launcher
+    x: 0
+    y: 0
+    width: 1280
+    height: 560
+    spacing: 340
+    tile_width: 260
+    tile_height: 260
+    center_scale: 1.0
+    side_scale: 0.5
+    initial_index: 0
+    index_ns: launcher/index
+    goto_ns: launcher/goto
+    tiles:
+      # LIVE-WIDGET tile: a colored panel hosting a live LED child.
+      - target: composer
+        label: Composer
+        widget:
+          type: pixel_stack
+          width: 260
+          height: 260
+          corner_radius: 22
+          background: [224, 79, 95]
+          children:
+            - {type: label, text: Composer, x: 0.5, y: 0.42, align: center,
+               font_size: 30, color: [12, 14, 20]}
+            - {type: led, state: on, color: [12, 14, 20], x: 0.5, y: 0.66}
+      - target: monitor
+        label: Monitor
+        widget:
+          type: pixel_stack
+          width: 260
+          height: 260
+          corner_radius: 22
+          background: [51, 168, 91]
+          children:
+            - {type: label, text: Monitor, x: 0.5, y: 0.42, align: center,
+               font_size: 30, color: [12, 14, 20]}
+            - {type: led, state: on, color: [12, 14, 20], x: 0.5, y: 0.66}
+      # static IMAGE tile (falls back to its label swatch if unresolved).
+      - {image: "bus://assets/launcher/gallery.png", target: gallery,
+         label: Gallery}
+      - target: fleet
+        label: Fleet
+        widget:
+          type: pixel_stack
+          width: 260
+          height: 260
+          corner_radius: 22
+          background: [224, 159, 62]
+          children:
+            - {type: label, text: Fleet, x: 0.5, y: 0.42, align: center,
+               font_size: 30, color: [12, 14, 20]}
+            - {type: led, state: on, color: [12, 14, 20], x: 0.5, y: 0.66}

@@ -1,0 +1,64 @@
+# ComposeUX demo — git gitGraph ([SPEC:CXC-IC] [CXC-IC-CANVAS])
+#
+# "Instrument the seam": the GitSensor (composeio.git_sensor) reads a repo's
+# sync state and publishes the `git/*` namespaces onto the ComposeBus — the
+# scalar readings, a structured `git/alert` (the "you forgot to push" nudge),
+# and a mermaid `gitGraph` SOURCE string on `git/graph`.
+#
+# `gitGraph` is a FIRST-CLASS diagram type in mermaid v11, so the string the
+# sensor emits on `git/graph` renders UNCHANGED in the already-built
+# MermaidWidget — state on the bus, behavior in the widget, no model round-trip.
+#
+# Produce a git/graph value from any repo:
+#   python3 -m composeio.git_sensor /path/to/repo   # prints the gitGraph
+# then publish that mermaid text to `git/graph` and watch it render:
+#   publish git/graph = "gitGraph\n   commit id: \"...\"\n   branch feature ..."
+#
+# Run from this directory:
+#   cd python/composeio/render/examples
+#   python3 -m composeio.render.engine.runtime git_graph.compose.yaml
+
+app:
+  id: demo-git-graph
+
+design:
+  title: "git — git/graph (gitGraph)"
+  width: 480
+  height: 380
+
+namespaces:
+  - name: git/graph             # the GitSensor emits mermaid gitGraph text here
+  - name: git/alert             # the structured out-of-sync bus alert
+
+widgets:
+  - type: stack
+    id: scene
+    direction: column
+    gap: 10
+    padding: [16, 16, 16, 16]
+    children:
+      - type: label
+        id: heading
+        text: "git history · live from bus — git/graph · mermaid gitGraph"
+        font_size: 13
+        color: "#8FA0B4"
+        height: 20
+      # The mermaid surface bound to git/graph: a gitGraph the GitSensor emits
+      # re-renders here with no model round-trip ([CXC-IC-C7]).  The `source`
+      # below is an illustrative initial graph; the sensor's real git/graph
+      # value replaces it on publish.
+      - type: mermaid
+        id: canvas
+        namespace: git/graph
+        theme: dark
+        width: 448
+        height: 320
+        source: |
+          gitGraph
+             commit id: "a1b2c3 first commit"
+             commit id: "d4e5f6 second commit"
+             branch feature_widget
+             checkout feature_widget
+             commit id: "9f8e7d feature commit"
+             checkout main
+             commit id: "ec6455 third commit (unpushed)"

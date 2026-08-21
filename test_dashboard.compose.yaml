@@ -1,0 +1,77 @@
+app:
+  id: test-dashboard
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+design:
+  target: desktop
+  title: "Test Dashboard"
+  theme: dark
+
+namespaces:
+  - name: engine_rpm
+    state_engine: continuous_0_255
+    export: true
+    label: "Engine RPM"
+
+  - name: ftl_arm
+    state_engine: binary
+    export: true
+    label: "FTL Arm"
+
+  - name: shields
+    state_engine: tri_level
+    export: true
+    label: "Shields"
+
+  - name: alert_status
+    state_engine: stop_light
+    export: true
+    label: "Alert Status"
+
+modules:
+  - name: controls
+    label: "Ship Controls"
+    grid_row: 0
+    grid_column: 0
+    widgets:
+      - type: ButtonWidget
+        namespace: ftl_arm
+        label: "FTL Arm"
+        state_engine: binary
+        input_type: toggle
+        led_behavior: follow_state
+        row: 0
+        column: 0
+
+      - type: ButtonWidget
+        namespace: shields
+        label: "Shields"
+        state_engine: tri_level
+        input_type: toggle
+        led_behavior: follow_state
+        row: 1
+        column: 0
+
+  - name: displays
+    label: "Displays"
+    grid_row: 0
+    grid_column: 1
+    widgets:
+      - type: GaugeWidget
+        namespace: engine_rpm
+        label: "Engine RPM"
+        min_val: 0
+        max_val: 100
+        state_engine: continuous_0_255
+        row: 0
+        column: 0
+
+      - type: RelayWidget
+        namespace: alert_status
+        label: "Alert Status"
+        state_engine: stop_light
+        row: 1
+        column: 0

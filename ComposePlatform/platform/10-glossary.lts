@@ -1,0 +1,132 @@
+---
+scope: "A starter glossary of the ComposePlatform's load-bearing terms — the vocabulary a reader (human or Intelligence, cold) must hold to traverse any corpus. One node per term: a crisp definition, where it lives, and the node(s) that own it in depth."
+audience: "Any reader entering the corpus cold — the Architect at wake, David, a stranger (OSS-bound). A term's authoritative spec is linked; this is the index, not the detail."
+boundary: "Definitions + pointers only. No term is fully specified here — each points AT its owning node/corpus. Starter set (2026-07-22 reorg); grows as terms earn a place."
+not-this: "Not a spec; not the design-excellence rules; not the taxonomy registry (that is the profile yaml). A dictionary that routes, not a system it defines."
+domain: PLT.GLOSSARY
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-07-22
+---
+# ComposePlatform — Glossary [SYSTEM:PLT-GLOSSARY]
+
+> The load-bearing terms, defined once and pointed at their owning specs. Read a term here to orient;
+> follow the pointer for the full contract. Terse by design — a term that needs a paragraph earns its
+> own spec node, and this entry points at it.
+
+---
+
+## Substrate & Bus
+
+### [GLOSS-BUS] ComposeBus / the Bus
+
+- term: ComposeBus (colloquially "the bus")
+- definition: the typed publish/subscribe fabric every peer communicates over. Namespace-addressed (address by message, not by node — CAN-Bus DNA); no peer holds a reference to another. Scope is `local` (in-process) or `global` (bridged over a transport, MQTT at `mqtt-broker.local:1883`). Messages are `state` (current value, retained — a late subscriber still sees current state) or `command` (imperative, drives undo).
+- lives-in: `layers/composeio` (`io` domain)
+- see-also: [GLOSS-STATE-ENGINE], [GLOSS-NARROW-WAIST]
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+### [GLOSS-STATE-ENGINE] State Engine
+
+- term: state engine
+- definition: the typed state machine a namespace carries — not a raw variable but a type + range + valid transitions (`binary`, `tri_level`, `stop_light`, `continuous_0_255`, `enum`, `json`). A value that violates the engine is a HARD ERROR, not a coercion. Free-form strings (paths, IDs, selections) MUST use the `json` engine — a strict engine fed an out-of-domain value (classically `""` into `binary`) raises inside a Tk callback and can abort the process.
+- lives-in: `layers/composeio` (`io` domain)
+- see-also: [GLOSS-BUS]
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+### [GLOSS-BUS-STORAGE] bus:// and doc://
+
+- term: bus-native storage (`bus://`, `doc://`)
+- definition: the platform's storage seams, addressed like bus namespaces. `bus://assets/<path>` resolves bytes via bus_storage (`:8420`); `doc://<collection>/<id>` resolves/queries documents via document_store (`:8421`). The client resolver is `composeio.resolve` (`resolve_bytes`, `resolve_doc`, `put_doc`, `query_docs`). Images/assets load by reference (`bus://`), never inlined.
+- lives-in: `layers/composeio` (`io` domain), `families/services` (`svc` — the store daemons)
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+---
+
+## Render & Contract
+
+### [GLOSS-CANVAS-CONTRACT] Canvas Contract
+
+- term: Canvas contract
+- definition: the EXPLICIT narrow-waist rendering contract — ~30 named primitives every backend meets. A widget definition renders pixel-identically across backends (macOS, RPi, browser, CYD) because every format lowers TO this contract and every backend is EXTENDED to meet it. Contrast the bus contract, which is (today) implicit — a named wart ([INSIGHT-BUS-CONTRACT-IS-IMPLICIT]).
+- lives-in: `layers/composeux` (`ux` domain)
+- see-also: [GLOSS-NARROW-WAIST], [GLOSS-COMPOSE-YAML]
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+### [GLOSS-NARROW-WAIST] Narrow Waist
+
+- term: narrow waist
+- definition: the single shared contract everything meets at, so N formats × M backends collapses to N + M. Formats lower TO the waist; backends are extended to MEET it; a widget is reused BY REFERENCE, never forked to a backend. The Canvas contract is the render-layer narrow waist; a declared, typed, versioned bus contract would be the same discipline one layer over.
+- lives-in: `platform` (`plt`) — the pattern; `layers/composeux` — the Canvas instance
+- see-also: [GLOSS-CANVAS-CONTRACT]
+- relates-to: [DX-NARROW-WAIST]
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+### [GLOSS-COMPOSE-YAML] .compose.yaml
+
+- term: `.compose.yaml`
+- definition: the declarative authoring format for a ComposeUX surface/widget — the config-over-code artifact a builder emits instead of writing Python. It lowers to the Canvas contract; the SDR credo made concrete (specificity in configuration, not firmware).
+- lives-in: `layers/composeux` (`ux` domain)
+- see-also: [GLOSS-CANVAS-CONTRACT]
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+---
+
+## Identity & Intelligence
+
+### [GLOSS-INTELLIGENCE-PEER] Intelligence-as-Peer
+
+- term: Intelligence-as-peer
+- definition: the credo that an Intelligence drives every surface IDENTICALLY to a human — every builder/operator action is a bus message, a mouse drag and an MCP publish are peers, and no privileged back door exists. If a capability is not reachable over the bus, the design is incomplete. Inherited by every surface built with Composer.
+- lives-in: `layers/composeio` (`io`), `families/apps/intelligence-console` (`app.console`)
+- see-also: [GLOSS-SELF-ID]
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+### [GLOSS-SELF-ID] self/<id>/*
+
+- term: `self/<id>/*` (carried identity)
+- definition: the proposed completion of the decomposition to the observer. The Intelligence's own state (`context`, `memory`, `projects`) is today a SINGLETON namespace (`self/*`) that a console must GUESS the owner of; `self/<id>/*` with an identity PASSED (not guessed) makes the Intelligence a true peer in the namespaces. An open wart, not yet built.
+- lives-in: `families/apps/intelligence-console` (`app.console`); the thesis in `platform`
+- relates-to: [INSIGHT-SELF-IS-NOT-YET-A-PEER], [PLT-INTELLIGENCE-PEER]
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+---
+
+## Corpus & Tooling
+
+### [GLOSS-FACTLATTICE] FactLattice / .lts
+
+- term: FactLattice (`.lts`)
+- definition: the queryable spec/decision format the corpus is authored in (successor to SMD) — nodes with typed edges, frontmatter, doctype tags, confidence, and the `change`/`context_for_change` primitive. Humans do NOT hand-edit `.lts`; an Intelligence composes them and humans read the rendered output. The parser/linter is a ComposeBus Service.
+- lives-in: `families/services` (`svc`); the base grammar in `~/factlattice/`
+- see-also: [GLOSS-MAGMA]
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+### [GLOSS-MAGMA] MAGMA
+
+- term: MAGMA (multi-corpus graph engine)
+- definition: the engine that reads the FactLattice corpus as a MULTI-corpus partition — one `graph_index` per corpus, filtered by the domain suffix that already encodes the corpus. IDs are unique WITHIN a corpus, never globally; cross-corpus edges become a thin routing layer, not a rebuilt core. `store.py` supports a list of roots with a `corpus_id`.
+- lives-in: `families/services` (`svc`); the engine at `~/factlattice/`
+- see-also: [GLOSS-FACTLATTICE]
+- relates-to: [SYSTEM:PLT-CONVENTIONS]
+- part-of: [SYSTEM:PLT-GLOSSARY]
+
+---
+
+## Relationships
+
+[SYSTEM:PLT-GLOSSARY] RELATED_TO [SYSTEM:PLT-FOUNDATION]
+[GLOSS-NARROW-WAIST] EXEMPLIFIES [DX-NARROW-WAIST]
+[GLOSS-INTELLIGENCE-PEER] RELATED_TO [PLT-INTELLIGENCE-PEER]
+
+---
+
+## Maintenance
+
+A starter set. The Architect adds a term when it becomes load-bearing across corpora and flags it for
+David. Keep each entry terse — definition, home, pointer. A term that needs more than a few lines has
+outgrown the glossary and wants its own spec node.
+
+**Version**: 1.0
+**Created**: 2026-07-22
+**Status**: Draft — starter glossary

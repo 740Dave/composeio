@@ -1,0 +1,126 @@
+# ComposeUX Widget Primitive — switch ([SPEC:CXC-PRIM] [CXC-PRIM-CATALOG])
+#
+# A forkable COMPONENT, not a code widget: TWO overlapping bg pills (one
+# per state, mutually exclusive via `visible:`) + a knob, wired with
+# declarative bindings only — no new interaction seam.  Tap publishes the
+# OPPOSITE literal state via publish_namespace/publish_value (the
+# existing M4 mechanism); the knob position is an ordinary bound
+# expression on that same state (the [CXC-PRIM-DRAGVAL] pixel-stack
+# geometry binding seam, reused as-is).  power_toggle/checkbox are NOT
+# retired by this — this is the forkable family beside them ([CXC-PRIM-WHY]).
+#
+# IMPLEMENTATION NOTE: the generic publish_value: "toggle" mechanism
+# ([CXC-R-CONTROL]) hardcodes numeric 0/1, which the `binary` state
+# engine's strict domain (['off','on']) rejects — a pre-existing
+# convention mismatch between the two mechanisms, not something this
+# composite can paper over without engine code.  Two discrete pills, each
+# publishing the opposite literal ("on"/"off"), sidesteps it entirely and
+# stays 100% declarative.
+#
+# Run:
+#   cd python/composeio/render/examples/components
+#   python3 -m composeio.render.engine.runtime switch.compose.yaml
+# Then, from any bus peer:  publish demo/jump_drive_armed = on | off
+
+app:
+  id: demo-switch
+
+design:
+  title: "switch"
+  width: 260
+  height: 160
+  theme: dark
+
+namespaces:
+  - name: demo/jump_drive_armed
+    state_engine: binary
+    initial: "on"
+  - name: demo/aux_power
+    state_engine: binary
+    initial: "off"
+
+components:
+  switch:
+    params: [state_ns, on_color, off_label, on_label, show_label, momentary]
+    defaults:
+      on_color: "#34c3d0"      # ratified accent (dark); fork for light: #159aa8
+      off_label: "OFF"
+      on_label: "ON"
+      show_label: false
+      # momentary: KNOWN LIMITATION (v1) — a generic rect has no
+      # on-release publish hook, so a true press-and-revert switch isn't
+      # expressible without new widget code; the param is accepted for
+      # forward-compat but only the toggle semantics are wired today.
+      momentary: false
+    widget:
+      # NOTE on ids: prefixed with {{state_ns}} (unique-by-construction)
+      # for the same reason as progress_bar — two switch instances in
+      # one tree must not collide on widget_id ([CXC-PRIM-C2] forkable
+      # implies safe multi-instantiation).
+      type: pixel_stack
+      id: "{{state_ns}}_switch_root"
+      width: 106
+      height: 26
+      children:
+        # bg pill, OFF state — shown + tappable while state_ns is falsy;
+        # tapping it publishes "on" (see IMPLEMENTATION NOTE above)
+        - type: rect
+          id: "{{state_ns}}_bg_off"
+          x: 0
+          y: 0
+          w: 46
+          h: 26
+          corner_radius: 13
+          fill_color: "#2a3542"          # ratified track-deep (dark)
+          visible: { namespace: "{{state_ns}}", invert: true, default: true }
+          publish_namespace: "{{state_ns}}"
+          publish_value: "on"
+        # bg pill, ON state — shown + tappable while state_ns is truthy;
+        # tapping it publishes "off"
+        - type: rect
+          id: "{{state_ns}}_bg_on"
+          x: 0
+          y: 0
+          w: 46
+          h: 26
+          corner_radius: 13
+          fill_color: "{{on_color}}"
+          visible: { namespace: "{{state_ns}}", default: false }
+          publish_namespace: "{{state_ns}}"
+          publish_value: "off"
+        # knob — pill/circular per [CXC-PRIM-TOKENS]; x is a plain
+        # ternary expression on the SAME state, zero new interaction code
+        - type: rect
+          id: "{{state_ns}}_knob"
+          x:
+            expr: "ns('{{state_ns}}') ? 22 : 2"
+            default: 2
+          y: 2
+          w: 22
+          h: 22
+          corner_radius: 11
+          fill_color: "#ffffff"
+        # optional state label — compile-time literal show_label (COMP-3
+        # exact-token substitution) hides it with zero engine change
+        - type: label
+          id: "{{state_ns}}_state_label"
+          x: 54
+          y: 5
+          w: 52
+          h: 16
+          text:
+            namespace: "{{state_ns}}"
+            map: { "on": "{{on_label}}", "off": "{{off_label}}" }
+          font_size: 12
+          color: "#808c9b"
+          visible: "{{show_label}}"
+
+widgets:
+  - type: stack
+    id: demo_column
+    direction: column
+    gap: 22
+    children:
+      - { use: switch, state_ns: demo/jump_drive_armed, show_label: true }
+      - { use: switch, state_ns: demo/aux_power, on_color: "#4bb07d", show_label: true,
+          on_label: "ARMED", off_label: "SAFE" }

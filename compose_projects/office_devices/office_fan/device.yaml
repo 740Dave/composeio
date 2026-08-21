@@ -1,0 +1,82 @@
+# office_fan — device profile (office_devices, MIT-publishable home automation).
+#
+# HEADLESS relay-fan controller.  It SUBSCRIBES one semantic enum namespace
+# (office_fan/speed = off|low|medium|high) and actuates a 3-speed AC tap fan via
+# an on-board 4-relay bank, with BREAK-BEFORE-MAKE + dead-time (motor safety).
+# It holds no logic beyond the actuator: a bus peer (human or Intelligence)
+# publishes the speed; the device drives the relays.  Same invariant as the
+# other headless leaves — it never publishes world state, it actuates.
+#
+# CONFIG-FETCHED (not baked): the generic composeio reactive_core firmware
+# fetches THIS device's office_fan.compose.yaml from the bus asset store at boot
+# (by device id) and self-configures its relay HAL from the fetched file's
+# `relay_actuator:` block.  Reflash-free reconfigure: edit the compose.yaml, PUT
+# it, then trigger a LIVE re-fetch (below) — no power-cycle.  Mirrors the
+# dradis_console / dual_throttle pattern.
+
+device:
+  id: office_fan
+  kind: esp32-wroom-32               # ESP32-WROOM-32E integrated 4-relay board
+  mac: "TBD"                         # fill from the board (config id is fixed below)
+  # NO native USB — an EXTERNAL FTDI adapter (TX/RX crossed).  The board
+  # BROWNOUTS on FTDI serial power alone; power it externally at 12V DC.
+  upload_port: /dev/cu.usbserial-FTZ29P6A
+
+  # The reactive controller FIRMWARE is the composeio PLATFORM tier — NOT
+  # vendored here.  Build/flash from composeio.  The board has no auto-reset
+  # you can trust: enter MANUAL download mode (tie IO0->GND, tap EN) first:
+  #   cd composeio/firmware/reactive_core
+  #   pio run -e office_fan -t upload \
+  #       --upload-port /dev/cu.usbserial-FTZ29P6A
+  #   pio device monitor --port /dev/cu.usbserial-FTZ29P6A -b 115200
+  firmware:
+    platform: composeio
+    tier: reactive_core
+    env: office_fan                  # firmware/reactive_core -e office_fan
+    # [env:office_fan] sets -DDISPLAY_DEVICE_ID="office_fan" (the config asset
+    # id below), -DCONTROLLER_CONFIG_FETCH, -DMQTT_PORT=1883,
+    # -DBUS_STORAGE_URL=http://mqtt-broker.local:8420.  WROOM console = UART0 (no
+    # USB-CDC flags).
+
+  # The device model this controller fetches + lowers at boot.  The firmware
+  # GETs bus://assets/displays/<device_id>.compose.yaml (config_fetch resolves
+  # displays/office_fan.compose.yaml); the SAME file's `relay_actuator:` block
+  # becomes the relay HAL.  Source of truth is co-located here.
+  controller:
+    scene: office_fan.compose.yaml
+    scene_source: compose_projects/office_devices/office_fan/office_fan.compose.yaml
+    bus_path: bus://assets/displays/office_fan.compose.yaml
+    # push the config to the bus asset store (bus master mqtt-broker.local:8420):
+    #   curl -X PUT --data-binary @office_fan.compose.yaml \
+    #     http://mqtt-broker.local:8420/api/v1/assets/displays/office_fan.compose.yaml
+
+# Relay HAL (extracted from the fetched compose.yaml at boot — informational
+# here; active-HIGH, break-before-make):
+#   office_fan/speed = off     -> RY1..RY4 all open
+#                    = low     -> GPIO33 (RY2) HIGH
+#                    = medium  -> GPIO25 (RY3) HIGH
+#                    = high    -> GPIO26 (RY4) HIGH
+#   RY1 = GPIO32 (spare, always open)
+#   dead-time 80ms between de-energizing all + energizing the target.
+
+# Namespaces this controller SUBSCRIBES (the actuator's leaf edge; it never
+# publishes on this — pure actuator to the relay bank).
+subscribes:
+  - office_fan/speed
+
+# --- LIVE re-fetch / reconfigure trigger ([CXC-ER-REMOTE-RESTART]) ----------
+# The device honors a remote config-reload command over the bus: publish a
+# TRUTHY value to either namespace and it acks, re-runs its boot config-fetch
+# (re-GETs office_fan.compose.yaml + re-lowers the relay HAL), no power-cycle.
+#   per-device:  _device/office_fan/restart   <- true   (or "restart", 1)
+#   broadcast:   _device/restart              <- true   (all devices)
+#   ack:         _device/office_fan/status    -> "restarting"
+# Example (MQTT BusMessage JSON, global scope):
+#   mosquitto_pub -h mqtt-broker.local -t 'composeio/global/_device/office_fan/restart' \
+#     -m '{"ns":"_device/office_fan/restart","type":"state","val":true,"scope":"global"}'
+# A 3s post-boot guard drops a re-delivered/retained command so the device
+# cannot restart-loop.
+reload:
+  per_device_command: _device/office_fan/restart
+  broadcast_command: _device/restart
+  status_ack: _device/office_fan/status

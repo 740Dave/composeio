@@ -1,0 +1,131 @@
+# Unified board bring-up descriptor — SINGLE SOURCE for this board.
+# Schema shared byte-for-byte with cyd/qualia/hosyond-s3/esp32c3/ch32v203 (same keys, same order).
+# The markdown recipe (waveshare-c6-lcd147.md) is the human view; the app consumes THIS file.
+# LOCAL-FIRST: eyeball before pushing. Not on the bus yet (future home: doc://board_profiles/*).
+
+board_id: waveshare-c6-lcd147
+name: "Waveshare ESP32-C6-LCD-1.47 + ST7789T 172x320 IPS (no touch)"
+
+chip:
+  part: esp32-c6             # ESP32-C6FH4 (QFN32) rev v0.1, read off the device 2026-08-11
+  arch: riscv32              # RV32IMAC — SINGLE core + LP core, 160MHz. NO FPU (see quirk no-fpu-softfloat)
+  flash_kb: 4096             # 4MB embedded (C6FH4); partitions.csv (the CYD's 4MB layout) applies unchanged
+  ram_kb: 0                  # NO PSRAM — band tier, like the classic CYD
+
+connect:
+  bus: usb
+  kind: native-usb-cdc        # native USB-Serial-JTAG; no onboard USB-serial bridge. Flash + monitor share one port
+  port_glob: "/dev/cu.usbmodem*"     # ini pins usbmodem11301
+  baud: 115200
+
+flash:
+  tool: esptool               # via PlatformIO / ESP-IDF
+  cmd: "cd cyd && pio run -e waveshare_c6 -t upload"
+  enter_bootloader: auto      # native-USB auto-download
+  retries:
+    - errno6-native-usb        # transient native-USB CDC re-enumeration; retry the upload ONCE (same as the C3/S3/Qualia siblings)
+  notes: >
+    Build wiring layers sdkconfig.defaults -> sdkconfig.c6.defaults, plus -DWAVESHARE_C6=1 (CMake cache var
+    switching src/CMakeLists.txt onto boards/waveshare_c6_lcd147.cpp; no touch TU is compiled because the
+    board has no touch controller). The WAVESHARE_C6 branch MUST sit above the "not esp32 -> DSL only"
+    early-return: this is an esp32c6 target that DOES drive glass, unlike env:esp32c3_dsl_test.
+    Everything above the board seam is the CYD's, unchanged. monitor: pio device monitor -e waveshare_c6.
+    ALL panel constants live in cyd/include/waveshare_c6_panel.h — the ONE place to retune.
+    CAUTION: platformio.ini build_flags do NOT reach ESP-IDF component compiles (see the hosyond-s3
+    descriptor's pio-build-flags-dropped quirk); this board's compile definitions are in CMakeLists.
+
+config_source: "bus://assets/displays/{device_id}.compose.yaml"   # same fungible fetch as every other board
+
+requires:
+  - ref: "bus://assets/displays/{device_id}.compose.yaml"
+    kind: scene-config
+    status: present
+    note: "device_id = wsc6-6f4ce4 (base MAC AA:BB:CC:DD:EE:FF). AS OF 2026-08-11 this board carries the NARROW BSG engine-thrust panel — compose_projects/bsg/game_hardware/engine_thrust_panel/engine_thrust_narrow.compose.yaml. NOTE: the 240-wide scenes (displays/default, the Hosyond's panel) do NOT fit; the tier logs 'design 240x320 != panel 172x320 — rendering 1:1 (no scaling on this tier)' and content runs off the right edge."
+  - ref: null
+    kind: firmware
+    status: placeholder
+    note: "no bus-hosted image today; built locally from cyd/ (-DWAVESHARE_C6=1)"
+  - ref: "docs/board-bringup/factory-images/waveshare-c6-lcd147-factory-4mb.bin"
+    kind: rollback-image
+    status: present
+    note: "full 4MB dump of the as-shipped Waveshare demo image, taken BEFORE the first flash. Restore: esptool.py --port <port> write-flash 0 <file>"
+
+verify:
+  machine:
+    - check: build
+      expect: "pio run -e waveshare_c6 -> SUCCESS"
+      note: "VERIFIED 2026-08-11 (first try). env:cyd re-verified clean afterwards."
+    - check: serial-token
+      expect: "Board profile: waveshare-c6-lcd147 (ESP32-C6, ST7789T 172x320, no touch)"
+      note: "VERIFIED 2026-08-11; followed by 'Panel: 172x320 rect' — the first non-240-wide panel in the tree"
+    - check: serial-token
+      expect: "ST7789T ready — 172x320 portrait, MADCTL 0x48, inversion cmd 0x21, SPI 12000000 Hz, backlight ON"
+      note: "VERIFIED 2026-08-11"
+    - check: serial-token
+      expect: "Band-rendered surface: 172x320, band=16 scanlines, buffer=5504 bytes"
+      note: "VERIFIED. Band tier — NO PSRAM, so no CXC_BAND_HEIGHT override; the dirty quantum is the band ('repaint mode: band walk')."
+    - check: serial-token
+      expect: "Device id: wsc6-6f4ce4"
+      note: "VERIFIED. CXC_DEVICE_PREFIX=\"wsc6\" set as a CMake definition."
+    - check: capture-pixel-diff
+      expect: "GET http://<ip>/capture.bmp"
+      note: "172x320 BMP ~165KB, reliable. VERIFIED 2026-08-11: renders the narrow engine-thrust panel correctly, with NO horizontal shift — which is the practical proof the 34-column GRAM offset is right."
+  human: >
+    SATISFIED 2026-08-11 — all rows confirmed on the glass by David. (1) Colours correct, after the
+    RAMCTRL endian fix (quirk ramctrl-endian-byteswap) — a bug no machine signal could see, because
+    capture.bmp decodes the same buffer with the same big-endian assumption it was written with.
+    (2) Brightness reads as about half (quirk backlight-50-percent-max). (3) RGB LED dark (quirk
+    neopixel-latches-last-colour). (4) Image NOT shifted sideways, confirming the 34-column GRAM offset.
+    (5) Reactive to live throttle traffic, "about as fast as the S3" — after the 40 MHz SPI experiment
+    was reverted (quirk spi-clock-ceiling-11mhz). (6) Boot splash shows the correct build date/time,
+    proving the panel tracks the flashed firmware rather than a stale frame. There is NO touch row —
+    this board has no touch controller.
+    FOUR of this board's defects were caught by eyes and NONE by instrumentation; in every case a
+    machine signal existed and agreed with the wrong answer. That is the argument for this tier.
+    STANDARD FIRST SCENE: the BSG engine-power bars — see quirk engine-bars-are-the-bringup-test.
+
+quirks:
+  - id: no-fpu-softfloat
+    value: "RV32IMAC"
+    resolved: false
+    note: "THE defining performance fact of this board, and it is a SILICON property, not a bug. The ESP32-C6 RISC-V core has NO FPU, so every float in the band canvas is software-emulated. Measured on the live board with the SAME binary and canvas: the stock 240-wide CYD dashboard (two DIAL gauges — arcs, trig, per-pixel SDF) drew in 892.9 ms/frame; the narrow engine-thrust scene (led_bar = rectangles + labels) draws in 31.2 ms — a 28x difference driven entirely by WHICH primitives the scene uses. Consequence for authors: on this board prefer rect/label/led_bar geometry and avoid dial gauges, gradients, shadows and large arcs. Not fixed and probably not worth fixing by de-floating the canvas; choosing primitives is cheaper."
+  - id: gram-column-offset
+    value: 34
+    resolved: true
+    note: "The ST7789 GRAM is 240 columns; this panel shows 172 of them starting at column 34. Every column address is biased by kWsC6ColOffset in set_address_window, and NOWHERE else. (240-172)/2 == 34, i.e. the glass is CENTRED in GRAM, which is why the same offset holds with or without the MX mirror. Get this wrong and the whole image slides sideways — the single most likely ST7789 bring-up failure on a non-240-wide panel."
+  - id: sd-shares-display-spi
+    value: "MOSI 6 / SCLK 7, SD MISO 5, SD CS 4"
+    resolved: true
+    note: "The SD slot sits on the SAME SPI2 bus as the panel (vendor SD_SPI.h reuses EXAMPLE_PIN_NUM_MOSI/SCLK). This is the hazard class that froze the classic CYD: an SD teardown reset the DMA channel the display relied on, the panel kept ACKing ESP_OK and never updated again ([ED-HW-CYD-QUIRKS]). This profile NEVER initializes an SD bus, so the display owns SPI2 outright and the bug is structurally impossible — but init drives SD CS HIGH anyway so an inserted card cannot chatter on the shared lines. If SD is ever enabled here, design the DMA channel and bus arbitration FIRST."
+  - id: real-reset-pin
+    value: 21
+    resolved: true
+    note: "Unlike the Hosyond ES3C28P (panel reset tied to CHIP_PU), this board brings LCD reset out to GPIO21, so init performs a genuine hardware reset (10ms low / 10ms high, the vendor's timing) and needs no software-reset substitution. It is therefore correct from a warm esp_restart() as well as a cold boot."
+  - id: ramctrl-endian-byteswap
+    value: "0xB0 param2: 0xE8 -> 0xE0"
+    resolved: true
+    note: "GLASS-ONLY BUG, caught by David 2026-08-11. ST7789 RAMCTRL (0xB0) param 2 bit 3 is the ENDIAN bit for 16-bit pixel data. The vendor ships 0xE8 (bit set = LITTLE-endian) because their LVGL colour buffers are native little-endian uint16; THIS canvas emits RGB565 BIG-endian (rgb565_be, what the ILI9341 boards want), so the panel byte-swapped every pixel. Symptom: pure blue 0x001F displayed as 0x1F00 = green, pure green 0x07E0 as 0xE007 = red. Diagnostic value of that pattern: it is NOT a BGR channel swap (which would show blue as RED) and MADCTL is not involved. WHY NO MACHINE SIGNAL CAUGHT IT: capture.bmp is decoded from the SAME band buffer with the SAME big-endian assumption, so the capture rendered perfectly while the panel did not — the assumption was being read back to itself. Fix is one bit: clear ENDIAN."
+  - id: backlight-50-percent-max
+    value: 127
+    resolved: true
+    note: "VENDOR HARDWARE CONSTRAINT, not a taste setting: the Waveshare wiki says 'Keep the screen brightness at 50% or lower during use' — sustained full brightness shortens panel life. Corroborated by the vendor's own demo, which ships LEDC_TEST_DUTY 4000 at 13-bit = 48.8%. The first bring-up ran at 255/255 (100%) for roughly an hour before David flagged it; the evidence was in ST7789.h, already read, and simply not divided out. Now kWsC6BacklightDefault = 124 (48.6%) and kWsC6BacklightMax = 127 is ENFORCED in WsC6Display::set_backlight() with a warn-once log, because a documented limit that any future caller can exceed is not a limit. Do NOT copy to other profiles: the CYD's ~40% is a LOOKS reason (TN washout), this is a LIFETIME reason."
+  - id: neopixel-latches-last-colour
+    value: "GPIO8"
+    resolved: true
+    note: "An UNCLAIMED WS2812 is not an OFF WS2812. It latches its last colour and holds it until given new data or power-cycled, so a freshly reflashed board still powered over USB keeps the Waveshare factory demo's LED burning at full brightness — David spotted it lit 2026-08-11, and this descriptor had previously (wrongly) recorded the LED as 'unclaimed, nothing initialized' as though that meant dark. The profile now claims GPIO8 exactly once at init, writes 24 zero bits over RMT (bit-bang cannot hit the ~0.4/0.85us timing reliably), and deletes the channel to hand the pin back. Relevant beyond tidiness on a panel the vendor already wants run at <=50% for heat/longevity."
+  - id: engine-bars-are-the-bringup-test
+    resolved: true
+    note: "CONVENTION (David 2026-08-11): use the BSG engine-power bars as the DEFAULT first scene for board bring-up, in place of the stock CYD dashboard. It is a markedly better test article: it spans the full segment palette (blue/green/amber/red) which is what made the endian byte-swap legible as a COLOUR-SPECIFIC pattern rather than a vague 'looks off'; it exercises three binding forms; it has live hardware publishing to it continuously; and it is cheap to draw, which matters on FPU-less silicon (the stock dashboard's dial gauges cost 892.9 ms/frame here vs 31.2 ms). A grey dashboard would have hidden the bug that this board's bring-up turned on."
+  - id: no-touch
+    resolved: true
+    note: "No touch controller fitted; WsC6Profile::touch() returns nullptr (the Qualia precedent). By design, not a gap."
+  - id: spi-clock-ceiling-11mhz
+    value: 12000000
+    resolved: true
+    note: "TRIED AND REVERTED 2026-08-11 — keep the vendor clock. Nominal 12 MHz is really 80/7 = 11.43 MHz (the C6 SPI source is 80 MHz; only exact dividers are reachable), just under the ST7789 datasheet 66 ns serial write-cycle minimum = ~15 MHz MAX write clock. Transfer dominates a repaint there (67.9 of 97.5 ms) and the bus is saturated, so it LOOKS like the obvious win. Raising to 40 MHz (80/2) improved EVERY machine signal — transfer 67.9->18.4 ms, repaint 97.5->46 ms, bus->glass ~103->~50 ms — and made the DISPLAY WORSE: David reported it updating very infrequently, with NO tearing. That symptom IS the diagnosis: at 2.6x over datasheet the panel does not latch reliably, so whole transactions are DROPPED rather than half-written (nothing torn because nothing partial arrives) while the ESP32 ACKs regardless. The reasoning that led there — ST7789 parts commonly run 40-80 MHz — is true of some modules and NOT of this part; the datasheet was the authority all along. 80/6 = 13.33 MHz is the only in-spec step up and buys 17%: not worth it."
+  - id: panel-width-not-240
+    value: 172
+    resolved: true
+    note: "First board in the tree whose PanelGeometry.width is not 240. Scenes authored for the CYD/Hosyond overflow: the tier does no scaling and logs 'design 240x320 != panel 172x320 — rendering 1:1'. Width is a BOARD property and scenes are authored to it — which is precisely the assumption the board seam exists to keep out of widget code. The narrow engine-thrust variant is the worked example."
+
+variants: []   # single physical board

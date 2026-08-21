@@ -1,0 +1,63 @@
+# R503 fingerprint-game — FLEET / DEVICE-STATUS view (troubleshooting-at-a-
+# glance before game night).
+#
+# FUNCTIONAL PLACEHOLDER. Distinct from fingerprint_casting.compose.yaml (the
+# binding/setup UI) and fingerprint_monitor.compose.yaml (the runtime
+# auth-event "cylon detector") — do not confuse this with either of them.
+# This scene shows, per device, its live health from the THREE mutually
+# exclusive heartbeats + the retained announce ([CXC-FPBUS-REQ-READY-
+# HEARTBEAT], [CXC-FPBUS-MSG-DEVICE-ANNOUNCE]) — ready / push_needed /
+# inoperable / OFFLINE (silence past the device's own declared cadence).
+# Composes the ONE new `fleet_status` panel — nothing else is forked.
+#
+# Run headless:  python -m composeio.render.examples.fingerprint.drive_fleet
+
+app:
+  id: fp-fleet-status
+  transports: []                 # in-process bus; the fleet controller rides it
+
+# [CXC-PROJECT-WIDGETS] import the module that self-registers `fleet_status`
+# BEFORE any type: is resolved — zero engine edits.
+widget_modules:
+  - composeio.render.widgets.fleet_status
+
+design:
+  target: desktop
+  title: "R503 — Fleet Status (device health, placeholder)"
+  theme: dark
+  width: 980
+  height: 480
+
+namespaces:
+  - {name: "fp/fleet/rows",    state_engine: json}
+  - {name: "fp/fleet/summary", state_engine: json}
+
+widgets:
+  - type: label
+    id: title
+    text: "FLEET STATUS — per-device health at a glance"
+    font_size: 18
+    font_weight: bold
+    color: [0x8A, 0xD4, 0xFF]
+    align: left
+    height: 28
+
+  - type: label
+    id: subtitle
+    text: "silence past a device's own cadence is OFFLINE — the fourth state"
+    font_size: 12
+    color: [0xFF, 0xC1, 0x66]
+    align: left
+    height: 18
+
+  - type: stack
+    id: body
+    direction: column
+    gap: 14
+    align: start
+    padding: 4
+
+    children:
+      - {type: fleet_status, id: v_fleet, title: "DEVICES",
+         namespace: "fp/fleet/rows", max_rows: 20,
+         width: 940, height: 380}

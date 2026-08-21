@@ -1,0 +1,1634 @@
+---
+scope: "Complete YAML configuration schema for ComposeIO — the builder-facing artifact that defines all hardware behavior, bindings, adapters, and workloads"
+audience: "Builders writing ComposeIO YAML configs, tooling developers implementing the YAML parser/validator, firmware developers consuming compiled binary configs"
+boundary: "Config schema only; bus protocol details in 01-composeio-bus-protocol.smd; design principles in 00-composeio-design-principles.smd; module role contracts in 03-composeio-module-roles.smd"
+not-this: "Not firmware implementation; not bus wire format; not a tutorial"
+depends-on: ["00-composeio-design-principles.smd"]
+---
+# ComposeIO Configuration Schema [SPEC:CIO-CONFIG-SCHEMA]
+
+> The YAML configuration is the builder's product — firmware is infrastructure (DP-CIO-7). This spec defines the complete schema for every configuration construct a builder can author. It is normative: a config that validates against this schema MUST produce correct behavior on any compliant ComposeIO runtime.
+
+---
+
+## Document Conventions
+
+- **MUST** / **SHALL**: absolute requirement
+- **SHOULD**: recommended unless there is a specific reason to deviate
+- **MAY**: optional behavior
+- All duration values use unit suffixes: `ms`, `s`, `m`, `hz` (e.g., `500ms`, `5s`, `10hz`)
+- All YAML examples are complete and valid against this schema unless explicitly marked `# fragment`
+
+---
+
+## [CS-TOP-LEVEL] Top-Level Document Structure
+
+A ComposeIO YAML file is a single document containing exactly one top-level construct. The construct type is determined by which root key is present.
+
+### [CS-TOP-LEVEL-1] Module Config
+
+```yaml
+module: <module-id>          # REQUIRED. String. Unique module identifier.
+role: <role-type>            # REQUIRED. String. Firmware role (see CS-ROLES).
+scope: <scope-name>          # OPTIONAL. String. Default scope for all namespaces in this module.
+authority: <local|external>  # OPTIONAL. Default: local. State authority (see CS-STATE-AUTHORITY).
+priority: <priority-list>    # OPTIONAL. Control priority override (see CS-CONTROL-PRIORITY).
+
+# Role-specific config arrays (exactly one required, determined by role):
+buttons: [...]               # For button-matrix role
+channels: [...]              # For relay-controller role
+gauges: [...]                # For gauge-driver role
+axes: [...]                  # For joystick role
+encoders: [...]              # For encoder role
+leds: [...]                  # For led-strip role
+sensors: [...]               # For sensor role
+```
+
+### [CS-TOP-LEVEL-2] Composite Device Config
+
+```yaml
+composite_device: <device-name>  # REQUIRED. String. Unique composite device name.
+components: [...]                # REQUIRED. Component list (see CS-COMPOSITE).
+lifecycle: {...}                 # OPTIONAL. Lifecycle sequences (see CS-COMPOSITE-LIFECYCLE).
+namespaces: {...}                # OPTIONAL. Namespace declarations.
+```
+
+### [CS-TOP-LEVEL-3] Adapter Config
+
+```yaml
+adapter: <adapter-type>      # REQUIRED. String. Adapter type (see CS-ADAPTERS).
+# Adapter-specific keys follow (see CS-ADAPTERS).
+```
+
+### [CS-TOP-LEVEL-4] Workload Config
+
+```yaml
+workload: <workload-name>    # REQUIRED. String. Unique workload name.
+# Workload-specific keys follow (see CS-WORKLOADS).
+```
+
+### [CS-TOP-LEVEL-5] Binding Config
+
+```yaml
+bindings: [...]              # REQUIRED. Binding list (see CS-BINDINGS).
+```
+
+### Validation Rules
+
+- A document MUST contain exactly one of: `module`, `composite_device`, `adapter`, `workload`, or `bindings` as its primary root key.
+- The `module` key value MUST be unique across all loaded configs.
+- The `role` key MUST reference a role defined in 03-composeio-module-roles.smd.
+
+---
+
+## [CS-NAMESPACE] Namespace Declaration
+
+Every I/O point in ComposeIO is addressed by a namespace string. Namespaces are the universal address space for state.
+
+### [CS-NAMESPACE-1] Static Namespace
+
+```yaml
+namespace: ftl_arm
+```
+
+A plain string. MUST match `[a-z][a-z0-9_]*`. No dots, no uppercase, no leading digits.
+
+### [CS-NAMESPACE-2] Scoped Namespace
+
+```yaml
+namespace: ftl_arm
+scope: bridge_console
+```
+
+Scope prefixes the namespace on the bus: `bridge_console.ftl_arm`. If a module-level `scope` is set and no per-item `scope` is declared, the module scope applies. An explicit `scope: null` on an item removes the module default.
+
+```yaml
+# Module-level scope applies to all items
+module: panel-1
+role: button-matrix
+scope: bridge_console
+buttons:
+  - namespace: ftl_arm       # Effective: bridge_console.ftl_arm
+    input: toggle
+    state_engine: binary
+    led: follow_state
+
+  - namespace: alert_status   # Effective: bridge_console.alert_status
+    scope: null               # Override: no scope, just alert_status
+    input: toggle
+    state_engine: stop_light
+    led: follow_state
+```
+
+### [CS-NAMESPACE-3] Dynamic Namespace Selectors
+
+A namespace string MAY contain a `${...}` interpolation referencing another namespace whose current value is substituted at runtime.
+
+```yaml
+namespace: ${active_camera}_ptz
+selector: camera_select
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `namespace` | string | YES | Template with `${selector_namespace}` |
+| `selector` | string | YES | The namespace whose value provides the substitution |
+
+The runtime MUST re-resolve the effective namespace whenever the selector namespace value changes. During resolution, if the selector value is empty or undefined, the item is inactive (publishes nothing, ignores input).
+
+**Validation**: Every `${...}` reference MUST correspond to a `selector` field on the same item or a namespace declared elsewhere in the config set.
+
+---
+
+## [CS-ROLES] Module Roles
+
+The `role` field selects the firmware behavior and determines which config array key is valid. Role firmware is generic — the config array provides all specificity (DP-CIO-1).
+
+| Role | Config Array | Description |
+|------|-------------|-------------|
+| `button-matrix` | `buttons` | GPIO button inputs with LEDs |
+| `relay-controller` | `channels` | Relay output channels |
+| `gauge-driver` | `gauges` | Analog gauge outputs (PWM/stepper) |
+| `joystick` | `axes` | Analog axis inputs |
+| `encoder` | `encoders` | Rotary encoder inputs |
+| `led-strip` | `leds` | Addressable LED strip outputs |
+| `sensor` | `sensors` | Analog/digital sensor inputs |
+
+Each config array item MUST include a `namespace` field (or dynamic namespace per CS-NAMESPACE-3).
+
+---
+
+## [CS-INPUT-TYPES] Input Types
+
+Input types define the mechanical behavior of a physical input. They are separate from state engines (DP-CIO-4): an input generates raw events, a state engine interprets those events into state transitions.
+
+### [CS-INPUT-TYPES-1] `momentary`
+
+Emits `pressed` on contact, `released` on release. No latching.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `debounce` | duration | `20ms` | Debounce window |
+
+```yaml
+- namespace: horn
+  input: momentary
+  debounce: 30ms
+  state_engine: binary
+  led: while_pressed
+```
+
+### [CS-INPUT-TYPES-2] `toggle`
+
+Each press-release cycle advances the state engine one step. The input itself is stateless — it generates `toggled` events.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `debounce` | duration | `20ms` | Debounce window |
+
+```yaml
+- namespace: engine_power
+  input: toggle
+  state_engine: tri_level
+  led: follow_state
+```
+
+### [CS-INPUT-TYPES-3] `hold_ramp`
+
+Press-and-hold generates a continuous ramp. Short press generates a `toggled` event (toggle behavior). Hold beyond `hold_threshold` enters ramp mode — emitting incremental value changes at `ramp_rate`.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `debounce` | duration | `20ms` | Debounce window |
+| `hold_threshold` | duration | `500ms` | Time before ramp begins |
+| `ramp_rate` | duration | `50ms` | Interval between ramp increments |
+| `ramp_step` | integer | `1` | Value change per ramp tick |
+
+```yaml
+- namespace: cabin_brightness
+  input: hold_ramp
+  hold_threshold: 400ms
+  ramp_rate: 30ms
+  ramp_step: 5
+  state_engine: continuous_0_255
+  led:
+    map:
+      - range: [1, 255]
+        behavior: proportional
+      - value: 0
+        behavior: off
+```
+
+### [CS-INPUT-TYPES-4] `continuous`
+
+Analog input producing a continuous value stream. Typically from joystick axes, sliders, or potentiometers.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `deadzone` | float | `0.0` | Center deadzone (0.0–1.0) |
+| `publish_rate` | frequency | `10hz` | Maximum publish frequency |
+
+```yaml
+- namespace: ${active_camera}_ptz
+  input: continuous
+  selector: camera_select
+  deadzone: 0.15
+  publish_rate: 10hz
+```
+
+### [CS-INPUT-TYPES-5] `encoder`
+
+Rotary encoder input producing directional step events (`step_cw`, `step_ccw`). Each detent generates one step event.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `debounce` | duration | `5ms` | Debounce window |
+| `detent_size` | integer | `1` | State change per detent click |
+
+```yaml
+- namespace: volume_control
+  input: encoder
+  detent_size: 5
+  state_engine: continuous_0_255
+  led: proportional
+```
+
+### Input Type Validation
+
+- `input` field MUST be one of: `momentary`, `toggle`, `hold_ramp`, `continuous`, `encoder`.
+- Parameters not applicable to the declared input type MUST cause a validation error.
+- `continuous` inputs do not use a state engine — they publish raw (possibly transformed) values directly to the namespace.
+
+---
+
+## [CS-STATE-ENGINES] State Engines
+
+State engines define the state domain: what values exist, which is default, and how input events cause transitions. State engines are independent of input mechanics (DP-CIO-4).
+
+### [CS-STATE-ENGINES-1] `binary`
+
+Two states with toggle cycling.
+
+| Property | Value |
+|----------|-------|
+| Values | `[off, on]` (ordered) |
+| Default | `off` |
+| Transition | `toggled` → advance to next value, wrapping |
+
+```yaml
+state_engine: binary
+```
+
+### [CS-STATE-ENGINES-2] `tri_level`
+
+Three states with toggle cycling.
+
+| Property | Value |
+|----------|-------|
+| Values | `[off, half, full]` (ordered) |
+| Default | `off` |
+| Transition | `toggled` → advance to next value, wrapping |
+
+```yaml
+state_engine: tri_level
+```
+
+### [CS-STATE-ENGINES-3] `stop_light`
+
+Three states representing traffic-light semantics.
+
+| Property | Value |
+|----------|-------|
+| Values | `[green, yellow, red]` (ordered) |
+| Default | `green` |
+| Transition | `toggled` → advance to next value, wrapping |
+
+```yaml
+state_engine: stop_light
+```
+
+### [CS-STATE-ENGINES-4] `continuous_0_255`
+
+Integer range 0–255. Used for brightness, volume, and similar analog-like controls.
+
+| Property | Value |
+|----------|-------|
+| Values | `0` through `255` (integer) |
+| Default | `0` |
+| Transitions | `toggled` → cycles [0, 128, 255]; `step_cw` → increment by `detent_size`; `step_ccw` → decrement by `detent_size`; `ramp_up` → increment by `ramp_step`; `ramp_down` → decrement by `ramp_step`; values clamp to [0, 255] |
+
+```yaml
+state_engine: continuous_0_255
+```
+
+### [CS-STATE-ENGINES-5] `enum` (User-Defined)
+
+Builder-defined ordered value list with custom default.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | YES | Must be `enum` |
+| `values` | string[] | YES | Ordered list of state values (minimum 2) |
+| `default` | string | YES | Must be a member of `values` |
+
+| Property | Value |
+|----------|-------|
+| Transition | `toggled` → advance to next value in list, wrapping |
+
+```yaml
+state_engine:
+  type: enum
+  values: [standby, warp_1, warp_5, warp_9, maximum]
+  default: standby
+```
+
+### Shorthand vs Expanded Syntax
+
+Built-in state engines (`binary`, `tri_level`, `stop_light`, `continuous_0_255`) MAY be specified as a plain string. User-defined `enum` MUST use the expanded object syntax.
+
+```yaml
+# Shorthand — valid for built-ins
+state_engine: binary
+
+# Expanded — required for enum, optional for built-ins
+state_engine:
+  type: binary
+```
+
+### State Engine Validation
+
+- Every item with an `input` type other than `continuous` MUST declare a `state_engine`.
+- Items with `input: continuous` MUST NOT declare a `state_engine` (they publish raw values).
+- `enum` values MUST contain at least 2 entries.
+- `enum` default MUST be a member of the values list.
+- All state values MUST match `[a-z][a-z0-9_]*`.
+
+---
+
+## [CS-LED-BEHAVIOR] LED Behavior Vocabulary
+
+LED behaviors are declarative (DP-CIO-12). The builder declares what the LED should do; firmware handles PWM timing, gamma correction, and refresh.
+
+### [CS-LED-BEHAVIOR-1] Primitive Behaviors
+
+| Behavior | Parameters | Description |
+|----------|-----------|-------------|
+| `solid` | none | LED on at full brightness |
+| `off` | none | LED off |
+| `follow_state` | none | LED reflects current state engine value (on if not default, off if default; for enums, proportional position through value list) |
+| `while_pressed` | none | LED on only while physical input is active |
+| `blink` | `rate` (duration) | LED toggles on/off at given rate. Default rate: `500ms` |
+| `pulse` | `rate` (duration) | LED fades in/out smoothly at given rate. Default rate: `1s` |
+| `proportional` | none | LED brightness tracks continuous value (0–255 maps to 0–100% PWM) |
+| `chase` | `speed` (duration), `direction` (`forward`\|`reverse`) | Sequential LED animation across a group. Default speed: `100ms`, default direction: `forward` |
+
+### [CS-LED-BEHAVIOR-2] Shorthand Syntax
+
+When no parameters are needed, the behavior name is a plain string:
+
+```yaml
+led: follow_state
+led: solid
+led: off
+led: while_pressed
+led: proportional
+```
+
+### [CS-LED-BEHAVIOR-3] Parameterized Syntax
+
+When parameters are required, use object syntax:
+
+```yaml
+led:
+  behavior: blink
+  rate: 250ms
+
+led:
+  behavior: pulse
+  rate: 2s
+
+led:
+  behavior: chase
+  speed: 50ms
+  direction: reverse
+```
+
+### [CS-LED-BEHAVIOR-4] State-Mapped LED Behavior
+
+For state engines with multiple values, a `map` array binds state ranges or individual values to LED behaviors. Maps are evaluated top-to-bottom; first match wins.
+
+| Map Entry Field | Type | Description |
+|----------------|------|-------------|
+| `range` | `[min, max]` | Matches if state value is within range (inclusive). For `continuous_0_255` only. |
+| `value` | string or integer | Matches a specific state value |
+| `values` | string[] | Matches any of the listed state values |
+| `behavior` | string | LED behavior primitive name |
+| `rate` | duration | Parameter for `blink` or `pulse` |
+| `speed` | duration | Parameter for `chase` |
+| `direction` | string | Parameter for `chase` |
+
+```yaml
+# continuous_0_255 with range mapping
+led:
+  map:
+    - range: [31, 255]
+      behavior: solid
+    - range: [3, 30]
+      behavior: blink
+      rate: 500ms
+    - range: [1, 2]
+      behavior: blink
+      rate: 250ms
+    - value: 0
+      behavior: off
+```
+
+```yaml
+# enum state mapping
+led:
+  map:
+    - value: standby
+      behavior: pulse
+      rate: 2s
+    - value: warp_1
+      behavior: solid
+    - values: [warp_5, warp_9]
+      behavior: blink
+      rate: 300ms
+    - value: maximum
+      behavior: blink
+      rate: 100ms
+```
+
+```yaml
+# stop_light with color-aware mapping
+led:
+  map:
+    - value: green
+      behavior: solid
+    - value: yellow
+      behavior: blink
+      rate: 500ms
+    - value: red
+      behavior: blink
+      rate: 200ms
+```
+
+### [CS-LED-BEHAVIOR-5] Named Effect Primitives
+
+Reusable LED behaviors MAY be defined at the top of a module config and referenced by name (DP-CIO-15).
+
+```yaml
+module: panel-1
+role: button-matrix
+
+effects:
+  warning_blink:
+    behavior: blink
+    rate: 250ms
+  slow_pulse:
+    behavior: pulse
+    rate: 3s
+  standby_indicator:
+    map:
+      - value: standby
+        behavior: pulse
+        rate: 2s
+      - value: active
+        behavior: solid
+
+buttons:
+  - namespace: ftl_arm
+    input: toggle
+    state_engine: binary
+    led: !effect warning_blink
+
+  - namespace: life_support
+    input: toggle
+    state_engine: binary
+    led: !effect slow_pulse
+```
+
+The `!effect` tag resolves the reference at parse time. The referenced name MUST exist in the `effects` map of the same document. Named effects enable parameterized collections without copy-paste (DP-CIO-14).
+
+### LED Behavior Validation
+
+- `led` field is OPTIONAL. If omitted, no LED feedback is produced.
+- If `led` is a plain string, it MUST be one of the primitive behavior names or a `!effect` reference.
+- If `led` is an object with `behavior`, the behavior MUST be a valid primitive.
+- If `led` is an object with `map`, every entry MUST have either `range`, `value`, or `values` — and a `behavior`.
+- `range` entries are only valid when the state engine is `continuous_0_255`.
+- Map entries SHOULD cover all possible state values. The validator SHOULD warn on gaps.
+
+---
+
+## [CS-MODAL-BUTTONS] Modal Buttons
+
+A button MAY have multiple modes. Each mode activates under a specific condition, temporarily overriding the button's namespace, input type, state engine, or LED behavior (DP-CIO-13).
+
+### [CS-MODAL-BUTTONS-1] Syntax
+
+```yaml
+- namespace: office_monitors
+  input: toggle
+  state_engine: binary
+  led: follow_state
+  modes:
+    - when: time_window(00:30, 00:59)
+      namespace: suppress_shutdown
+      input: toggle
+      state_engine: binary
+      led:
+        behavior: blink
+        rate: 500ms
+```
+
+### [CS-MODAL-BUTTONS-2] Mode Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `when` | condition | YES | Activation condition (see CS-MODAL-CONDITIONS) |
+| `namespace` | string | NO | Override namespace. If omitted, base namespace applies. |
+| `input` | string | NO | Override input type. If omitted, base input applies. |
+| `state_engine` | string/object | NO | Override state engine. If omitted, base engine applies. |
+| `led` | string/object | NO | Override LED behavior. If omitted, base LED applies. |
+| `priority` | integer | NO | Mode priority (higher wins). Default: declaration order (later = higher). |
+
+### [CS-MODAL-CONDITIONS] Condition Functions
+
+| Condition | Syntax | Description |
+|-----------|--------|-------------|
+| `time_window` | `time_window(HH:MM, HH:MM)` | Active when current time is within the window (24-hour format). Wraps across midnight. |
+| `namespace_equals` | `namespace_equals(ns, value)` | Active when namespace `ns` has value `value` |
+| `namespace_in` | `namespace_in(ns, [v1, v2, ...])` | Active when namespace `ns` value is in the listed set |
+| `and` | `and(cond1, cond2, ...)` | All conditions must be true |
+| `or` | `or(cond1, cond2, ...)` | Any condition must be true |
+| `not` | `not(cond)` | Inverts condition |
+
+```yaml
+modes:
+  # Active during late-night window AND when system is in standby
+  - when: and(time_window(23:00, 05:00), namespace_equals(system_mode, standby))
+    namespace: night_mode_override
+    led:
+      behavior: pulse
+      rate: 3s
+
+  # Active when any alert is firing
+  - when: namespace_in(alert_level, [warning, critical])
+    led:
+      behavior: blink
+      rate: 200ms
+```
+
+### Mode Evaluation
+
+- Modes are evaluated in declaration order (unless `priority` is specified).
+- The FIRST matching mode activates. Only one mode is active at a time.
+- If no mode matches, the base button configuration applies.
+- Mode transitions are immediate — on the next input scan cycle after the condition changes.
+
+---
+
+## [CS-SIGNAL-TRANSFORMS] Signal Transforms
+
+Signal transforms process values between input and publication (DP-CIO-22). Transforms are composable — they execute in declaration order, each feeding its output to the next.
+
+### [CS-SIGNAL-TRANSFORMS-1] Transform Types
+
+| Transform | Parameters | Input | Output | Description |
+|-----------|-----------|-------|--------|-------------|
+| `deadzone` | float (0.0–1.0) | float | float | Values within deadzone of center map to 0.0 |
+| `threshold` | threshold list | numeric | string | Maps value ranges to named outputs |
+| `scale` | `{in: [min, max], out: [min, max]}` | numeric | numeric | Linear mapping from input range to output range |
+| `rate_limit` | frequency | any | any | Suppresses updates faster than the given rate |
+| `debounce` | duration | any | any | Only emits after value is stable for duration |
+| `map` | `{key: value, ...}` | string | string | Discrete value remapping |
+| `clamp` | `{min: N, max: N}` | numeric | numeric | Clamps output to range |
+| `invert` | none | numeric | numeric | Inverts value within its range (max - value + min) |
+
+### [CS-SIGNAL-TRANSFORMS-2] Syntax
+
+Transforms are declared as an ordered array on any item that produces values:
+
+```yaml
+- namespace: ${active_camera}_pan
+  input: continuous
+  selector: camera_select
+  transforms:
+    - deadzone: 0.15
+    - scale:
+        in: [0, 4095]
+        out: [-1.0, 1.0]
+    - rate_limit: 10hz
+```
+
+### [CS-SIGNAL-TRANSFORMS-3] Threshold Transform
+
+Threshold converts a continuous value into discrete named tiers. Thresholds are evaluated top-to-bottom; first match wins.
+
+```yaml
+transforms:
+  - threshold:
+      - above: 500
+        emit: tier_3
+      - above: 200
+        emit: tier_2
+      - above: 50
+        emit: tier_1
+      - default: idle
+```
+
+The `default` entry matches when no `above` condition is met.
+
+### [CS-SIGNAL-TRANSFORMS-4] Map Transform
+
+Map performs discrete value-to-value remapping:
+
+```yaml
+transforms:
+  - map:
+      green: all_clear
+      yellow: caution
+      red: danger
+```
+
+Unmapped values pass through unchanged unless `strict: true` is set:
+
+```yaml
+transforms:
+  - map:
+      strict: true
+      values:
+        green: all_clear
+        yellow: caution
+        red: danger
+```
+
+With `strict: true`, unmapped values are dropped (not published).
+
+### Transform Validation
+
+- `transforms` MUST be an array.
+- Each entry MUST be a single-key object (the transform type).
+- Transforms not applicable to the value type SHOULD produce a validation warning.
+- `scale.in` and `scale.out` MUST each be a 2-element numeric array.
+- `threshold` entries MUST be ordered from highest to lowest `above` value.
+
+---
+
+## [CS-BINDINGS] Sensor-to-Actuator Bindings
+
+Bindings declare reactive dataflow from a source namespace to a target namespace (DP-CIO-10). The runtime evaluates bindings whenever the source value changes.
+
+### [CS-BINDINGS-1] Syntax
+
+```yaml
+bindings:
+  - source: laser_power
+    target: vent_fan_speed
+    transform:
+      - threshold:
+          - above: 500
+            emit: tier_3
+          - above: 200
+            emit: tier_2
+          - above: 50
+            emit: tier_1
+          - default: idle
+      - map:
+          tier_3: 255
+          tier_2: 180
+          tier_1: 90
+          idle: 0
+```
+
+### [CS-BINDINGS-2] Binding Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | string | YES | Source namespace to watch |
+| `target` | string | YES | Target namespace to write |
+| `transform` | transform[] | NO | Transform pipeline (same syntax as CS-SIGNAL-TRANSFORMS) |
+| `condition` | condition | NO | Binding only active when condition is true (same syntax as CS-MODAL-CONDITIONS) |
+| `authority` | string | NO | Default: `auto`. The control layer this binding operates at. |
+
+### [CS-BINDINGS-3] Conditional Bindings
+
+```yaml
+bindings:
+  - source: room_temperature
+    target: fan_speed
+    condition: namespace_equals(fan_mode, auto)
+    transform:
+      - scale:
+          in: [18, 35]
+          out: [0, 255]
+      - clamp:
+          min: 0
+          max: 255
+```
+
+The binding is only evaluated when `fan_mode` equals `auto`. When the condition becomes false, the target retains its last value (it is NOT reset).
+
+### [CS-BINDINGS-4] Multi-Source Bindings
+
+When a target depends on multiple sources, use separate bindings with conditions or priorities:
+
+```yaml
+bindings:
+  # Auto mode: temperature drives fan
+  - source: room_temperature
+    target: fan_speed
+    authority: auto
+    transform:
+      - scale:
+          in: [18, 35]
+          out: [0, 255]
+
+  # Manual override: knob drives fan
+  - source: fan_knob
+    target: fan_speed
+    authority: manual
+```
+
+Control priority (CS-CONTROL-PRIORITY) determines which binding's output is authoritative.
+
+---
+
+## [CS-COMPOSITE] Composite Devices
+
+Composite devices group multiple physical I/O points into a single logical device with coordinated lifecycle management.
+
+### [CS-COMPOSITE-1] Component Declaration
+
+```yaml
+composite_device: printer_station
+components:
+  - name: printer_power
+    type: relay
+    channel: 1
+  - name: vent_fans
+    type: relay
+    channel: 2
+  - name: status_led
+    type: led
+    channel: 3
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | YES | Component name (unique within the composite device) |
+| `type` | string | YES | Component type (`relay`, `led`, `sensor`, `gauge`) |
+| `channel` | integer | YES | Physical channel on the module |
+
+### [CS-COMPOSITE-LIFECYCLE] Lifecycle Sequences
+
+Lifecycle sequences define ordered operations for state transitions. Each sequence is a named array of steps.
+
+```yaml
+lifecycle:
+  power_on:
+    - set: vent_fans -> on
+    - wait: 5s
+    - set: printer_power -> on
+  power_off:
+    - require: printer_status != printing
+    - set: printer_power -> off
+    - wait: 60s
+    - set: vent_fans -> off
+  safety:
+    - lock: printer_power while printer_status == printing
+    - lock: vent_fans while printer_power == on
+```
+
+### [CS-COMPOSITE-2] Lifecycle Step Types
+
+| Step | Syntax | Description |
+|------|--------|-------------|
+| `set` | `set: <component> -> <value>` | Set a component to a value |
+| `wait` | `wait: <duration>` | Pause sequence execution |
+| `require` | `require: <namespace> <op> <value>` | Block until condition is met. Operators: `==`, `!=`, `>`, `<`, `>=`, `<=` |
+| `lock` | `lock: <component> while <namespace> <op> <value>` | Prevent changes to component while condition holds |
+| `publish` | `publish: <namespace> -> <value>` | Write a value to a namespace |
+| `abort` | `abort: <message>` | Cancel the sequence and report an error |
+
+### [CS-COMPOSITE-3] Safety Rules
+
+Safety rules in the `safety` lifecycle key are always active — they are not sequenced but evaluated continuously.
+
+```yaml
+lifecycle:
+  safety:
+    - lock: printer_power while printer_status == printing
+    - lock: vent_fans while printer_power == on
+```
+
+**Semantics**: A locked component rejects all writes (from any source, any priority level) until the lock condition becomes false.
+
+### Composite Device Validation
+
+- Every `name` in `components` MUST be unique within the device.
+- `set` steps MUST reference a valid component `name`.
+- `require` and `lock` conditions MAY reference namespaces outside the composite device.
+- Circular lock dependencies MUST be detected at validation time and rejected.
+
+---
+
+## [CS-COLLECTIONS] Parameterized Collections
+
+To avoid copy-paste configuration for repeated patterns, ComposeIO supports parameterized templates (DP-CIO-14).
+
+### [CS-COLLECTIONS-1] Template Syntax
+
+```yaml
+module: panel-1
+role: button-matrix
+
+templates:
+  standard_toggle:
+    input: toggle
+    state_engine: binary
+    led: follow_state
+
+  dimmer_button:
+    input: hold_ramp
+    hold_threshold: 400ms
+    ramp_rate: 30ms
+    ramp_step: 5
+    state_engine: continuous_0_255
+    led:
+      map:
+        - range: [1, 255]
+          behavior: proportional
+        - value: 0
+          behavior: off
+
+buttons:
+  - namespace: office_lights
+    template: standard_toggle
+
+  - namespace: kitchen_lights
+    template: standard_toggle
+
+  - namespace: hallway_lights
+    template: dimmer_button
+
+  - namespace: bedroom_lights
+    template: dimmer_button
+    ramp_step: 3       # Override template default
+```
+
+### [CS-COLLECTIONS-2] Template Resolution
+
+- Templates are declared in the `templates` map at the module level.
+- An item references a template with `template: <name>`.
+- Template fields are merged into the item as defaults — any field explicitly set on the item overrides the template value.
+- Templates do NOT support nesting (a template cannot reference another template).
+- `namespace` MUST always be set on the item, never in the template.
+
+### [CS-COLLECTIONS-3] Generate Syntax
+
+For highly repetitive configurations, `generate` creates multiple items from a value list:
+
+```yaml
+buttons:
+  - generate:
+      namespaces: [light_1, light_2, light_3, light_4, light_5, light_6, light_7, light_8]
+      template: standard_toggle
+```
+
+This expands to 8 button items, each with a unique namespace and identical configuration from the template. `generate` is syntactic sugar — the result is identical to writing each item individually.
+
+---
+
+## [CS-STATE-AUTHORITY] State Authority
+
+Each namespace has a state authority that determines where the truth lives (DP-CIO-19).
+
+### [CS-STATE-AUTHORITY-1] Authority Values
+
+| Authority | Description |
+|-----------|-------------|
+| `local` | State is owned by ComposeIO. The local state engine is authoritative. External systems read but do not write. **Default.** |
+| `external` | State is owned by an external system (e.g., Home Assistant). ComposeIO reads and caches but does not originate. Writes from ComposeIO are forwarded to the external system as requests. |
+
+### [CS-STATE-AUTHORITY-2] Syntax
+
+```yaml
+# Per-item authority
+- namespace: office_heater
+  authority: external
+  input: toggle
+  state_engine: binary
+  led: follow_state
+
+# Module-level default
+module: ha-bridge
+role: button-matrix
+authority: external
+buttons:
+  - namespace: kitchen_lights    # Inherits external authority
+    input: toggle
+    state_engine: binary
+    led: follow_state
+```
+
+### Authority Semantics
+
+- `local` authority: input events update the local state engine immediately. The new state is published to the bus.
+- `external` authority: input events generate a command to the external system. The local state updates only when the external system confirms the change. LED behavior reflects the confirmed external state, not the request.
+
+---
+
+## [CS-CONTROL-PRIORITY] Control Priority
+
+When multiple sources can affect a namespace (manual input, remote API, automation), control priority determines which source wins (DP-CIO-16).
+
+### [CS-CONTROL-PRIORITY-1] Priority Levels
+
+Priority is evaluated highest-first. A higher-priority source always overrides a lower-priority source.
+
+| Level | Name | Description |
+|-------|------|-------------|
+| 1 (highest) | `disabled` | Namespace is locked out. No source can change it. |
+| 2 | `manual` | Physical input (buttons, knobs, joysticks). Human at the panel. |
+| 3 | `remote` | API calls, MQTT commands, external system writes. |
+| 4 (lowest) | `auto` | Automation bindings, scheduled rules. |
+
+### [CS-CONTROL-PRIORITY-2] Syntax
+
+```yaml
+# Default priority order (implicit)
+priority: [disabled, manual, remote, auto]
+
+# Per-namespace priority override
+- namespace: critical_relay
+  priority: disabled    # Locked out entirely
+
+# Binding with priority level
+bindings:
+  - source: temperature
+    target: fan_speed
+    authority: auto      # Will be overridden by manual knob input
+```
+
+### Priority Semantics
+
+- When a `manual` action occurs, it overrides any active `remote` or `auto` value.
+- When a `disabled` lock is active, all other sources are rejected.
+- Priority is NOT a queue — only the highest-priority active source matters.
+- When the higher-priority source releases (e.g., a manual hold ends), the next-highest active source takes over.
+- A source "releases" when it has not written for a configurable timeout (`priority_release_timeout`, default `30s` for manual, never for disabled).
+
+```yaml
+- namespace: room_lights
+  input: toggle
+  state_engine: binary
+  led: follow_state
+  priority_release_timeout: 60s   # Manual override holds for 60s before auto resumes
+```
+
+---
+
+## [CS-ADAPTERS] External Service Adapters
+
+Adapters bridge ComposeIO namespaces to external systems (DP-CIO-20). Each adapter type has its own configuration schema.
+
+### [CS-ADAPTERS-HA] Home Assistant Adapter
+
+```yaml
+adapter: home_assistant
+url: "http://homeassistant.local:8123"
+token: !secret ha_token
+poll_interval: 5s                    # State sync interval. Default: 5s.
+
+# Device-based auto-discovery
+devices:
+  - device_id: 9a22aae5561f6a90b52cbbd0b6f0ad44
+    namespace_prefix: d6_bar_top     # All entities under this device get this prefix
+
+# Explicit entity mapping
+entities:
+  - entity_id: switch.kauf_plug
+    namespace: office_heater
+    authority: external              # HA owns this state
+  - entity_id: light.desk_lamp
+    namespace: desk_lamp
+    authority: external
+    attributes:                       # Map HA attributes to sub-namespaces
+      brightness: desk_lamp_brightness
+      color_temp: desk_lamp_color_temp
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | string | YES | Home Assistant base URL |
+| `token` | string | YES | Long-lived access token (use `!secret` tag) |
+| `poll_interval` | duration | NO | State sync interval. Default: `5s`. |
+| `devices` | array | NO | Device-based auto-discovery entries |
+| `entities` | array | NO | Explicit entity-to-namespace mappings |
+
+**Device auto-discovery**: When a `device_id` is specified, the adapter queries HA for all entities belonging to that device and creates namespaces automatically using `namespace_prefix` + entity suffix.
+
+**`!secret` tag**: References a value from a separate secrets file (`secrets.yaml`) that is never committed to version control.
+
+### [CS-ADAPTERS-WLED] WLED Adapter
+
+```yaml
+adapter: wled
+url: "http://wled-strip.local"
+namespace_prefix: wled_strip
+segments:
+  - segment_id: 0
+    namespace: wled_strip_main
+    controls:
+      brightness: wled_strip_brightness
+      effect: wled_strip_effect
+      palette: wled_strip_palette
+```
+
+### [CS-ADAPTERS-MQTT] MQTT Adapter
+
+```yaml
+adapter: mqtt
+broker: "mqtt://broker.local:1883"
+username: !secret mqtt_user
+password: !secret mqtt_pass
+mappings:
+  - topic: "sensors/temperature/office"
+    namespace: office_temperature
+    direction: subscribe
+    transform:
+      - scale:
+          in: [0, 50]
+          out: [0, 255]
+  - topic: "actuators/fan/office"
+    namespace: office_fan_speed
+    direction: publish
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `broker` | string | YES | MQTT broker URL |
+| `username` | string | NO | Authentication username |
+| `password` | string | NO | Authentication password |
+| `mappings` | array | YES | Topic-to-namespace mappings |
+
+Each mapping:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `topic` | string | YES | MQTT topic |
+| `namespace` | string | YES | ComposeIO namespace |
+| `direction` | string | YES | `subscribe` (external→CIO) or `publish` (CIO→external) |
+| `transform` | transform[] | NO | Transform pipeline applied to values |
+| `qos` | integer | NO | MQTT QoS level (0, 1, 2). Default: `0`. |
+| `retain` | boolean | NO | MQTT retain flag. Default: `false`. |
+
+### Adapter Validation
+
+- `adapter` MUST be one of: `home_assistant`, `wled`, `mqtt`, or a registered custom adapter type.
+- `!secret` references MUST resolve against the secrets file at config load time.
+- `entities` namespace values MUST be unique across all adapters.
+- `devices` with `namespace_prefix` MUST NOT produce namespace collisions with explicit entity mappings.
+
+---
+
+## [CS-WORKLOADS] Workload Configurations
+
+Workloads are user-defined processes managed by the ComposeIO host. They participate in the namespace bus but run arbitrary code.
+
+### [CS-WORKLOADS-1] Syntax
+
+```yaml
+workload: camera_frame_server
+runtime: python
+entry: server.py
+requirements: requirements.txt
+restart: always
+env:
+  CAMERA_INDEX: "0"
+  RESOLUTION: "1280x720"
+namespaces:
+  publishes:
+    - camera_front_frame_ready
+  subscribes:
+    - camera_select
+    - camera_ptz
+```
+
+### [CS-WORKLOADS-2] Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `workload` | string | YES | Unique workload name |
+| `runtime` | string | YES | Runtime environment: `python`, `node`, `binary`, `docker` |
+| `entry` | string | YES | Entrypoint file or command |
+| `requirements` | string | NO | Dependency file (e.g., `requirements.txt`, `package.json`) |
+| `restart` | string | NO | Restart policy: `always`, `on_failure`, `never`. Default: `on_failure`. |
+| `env` | map | NO | Environment variables passed to the process |
+| `namespaces.publishes` | string[] | NO | Namespaces this workload writes to |
+| `namespaces.subscribes` | string[] | NO | Namespaces this workload reads from |
+| `resources` | object | NO | Resource limits (see below) |
+
+### [CS-WORKLOADS-3] Resource Limits
+
+```yaml
+resources:
+  memory: 256M
+  cpu: 0.5
+  gpu: false
+```
+
+### [CS-WORKLOADS-4] Namespace Contract
+
+The `namespaces` declaration is a contract:
+
+- A workload MUST NOT write to namespaces not listed in `publishes`.
+- A workload MUST NOT read from namespaces not listed in `subscribes`.
+- The runtime enforces this contract. Violations are logged and the write/read is rejected.
+- This contract enables static analysis: the validator can detect namespace conflicts and missing providers across all configs.
+
+---
+
+## [CS-SECRETS] Secrets Management
+
+Sensitive values (API tokens, passwords) MUST NOT appear in config files directly.
+
+### [CS-SECRETS-1] Secret References
+
+```yaml
+token: !secret ha_token
+password: !secret mqtt_pass
+```
+
+The `!secret` YAML tag references a key in a separate `secrets.yaml` file:
+
+```yaml
+# secrets.yaml — NOT committed to version control
+ha_token: "eyJhbGciOiJIUzI1NiIsInR5cCI..."
+mqtt_pass: "hunter2"
+```
+
+### [CS-SECRETS-2] Resolution
+
+- The runtime loads `secrets.yaml` from the config directory.
+- Every `!secret` reference MUST resolve to a key in the secrets file.
+- If a secret is missing, the config fails to load with a clear error identifying the missing key.
+- The secrets file MUST be excluded from version control (enforced by `.gitignore` template).
+
+---
+
+## [CS-BINARY-FORMAT] Binary Compilation Format
+
+Module configs compile to a compact binary format for flashing to CH32V003 modules (256-byte config region). The host toolchain performs compilation; modules never parse YAML.
+
+### [CS-BINARY-FORMAT-1] Header (8 bytes)
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0x00 | 2 | `magic` | `0xC10C` (ComposeIO Config) |
+| 0x02 | 1 | `version` | Schema version (current: `0x01`) |
+| 0x03 | 1 | `role_id` | Role type enum (see table below) |
+| 0x04 | 1 | `item_count` | Number of configured items (buttons, channels, etc.) |
+| 0x05 | 1 | `flags` | Bit flags: `[0]` has_scope, `[1]` has_templates, `[2]` has_transforms, `[3-7]` reserved |
+| 0x06 | 2 | `checksum` | CRC-16/CCITT of bytes 0x08–0xFF |
+
+### [CS-BINARY-FORMAT-2] Role ID Table
+
+| Role ID | Role |
+|---------|------|
+| `0x01` | `button-matrix` |
+| `0x02` | `relay-controller` |
+| `0x03` | `gauge-driver` |
+| `0x04` | `joystick` |
+| `0x05` | `encoder` |
+| `0x06` | `led-strip` |
+| `0x07` | `sensor` |
+
+### [CS-BINARY-FORMAT-3] Item Records
+
+After the header, item records are packed sequentially. Each record format depends on the role.
+
+#### Button Item Record (8 bytes)
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| +0 | 1 | `namespace_id` | Namespace hash (8-bit FNV-1a of namespace string) |
+| +1 | 1 | `input_type` | `0x01` momentary, `0x02` toggle, `0x03` hold_ramp, `0x04` continuous, `0x05` encoder |
+| +2 | 1 | `state_engine` | `0x01` binary, `0x02` tri_level, `0x03` stop_light, `0x04` continuous_0_255, `0x05` enum (enum values in aux region) |
+| +3 | 1 | `led_behavior` | `0x00` off, `0x01` solid, `0x02` follow_state, `0x03` while_pressed, `0x04` blink, `0x05` pulse, `0x06` proportional, `0x07` chase, `0xFF` mapped (map in aux region) |
+| +4 | 1 | `led_param` | Rate/speed in 10ms units (e.g., 50 = 500ms). 0 if N/A. |
+| +5 | 1 | `input_param_1` | Debounce in ms (0–255). For hold_ramp: hold_threshold in 10ms units. For continuous: deadzone * 255. |
+| +6 | 1 | `input_param_2` | For hold_ramp: ramp_rate in ms. For continuous: publish_rate in hz. For encoder: detent_size. |
+| +7 | 1 | `flags` | `[0]` has_modes, `[1]` has_transforms, `[2]` has_scope, `[3]` authority_external, `[4-7]` reserved |
+
+#### Relay Channel Record (4 bytes)
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| +0 | 1 | `namespace_id` | Namespace hash |
+| +1 | 1 | `channel` | Physical channel number (1-indexed) |
+| +2 | 1 | `default_state` | `0x00` off, `0x01` on |
+| +3 | 1 | `flags` | `[0]` has_lock, `[1]` authority_external, `[2-7]` reserved |
+
+#### Gauge Record (6 bytes)
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| +0 | 1 | `namespace_id` | Namespace hash |
+| +1 | 1 | `channel` | Physical channel number |
+| +2 | 1 | `min_value` | Minimum output value (0–255 mapped to physical range) |
+| +3 | 1 | `max_value` | Maximum output value |
+| +4 | 1 | `default_value` | Default position |
+| +5 | 1 | `flags` | `[0]` inverted, `[1]` authority_external, `[2-7]` reserved |
+
+### [CS-BINARY-FORMAT-4] Auxiliary Data Region
+
+The space after item records (up to byte 0xFF) is the auxiliary data region. It stores:
+
+- **Enum values**: Packed as length-prefixed strings (1 byte length + ASCII bytes). Referenced by item index.
+- **LED maps**: Packed as arrays of (match_type, match_value, behavior_id, param) tuples (4 bytes each).
+- **Modal conditions**: Encoded as a bytecode (condition_type, params...). Max 2 modes per button.
+- **Scope strings**: Length-prefixed ASCII.
+
+Auxiliary data is indexed by item flags — if a flag indicates auxiliary data exists, the firmware scans the aux region sequentially.
+
+### [CS-BINARY-FORMAT-5] Size Constraints
+
+| Constraint | Limit |
+|------------|-------|
+| Total config region | 256 bytes |
+| Header | 8 bytes |
+| Max button items | 30 (8 bytes each = 240 bytes + 8 header = 248, leaving 8 bytes aux) |
+| Practical button limit | 16–20 (to leave room for aux data) |
+| Max relay channels | 62 (4 bytes each) |
+| Max enum values per state engine | 8 |
+| Max LED map entries | 8 |
+| Max modes per button | 2 |
+| Namespace hash collisions | MUST be detected at compile time; collision = build error |
+
+### Compilation Validation
+
+- The compiler MUST reject configs that exceed the 256-byte limit with a clear error showing byte usage breakdown.
+- Namespace hash collisions MUST be detected and reported (suggesting a namespace rename).
+- Enum values exceeding 8 entries MUST be rejected.
+- The compiled binary MUST be byte-identical for identical YAML input (deterministic compilation).
+
+---
+
+## [CS-RELAY-CHANNELS] Relay Channel Config
+
+Relay channels are output-only items on `relay-controller` modules.
+
+```yaml
+module: relay-1
+role: relay-controller
+channels:
+  - namespace: office_lights
+    channel: 1
+    default: off
+
+  - namespace: printer_power
+    channel: 2
+    default: off
+    authority: external
+
+  - namespace: vent_fans
+    channel: 3
+    default: off
+    lock:
+      while: printer_power == on
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `namespace` | string | YES | Namespace for this channel |
+| `channel` | integer | YES | Physical relay channel (1-indexed) |
+| `default` | string | NO | Default state: `on` or `off`. Default: `off`. |
+| `authority` | string | NO | `local` or `external`. Default: `local`. |
+| `lock` | object | NO | Safety lock condition (see CS-COMPOSITE safety rules) |
+
+---
+
+## [CS-FULL-EXAMPLE] Complete Configuration Example
+
+A full system config demonstrating all major features working together.
+
+```yaml
+# === Module: Button Panel ===
+module: panel-1
+role: button-matrix
+scope: bridge
+
+effects:
+  active_glow:
+    behavior: solid
+  standby_pulse:
+    behavior: pulse
+    rate: 2s
+
+templates:
+  standard_toggle:
+    input: toggle
+    state_engine: binary
+    led: follow_state
+  warp_selector:
+    input: toggle
+    state_engine:
+      type: enum
+      values: [standby, warp_1, warp_5, warp_9, maximum]
+      default: standby
+    led:
+      map:
+        - value: standby
+          behavior: pulse
+          rate: 2s
+        - value: warp_1
+          behavior: solid
+        - values: [warp_5, warp_9]
+          behavior: blink
+          rate: 300ms
+        - value: maximum
+          behavior: blink
+          rate: 100ms
+
+buttons:
+  - namespace: ftl_arm
+    template: standard_toggle
+
+  - namespace: engine_power
+    input: toggle
+    state_engine: tri_level
+    led: follow_state
+
+  - namespace: alert_status
+    input: toggle
+    state_engine: stop_light
+    led:
+      map:
+        - value: green
+          behavior: solid
+        - value: yellow
+          behavior: blink
+          rate: 500ms
+        - value: red
+          behavior: blink
+          rate: 200ms
+
+  - namespace: warp_factor
+    template: warp_selector
+
+  - namespace: cabin_brightness
+    input: hold_ramp
+    hold_threshold: 400ms
+    ramp_rate: 30ms
+    ramp_step: 5
+    state_engine: continuous_0_255
+    led:
+      map:
+        - range: [31, 255]
+          behavior: solid
+        - range: [3, 30]
+          behavior: blink
+          rate: 500ms
+        - range: [1, 2]
+          behavior: blink
+          rate: 250ms
+        - value: 0
+          behavior: off
+
+  - namespace: office_monitors
+    input: toggle
+    state_engine: binary
+    led: follow_state
+    modes:
+      - when: time_window(00:30, 00:59)
+        namespace: suppress_shutdown
+        input: toggle
+        state_engine: binary
+        led:
+          behavior: blink
+          rate: 500ms
+
+  - generate:
+      namespaces: [light_zone_1, light_zone_2, light_zone_3, light_zone_4]
+      template: standard_toggle
+```
+
+```yaml
+# === Module: Relay Controller ===
+module: relay-1
+role: relay-controller
+channels:
+  - namespace: office_lights
+    channel: 1
+    default: off
+
+  - namespace: printer_power
+    channel: 2
+    default: off
+
+  - namespace: vent_fans
+    channel: 3
+    default: off
+    lock:
+      while: printer_power == on
+```
+
+```yaml
+# === Composite Device ===
+composite_device: printer_station
+components:
+  - name: printer_power
+    type: relay
+    channel: 1
+  - name: vent_fans
+    type: relay
+    channel: 2
+lifecycle:
+  power_on:
+    - set: vent_fans -> on
+    - wait: 5s
+    - set: printer_power -> on
+  power_off:
+    - require: printer_status != printing
+    - set: printer_power -> off
+    - wait: 60s
+    - set: vent_fans -> off
+  safety:
+    - lock: printer_power while printer_status == printing
+    - lock: vent_fans while printer_power == on
+```
+
+```yaml
+# === Bindings ===
+bindings:
+  - source: laser_power
+    target: vent_fan_speed
+    transform:
+      - threshold:
+          - above: 500
+            emit: tier_3
+          - above: 200
+            emit: tier_2
+          - above: 50
+            emit: tier_1
+          - default: idle
+      - map:
+          tier_3: 255
+          tier_2: 180
+          tier_1: 90
+          idle: 0
+
+  - source: room_temperature
+    target: fan_speed
+    authority: auto
+    condition: namespace_equals(fan_mode, auto)
+    transform:
+      - scale:
+          in: [18, 35]
+          out: [0, 255]
+      - clamp:
+          min: 0
+          max: 255
+```
+
+```yaml
+# === Adapter: Home Assistant ===
+adapter: home_assistant
+url: "http://homeassistant.local:8123"
+token: !secret ha_token
+devices:
+  - device_id: 9a22aae5561f6a90b52cbbd0b6f0ad44
+    namespace_prefix: d6_bar_top
+entities:
+  - entity_id: switch.kauf_plug
+    namespace: office_heater
+    authority: external
+```
+
+```yaml
+# === Adapter: MQTT ===
+adapter: mqtt
+broker: "mqtt://broker.local:1883"
+username: !secret mqtt_user
+password: !secret mqtt_pass
+mappings:
+  - topic: "sensors/temperature/office"
+    namespace: office_temperature
+    direction: subscribe
+  - topic: "actuators/fan/office"
+    namespace: office_fan_speed
+    direction: publish
+```
+
+```yaml
+# === Workload ===
+workload: camera_frame_server
+runtime: python
+entry: server.py
+requirements: requirements.txt
+restart: always
+env:
+  CAMERA_INDEX: "0"
+  RESOLUTION: "1280x720"
+namespaces:
+  publishes:
+    - camera_front_frame_ready
+  subscribes:
+    - camera_select
+    - camera_ptz
+```
+
+---
+
+## [CS-VALIDATION] Validation Rules Summary
+
+The config validator MUST enforce all of the following. A config that passes validation MUST work on any compliant runtime.
+
+### Structural Rules
+
+1. Each document MUST have exactly one primary root key (`module`, `composite_device`, `adapter`, `workload`, or `bindings`).
+2. `module` values MUST be unique across the config set.
+3. `role` MUST be a recognized role type.
+4. The config array key MUST match the declared role.
+
+### Namespace Rules
+
+5. All namespace strings MUST match `[a-z][a-z0-9_]*` (before scope prefix and dynamic interpolation).
+6. Static namespaces MUST be unique across the entire config set (after scope resolution).
+7. Dynamic namespace templates MUST have a corresponding `selector` field.
+8. Every `selector` reference MUST resolve to a declared namespace.
+
+### Type Rules
+
+9. `input` MUST be a recognized input type.
+10. Input parameters MUST be valid for the declared input type.
+11. `state_engine` MUST be declared for non-continuous inputs.
+12. `state_engine` MUST NOT be declared for continuous inputs.
+13. `enum` state engines MUST have at least 2 values and a valid default.
+
+### LED Rules
+
+14. LED behavior names MUST be recognized primitives or `!effect` references.
+15. `!effect` references MUST resolve within the same document's `effects` map.
+16. LED map `range` entries are only valid for `continuous_0_255` state engines.
+17. LED maps SHOULD cover all possible state values (warning on gaps).
+
+### Binding Rules
+
+18. Binding `source` and `target` MUST reference declared namespaces.
+19. Transform pipelines MUST have valid transform types.
+20. Threshold entries MUST be ordered highest-to-lowest.
+
+### Composite Rules
+
+21. Component names MUST be unique within a composite device.
+22. Lifecycle `set` steps MUST reference valid component names.
+23. Circular lock dependencies MUST be rejected.
+
+### Binary Compilation Rules
+
+24. Compiled config MUST fit within 256 bytes.
+25. Namespace hash collisions MUST be detected and rejected.
+26. Enum state engines MUST have 8 or fewer values.
+27. Compilation MUST be deterministic (identical input = identical output).
+
+### Cross-Document Rules
+
+28. Workload `publishes` namespaces MUST NOT conflict with other publishers.
+29. Adapter entity namespaces MUST NOT conflict with module namespaces.
+30. `!secret` references MUST resolve against the secrets file.
+
+---
+
+## Appendix A: Duration and Frequency Syntax
+
+| Suffix | Unit | Example | Meaning |
+|--------|------|---------|---------|
+| `ms` | milliseconds | `500ms` | 500 milliseconds |
+| `s` | seconds | `5s` | 5 seconds |
+| `m` | minutes | `2m` | 2 minutes |
+| `hz` | hertz | `10hz` | 10 times per second |
+
+Durations MUST be positive integers followed by a unit suffix. No spaces between number and unit. Frequency values convert to period internally (10hz = 100ms interval).
+
+## Appendix B: Design Principle Traceability
+
+| Section | Principles Satisfied |
+|---------|---------------------|
+| CS-TOP-LEVEL | DP-CIO-1, DP-CIO-7 |
+| CS-INPUT-TYPES | DP-CIO-4 |
+| CS-STATE-ENGINES | DP-CIO-4 |
+| CS-LED-BEHAVIOR | DP-CIO-12, DP-CIO-15 |
+| CS-MODAL-BUTTONS | DP-CIO-13 |
+| CS-SIGNAL-TRANSFORMS | DP-CIO-22 |
+| CS-BINDINGS | DP-CIO-10 |
+| CS-COLLECTIONS | DP-CIO-14 |
+| CS-NAMESPACE (dynamic) | DP-CIO-21 |
+| CS-STATE-AUTHORITY | DP-CIO-19 |
+| CS-CONTROL-PRIORITY | DP-CIO-16 |
+| CS-ADAPTERS | DP-CIO-20 |
+| CS-BINARY-FORMAT | DP-CIO-7 |

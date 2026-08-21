@@ -1,0 +1,39 @@
+# Hosyond ESP32-S3 2.8" IPS display overrides (env:hosyond_s3) —
+# layered after sdkconfig.defaults + sdkconfig.s3.defaults.
+# [CXC-BRINGUP], [CXC-ER-BOARDS].
+#
+# This board is the CYD's SPI/band display tier on an S3 with octal
+# PSRAM, so it inherits the CYD app config and overrides exactly the
+# things the S3 + this board's flash/PSRAM fit-out change.
+
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# 16 MB quad flash (measured off the device, and CONFIG_ESPTOOLPY_FLASHSIZE
+# in the vendor demo agrees).  sdkconfig.defaults says 4 MB for the CYD —
+# this layer overrides it, and points at the matching partition table.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.16mb.csv"
+
+# Octal PSRAM, 8 MB @ 80 MHz.  Load-bearing here: the full-frame band
+# buffer (240x320x2 = 153,600 B) lives in PSRAM rather than taking that
+# much out of the internal DMA heap ([CXC-BRINGUP] the bands-or-frame
+# call).  Pin/clock config is the chip's own (CS=IO26, CLK=IO30) —
+# matches the vendor demo's sdkconfig.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# Keep small allocations and a reserve OFF the PSRAM heap: WiFi and the
+# SPI driver want internal, DMA-capable memory, and the one big thing
+# that belongs in PSRAM asks for it explicitly (MALLOC_CAP_SPIRAM).
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# The board has NO USB-serial bridge — the Type-C port is the S3's own
+# native USB.  s3.defaults already makes USB-Serial-JTAG the primary
+# console; restated here because on this board it is not a choice.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

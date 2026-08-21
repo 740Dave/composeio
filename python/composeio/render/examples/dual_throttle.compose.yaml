@@ -1,0 +1,201 @@
+# Galactica dual-throttle controller — maker-project-flow §7 (S5 VALIDATION PROJECT).
+#
+# The first real maker project: one artifact carries BOTH halves.
+#   PHYSICAL half (`hookup:`) — 2x pot-10k -> ESP32-C3, wipers on ADC GPIO0/GPIO1,
+#     the wiper->GPIO `publishes:` seam maps each pin to a bus slot.
+#   LOGICAL half (`namespaces` + `widgets`) — the two engine-thrust slots and a
+#     small CONSOLE monitor (two gauges) we watch even though the DEVICE is
+#     HEADLESS (no display part in the hookup — the ESP32-C3 only reads + publishes).
+#
+# Four consumers read this ONE file (design lock §2), so nothing can drift:
+#   1. the widget (this scene)            — the console monitor;
+#   2. the hookup guide (S3)              — perfboard SVG -> doc-viewer;
+#   3. the MCU read/publish config (S4)   — GPIO0->throttle/left, GPIO1->throttle/right
+#                                           PLUS the DY-SV5F audio ACTUATOR block;
+#   4. [future] a KiCad netlist (documented, not built).
+#
+# Downstream (S5 integration): the world app subscribes throttle/left+right as L/R
+# engine thrust -> differential (L-R) integrates the Galactica's heading -> published
+# on game/own_heading -> the Qualia dradis reflects it.  See
+# composeio.maker.throttle_thrust (the mapping + the world-app hook).
+#
+# Downstream (S6 audio): the SAME C3 ALSO drives a DY-SV5F voice module — a PURE bus
+# SUBSCRIBER.  It subscribes dradis/contacts + game/jump, derives two edges AT THE
+# LEAF (a contact flips unknown->hostile; game/jump -> "jumping"), and plays a track
+# over UART.  It NEVER publishes — additive audio peer, no game change.  See
+# composeio.maker.audio_cover (the edge detectors + the DY-SV5F UART protocol + the
+# C3 firmware cover hook).  The cue->track map lives in the `audio_cover:` block below.
+#
+#   python3 -m composeio.render.engine.runtime dual_throttle.compose.yaml
+
+app:
+  id: dual-throttle
+
+design:
+  title: "Galactica Dual-Throttle · Console Monitor"
+  width: 320
+  height: 200
+
+# THE WIRE CARRIES A PERCENTAGE (David 2026-08-15: "the C3 should only be
+# publishing throttle percentages, not 0_255").  A pot position is not an
+# 8-bit hardware code that happens to be meaningful; it is "how far open is
+# this engine", and every consumer wants that: the LED bars quantize it to
+# ten segments, the numeric readouts print it, and the world app's helm
+# divides it by full scale to get a normalized [0,1] thrust.  0..100 is the
+# only representation all three read without a codec.
+#
+# ⛔ 0..100 IS A SUBSET OF 0..255.  A percentage published to a namespace
+# still declared continuous_0_255 validates CLEANLY and renders at ~40% —
+# a wrong reading that looks exactly like a failing pot.  The engine
+# declaration is the ONLY thing separating the two on the wire, so this
+# file and the firmware flash must land together (see the migration order
+# in the commit message).
+namespaces:
+  - name: throttle/left
+    state_engine: continuous_0_100
+  - name: throttle/right
+    state_engine: continuous_0_100
+
+# --- PHYSICAL half: the hookup netlist (design lock §3) --------------------
+# Placements are sized for the REAL Fritzing footprints (S3 composites the
+# cached art; a footprint part's `at:` anchors the ART's top-left corner on
+# the grid).  The SuperMini's wired pads (GND/3V3/GPIO0/GPIO1) sit on the
+# art's RIGHT column, so the pots stack to its right with their legs down.
+hookup:
+  board: perfboard
+  parts:
+    - {id: mcu,  part: esp32-c3-supermini, at: [8, 2]}
+    - {id: potL, part: pot-10k,  at: [1, 12]}
+    - {id: potR, part: pot-10k,  at: [15, 12]}
+    # S6 audio actuator: the DY-SV5F voice module + its speaker terminus.  The
+    # module is placed clear below the throttle cluster so the composited
+    # footprint art reads; the speaker carries NO `at:` — the layout's
+    # wired-adjacency rule nestles it right beside the DY-SV5F that drives it
+    # (David 2026-07-26: an unanchored part belongs next to its wired peer,
+    # not flung off-board).
+    - {id: dysv5f, part: dy-sv5f, at: [30, 2]}
+    - {id: spk,    part: speaker}
+  wires:
+    # the loop-closers: physical wiper pin -> slot namespace -> widget binding.
+    # Per-pot leaf-owned conditioning (config-driven, P1b — the leaf holds the
+    # raw ADC, so inversion + smoothing are pure derivation it fully owns):
+    #   invert:   flip the raw ADC (adc_max - raw) — any pot mounted backwards
+    #   deadband: DEFAULT denoiser — re-emit only on a >= N-code move (kills
+    #             held-still ADC dither; quiet-bus by construction)
+    #   ema:      0 = off; else EMA alpha on the raw ADC for a smooth glide
+    #   in_min/in_max:  CALIBRATION / SAFETY BANDS, in RAW ADC CODES — the
+    #             input half of the SAME clamped linear map the output half
+    #             already runs (actuator_hal.cpp _map_scaled).  raw <= in_min
+    #             publishes 0; raw >= in_max publishes out_max.
+    #
+    # ⛔ THE BANDS ARE A SAFETY MECHANISM, NOT SPARE RANGE — DO NOT TRIM THEM.
+    # The rounding fix landed 2026-08-15 removed the ARITHMETIC's contribution
+    # to unreachable rails, and the host test's boundary report then measured
+    # the residual: past ~8 codes of ADC zero-offset the far rail's preimage is
+    # a code the ADC never produces, and no rounding scheme can reach it.  The
+    # band closes that BY CONSTRUCTION — each rail owns a neighbourhood of raw
+    # codes instead of a single lucky one.  Measured in the same report: the
+    # survivable offset goes 8 codes -> 115 codes.  Delete the band and a pot
+    # at its mechanical stop starts reporting 97%.
+    #
+    # 96 of 4095 == 2.34% of full scale == David's "0-5 of 255" at each end
+    # ("0% thrust should not just be 0 ... but a small safety band, say 0-5,
+    # and the same on the high end, 250-255 should be 100%").  Stated in ADC
+    # codes rather than output units ON PURPOSE: a band expressed on the output
+    # scale would have silently changed width when this file moved from
+    # continuous_0_255 to continuous_0_100.
+    #
+    # deadband 1 (was 2): on the 0..100 scale one output code is ~41 ADC codes,
+    # so the coarser quantization already does the dither suppression a
+    # deadband of 2 was buying on the 0..255 scale.  A deadband of 2 here would
+    # be a 2% step — a visibly notchy stick.
+    - {from: potL.wiper, to: mcu.GPIO0, publishes: throttle/left,  deadband: 1, in_min: 96, in_max: 3999}
+    - {from: potR.wiper, to: mcu.GPIO1, publishes: throttle/right, invert: true, deadband: 1, in_min: 96, in_max: 3999}
+    # power / ground
+    - {from: potL.vcc, to: mcu.3V3}
+    - {from: potL.gnd, to: mcu.GND}
+    - {from: potR.vcc, to: mcu.3V3}
+    - {from: potR.gnd, to: mcu.GND}
+    # --- S6: the DY-SV5F audio module (OUTPUT/actuator; no `publishes:`) --------
+    # Power the module off the C3's 5V rail (onboard class-D amp wants 5V).
+    - {from: dysv5f.VCC, to: mcu.5V}
+    - {from: dysv5f.GND, to: mcu.GND}
+    # UART: the C3's GPIO5 (a free, non-strap, non-console GPIO used as UART TX)
+    # drives the module's RXD.  Direction mcu -> module: the C3 only WRITES
+    # "play track" frames; it never reads a reply (pure actuator).
+    # `subscribes:` is the ACTUATOR half of the seam — the exact dual of
+    # `publishes:` on the pot wires above.  It used to live ONLY in the
+    # `audio_cover:` block below beside a "must match the hookup wire" comment;
+    # a comment is not a cross-check, and the two drifted freely.  Now the
+    # netlist carries the namespaces and hookup_seam.py ASSERTS the two halves
+    # agree — a scene whose device block and wires disagree does not load.
+    - {from: mcu.GPIO5, to: "dysv5f.RXD/IO1",
+       subscribes: [dradis/contacts, game/jump]}
+    # optional playback-status input: the module's BUSY pin (HIGH while a track
+    # plays) into a free GPIO, so the C3 can tell "still playing" if it wants.
+    - {from: "dysv5f.BUSY", to: mcu.GPIO6}
+    # the speaker terminus: the module's onboard amp drives the speaker directly.
+    - {from: "dysv5f.Spk+", to: "spk.+"}
+    - {from: "dysv5f.Spk-", to: "spk.-"}
+
+# --- LOGICAL half: the console monitor (the DEVICE is headless) -----------
+# Two gauges reading the live thrust the headless controller publishes — we
+# watch these on the console while the ESP32-C3 itself has no display.
+widgets:
+  - type: stack
+    id: gauges
+    direction: row
+    children:
+      - type: gauge
+        id: left
+        label: "L THRUST %"
+        min_val: 0
+        max_val: 100
+        namespace: throttle/left
+      - type: gauge
+        id: right
+        label: "R THRUST %"
+        min_val: 0
+        max_val: 100
+        namespace: throttle/right
+
+# --- S6 AUDIO half: the DY-SV5F cover (a PURE bus SUBSCRIBER) ---------------
+# The SAME headless C3 ALSO drives the DY-SV5F.  This block is the cover's
+# declarative config — the SDR credo: the cue->track map + the subscribe list +
+# the UART pin live in CONFIG, not firmware.  The C3 firmware
+# (composeio.maker.audio_cover.AudioCover / COVER_HOOK) reads it; the S4 MCU-config
+# emitter lowers it into the device config's `audio` actuator block.  The cover is
+# INPUT-only from the bus and OUTPUT-only to the module — it NEVER publishes.
+audio_cover:
+  module: dysv5f            # the hookup part id of the DY-SV5F
+  uart:
+    tx_pin: GPIO5           # C3 UART TX -> DY-SV5F RXD/IO1 (must match the hookup wire)
+    busy_pin: GPIO6         # optional: DY-SV5F BUSY -> C3 (playback status)
+    baud: 9600              # DY-SV5F UART mode is 9600-8N1
+  # The two namespaces the cover subscribes (existing published game state; the
+  # cover adds NO new publisher on the game side).
+  subscribes:
+    - dradis/contacts
+    - game/jump
+  # cue -> track: each cue is an EDGE derived at the leaf.
+  #
+  # `track` and `file` are TWO INDEPENDENT FACTS, not one (decision D8.2, the
+  # 2026-07-29 ears-verified audio bring-up — DECISIONS-composebus-conventions):
+  #   track = the DY-SV5F "select and play" ORDINAL — the module indexes by the
+  #           card's NUMERIC FILE ORDER, not by the digits in the file name.  On
+  #           a 2-file card 00008.mp3 IS track 1.
+  #   file  = what is actually ON the card.  It is NOT derivable from `track`
+  #           (that identity held only under the pre-D8 model), so it is
+  #           DECLARED — this is the line a human reads when loading the card.
+  # Both are config, per the SDR credo; the firmware reads only `track`.
+  cues:
+    - cue: condition_one    # a contact flips unknown -> IDENTIFIED (allegiance
+      source: dradis/contacts   #   neutral -> hostile), the fog-of-war reveal
+      edge: contact_identified
+      track: 1              # 1st file on the card, numeric order
+      file: 00008.mp3       # ...which is this one
+    - cue: jump             # game/jump transitions INTO "jumping" (the FTL moment)
+      source: game/jump
+      edge: "value == jumping"
+      track: 2              # 2nd file on the card, numeric order
+      file: 00009.mp3

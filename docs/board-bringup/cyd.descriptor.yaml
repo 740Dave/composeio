@@ -1,0 +1,81 @@
+# Unified board bring-up descriptor — SINGLE SOURCE for this board.
+# Schema shared byte-for-byte with qualia/esp32c3/ch32v203 .descriptor.yaml (same keys, same order).
+# The markdown recipe (cyd.md) is the generated human view; the app consumes THIS file.
+# LOCAL-FIRST: eyeball before pushing. Not on the bus yet (future home: doc://board_profiles/*).
+# Every value traceable to cyd.md (recipe §refs + commits cited inline).
+
+board_id: cyd
+name: "CYD — Cheap Yellow Display (ESP32-2432S024)"
+
+chip:
+  part: esp32                 # classic ESP32, Xtensa LX6 (recipe §1)
+  arch: xtensa-lx6
+  flash_kb: 4096              # board_upload.flash_size = 4MB (recipe §2)
+  ram_kb: 520                 # on-chip SRAM; NO PSRAM (recipe §1) -> band-rendered, 7680-byte band buffer (kBandHeight=16, 20 bands)
+
+connect:
+  bus: usb
+  kind: ch340-serial          # CH340 USB-UART bridge (recipe §2)
+  port_glob: "/dev/cu.usbserial-*"   # ini pins usbserial-3120 as last-known
+  baud: 115200                # monitor_speed (recipe §2/§5)
+
+flash:
+  tool: esptool               # the app's dispatch key (via PlatformIO espressif32)
+  cmd: "cd cyd && pio run -e cyd -t upload"
+  enter_bootloader: auto      # CH340 auto-reset drives EN/GPIO0 -> esptool auto-enters ROM bootloader; NO button dance (recipe §2)
+  retries: []                 # none observed on the CH340 path
+  notes: >
+    ESP-IDF via PlatformIO. flash: qio / 80MHz / 4MB / partitions.csv; SDK from sdkconfig.defaults.
+    monitor: pio device monitor -e cyd (or -t monitor on the upload). device_id = cyd-<last3 STA MAC hex>
+    unless DISPLAY_DEVICE_ID build flag overrides (recipe §1). The `cyd-` vs `qualia-` id prefix lets a
+    dispatcher tell board families apart on the same bus.
+
+config_source: "bus://assets/displays/{device_id}.compose.yaml"   # fungible firmware fetches its scene at boot (recipe §3)
+
+requires:
+  - ref: "bus://assets/displays/{device_id}.compose.yaml"
+    kind: scene-config
+    status: present
+    note: "fetched at boot over HTTP from bus_storage; 5s retry until obtained, then 60s re-poll; swap under render lock on change (recipe §3)"
+  - ref: "bus://assets/animations/dradis/*"
+    kind: animation
+    status: present
+    note: "CI16 sprite frames baked offline (scripts/bake_lottie_sprite.py) for the dradis scene; a transient boot fetch can leave N/8 frames (recipe §6, quirk sprite-frame-fetch-flakiness)"
+  - ref: null
+    kind: firmware
+    status: placeholder
+    note: "no bus-hosted factory image today; fungible firmware is built locally from cyd/. A prebuilt image WOULD live at bus://assets/firmware/cyd/<ver>.bin for reproducible bring-up"
+
+verify:
+  machine:
+    - check: serial-token
+      expect: "[PERF]"
+      note: "115200 baud; per-30-frame render avg/min/max + fps + ms/band + loop fps + heap; healthy full-frame ~56ms (recipe §5)"
+    - check: capture-pixel-diff
+      expect: "GET http://<ip>/capture.bmp"
+      note: "SD-free live band re-render -> 24-bit BGR top-down BMP; scripts/cyd_config_crosscheck.py diffs vs the Skia reference (recipe §5)"
+    - check: http-status
+      expect: "GET http://<ip>/"
+      note: "one-line status: scene title, heap, pointer to /capture.bmp"
+  human: >
+    Eyes-on-glass is the FINAL gate, NOT a substitute check. The CYD's motivating failure (§4.1): the
+    framebuffer/render-loop advanced normally while SPI writes kept ACKing ESP_OK and the glass stayed
+    frozen on frame 0. So a healthy [PERF] stream AND a moving capture.bmp are NOT sufficient proof the
+    panel itself is updating — confirm live motion on the physical glass.
+
+quirks:
+  - id: shared-spi-dma-channel-hazard
+    resolved: true
+    note: "Classic ESP32 has only 2 SPI DMA channels; SD-bus spi_bus_free() teardown on SPI_DMA_CH_AUTO (dev capture path, every boot + 60s re-poll) reset the display's DMA channel -> panel froze while still ACKing writes. Fixed with explicit non-overlapping DMA channels + SD init-once/never-free (9a35baf), then made structurally impossible by deleting the SD/capture path entirely (cfa313a) — display now owns the sole SPI bus. This cycle's DMA hunt (staged bisection) is the cost this recipe exists to prevent."
+  - id: display-spi-clock-margin
+    value: 20000000
+    resolved: true
+    note: "CYD_SPI_FREQ_HZ 27MHz -> 20MHz; 27MHz was above the reliable margin (intermittent/blank boot splash). 20MHz hardware-verified — do not raise without re-verifying cold-boot splash. (The M5 perf-floor was characterized at 27MHz; cyd_pins.h canonical value is 20MHz.)"
+  - id: touch-shares-display-bus
+    resolved: true
+    note: "XPT2046 touch is a second spi_master device (hardware CS GPIO33, 2.5MHz) on SPI2_HOST, not bit-banged (9a35baf). By design; replaces a bit-bang path that reset shared HSPI pins per touch read and could not restore 27MHz display SPI (GPIO-matrix ceiling ~26.6MHz)."
+  - id: sprite-frame-fetch-flakiness
+    resolved: false
+    note: "Transient boot-time bus_storage sprite-frame fetch can leave an animated sprite short of its full frame count (N/8). Fetch-retry gap in the sprite asset loader; open (recipe §6)."
+
+variants: []   # single physical board; device_id disambiguates units (cyd-<mac3> or DISPLAY_DEVICE_ID)

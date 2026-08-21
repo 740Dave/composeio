@@ -1,0 +1,42 @@
+# ComposeUX demo — Multitouch Visualizer  ([SPEC:CXC-R-WIDGET-CONTRACT], [CXC-R-ENGINE-HIT])
+#
+# Every finger paints a soft halo + a solid core block, coloured by its
+# pointer_id, tracked independently.  This is the first-class ComposeApp form
+# of the raw-SDL2 kiosk (`~/apps/touch_viz.py`) that proved the Turbot touch
+# path on mary-ann — now it renders through the skia Canvas contract
+# (cross-backend) and its fingers are bus-observable via the engine's
+# interaction events ([CXC-R-CONTROL]).
+#
+# Run (mary-ann kiosk, rotated Dell S2240T — compositor `output transform 90`
+# makes the logical surface portrait 1080x1920; touch coords are normalized so
+# fullscreen scales the texture to the panel):
+#   python -m composeio.render.run_compose touch_viz.compose.yaml --fullscreen
+#
+# The single fullscreen `touch_viz` leaf sits on a black pixel_stack canvas.
+
+app:
+  id: demo-touch-viz
+
+design:
+  title: "Multitouch Visualizer"
+  width: 1080
+  height: 1920
+  padding: 0          # fullscreen kiosk: edge-to-edge, no root gutter
+  gap: 0
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 1080
+    height: 1920
+    background: "#080A10"
+    children:
+      - type: touch_viz
+        id: viz
+        x: 0
+        y: 0
+        w: 1080
+        h: 1920
+        core_size: 88
+        halo_radius: 190
+        background: "#080A10"

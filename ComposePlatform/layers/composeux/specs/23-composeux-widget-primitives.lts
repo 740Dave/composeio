@@ -1,0 +1,147 @@
+---
+scope: "Six missing UI primitives — progress bar, slider, switch, dropdown, keyboard, number pad — delivered AS ComposeUX component composites (forkable defaults), not code Widget subclasses; plus the two small interaction seams the slider and dropdown require, and the ratified default aesthetic the family shares."
+audience: "ComposeUX widget authors, Composer users, render-engine developers"
+boundary: "IN: the six primitives as `components:` composites, their composition/bindings/params, the ratified design tokens, and two new interaction seams (drag-to-value, popup-list). OUT: new engine Widget subclasses (deliberately avoided — see [CXC-PRIM-WHY]); the DSL ([SPEC:CXC-DSL], reused); the component-expansion mechanism ([14-composer-components], reused)."
+not-this: "Not code widgets that lock a look; not a design system beyond the shared tokens; not a replacement for the existing power_toggle/checkbox/tab code widgets (those stay; these are the forkable composite family)."
+depends-on: [14-composer-components.lts, 16-composeux-bindings-behaviors.lts, 22-composeux-expression-dsl.lts]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# ComposeUX Widget Primitives [SPEC:CXC-PRIM]
+
+> Six primitives, built as **components you fork**, not code widgets that lock the look. Each is a pixel-stack of existing primitives wired with bindings + the expression DSL, so it renders on every backend for free and its default `.compose.yaml` is the thing you clone and restyle. Pre-vis (ratified aesthetic): `ux/widget-primitives-previs.v1.html`.
+
+---
+
+## 1. Intent
+
+### [CXC-PRIM-WHY] Composites, Not Code Widgets
+
+- decision (David 2026-07-09): these six ship as reusable **components** (`components:` map + `{use: …}`, [14-composer-components]), NOT new engine `Widget` subclasses.
+- reasoning: David will *rarely* use the default look (e.g. BSG progress bars need a bespoke, consistent feel) — so the default's value is being **inspectable and forkable**. A component is an author-readable `.compose.yaml` composition you clone and restyle; a code widget hides its rendering in Python/C++ and locks the look. Composites also render on every backend for free (they compose primitives that already implement the Canvas contract) and reuse the binding/DSL/component systems already built.
+- consequence: the "default implementation" IS the deliverable artifact — seeing it is the point. Custom variants are forks that keep the shared tokens ([CXC-PRIM-TOKENS]) for family consistency and change the rest.
+- note: existing code widgets that overlap (`power_toggle` ≈ switch, `checkbox`, `tab`) are NOT retired; these composites are the forkable family beside them.
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 2. Ratified Default Aesthetic
+
+### [CXC-PRIM-TOKENS] The Shared Token Set (ratified from the pre-vis, David 2026-07-09)
+
+- surfaces: card/panel over an inset track; cool-biased neutrals.
+- accent = **the interactive/active state only** (fill, thumb, on-state, focus) — a single measured teal, deliberately not a neon pop. Dark `#34c3d0`; light `#159aa8`.
+- semantic (good/warn/crit) is a SEPARATE axis from the accent — a progress bar's `warn` color is a threshold binding, never the accent.
+- conventions: corner radius **4px**; thumbs are pill/circular; tracks **6–10px**; value labels in **mono**; both light+dark themed.
+- rule: a fork keeps these tokens for a consistent family and restyles the rest. The tokens are the contract that makes bespoke variants still look related.
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 3. The Catalog
+
+### [CXC-PRIM-CATALOG] Six Primitives
+
+Each is a `components:` entry (`params` + `defaults` + `widget` template); `{{param}}` resolves at load, `ns('…')`/`${ns}` at runtime.
+
+- **progress_bar** (pure composite): track rect + fill rect. `binds`: value → `fill.width = expr(clamp(ns('{{value_ns}}'),0,1)*{{W}})`. `params`: value_ns, height, radius, color, warn_at, show_label. Variants: determinate + indeterminate (a looping behavior).
+- **switch** (pure composite): bg pill + knob. `binds`: state (binary) ⇄ tap→toggle; `knob.x = expr(state ? on : off)`. `params`: state_ns, on_color, labels, momentary.
+- **numpad** (pure composite): grid of `button` components (0–9, CLR, ↵). `binds`: each key → publish char to a target text namespace. `params`: target_ns, allow_decimal, on_enter.
+- **keyboard** (pure composite): grid of `button` components (QWERTY + shift/backspace/space as param keys) editing a text namespace a `text_input` consumes. `params`: layout, target_ns, shift_mode, keycaps.
+- **slider** (composite + [CXC-PRIM-DRAGVAL]): track + fill + thumb. `binds`: value ⇄ drag; `thumb.x = expr(ns('{{value_ns}}')*{{W}})`. `params`: value_ns, min, max, step, orient, live_or_on_release.
+- **dropdown** (composite + [CXC-PRIM-POPUP]): closed field (label + chevron) + popup item list. `binds`: selected ⇄ item tap → publish + dismiss. `params`: selected_ns, options[], placeholder, max_visible.
+- **segment_bar** (composite + [CXC-PRIM-REPEAT], David 2026-07-09): an N-segment LED bargraph (the classic 10-segment look — discrete lit segments, zoned green/yellow/red). `binds`: value → each segment lit/dim + zoned color via one per-segment expression. `params`: value_ns, segments (N), green (count), yellow (count) [red = N−green−yellow], orient (horizontal/vertical), colors (green/yellow/red hex, defaulting to the semantic tokens), gap. Reference image: a 10-seg bar, 6 green / 2 yellow / 2 red, horizontal, on a dark bezel.
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-FADER] The Linear Fill / Fader — a READOUT, so a Code Style Mode
+
+- what: a linear FILL / FADER gauge — an inset track the bound value fills as a fraction of `[min_val, max_val]`. `orientation: vertical` (default) fills BOTTOM->TOP (a throttle lever / VU meter); `orientation: horizontal` fills LEFT->RIGHT (a level meter). It draws a bright level-cap line at the fill edge, a min/max scale, and a big raw-value readout; the fill warms teal->amber->red on `warning_threshold`/`danger_threshold` ([CXC-PRIM-TOKENS]: accent is the active fill, semantic is the separate threshold axis).
+- delivered AS: `style: "bar"` on the EXISTING `GaugeWidget` (`python/composeio/render/widgets/gauge.py`) — one more style MODE beside `dial` and `semicircle`, per [CXC-ICV-GAUGE]'s ratified "generalize, don't fork". NOT a new engine class; NOT a `components:` composite. API mirrors the dial exactly: `namespace`, `min_val`, `max_val`, `label`, `warning_threshold`/`danger_threshold`, plus `orientation`. Namespace binding, the `on_bus_state` float/dict hook, the registry entry, and the parser branch are all reused unchanged.
+- why a code widget here (and NOT one of the six [CXC-PRIM-WHY] composites): the six are INPUT primitives (slider/switch/dropdown/…) whose value IS being inspectable-and-forkable, because David will rarely use their default look. A fader is a READOUT in the gauge family (dial/semicircle/bar) — its value is a stable, `namespace:`-bound API, not a look to fork. Forking it as a rect-and-DSL composite is exactly the brittleness this fact retires (see the change record). So it earns the gauge's code style-mode, while the input primitives stay composites — the discipline splits on input-to-fork vs. readout-with-a-stable-API, not on "code vs. composite" as a blanket rule.
+- change: "The dual-throttle pot-calibration bar is a first-class namespace-bound widget (`gauge` `style: bar`), not a hand-composed scene fragment."
+- context_for_change:
+  - prior_state: "The throttle calibration view was a hand-authored `pixel_stack` of `rect` children whose fill HEIGHT was driven by inline `ns('throttle/left')`-style geometry expressions — a one-off per scene, brittle to DSL string-literal quoting, and not reusable."
+  - reasoning: "David asked whether the calibration bar 'should have its own namespace and be a real ComposeUX widget'. It should: a fill/fader is a readout gauge, and the gauge already carries the exact clean API (`namespace`/`min_val`/`max_val`/`label`/thresholds) plus its bus hook and cross-backend Canvas-contract draw. Adding `style: bar` reuses all of it and follows [CXC-ICV-GAUGE] ('generalize, don't fork'); the scene becomes two `namespace:`-bound widgets + a title with zero hand-wired `ns()` geometry."
+  - rejected_alternative: "A new `fader`/`bar` engine Widget subclass — rejected: it would duplicate the gauge's value/threshold/bus API for no gain and split a readout family across two classes. Also rejected: a `components:` composite in the [CXC-PRIM-CATALOG] family — that is the correct home for a FORKABLE input, but re-introduces the exact rect+DSL-geometry brittleness this change retires, for a widget whose value is its bound API, not its look."
+  - invalidating_assumption: "That a fader's default look will be forked as often as a slider's. If a scene needs a bespoke fader look, it forks the drawing (a gauge style variant) — the tokens ([CXC-PRIM-TOKENS]) still bind the family; the namespace API is unchanged."
+  - implication: "The gauge is now the single readout home for dial + semicircle + linear-fill; `orientation` is the fader's axis/origin selector. The demo scene is `render/examples/calib_throttle.compose.yaml`."
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 4. The Two New Interaction Seams
+
+### [CXC-PRIM-DRAGVAL] Drag-to-Value (the slider needs this)
+
+- gap: the engine already delivers `on_pan_start/on_pan/on_pan_end` to widgets ([CXC-RM-M1]) and publishes tap/long_press interactions, but there is no primitive that converts a drag into a **normalized value published to a namespace**.
+- contract: a small, reusable interaction behavior — a draggable region maps pointer position along its axis to a `[min,max]` value (respecting `step`) and publishes it to a namespace. Modes: **live** (publish on every `on_pan`) or **on_release** (publish once on `on_pan_end`). Deterministic + bus-native: an Intelligence can "drag" by publishing the value directly, identical to a finger.
+- reuse: this is the same "state on the bus, behavior in the widget" model; the slider's thumb position is a normal bound expression on the published value, so the visual is pure composite — only the *input* (pan→publish) is the new seam.
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-REPEAT] The `repeat` Generator (the segment_bar needs this; keyboard/numpad want it)
+
+- gap: the component expander ([14-composer-components]) substitutes `{{param}}` into a FIXED template — it cannot emit a *variable* number of children from a count param. An N-segment bargraph, and cleanly-generated key grids, need "clone this child N times, indexed."
+- decision: build a **code widget for this? NO** — that would be the first primitive to break define-once (needing a separate C++/CYD implementation) and would lock the look. Instead add a minimal **`repeat` construct** to the expander: a child carrying `repeat: <count> as: <name>` is unrolled at load into `count` concrete children, substituting the integer index token (`{{i}}`) 0..count-1 (and `{{count}}`). Nothing more — no load-time arithmetic engine.
+- key-insight (why it stays tiny): the **runtime DSL already exists** ([SPEC:CXC-DSL]), so ALL per-index logic lives in a normal bound expression, not the generator. The generator only substitutes the integer index as a literal; the expression does the math. A segment's color is one binding: `fill_color: { expr: "ns('{{value_ns}}') * {{count}} >= {{i}} + 1 ? ({{i}} < {{green}} ? '<greenhex>' : {{i}} < {{green}}+{{yellow}} ? '<yellowhex>' : '<redhex>') : '<dimhex>'" }` — lit/dim AND green/yellow/red zone in one expression, index/counts substituted as literals at load. (A `rect` binds `fill_color`, not `color` — the DSL result `'#RRGGBB'` is coerced to RGBA by the site since `fill_color ∈ COLOR_ATTRS`.) This is a direct dividend of building the DSL before the widgets.
+- reuse: `repeat` generalizes — keyboard/numpad key grids become generated rows rather than hand-listed (a follow-on refactor, not required now); tick marks, gauge ticks, any repeating structure.
+- composition: `repeat` runs in the same load-time expansion pass as `{{param}}`/`use:`; nested `repeat` and `repeat` inside a `use:` component must compose. Layout keys ([14] `_LAYOUT_KEYS`) on the repeated child apply per-copy so the container lays them out (a horizontal/vertical row of segments).
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-POPUP] Popup-List Overlay (the dropdown needs this)
+
+- gap: dropdown needs a transient overlay list with select + outside-dismiss. Overlay mechanics already exist (the Command arm-confirm + BusMonitor pop-out use `DialogWidget`); what's missing is a **list-select popup** as a reusable interaction.
+- contract: a popup surface anchored to the field, rendering an item list; an item tap publishes the selected value to a namespace and dismisses; an outside tap / escape dismisses without change. Reuse the existing dialog/overlay layer rather than inventing a second overlay system.
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 5. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-PRIM-C1 | Composites, not code widgets | Each primitive is a `components:` entry expanded by `expand_components`; no new engine `Widget` subclass is required for the four pure composites |
+| CXC-PRIM-C2 | Forkable | A demo `.compose.yaml` uses `{use: <name>, …}`; cloning the component and changing tokens restyles it with no engine change |
+| CXC-PRIM-C3 | Shared tokens | All six render in the ratified token set ([CXC-PRIM-TOKENS]); pre-vis is the visual reference |
+| CXC-PRIM-C4 | progress_bar | fill width tracks a bound value 0..1; warn threshold flips color via binding, not a new widget |
+| CXC-PRIM-C5 | switch | tap toggles a binary namespace; knob position is a bound expression on that state |
+| CXC-PRIM-C6 | slider | `on_pan` publishes a normalized value ([CXC-PRIM-DRAGVAL]); thumb tracks the published value; an Intelligence publish moves it identically |
+| CXC-PRIM-C7 | dropdown | item selection publishes + dismisses via the popup overlay ([CXC-PRIM-POPUP]); outside tap dismisses without change |
+| CXC-PRIM-C8 | numpad / keyboard | key presses edit a target text namespace a `text_input` consumes |
+| CXC-PRIM-C9 | Backends | Each composite renders via the Canvas contract with no per-backend widget code (define-once) |
+| CXC-PRIM-C10 | repeat generator | `repeat: N as: i` unrolls a child into N concrete children with `{{i}}` = 0..N−1 at load; composes with `{{param}}` and `use:`; no new per-backend code |
+| CXC-PRIM-C11 | segment_bar | An N-segment bar lights `floor`/threshold segments by a bound value, zoned green/yellow/red by count params, in horizontal or vertical orientation; all per-segment logic is one DSL expression |
+| CXC-PRIM-C12 | fill/fader ([CXC-PRIM-FADER]) | `gauge` `style: bar` fills a track by a `namespace:`-bound value's fraction of `[min_val,max_val]`; `orientation: vertical` fills bottom->top, `horizontal` left->right; the fill warms on `warning_threshold`/`danger_threshold`; the dial/semicircle rendering is byte-unchanged (a new style branch only) |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-PRIM] USES [14-composer-components]
+[SPEC:CXC-PRIM] USES [SPEC:CXC-BIND]
+[SPEC:CXC-PRIM] USES [SPEC:CXC-DSL]
+[CXC-PRIM-DRAGVAL] EXTENDS [CXC-RM-M1]
+[CXC-PRIM-POPUP] REUSES [CXC-R-DIALOG]
+[CXC-PRIM-FADER] REALIZES [CXC-ICV-GAUGE]
+
+---
+
+**Version**: 0.3
+**Created**: 2026-07-09
+**Status (0.3, 2026-07-28, [CXC-PRIM-FADER])**: the linear fill/fader readout landed as `gauge` `style: "bar"` (+ `orientation: vertical|horizontal`) — NOT a new class, NOT a composite — reusing the gauge's namespace/threshold/bus API and Canvas-contract draw. It retires the hand-wired `pixel_stack`+`rect`+`ns()`-geometry throttle calibration fragment: `render/examples/calib_throttle.compose.yaml` is now two `namespace:`-bound bars (throttle/left|right, continuous_0_255) + a title, zero hand-wired geometry exprs. 11 unit tests (`tests/render/test_gauge_bar.py`: fill-fraction monotonicity + ~half-at-midpoint, vertical bottom-up + horizontal left-right origin, threshold warming, measure/style routing, and the calib-scene namespace binding driven over the bus). Pixel proof: `captures/calib_throttle/` (scene at L/R = 0/0, 128/64, 255/200; a 0/128/255 fill strip; a horizontal level meter). Full render suite green (2094 passed; the one failure — `test_agents_skills::test_publisher_reads_real_repo_set` expecting a `console-up` skill — is a pre-existing `.claude` skill-registry drift, orthogonal to this change). Opus tier (composition, not render-systems depth); Fable correctly not used.
+
+**Status (0.2, 2026-07-09)**: OPERATIONAL. All seven composites landed (`render/examples/components/{progress_bar[,_indeterminate],switch,numpad,keyboard,slider,dropdown,segment_bar}.compose.yaml`) — Sonnet built the four pure composites, Opus built slider/dropdown + segment_bar/repeat. **633 tests green macOS**, zero regressions (`test_primitives_composites.py` 20, `test_primitives_interactive.py` 13, `test_component_repeat.py` 14, `test_segment_bar.py` 8). Aesthetic ratified from the pre-vis; Fable correctly not used.
+
+Engine seams REALIZED (each earned its keep, ratified 2026-07-09):
+- **[CXC-PRIM-DRAGVAL]** → `render/engine/drag_value.py` (`DragValueController` + declarative `drag_value:` block; base-`Widget` pan delegation). Publish-only, deterministic: dragging to a value and *directly publishing* it land the thumb at the identical pixel (Intelligence "drags" byte-identically to a finger).
+- **[CXC-PRIM-POPUP]** → `DialogWidget` list-select mode (`options` + `select_namespace` + `anchor`); reuses the existing overlay, no second system.
+- **[CXC-PRIM-REPEAT]** → `render/engine/components.py` (`repeat: N as: i` unrolls at load; composes with `{{param}}`/`use:`/nesting via a `known`-scope token rule that leaves un-owned tokens intact). Generalizes to keyboard/numpad key grids (a queued follow-on refactor).
+- **NEW — bindable pixel-stack geometry** (promote into [SPEC:CXC-BIND]): `x/y/w/h` are now bindable (→ `stack_x/y/w/h`), and a *bound* geometry value resolves as ABSOLUTE PIXELS (not the `0..1⇒fraction` shorthand) — this is what makes the slider's visual a pure bound composite.
+- **orient vocabulary**: `build_node` now aliases `horizontal→row`, `vertical→column` (`_DIRECTION_ALIASES`), so every primitive accepts David's `horizontal|vertical` terms; segment_bar's param carries that spelling.
+
+Reconciliations / findings:
+- spec sketch's `color:` corrected to `fill_color:` (a `rect` has no bindable `color`).
+- **string-accumulation gap** (numpad/keyboard): a key publish is last-key-wins, not append — the DSL has no string-concat and there is no read-modify-write publish site outside headless `outputs:` ticks. Per [CXC-BIND-BOUNDARY], a companion bus workload / Intelligence is the intended text accumulator (documented in both configs). A harvested need — candidate for a future text-accumulate site or a DSL string op.
+- **binary-engine convention gap** (pre-existing, found via the switch): `publish_value: toggle` hardcodes numeric `0/1`, which the binary state engine's `['off','on']` domain rejects. Worked around (discrete-literal pills); the underlying `toggle`↔binary mismatch is flagged for a runtime fix, not addressed here.
+- theme: only dark tokens wired (engine `design.theme` isn't runtime-switchable yet); light hex noted in comments.

@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Bake the colonial_console CHROME SVG bundled with the render engine
+([SPEC:CXC-CIC] [CXC-CIC-SVG-MAP]).
+
+David authors the full colonial-console mockup in Inkscape
+(``compose_projects/bsg/resources/screen_base_layout/colonial_base_ux.svg``) —
+a 1.7 MB file that also carries reference-art layers, per-console content, and
+the ``*-for-inspiration-not-coding`` placeholders.  The RENDER ENGINE needs only
+the CHROME subtrees (the master-mask frame + decorators + the modal dialog) and
+must be self-contained (no project-tree dependency at draw time, like the bundled
+DRADIS scene + font atlas).  This script EXTRACTS the named chrome subtrees VERBATIM
+(same path data, same coordinates, same transforms — David aligned all artwork to
+the 0,0 upper-left corner, so the SVG pixel placement is directly usable) and writes
+a small trimmed SVG next to the widget.
+
+Reuse, not fork: the extraction rides the existing SVG model + the named-resource
+walk (``composeio.maker.svg_resources``); serialization rides the model's own
+``_serialize_node``.  The output is BYTE-STABLE (same input -> same file), so it is
+a committed, regenerable asset (the ``generate_dradis_lottie`` / ``bake_lottie_sprite``
+pattern).
+
+Usage:
+    python -m scripts.bake_cic_chrome_svg          # regenerate the bundled chrome
+    python scripts/bake_cic_chrome_svg.py --check   # verify it is up to date
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PY_ROOT = os.path.abspath(os.path.join(HERE, os.pardir))
+if PY_ROOT not in sys.path:
+    sys.path.insert(0, PY_ROOT)
+
+from composeio.maker.svg_resources import load_svg  # noqa: E402
+from composeio.render.svg.model import SvgNode, _serialize_node  # noqa: E402
+
+# The tracked art source (project tree, relative to the repo root).
+_REPO_ROOT = os.path.abspath(os.path.join(PY_ROOT, os.pardir))
+SOURCE_SVG = os.path.join(
+    _REPO_ROOT, "compose_projects", "bsg", "resources",
+    "screen_base_layout", "colonial_base_ux.svg")
+
+# The bundled output (lives beside the widget, shipped with the engine).
+# [CXC-PROJECT-WIDGETS] the bundled offline-fallback art lives with the BSG
+# project-local cic module now (moved out of the engine core).
+OUT_SVG = os.path.join(_REPO_ROOT, "compose_projects", "bsg", "widgets", "cic",
+                       "colonial_console_chrome.svg")
+
+# The CHROME layer vocabulary this engine renders as EXACT SVG art
+# ([CXC-CIC-SVG-MAP]: frame/decorators/dialog/tabs = extract-the-exact-shape).
+# Order is the serialization order in the bundle; widgets pick elements BY LABEL
+# (no widget renders the whole bundle in order), so z-order lives in the
+# colonial_console layer stack, NOT here.  The tab GROUPS are extracted verbatim:
+# ``row3-tabs`` carries the per-tab artwork template (``row3-tab1-artwork``) that
+# the sub-tab row TILES across N menu-driven tabs, plus the status band
+# (``row3-tab-status-bar-artwork`` + the dynamic ``selected-tab-id-number`` /
+# ``selected-tab-status-label`` placeholders stamped with live status); ``row2-tabs``
+# carries BOTH the console-selector ``row2-tab-selected-artwork`` pill AND the
+# ``row2-tab-background`` tab-cell band (a descendant of ``row2-tabs``, so it rides
+# in verbatim — no separate extraction).  ``radio-button-group-bounding-box`` is a
+# tiny placement rect (never drawn) whose viewBox geometry positions the
+# ``colonial_radio_buttons`` widget in the row1 button bar.  David's SVG is the
+# source of truth ([DEC-COLONIAL-OS-SVG-IS-SOURCE-OF-TRUTH]) — we render his
+# EXACT shapes at their SVG placement, never an approximation.
+CHROME_LABELS = [
+    "screen-area",                 # BACK layer: the black screen frame-of-reference
+    "row3-tabs",                   # sub-tab artwork template + status band + dynamic text
+    "row2-tabs",                   # console selector row: tab-cell background band + pill
+    "row1-button-bar",             # REBOOT / SHUT DOWN button shapes + firmware text
+    "standard_ux_shape_element",   # THE master-mask amber frame (the hole = screen)
+    "decorators",                  # left/right amber+highlight frame decorators
+    "overlay-dialog-box",          # the modal dialog group (drawn only when active)
+    "radio-button-group-bounding-box",  # placement-only rect for the radio widget
+]
+
+
+def _find_by_label(node: SvgNode, label: str):
+    if node.attrs.get("label") == label:
+        return node
+    for ch in node.children:
+        found = _find_by_label(ch, label)
+        if found is not None:
+            return found
+    return None
+
+
+def build_chrome_svg(source: str = SOURCE_SVG) -> str:
+    doc = load_svg(source)
+    vb = doc.viewbox
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'xmlns:xlink="http://www.w3.org/1999/xlink" '
+        f'width="{doc.width}" height="{doc.height}" '
+        f'viewBox="{vb[0]} {vb[1]} {vb[2]} {vb[3]}">',
+        "<!-- GENERATED by python/scripts/bake_cic_chrome_svg.py from "
+        "compose_projects/bsg/resources/screen_base_layout/colonial_base_ux.svg "
+        "([SPEC:CXC-CIC]).  Do not hand-edit; re-bake after David re-exports. -->",
+    ]
+    missing = []
+    for label in CHROME_LABELS:
+        node = _find_by_label(doc.root, label)
+        if node is None:
+            missing.append(label)
+            continue
+        out: list = []
+        _serialize_node(node, "", out)
+        parts.append("\n".join(out))
+    parts.append("</svg>\n")
+    if missing:
+        raise SystemExit(f"chrome labels missing from source SVG: {missing}")
+    return "\n".join(parts)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Bake the CIC chrome SVG.")
+    ap.add_argument("--source", default=SOURCE_SVG)
+    ap.add_argument("--out", default=OUT_SVG)
+    ap.add_argument("--check", action="store_true",
+                    help="fail if the bundled file is stale, do not write")
+    args = ap.parse_args(argv)
+
+    content = build_chrome_svg(args.source)
+    if args.check:
+        if not os.path.exists(args.out):
+            print(f"MISSING: {args.out}")
+            return 1
+        with open(args.out, "r", encoding="utf-8") as fh:
+            current = fh.read()
+        if current != content:
+            print(f"STALE: {args.out} differs from a fresh bake")
+            return 1
+        print(f"OK: {args.out} is up to date")
+        return 0
+    with open(args.out, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    print(f"wrote {args.out} ({len(content)} bytes)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

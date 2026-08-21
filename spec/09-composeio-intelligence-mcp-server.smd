@@ -1,0 +1,609 @@
+---
+scope: "MCP server specification for Intelligence participation on the ComposeIO bus — deployment, transport, tool taxonomy, lifecycle management, and operational model"
+audience: "Intelligence developers (Claude Code users), infrastructure operators deploying the server, ComposeUX developers consuming intelligence commands"
+boundary: "MCP server behavior only; Intelligence command taxonomy in ux_composer/specs/06-composer-intelligence-api.smd; bus protocol in 01-composeio-bus-protocol.smd; app framework in 08-composeio-app-framework.smd"
+not-this: "Not the Intelligence API itself (that's spec 06); not the bus protocol; not the MCP protocol specification (that's Anthropic's); not LLM prompting strategy"
+depends-on: [01-composeio-bus-protocol.smd, 08-composeio-app-framework.smd, "../ux_composer/specs/06-composer-intelligence-api.smd"]
+---
+
+# ComposeIO Intelligence MCP Server [SPEC:CIO-MCP]
+
+> An Intelligence (Claude Code, or any MCP-capable agent) participates on the
+> ComposeIO bus by calling tools exposed by this MCP server. The server translates
+> MCP tool calls into bus messages and bus events into tool responses. The
+> Intelligence never touches MQTT directly — the MCP server is the bridge.
+
+---
+
+## 1. Architecture [MCP-ARCH]
+
+### 1.1 Deployment Topology [MCP-ARCH-TOPOLOGY]
+
+```
+David's Mac                          mqtt-broker.local
+┌────────────────────┐               ┌──────────────────────────────────┐
+│  Claude Code       │               │                                  │
+│                    │   SSE/HTTP     │  ComposeIO MCP Server (:8433)    │
+│  MCP Client ───────┼──────────────▶│    │                             │
+│                    │               │    ├─ MQTT client (localhost:1883)│
+│                    │               │    ├─ Intelligence lifecycle      │
+│                    │               │    └─ Tool ↔ bus message mapping  │
+└────────────────────┘               │                                  │
+                                     │  MQTT Broker (:1883)             │
+                                     │    │                             │
+                                     │    ├─ composeio/global/...       │
+                                     │    └─ composeio/global/composer/ │
+                                     │         intelligence/...         │
+                                     └──────────────────────────────────┘
+                                               │
+                                     ┌─────────┴──────────┐
+                                     │  ComposeUX          │
+                                     │  (any machine)      │
+                                     │  Design bus ↔ MQTT  │
+                                     └────────────────────-┘
+```
+
+**Key decisions:**
+
+1. The MCP server runs on **mqtt-broker.local**, not on the Intelligence's machine. This co-locates it with the MQTT broker for zero-latency bus access.
+
+2. The Intelligence (Claude Code) connects via **SSE over HTTP** — the MCP remote transport. No MQTT client needed on the Intelligence's machine.
+
+3. The MCP server connects to MQTT on **localhost:1883** (same machine). Bus messages never cross the network between MCP server and broker.
+
+4. ComposeUX connects to the same MQTT broker. The MCP server and ComposeUX are peers on the bus — neither knows or cares about the other's implementation. They communicate through namespaces.
+
+### 1.2 The MCP Server as a ComposeApp [MCP-ARCH-APP]
+
+The MCP server IS a ComposeApp (spec 08). It uses the dual-bus architecture:
+
+- **Internal bus**: In-process. Manages tool state, pending request/response correlations, heartbeat timer, connection tracking.
+- **External bus**: MQTT to `localhost:1883`. Carries all Intelligence namespace traffic per spec 06.
+
+Exported namespaces (internal → external):
+- `composer/intelligence/joined`
+- `composer/intelligence/left`
+- `composer/intelligence/heartbeat`
+- `composer/intelligence/intent`
+- `composer/intelligence/suggestion`
+- `composer/intelligence/request_state`
+- `composer/intelligence/request_layout`
+- `composer/intelligence/validate`
+
+Imported namespaces (external → internal):
+- `composer/intelligence/error`
+- `composer/intelligence/state_snapshot`
+- `composer/intelligence/layout_snapshot`
+- `composer/intelligence/validation_result`
+- `composer/intelligence/cancel`
+
+The command namespaces (`composer/canvas/*`, `composer/binding/*`, `composer/config/*`, `composer/file/*`) are published directly to the external bus — they are ComposeUX's internal bus namespaces that ComposeUX imports from its design bus.
+
+### 1.3 Transport: SSE over HTTP [MCP-ARCH-SSE]
+
+The MCP server exposes a single HTTP endpoint for the MCP protocol:
+
+```
+http://mqtt-broker.local:8433/sse
+```
+
+The MCP SSE transport:
+- Client sends tool calls as HTTP POST to a messages endpoint
+- Server streams responses and notifications as Server-Sent Events
+- Connection is persistent (long-lived HTTP/1.1 with chunked transfer)
+- Automatic reconnection on network interruption (MCP protocol handles this)
+
+**Claude Code configuration** (on David's Mac):
+
+```json
+{
+  "mcpServers": {
+    "composeio": {
+      "type": "sse",
+      "url": "http://mqtt-broker.local:8433/sse"
+    }
+  }
+}
+```
+
+---
+
+## 2. Intelligence Lifecycle Management [MCP-LIFECYCLE]
+
+The MCP server manages the Intelligence lifecycle (spec 06) automatically. The Intelligence does NOT need to manually join/leave or heartbeat.
+
+### 2.1 Auto-Join [MCP-LIFECYCLE-JOIN]
+
+When an MCP client connects (first tool call or explicit connect):
+1. Server generates an `agent_id`: `claude-{session_hash[:8]}` (e.g., `claude-a1b2c3d4`)
+2. Server publishes `composer/intelligence/joined` with capabilities derived from available tools
+3. Server starts heartbeat timer (10-second interval)
+4. Server returns the `agent_id` to the client (included in the first tool response)
+
+### 2.2 Auto-Heartbeat [MCP-LIFECYCLE-HEARTBEAT]
+
+The server publishes `composer/intelligence/heartbeat` every 10 seconds with:
+- `agent_id`: The session's agent ID
+- `active_task`: Description of the most recent tool call (updated on each call)
+
+The Intelligence does not need to call a heartbeat tool. The server handles it.
+
+### 2.3 Auto-Leave [MCP-LIFECYCLE-LEAVE]
+
+When the SSE connection drops (client disconnects, network failure, timeout):
+1. Server publishes `composer/intelligence/left`
+2. Server stops heartbeat timer
+3. Server cleans up pending request/response correlations
+
+### 2.4 Session State [MCP-LIFECYCLE-STATE]
+
+The server maintains per-session state:
+
+| State | Type | Description |
+|-------|------|-------------|
+| `agent_id` | string | Unique ID for this session |
+| `connected_at` | datetime | When the session started |
+| `last_tool_call` | datetime | When the last tool was called |
+| `active_task` | string | Description of current work (for heartbeat) |
+| `pending_requests` | dict | Correlation IDs for request/response patterns |
+| `batch_id` | string | Current batch ID (if in batch mode), else None |
+| `batch_index` | int | Next batch index |
+
+---
+
+## 3. Tool Taxonomy [MCP-TOOLS]
+
+Tools are organized by the Intelligence API workflow phases (spec 06 section 3). Each tool maps to one or more bus messages. Tool names use the `composeio_` prefix.
+
+### 3.1 Observation Tools [MCP-TOOLS-OBSERVE]
+
+#### `composeio_get_state`
+
+Request a full design state snapshot. Blocks until response received (timeout 5s).
+
+**Parameters**: None
+
+**Returns**: The full DesignDocument as JSON, plus current namespace values, connection status, and selection state. Matches `composer/intelligence/state_snapshot` payload.
+
+**Bus flow**:
+1. Publish `composer/intelligence/request_state` with correlation ID
+2. Subscribe to `composer/intelligence/state_snapshot`
+3. Wait for matching response (timeout 5s)
+4. Return snapshot to Intelligence
+
+#### `composeio_get_layout`
+
+Request spatial layout of the current design (pixel positions, overlap detection).
+
+**Parameters**:
+- `target`: `"preview"` or `"canvas"` (default: `"preview"`)
+
+**Returns**: Layout data from `composer/intelligence/layout_snapshot`.
+
+#### `composeio_validate`
+
+Request design validation. Returns errors and warnings.
+
+**Parameters**: None
+
+**Returns**: Validation result from `composer/intelligence/validation_result`.
+
+#### `composeio_get_namespaces`
+
+List all namespaces on the design bus with current values.
+
+**Parameters**: None
+
+**Returns**: Namespace registry from the external bus. This is a local query on the MCP server's bus instance — no round-trip to ComposeUX needed.
+
+### 3.2 Structure Tools [MCP-TOOLS-STRUCTURE]
+
+#### `composeio_add_module`
+
+Add a module to the design.
+
+**Parameters**:
+- `module_id`: string (e.g., `"ftl_panel"`)
+- `role`: string (e.g., `"button-matrix"`)
+- `grid_row`: int (default: 0)
+- `grid_column`: int (default: 0)
+
+**Bus message**: Publishes to `composer/canvas/module_added`.
+
+#### `composeio_remove_module`
+
+**Parameters**:
+- `module_id`: string
+
+**Bus message**: Publishes to `composer/canvas/module_removed`.
+
+#### `composeio_add_widget`
+
+Add a widget to a module.
+
+**Parameters**:
+- `widget_id`: string (e.g., `"btn_arm"`)
+- `widget_type`: string (e.g., `"ButtonWidget"`)
+- `module_id`: string — the parent module
+- `namespace`: string — the namespace this widget is bound to
+- `properties`: dict (optional) — widget-specific properties
+- `row`: int (default: 0)
+- `column`: int (default: 0)
+
+**Bus message**: Publishes to `composer/canvas/widget_added`.
+
+#### `composeio_remove_widget`
+
+**Parameters**:
+- `widget_id`: string
+
+**Bus message**: Publishes to `composer/canvas/widget_removed`.
+
+#### `composeio_add_namespace`
+
+Register a namespace in the design.
+
+**Parameters**:
+- `name`: string (e.g., `"ftl_arm"`)
+- `label`: string (optional, human-readable)
+- `state_engine`: string or dict (e.g., `"binary"` or `{"type": "enum", "values": [...]}`)
+- `scope`: string (default: `"auto"`)
+- `authority`: string (default: `"local"`)
+
+**Bus message**: Publishes to `composer/config/namespace_changed` with `action: "created"`.
+
+### 3.3 Layout Tools [MCP-TOOLS-LAYOUT]
+
+#### `composeio_move_widget`
+
+**Parameters**:
+- `widget_id`: string
+- `row`: int
+- `column`: int
+
+**Bus message**: Publishes to `composer/canvas/widget_moved`.
+
+#### `composeio_resize_widget`
+
+**Parameters**:
+- `widget_id`: string
+- `rowspan`: int
+- `columnspan`: int
+
+**Bus message**: Publishes to `composer/canvas/widget_resized`.
+
+### 3.4 Configuration Tools [MCP-TOOLS-CONFIG]
+
+#### `composeio_set_property`
+
+Change a widget, module, or namespace property.
+
+**Parameters**:
+- `target_type`: `"widget"` | `"module"` | `"namespace"`
+- `target_id`: string (widget_id, module_id, or namespace name)
+- `property`: string (property name)
+- `value`: any (new value)
+
+**Bus message**: Publishes to `composer/config/widget_changed`, `composer/config/module_changed`, or `composer/config/namespace_changed` depending on `target_type`.
+
+### 3.5 Binding Tools [MCP-TOOLS-BINDING]
+
+#### `composeio_create_binding`
+
+**Parameters**:
+- `binding_id`: string
+- `binding_type`: `"simple"` | `"compound"` | `"event_triggered"`
+- `config`: dict — binding configuration (source/target/transform for simple, output/requires/conditions for compound, trigger/sequence/side_effects for event)
+
+**Bus message**: Publishes to `composer/binding/created`.
+
+#### `composeio_modify_binding`
+
+**Parameters**:
+- `binding_id`: string
+- `config`: dict — updated configuration
+
+**Bus message**: Publishes to `composer/binding/modified`.
+
+#### `composeio_remove_binding`
+
+**Parameters**:
+- `binding_id`: string
+
+**Bus message**: Publishes to `composer/binding/removed`.
+
+### 3.6 File Tools [MCP-TOOLS-FILE]
+
+#### `composeio_save`
+
+Save the current design to a .compose.yaml file.
+
+**Parameters**:
+- `path`: string (file path on the machine running ComposeUX)
+
+**Bus message**: Publishes to `composer/file/saved`.
+
+#### `composeio_load`
+
+Load a design from a .compose.yaml file.
+
+**Parameters**:
+- `path`: string
+
+**Bus message**: Publishes to `composer/file/loaded`.
+
+#### `composeio_export`
+
+Export the design to ComposeIO module YAML files.
+
+**Parameters**:
+- `output_dir`: string
+
+**Bus message**: Publishes to `composer/file/exported`.
+
+### 3.7 Batch Tools [MCP-TOOLS-BATCH]
+
+#### `composeio_batch_begin`
+
+Start a batch operation. All subsequent structure/layout/config/binding tools are tagged with the batch ID until `composeio_batch_end` is called.
+
+**Parameters**:
+- `description`: string — what this batch does (shown to human)
+- `estimated_commands`: int (optional) — for progress indication
+
+**Behavior**:
+1. Generate batch ID
+2. Publish `composer/intelligence/intent` with description
+3. Set session state: `batch_id`, `batch_index = 0`
+4. Return batch ID
+
+All subsequent tool calls auto-increment `batch_index` and include `batch_id` + `batch_total` in the bus message data.
+
+#### `composeio_batch_end`
+
+Complete the current batch. Updates `batch_total` on all previously sent messages (the History module waits for `batch_total` messages before committing the batch as one undo unit).
+
+**Parameters**: None
+
+**Behavior**:
+1. Calculate final `batch_total` from `batch_index`
+2. Clear batch state
+3. Return summary
+
+**Note**: If the SSE connection drops mid-batch, the server publishes `composer/intelligence/left` and the History module discards the incomplete batch.
+
+### 3.8 Intent and Suggestion Tools [MCP-TOOLS-INTENT]
+
+#### `composeio_declare_intent`
+
+Declare what the Intelligence is about to do. Shown to human as toast notification.
+
+**Parameters**:
+- `description`: string
+- `affected_modules`: list[string] (optional)
+
+**Bus message**: Publishes to `composer/intelligence/intent`.
+
+#### `composeio_suggest`
+
+Make a non-imperative suggestion to the human.
+
+**Parameters**:
+- `suggestion`: string
+- `rationale`: string (optional)
+- `affected_ids`: list[string] (optional) — widget/module/binding IDs the suggestion relates to
+
+**Bus message**: Publishes to `composer/intelligence/suggestion`.
+
+### 3.9 Bus Monitor Tools [MCP-TOOLS-MONITOR]
+
+#### `composeio_bus_status`
+
+Get current bus status — connected transports, namespace count, active modules.
+
+**Parameters**: None
+
+**Returns**: Status dict from the MCP server's external bus instance.
+
+#### `composeio_publish_raw`
+
+Escape hatch: publish a raw bus message. For advanced use when no specific tool covers the operation.
+
+**Parameters**:
+- `namespace`: string
+- `type`: `"state"` | `"event"`
+- `value`: any (for state) or `event_type` + `data` (for event)
+
+**Bus message**: Direct publish to the specified namespace.
+
+---
+
+## 4. Request/Response Correlation [MCP-CORRELATION]
+
+Several tools (get_state, get_layout, validate) follow a request/response pattern:
+the MCP server publishes a request and waits for a response on a different namespace.
+
+### 4.1 Correlation Protocol [MCP-CORRELATION-PROTOCOL]
+
+1. Server generates a correlation ID: `mcp_{agent_id}_{sequence}`
+2. Server subscribes to the response namespace (if not already subscribed)
+3. Server publishes the request with the correlation ID in the data
+4. Server waits for a response with matching correlation ID (timeout: 5 seconds)
+5. Server returns the response payload as the tool result
+
+If timeout occurs, the tool returns an error: `"ComposeUX did not respond within 5 seconds. Is it running and connected to MQTT?"`
+
+### 4.2 Multiple Concurrent Requests [MCP-CORRELATION-CONCURRENT]
+
+The server supports multiple concurrent request/response pairs (e.g., get_state called while validate is pending). Each is tracked by its correlation ID in the `pending_requests` session state.
+
+---
+
+## 5. Deployment [MCP-DEPLOY]
+
+### 5.1 Docker Container [MCP-DEPLOY-DOCKER]
+
+The MCP server runs as a Docker container on mqtt-broker.local:
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+
+# Install composeio library first (local package, not on PyPI)
+COPY composeio_lib/ /tmp/composeio_lib/
+RUN pip install --no-cache-dir /tmp/composeio_lib/ && rm -rf /tmp/composeio_lib/
+
+# Install MCP server dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy MCP server code
+COPY intelligence_mcp/ ./intelligence_mcp/
+
+EXPOSE 8433
+CMD ["python", "-m", "intelligence_mcp", "--host", "0.0.0.0"]
+```
+
+**Build note**: The composeio library is not on PyPI. A build script (`build.sh`) copies it into the Docker build context from `../../python/` before building. See `services/intelligence_mcp/build.sh`.
+
+```yaml
+# docker-compose.yml (or K8s deployment)
+services:
+  composeio-mcp:
+    build: .
+    ports:
+      - "8433:8433"
+    environment:
+      - MQTT_BROKER=localhost
+      - MQTT_PORT=1883
+      - MCP_PORT=8433
+    restart: always
+    network_mode: host    # localhost MQTT access
+```
+
+### 5.2 K8s Deployment (Alternative) [MCP-DEPLOY-K8S]
+
+For K8s deployment on the existing K3s cluster:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: composeio-mcp
+  namespace: composeio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: composeio-mcp
+  template:
+    spec:
+      hostNetwork: true     # MQTT on localhost
+      containers:
+        - name: mcp
+          image: localhost:5000/composeio-mcp:latest
+          ports:
+            - containerPort: 8433
+          env:
+            - name: MQTT_BROKER
+              value: "localhost"
+            - name: MQTT_PORT
+              value: "1883"
+```
+
+### 5.3 Dependencies [MCP-DEPLOY-DEPS]
+
+```
+# requirements.txt
+paho-mqtt>=2.0
+aiohttp>=3.9        # Fallback SSE server (when mcp SDK not installed)
+composeio>=0.1      # ComposeIO Python library (local install, not on PyPI)
+# Optional: mcp>=1.0, starlette, uvicorn for MCP SDK mode
+```
+
+### 5.4 Boot Resilience [MCP-DEPLOY-RESILIENCE]
+
+Per mqtt-broker.local's boot resilience pattern:
+- Docker: `restart: always`
+- K8s: `restartPolicy: Always`
+- If MQTT broker is not yet available on startup, the server retries connection every 5 seconds (paho-mqtt auto-reconnect)
+- If no MCP client connects, the server is idle (no bus messages published, no heartbeat)
+- First MCP client connection triggers Intelligence join + heartbeat start
+
+---
+
+## 6. Monitoring [MCP-MONITOR]
+
+### 6.1 Prometheus Metrics [MCP-MONITOR-METRICS]
+
+The MCP server exposes Prometheus metrics at `http://mqtt-broker.local:8433/metrics`:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `composeio_mcp_tool_calls_total` | counter | Total tool calls, labeled by tool name |
+| `composeio_mcp_bus_messages_published` | counter | Bus messages published |
+| `composeio_mcp_bus_messages_received` | counter | Bus messages received |
+| `composeio_mcp_active_sessions` | gauge | Currently connected MCP clients |
+| `composeio_mcp_request_duration_seconds` | histogram | Request/response round-trip time |
+
+Scrape config for Prometheus (already running on mqtt-broker):
+
+```yaml
+- job_name: composeio-mcp
+  static_configs:
+    - targets: ['localhost:8433']
+  metrics_path: /metrics
+```
+
+### 6.2 Loki Logging [MCP-MONITOR-LOGGING]
+
+The server logs to stdout (captured by Docker/K8s → Promtail → Loki):
+- INFO: Tool calls, lifecycle events (join/leave), connection state
+- WARN: Timeouts, malformed tool parameters, MQTT reconnections
+- ERROR: MQTT connection failures, unhandled exceptions
+
+---
+
+## 7. Security [MCP-SECURITY]
+
+### 7.1 Network Access [MCP-SECURITY-NETWORK]
+
+The MCP server is accessible from the local network via mDNS (`mqtt-broker.local:8433`). It does NOT require authentication in v0.1 — the LAN is trusted.
+
+Future: TLS + API key authentication for remote Intelligence access.
+
+### 7.2 Intelligence Boundaries [MCP-SECURITY-BOUNDARIES]
+
+Per spec 06 section 10:
+- The MCP server enforces `source: "{agent_id}"` on all published messages
+- The MCP server does not expose tools that publish to `_bus/` infrastructure namespaces
+- The `composeio_publish_raw` escape hatch validates that the namespace does not start with `_bus/`
+- Review-mode agents (future) are restricted to observation tools only
+
+---
+
+## 8. Compliance [MCP-COMPLIANCE]
+
+A compliant ComposeIO MCP server MUST:
+
+1. **[MCP-C1]** Implement the Intelligence lifecycle (spec 06): auto-join on first tool call, auto-heartbeat every 10s, auto-leave on disconnect
+2. **[MCP-C2]** Tag all published messages with `source: "{agent_id}"`
+3. **[MCP-C3]** Support the SSE MCP transport for remote client access
+4. **[MCP-C4]** Implement request/response correlation with 5-second timeout for observation tools
+5. **[MCP-C5]** Support batch operations with atomic undo grouping
+6. **[MCP-C6]** Refuse to publish to `_bus/` infrastructure namespaces
+7. **[MCP-C7]** Cleanly disconnect (publish leave, stop heartbeat) when SSE connection drops
+
+A compliant implementation SHOULD:
+
+8. **[MCP-S1]** Expose Prometheus metrics for monitoring
+9. **[MCP-S2]** Support multiple concurrent MCP client sessions (multiple Intelligences)
+10. **[MCP-S3]** Log all tool calls at INFO level for audit trail
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-28
+**Status**: Draft — specification for review
+**Deployment Target**: mqtt-broker.local (Docker or K8s)
+**Depends-On**: 01-composeio-bus-protocol, 08-composeio-app-framework, ux_composer/specs/06-composer-intelligence-api

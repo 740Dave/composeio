@@ -1,0 +1,117 @@
+---
+scope: "Headless Pass 4 — the Headless Monitor (Diagnosis observability). The producer: the headless runtime instruments its tick loop and publishes per-widget trace/state/health to the reserved _bus/headless/<id>/* namespaces (opt-in, throttled), backed by a new DSL trace mode. The viewer: one define-once ComposeUX Monitor surface, hosted as a Flow pop-out and a standalone ops app. Realizes the Diagnosis half of [CXC-HW-INTROSPECT]; the Confirmation half shipped in Pass 3."
+audience: "ComposeUX/ComposeIO architects, headless-runtime + DSL developers, Composer developers, fleet operators"
+boundary: "IN: tick-loop instrumentation, the DSL trace mode, the trace/state/health schema on _bus/headless/<id>/*, throttling, and the Monitor viewer + its two hosts. OUT: the Confirmation tier (live ports + heartbeat, shipped Pass 3, [CXC-FLAUTH-CONFIRM]); the DSL evaluator itself ([SPEC:CXC-DSL], extended not replaced); Flow authoring ([SPEC:CXC-FLAUTH], reused for the pop-out host)."
+not-this: "Not a new authority or a debugger that pauses execution (read-only observation of a running widget); not a bespoke debug channel (bus-native — the raw Bus Monitor + an Intelligence read the same trace); not always-on (opt-in per widget, throttled — never a 10 Hz firehose on a CAN bus)."
+depends-on: [20-composeux-headless-widgets.lts, 22-composeux-expression-dsl.lts, 24-composer-flow-headless-authoring.lts]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# ComposeUX Headless Monitor [SPEC:CXC-HMON]
+
+> Headless widgets are invisible; this makes them legible. The runtime publishes a per-widget tick trace, internal state, and health to `_bus/headless/<id>/*`; one Monitor surface consumes it. Because the DSL is deterministic, every tick is a clean, replayable record — you *see* which branch ran, on which inputs, and why nothing published. Pre-vis: `ux/headless-monitor-previs.v1.html`.
+
+---
+
+## 1. Intent
+
+### [CXC-HMON-INTENT] The Diagnosis Half
+
+- definition: realize the **Diagnosis** half of observability ([CXC-HW-INTROSPECT]) — *why did this tick produce that? what is the internal state?* — with (a) a producer that instruments the runtime tick loop and (b) a dedicated viewer. The **Confirmation** half (is it running / are ports moving) already shipped in Pass 3 ([CXC-FLAUTH-CONFIRM]); this builds on that seam (`HEADLESS_BUS_PREFIX`, the runtime heartbeat, the reserved "Inspect ▸" stub).
+- why now (not sooner): a producer needs a consumer to be testable/valuable, so they ship together; and real authored widgets (Pass 3) now exist to instrument what is actually worth tracing.
+- part-of: [SPEC:CXC-HMON]
+
+---
+
+## 2. The Producer
+
+### [CXC-HMON-TRACE] Instrument the Tick Loop
+
+- definition: when tracing is enabled for a widget (opt-in), each `RenderApp.tick(t)` (`engine/headless.py` / `runtime.py`) captures a **tick record** and the runtime publishes it to `_bus/headless/<widget_id>/trace`. The record: `t`, **inputs read** (namespace → value this tick), per output the **traced evaluation** (branch taken + intermediates + result, [CXC-HMON-DSL]), and **published-or-suppressed** (publish-on-change — the suppression is diagnostic: it explains why *nothing* changed).
+- part-of: [SPEC:CXC-HMON]
+
+### [CXC-HMON-DSL] DSL Trace Mode ("explain this evaluation")
+
+- definition: a new `Expression.evaluate_traced(ctx)` on the DSL ([SPEC:CXC-DSL]) that returns the value AND a trace of the AST walk — each `ns()`/`$var` read + value, each operator/function + operands + result, and for a ternary/short-circuit the **branch taken** and that the dead branch was NOT evaluated. It is a pure addition beside `evaluate` (same result, plus a record); the deterministic own-AST walker makes it clean.
+- reuse: this is generally useful beyond the Monitor — an "explain" for the inline expr editor ([CXC-FLAUTH-EXPR]) and for an Intelligence reasoning about a binding.
+- part-of: [SPEC:CXC-HMON]
+
+### [CXC-HMON-STATE] Internal State & Health
+
+- definition: the runtime also publishes `_bus/headless/<id>/state` — `$var` values, behavior timers (blink phase, ramp progress), schedule state (next fire for periodic, last trigger for bus-triggered), last-input-Δ — and extends the Pass-3 per-runtime health to per-widget `_bus/headless/<id>/health` (rate, tick count, last error, uptime).
+- part-of: [SPEC:CXC-HMON]
+
+### [CXC-HMON-THROTTLE] Opt-In + Throttled (never a firehose)
+
+- constraint: tracing is **opt-in per widget** and **throttled** — a 10 Hz full trace must never flood the bus (least of all a CAN transport). Model: the runtime keeps a **ring buffer of the last N ticks** and publishes on-change / on-request / at a sampled rate (not every tick). Enabling trace on a widget is a deliberate act (the Monitor requests it); default is off, so goldens/deterministic drives and production fleets are untouched (as the Pass-3 heartbeat already is).
+- part-of: [SPEC:CXC-HMON]
+
+---
+
+## 3. The Viewer
+
+### [CXC-HMON-VIEW] One Define-Once ComposeUX Surface
+
+- definition: the Monitor is itself a **ComposeUX surface** subscribing `_bus/headless/*` — it dogfoods the primitives ([SPEC:CXC-PRIM]: sparkline/progress, status pills, the trace list) and the DSL. For a selected widget it shows:
+  - **the annotated tick (hero)** — the output `expr` with the tick's live values substituted and the **taken branch lit / dead branch dimmed**, → the result, and a published/suppressed pill. This is the "why did this tick do that" made visible.
+  - **the tick timeline** — recent ticks (t, key inputs, output, pub/suppressed); **click to replay** any tick into the hero (the trace is a replayable record).
+  - **internal state** — `$vars`, timers, schedule state.
+  - **health** — a rate sparkline, uptime, tick count, last error.
+- part-of: [SPEC:CXC-HMON]
+
+### [CXC-HMON-HOSTS] Two Hosts, One Surface
+
+- definition: the same surface, two frames:
+  - **Flow pop-out** (dev loop) — launched from a Flow logic node's **"Inspect ▸"** (the Pass-3 reserved stub, now wired), scoped to ONE widget; reuses Composer's existing subprocess pop-out (as the Bus Monitor already does).
+  - **standalone ops app** (fleet) — a fleet rail of runtimes → widgets with health at a glance, drill into any one.
+- bus-native corollary: because it is all on `_bus/headless/*`, the raw Bus Monitor and an Intelligence read the identical trace — the Monitor is the ergonomic view, not the only one.
+- part-of: [SPEC:CXC-HMON]
+
+---
+
+## 4. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-HMON-C1 | Tick trace | With trace enabled, each tick publishes a record (inputs, per-output eval, published/suppressed) to `_bus/headless/<id>/trace` |
+| CXC-HMON-C2 | DSL trace mode | `Expression.evaluate_traced` returns the same value as `evaluate` PLUS a trace with branch-taken + intermediates; dead ternary branch recorded as not-evaluated |
+| CXC-HMON-C3 | Suppression visible | A publish-on-change suppression is represented in the trace (why nothing published) |
+| CXC-HMON-C4 | Internal state | `$vars` + behavior/schedule state publish to `_bus/headless/<id>/state` |
+| CXC-HMON-C5 | Per-widget health | Rate/ticks/last-error/uptime on `_bus/headless/<id>/health` |
+| CXC-HMON-C6 | Opt-in + throttled | Default OFF (goldens/deterministic drives untouched); enabled per widget; a ring buffer + sampled/on-change publish, not every tick |
+| CXC-HMON-C7 | Annotated hero | The viewer renders the output expr with the tick's live values + lit taken branch + result + pub/suppress |
+| CXC-HMON-C8 | Replay | Clicking a timeline tick replays it into the hero (the trace is a replayable record) |
+| CXC-HMON-C9 | Two hosts | The surface runs as a Flow pop-out (wired to the Pass-3 "Inspect ▸" stub) and as a standalone fleet app |
+| CXC-HMON-C10 | Bus-native | The raw Bus Monitor / an Intelligence can read the same `_bus/headless/*` trace |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-HMON] REALIZES [CXC-HW-INTROSPECT]
+[SPEC:CXC-HMON] EXTENDS [SPEC:CXC-DSL]
+[SPEC:CXC-HMON] BUILDS_ON [CXC-FLAUTH-CONFIRM]
+[CXC-HMON-HOSTS] USES [SPEC:CXC-FLAUTH]
+[CXC-HMON-VIEW] USES [SPEC:CXC-PRIM]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-07-10
+**Status**: OPERATIONAL (2026-07-10). CXC-HMON-C1…C10 all PASS. Delivered by Fable. **920 tests green** (662→+258, 0 regressions), `smoke_hmon_mqtt.py` 11/11 on real broker (runtime + Monitor + rig + a raw 4th peer — enable crosses the broker, a damage flip is annotated over the wire incl. a branch change AND a suppression), regression smokes 9/9 + 5/5.
+
+Producer: `dsl.Expression.evaluate_traced` → `EvalTrace{value, source, steps}` (JSON-native; reads+values, post-order intermediates, ternary/short-circuit branch-taken with the dead branch's span marked `dead_evaluated:false`) — **bit-exact IEEE-754 parity with `evaluate` over all 234 corpus cases + identical error class** (arithmetic extracted once into `_bin_core`/`_cmp_core`/`_call_core`, both walkers share it; a counting-reader test proves the dead namespace is never read). `RenderApp.tick` leaves `last_tick_record` when `trace_enabled` (default False — otherwise the exact pre-existing path); the runtime publishes `_bus/headless/<id>/{trace,state,health}` via a per-widget ring buffer (depth 32) at ≤`sample_s` (change/error sooner, floored at `change_min_s`) — **never per-tick** (500 ticks → ≤21 publishes). Enable is a bus publish to the control-plane `_bus/headless/<wid>/trace/ctl`.
+
+Default-off proven **byte-identical**, and trace-ON proven **observation-neutral** (traced-vs-untraced published event streams are EQUAL — since `evaluate_traced` returns `evaluate`'s value). Viewer: `composer/monitor.py` (`MonitorPane`, `annotate()`), the annotated-tick hero + replayable timeline + state + health sparkline, matched to the pre-vis. Two hosts: Flow **"Inspect ▸"** now publishes `composer/monitor/open` (Intelligence-openable) → subprocess `python -m composeio.composer.monitor` (or an in-window DialogWidget fallback); the standalone ops app is the same module without `--widget`, and on unmount it disables every trace it enabled (fleet left as found). Read-only throughout (only write = the ctl request; design document proven untouched).
+
+Ratified / recorded (David 2026-07-10, from Fable's SUMMARY):
+- **spans as an `id(node)→(start,end)` side table** — the corpus-pinned AST tuple shapes (shared with C++/JS) stay untouched; C++/CYD tracing intentionally NOT built (Diagnosis is a desktop-tier concern; the CYD never sees `trace_enabled`).
+- **NEW seam worth its own node — the trace control plane `_bus/headless/<wid>/trace/ctl`**: the first sanctioned *inbound* runtime-control namespace in the family (verbs: enabled/depth/sample_s/snapshot). Plus `dsl.EvalTrace`/`annotate` (the reusable "explain this evaluation" for the expr editor + Intelligence) and `Composition.variables`/`bindings.resolve_doc_variables` (resolved doc vars retained for observability).
+- **known constraint**: per-widget health reuses `health_namespace()` (`_bus/headless/<id>/health` for both runtime and widget ids); a widget id identical to its runtime id collides — a documented author error (Monitor disambiguates by payload `widget_ids`). A distinct suffix is the clean fix if it ever bites.
+- **eval-error tick** publishes on the change-rate-limit (an error is an event) and suppresses (`suppressed:"error"`), never silent.
+- **viewer-is-chrome (flag for David)**: the Monitor is drawn as engine **chrome via the Canvas contract + the DSL's own trace records** (the FlowPane precedent), NOT as a `.compose.yaml` surface using the YAML composite primitives — those weren't natural inside chrome. So "dogfoods the primitives" landed as *dogfoods the Canvas contract + DSL*, not the component composites. A fully-declarative Monitor would need a **custom-panel parser seam** (escalation boundary, same class as BINDEDIT drag-connect) — a deliberate future option, not built.
+- ops gotchas recorded in the living agent doc: a hand-built Monitor bus must `bus.start()` itself (RenderApp only starts buses it owns); `MQTTTransport` default `client_id` collides (rc=7) → the Monitor passes a pid-based id.
+
+The headless observability arc is now COMPLETE: Confirmation (Pass 3) + Diagnosis (Pass 4).

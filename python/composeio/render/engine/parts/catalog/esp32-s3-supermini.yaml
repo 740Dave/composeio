@@ -1,0 +1,141 @@
+# Part catalog entry — ESP32-S3 SuperMini (the tiny USB-C dev board).
+#
+# Maker-project-flow design lock §4: one multi-target def, N consumers.  A `part:`
+# reference in a scene's `hookup.parts` resolves here; wires in `hookup.wires` speak
+# the canonical `pins` below.
+#
+# SOURCED 2026-07-26 from David's community through-hole part
+# `esp32-S3-supermini-tht.fzpz` -> cached breadboard SVG at
+# `render/engine/parts/svg/esp32-s3-supermini.svg` (self-contained, 1001x709 viewBox,
+# 40 connectorNpin terminals).  UNLIKE the C3 SuperMini, this .fzp carries real pin
+# DESCRIPTIONS, so the pin->connector map below is AUTHORITATIVE from the part file
+# (not a positional guess): TX/RX + GPIO1..13 on the accessible edge header, power at
+# the tail, plus a bank of BOTTOM-ONLY GPIO pads and B-/B+ battery pads.
+#
+# The ESP32-S3 has far more IO than the C3: GPIO1..21 + GPIO33..48 are broken out
+# here (GPIO26..32 are the SoC's internal SPI flash/PSRAM and are NOT exposed).
+
+esp32-s3-supermini:
+  description: Espressif ESP32-S3 dual-core SoC on the tiny USB-C SuperMini dev board.
+
+  # Canonical pin map — the netlist (hookup.wires) speaks EXACTLY these names.
+  # A wire endpoint naming a pin not in this list is a hard parse error (S2).
+  # ACCESSIBLE EDGE HEADER (the castellated/through-hole pins you solder):
+  pins:
+    - 5V
+    - GND
+    - 3V3
+    - TX            # GPIO43 (U0TXD)
+    - RX            # GPIO44 (U0RXD)
+    - GPIO1
+    - GPIO2
+    - GPIO3
+    - GPIO4
+    - GPIO5
+    - GPIO6
+    - GPIO7
+    - GPIO8
+    - GPIO9
+    - GPIO10
+    - GPIO11
+    - GPIO12
+    - GPIO13
+    # BATTERY pads (bottom): a LiPo charge circuit's cell terminals.
+    - B-
+    - B+
+    # BOTTOM-ONLY GPIO pads (accessible from the underside; broken out on this board).
+    - GPIO14
+    - GPIO15
+    - GPIO16
+    - GPIO17
+    - GPIO18
+    - GPIO21
+    - GPIO33
+    - GPIO34
+    - GPIO35
+    - GPIO36
+    - GPIO37
+    - GPIO38
+    - GPIO39
+    - GPIO40
+    - GPIO41
+    - GPIO42
+    - GPIO45
+    - GPIO46
+    - GPIO47
+    - GPIO48
+
+  # MCU capability hint for the config-emitter (S4): the pins that back an ADC
+  # channel and can read an analog `publishes:` slot.  ESP32-S3 ADC1 = CH0..CH9 on
+  # GPIO1..GPIO10 (the WiFi-safe set; ADC2 GPIO11..20 is unreliable with the radio on).
+  adc_pins:
+    - GPIO1
+    - GPIO2
+    - GPIO3
+    - GPIO4
+    - GPIO5
+    - GPIO6
+    - GPIO7
+    - GPIO8
+    - GPIO9
+    - GPIO10
+
+  # Hookup-SVG art (S3).  Real community THT footprint (David-supplied .fzpz, cached).
+  fritzing: esp32-s3-supermini.svg
+  fritzing_part: "ESP32-S3 SuperMini (THT)"
+  fritzing_source: "David-supplied esp32-S3-supermini-tht.fzpz (community THT part), 2026-07-26"
+  # pin -> breadboard connector id.  AUTHORITATIVE from the .fzp <connector><description>
+  # (real names in the part file, not positional) — so this needs NO board-confirm caveat,
+  # unlike the C3 SuperMini.  connectorNpin terminals resolve via the S3 compositing pass.
+  fritzing_connectors:
+    "5V": connector39
+    "GND": connector38
+    "3V3": connector37
+    "TX": connector2
+    "RX": connector3
+    "GPIO1": connector4
+    "GPIO2": connector5
+    "GPIO3": connector6
+    "GPIO4": connector7
+    "GPIO5": connector8
+    "GPIO6": connector9
+    "GPIO7": connector10
+    "GPIO8": connector31
+    "GPIO9": connector32
+    "GPIO10": connector33
+    "GPIO11": connector34
+    "GPIO12": connector35
+    "GPIO13": connector36
+    "B-": connector0
+    "B+": connector1
+    "GPIO48": connector11
+    "GPIO47": connector12
+    "GPIO46": connector13
+    "GPIO45": connector14
+    "GPIO42": connector15
+    "GPIO41": connector16
+    "GPIO40": connector17
+    "GPIO39": connector18
+    "GPIO38": connector19
+    "GPIO37": connector20
+    "GPIO36": connector21
+    "GPIO35": connector22
+    "GPIO34": connector23
+    "GPIO33": connector24
+    "GPIO21": connector25
+    "GPIO18": connector26
+    "GPIO17": connector27
+    "GPIO16": connector28
+    "GPIO15": connector29
+    "GPIO14": connector30
+  fritzing_note: >-
+    Real community THT footprint (David-supplied .fzpz, cached).  The pin->connector
+    binding is AUTHORITATIVE from the .fzp connector descriptions (real pin names in the
+    part file), so — unlike the C3 SuperMini — it needs no board-confirmation caveat.
+    S3's compositing pass places this SVG and anchors wires to the connectorNpin terminals.
+
+  # Future KiCad interpreter target (documented; not built).  Use the ESP32-S3-MINI-1
+  # module symbol + a community/hand SuperMini footprint (no official one in stock libs).
+  kicad:
+    symbol: "RF_Module:ESP32-S3-MINI-1"
+    footprint: "Module:ESP32-S3-SuperMini"

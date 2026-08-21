@@ -1,0 +1,59 @@
+# office_hepa — device profile (office_devices, MIT-publishable home automation).
+#
+# IDENTICAL board + firmware to office_fan — a HEADLESS relay-fan controller for
+# a 3-speed AC HEPA unit.  Subscribes office_hepa/speed (off|low|medium|high)
+# and actuates the on-board 4-relay bank with BREAK-BEFORE-MAKE + dead-time.
+# Only the device id + namespace differ from office_fan (per-device namespaces
+# so the two identical boards never collide).
+#
+# CONFIG-FETCHED: the generic reactive_core firmware GETs this device's
+# office_hepa.compose.yaml from the bus asset store at boot and self-configures
+# its relay HAL.  Reflash-free reconfigure: edit, PUT, trigger a live re-fetch.
+
+device:
+  id: office_hepa
+  kind: esp32-wroom-32               # ESP32-WROOM-32E integrated 4-relay board
+  mac: "TBD"
+  # EXTERNAL FTDI (TX/RX crossed); powered externally at 12V DC (brownouts on
+  # FTDI power alone).  NOTE: office_fan + office_hepa share the same FTDI
+  # cable in this pass — flash them ONE AT A TIME on this port.
+  upload_port: /dev/cu.usbserial-FTZ29P6A
+
+  # Build/flash from composeio, MANUAL download mode (IO0->GND, tap EN):
+  #   cd composeio/firmware/reactive_core
+  #   pio run -e office_hepa -t upload \
+  #       --upload-port /dev/cu.usbserial-FTZ29P6A
+  #   pio device monitor --port /dev/cu.usbserial-FTZ29P6A -b 115200
+  firmware:
+    platform: composeio
+    tier: reactive_core
+    env: office_hepa                 # firmware/reactive_core -e office_hepa
+    # [env:office_hepa] sets -DDISPLAY_DEVICE_ID="office_hepa", the rest as
+    # office_fan.
+
+  controller:
+    scene: office_hepa.compose.yaml
+    scene_source: compose_projects/office_devices/office_hepa/office_hepa.compose.yaml
+    bus_path: bus://assets/displays/office_hepa.compose.yaml
+    # push the config to the bus asset store:
+    #   curl -X PUT --data-binary @office_hepa.compose.yaml \
+    #     http://mqtt-broker.local:8420/api/v1/assets/displays/office_hepa.compose.yaml
+
+# Relay HAL (from the fetched compose.yaml; active-HIGH, break-before-make):
+#   office_hepa/speed = off/low/medium/high
+#   off -> all open · low -> GPIO33 (RY2) · medium -> GPIO25 (RY3) · high -> GPIO26 (RY4)
+#   RY1 = GPIO32 (spare) · 80ms dead-time.
+
+subscribes:
+  - office_hepa/speed
+
+# --- LIVE re-fetch / reconfigure trigger ([CXC-ER-REMOTE-RESTART]) ----------
+#   per-device:  _device/office_hepa/restart  <- true
+#   broadcast:   _device/restart              <- true
+#   ack:         _device/office_hepa/status   -> "restarting"
+#   mosquitto_pub -h mqtt-broker.local -t 'composeio/global/_device/office_hepa/restart' \
+#     -m '{"ns":"_device/office_hepa/restart","type":"state","val":true,"scope":"global"}'
+reload:
+  per_device_command: _device/office_hepa/restart
+  broadcast_command: _device/restart
+  status_ack: _device/office_hepa/status

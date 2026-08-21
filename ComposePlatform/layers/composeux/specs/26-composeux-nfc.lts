@@ -1,0 +1,73 @@
+---
+scope: "ComposeUX NFC — an NFC reader is an INPUT peripheral: it sees a tag and emits a semantic ComposeBus message (a namespace publish), scoped internal-to-the-design or onto the shared bus. The input dual of the audio actuator ([SPEC:CXC-AUDIO]); a concrete instance of the headless sensor-node pattern. Captured 2026-07-10 (David); minor."
+audience: "ComposeUX/ComposeIO architects, embedded developers, widget authors"
+boundary: "IN: the NFC-as-input-peripheral model, the tag-event shape (presence/uid/payload), the semantic value-map, internal-vs-bus scoping, board-profile transport, and the input/output peripheral pattern it names. OUT (v1 / until shaped): NDEF payload decoding depth, tag WRITING, and the presence/debounce tuning below."
+not-this: "Not a general smartcard/PC-SC stack; not tag writing (v1 reads); not raw APDU exposure in the config (the backend maps to a namespace, like every other peripheral)."
+depends-on: [16-composeux-bindings-behaviors.lts, 20-composeux-headless-widgets.lts, 21-composebus-pattern-subscription.lts]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: concept-capture
+---
+# ComposeUX NFC [SPEC:CXC-NFC]
+
+> See a tag → emit a semantic message. An NFC reader is an input peripheral whose "signal" is a tag; reading it publishes a namespace, either internal to the design or onto the shared bus. "State on the bus" from the *input* side — the mirror of audio's actuation.
+
+---
+
+## 1. Intent
+
+### [CXC-NFC-INTENT] An NFC Reader Is an Input Peripheral
+
+- definition: a device with an NFC reader observes tags and **publishes a semantic namespace** on tag arrival/departure. The config declares the reader → namespace mapping; the platform's NFC backend performs the read. This is [CXC-HW-INTENT] on the input side — "the silicon's job shrinks to map signals ↔ peripherals," and a tag reader is just another peripheral producing a signal.
+- symmetry: NFC is the **input dual of the audio actuator** ([SPEC:CXC-AUDIO]). Together they name a pattern ([CXC-NFC-PATTERN]): ComposeUX nodes bind *input* peripherals (touch, NFC, lure sensors) that publish and *output* peripherals (display, audio) that actuate — all namespace-scoped, all board-profile facts.
+- part-of: [SPEC:CXC-NFC]
+
+---
+
+## 2. The Model
+
+### [CXC-NFC-EVENT] Tag Event → Namespace
+
+- shape: a tag event carries **presence** (binary: present / removed), **uid** (the tag's id), and optionally a **payload** (decoded NDEF text/URL/records, json). A reader publishes these to its declared namespace(s) — e.g. `access/badge` (uid + presence) and optionally `access/badge_data` (payload).
+- semantic translation: a **value-map** ([CXC-BIND-C8], the existing map editor) turns a raw uid into meaning — `04:A3:2F:…` → `badge:david` → an action. So the config speaks semantics, not hex; the map is authored, not hardcoded.
+- pattern-ready: uid namespaces work with `subscribe_pattern` ([SPEC:CXC-PATSUB]) — many readers under `access/*` are one subscription.
+- part-of: [SPEC:CXC-NFC]
+
+### [CXC-NFC-SCOPE] Internal vs Bus Is Just Namespace Scope
+
+- decision: "emit internal to the widget" and "push to the ComposeBus" are NOT two mechanisms — both are a namespace publish; the difference is **scope**. A **local/design-scoped** namespace stays within the surface (a tag flips a widget's state via an ordinary binding/behavior); a **global/external** namespace ([CXC-FL-DISCOVERY] `external`) is visible to other bus participants. Same publish, different reach — the author picks the scope.
+- consequence: a headed widget can react to a tag locally (tap-to-scan-style), a headless widget can turn a tag into a shared event, and an Intelligence sees tag events like any other bus traffic.
+- part-of: [SPEC:CXC-NFC]
+
+### [CXC-NFC-TRANSPORT] The Reader Is a Board-Profile Fact
+
+- definition: which NFC reader a device has — PN532 / RC522 / ST25R over **I2C / SPI / UART** on an MCU (the Class-B lure's I2C/serial is literally this transport), or a USB / PC-SC reader on a Pi / MinnowBoard / desktop — is declared in the board profile ([CXC-RM-M5] `board_profile.h`), exactly like the display driver and the audio backend. The same config runs on whatever reader is wired.
+- part-of: [SPEC:CXC-NFC]
+
+---
+
+## 3. The Pattern It Names
+
+### [CXC-NFC-PATTERN] Input/Output Peripheral Bindings (observation)
+
+- observation: with touch (input), NFC (input), the lure sensors (input), display (output), and audio (output), a general shape is now visible — **a ComposeUX node binds physical peripherals to namespaces; inputs publish, outputs actuate, all scoped local or bus, all board-profile facts.** NFC is the first *explicit input-peripheral spec beyond touch*.
+- note: PROMOTED (2026-07-10) — the generalization is now **[SPEC:CXC-HAL]** (the tiered Peripheral HAL): NFC is a Tier-2 (reusable-driver bus peripheral) citizen of it. Reed switch = Tier 1 (declarative), R503 fingerprint = Tier 3 (direct integration).
+- part-of: [SPEC:CXC-NFC]
+
+---
+
+## 4. Open Decisions (before build)
+
+### [CXC-NFC-OPEN] What Needs Deciding
+
+- **payload depth in v1**: uid + presence only (the badge/access case), or decode NDEF (text/URL/records) too?
+- **tag writing**: v1 is read-only; is writing a tag (provisioning) ever in scope, or explicitly a separate concern?
+- **presence semantics / debounce**: arrival + departure events, a hold/dwell, anti-bounce on flaky reads — tune per backend.
+- **security note**: a UID is trivially cloneable — the value-map/access use must treat NFC as an *identifier*, not an authenticator (reads on fleet-integrity §8-B; do not build access-control on a bare UID).
+- part-of: [SPEC:CXC-NFC]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-07-10
+**Status**: CONCEPT CAPTURE (David 2026-07-10) — minor, framing settled (NFC = an input peripheral publishing a semantic namespace; internal-vs-bus = scope; reader = board-profile fact; value-map = semantics). [CXC-NFC-OPEN] decisions need shaping before build. Small, and a natural first input-peripheral fit alongside the embedded-reactive tier + the MinnowBoard lure sensors.

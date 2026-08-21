@@ -1,0 +1,159 @@
+---
+scope: "Cross-platform font unification — make the desktop Skia renderer use the same pre-rendered bitmap font atlas as the CYD ESP32 renderer, eliminating text rendering as the largest source of pixel divergence"
+audience: "Builder agents implementing the atlas-based text renderer on desktop"
+boundary: "Text rendering path only; does not change geometric primitives, widget layout, or the CYD firmware"
+not-this: "Not a new font format; not adding new font sizes; not changing the CYD text renderer"
+depends-on: [12-composeux-render-engine.smd, cyd-visual-polish-aa.smd]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# CYD Cross-Platform Font Unification [SPEC:FONT-UNIFY]
+
+> Desktop Skia renderer adopts the CYD's pre-rendered bitmap font atlas, eliminating text-area pixel delta (max 200) as the primary source of cross-platform divergence.
+
+---
+
+## 1. Atlas Export to Python-Readable Format [FONT-UNIFY-EXPORT]
+
+Modify `cyd/fonts/generate_atlas.py` to produce **two** outputs from a single run:
+
+| Output | Path | Format |
+|--------|------|--------|
+| C header (existing) | `cyd/src/font_atlas.h` | Static arrays, struct initializers |
+| Python atlas | `python/composeio/render/font_atlas_data.json` | JSON with hex-encoded bitmaps |
+
+### 1.1 JSON Schema [FONT-UNIFY-EXPORT-SCHEMA]
+
+```json
+{
+  "generator": "generate_atlas.py",
+  "font_source": "<path to TTF used>",
+  "dpi": 72,
+  "char_range": [32, 126],
+  "sizes": [
+    {
+      "size": 10,
+      "ascent": 8,
+      "descent": 2,
+      "line_height": 10,
+      "glyphs": [
+        {
+          "char_code": 33,
+          "width": 2,
+          "height": 6,
+          "bearing_x": 1,
+          "bearing_y": 6,
+          "advance": 4,
+          "bitmap_hex": "0E871..."
+        }
+      ]
+    }
+  ]
+}
+```
+
+`bitmap_hex` is the glyph's 8-bit alpha bitmap as a contiguous hex string (2 hex chars per byte, row-major, `width * height` bytes total). Empty glyphs (space) have `bitmap_hex: ""`.
+
+### 1.2 Regeneration [FONT-UNIFY-EXPORT-REGEN]
+
+Running `generate_atlas.py` regenerates **both** outputs atomically. The `--sizes` flag applies to both. Default sizes: `8 10 12 14 16` (matching current CYD atlas).
+
+---
+
+## 2. Bitmap Font Renderer for Desktop [FONT-UNIFY-RENDERER]
+
+New module: `python/composeio/render/bitmap_font.py`
+
+### 2.1 BitmapFontAtlas Class [FONT-UNIFY-RENDERER-CLASS]
+
+```python
+class BitmapFontAtlas:
+    """Loads a JSON font atlas and provides glyph lookup + text measurement."""
+
+    def __init__(self, json_path: str): ...
+    def find_atlas(self, target_size: int) -> FontSizeData: ...
+    def measure_text(self, text: str, font_size: float) -> TextMetrics: ...
+    def get_glyph(self, char_code: int, atlas: FontSizeData) -> GlyphData | None: ...
+```
+
+The `measure_text` implementation must match the CYD's `ESP32Canvas::measure_text` logic exactly: find best atlas size, scale by `font_size / atlas.size`, sum `advance * scale` for width.
+
+### 2.2 Integration with SkiaCanvas [FONT-UNIFY-RENDERER-INTEGRATE]
+
+Add to `SkiaCanvas`:
+
+```python
+def enable_bitmap_atlas(self, atlas_path: str) -> None:
+    """Switch text rendering to bitmap font atlas mode.
+
+    When enabled, draw_text() and measure_text() use the atlas
+    instead of Skia native text. set_font() still records size
+    and weight but does not create a Skia Typeface.
+    """
+```
+
+When bitmap atlas mode is enabled:
+
+| Method | Behavior |
+|--------|----------|
+| `set_font(family, size, weight)` | Records `size` for atlas lookup. `family` and `weight` ignored (atlas has one weight). |
+| `measure_text(text)` | Delegates to `BitmapFontAtlas.measure_text()` |
+| `draw_text(text, x, y, align)` | For each glyph: decode hex bitmap to alpha array, create a single-channel Skia image, draw with fill color modulated by alpha. Alignment logic identical to current. |
+
+### 2.3 Glyph Blitting [FONT-UNIFY-RENDERER-BLIT]
+
+For each glyph in `draw_text`:
+
+1. Look up glyph in atlas (same `font_atlas_find` / `font_atlas_glyph` logic as CYD)
+2. Compute scale = `font_size / atlas.size`
+3. Compute screen position: `gx = draw_x + bearing_x * scale`, `gy = draw_y + (ascent - bearing_y) * scale`
+4. Scale glyph bitmap using nearest-neighbor (matching CYD's `src_row = py * glyph_h / sh` logic)
+5. For each non-zero alpha pixel: blend `fill_color` with `alpha * fill_alpha / 255` onto the canvas
+
+The scaling and blending must use the **same integer arithmetic** as `canvas_esp32.cpp` lines 1408-1431. This is the critical path for pixel fidelity.
+
+---
+
+## 3. Crosscheck Integration [FONT-UNIFY-CROSSCHECK]
+
+### 3.1 Update cyd_dashboard_crosscheck.py [FONT-UNIFY-CROSSCHECK-UPDATE]
+
+After `canvas = SkiaCanvas()`, add:
+
+```python
+atlas_path = os.path.join(_pkg_root, "composeio", "render", "font_atlas_data.json")
+canvas.enable_bitmap_atlas(atlas_path)
+```
+
+All subsequent widget `draw()` calls route text through the atlas renderer.
+
+### 3.2 Screenshot Progression [FONT-UNIFY-CROSSCHECK-SCREENSHOTS]
+
+Save crosscheck outputs to `cyd/screenshots/progression/` with timestamp prefix:
+
+- `YYYYMMDD-HHMMSS-desktop-atlas.png` — Desktop render with bitmap atlas
+- `YYYYMMDD-HHMMSS-desktop-native.png` — Desktop render with Skia native text (for comparison)
+- `YYYYMMDD-HHMMSS-comparison-report.txt` — pixel_comparison.py output
+
+Also copy any CYD captures from document_store to the same directory.
+
+---
+
+## 4. Compliance [FONT-UNIFY-COMPLIANCE]
+
+| ID | Requirement | Verification |
+|----|-------------|-------------|
+| FU-C1 | `generate_atlas.py` produces both C header and JSON from single invocation | Run generator, verify both files exist and contain same glyph count |
+| FU-C2 | JSON atlas byte data matches C header byte data for every glyph | Automated comparison: parse both outputs, assert bitmap equality |
+| FU-C3 | `BitmapFontAtlas.measure_text()` returns identical metrics to CYD for all test strings | Unit test with known strings at sizes 8/10/12/14/16 |
+| FU-C4 | `SkiaCanvas` with bitmap atlas enabled produces text visually matching CYD | Pixel comparison: text area delta drops from 200 to < 10 |
+| FU-C5 | `SkiaCanvas` without bitmap atlas works identically to current behavior | Existing 122 render engine tests pass unchanged |
+| FU-C6 | Nearest-neighbor scaling in Python matches CYD integer arithmetic | Unit test: render "82C" at size 14 in Python and compare pixel-by-pixel with CYD atlas reference |
+| FU-C7 | Screenshots saved to `cyd/screenshots/progression/` with timestamps | Verify files created after crosscheck run |
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-30
+**Status**: Draft

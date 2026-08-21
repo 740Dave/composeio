@@ -1,0 +1,104 @@
+# Unified board bring-up descriptor — SINGLE SOURCE for this board.
+# Schema shared byte-for-byte with cyd/esp32c3/ch32v203 .descriptor.yaml (same keys, same order).
+# The markdown recipe (qualia.md) is the generated human view; the app consumes THIS file.
+# LOCAL-FIRST: eyeball before pushing. Not on the bus yet (future home: doc://board_profiles/*).
+# Every value traceable to qualia.md (recipe §refs + commits cited inline).
+
+board_id: qualia
+name: "Adafruit Qualia ESP32-S3 RGB666 (5800) + 4.0-inch round NV3052C 720x720 (5793)"
+
+chip:
+  part: esp32-s3              # Xtensa LX7 (recipe §1)
+  arch: xtensa-lx7
+  flash_kb: 4096             # board_upload.flash_size = 4MB / CONFIG_ESPTOOLPY_FLASHSIZE=4MB (recipe §1)
+  ram_kb: 8192               # octal PSRAM 8MB @80MHz (CONFIG_SPIRAM_MODE_OCT/_SPEED_80M); load-bearing for ~1MB RGB565 framebuffers (recipe §1/§3)
+
+connect:
+  bus: usb
+  kind: native-usb-cdc        # native USB-Serial-JTAG (CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y); flash + monitor share one port (recipe §2)
+  port_glob: "/dev/cu.usbmodem*"     # ini pins usbmodem31101
+  baud: 115200
+
+flash:
+  tool: esptool               # via PlatformIO / ESP-IDF
+  cmd: "cd cyd && pio run -e qualia_display -t upload"
+  enter_bootloader: auto      # native-USB auto-download; no button dance
+  retries:
+    - errno6-native-usb        # transient native-USB CDC re-enumeration -> "OSError [Errno 6] Device not configured"; retry the upload ONCE (2nd attempt succeeds) (recipe §2)
+  notes: >
+    Build wiring layers sdkconfig.defaults -> sdkconfig.s3.defaults -> sdkconfig.qualia.defaults, plus
+    -DQUALIA_DISPLAY=1 (CMake cache var switching src/CMakeLists.txt onto qualia_main.cpp / canvas_qualia /
+    boards/qualia_rgb666.cpp instead of the CYD banded-SPI path). monitor: pio device monitor -e qualia_display.
+    device_id = qualia-<last3 STA MAC hex> (recipe §1). ALL panel constants live in cyd/include/qualia_panel.h
+    — the ONE place to retune for a different physical panel revision.
+
+config_source: "bus://assets/displays/{device_id}.compose.yaml"   # same fungible fetch as CYD (recipe §1, device_id qualia-<mac3>)
+
+requires:
+  - ref: "bus://assets/displays/{device_id}.compose.yaml"
+    kind: scene-config
+    status: present
+    note: "fetched at boot from bus_storage (same fungible path as CYD)"
+  - ref: "bus://assets/animations/dradis/*"
+    kind: animation
+    status: present
+    note: "CI16 sprite frames baked offline for the animated DRADIS radar scene (num_fbs=2 zero-copy tier)"
+  - ref: null
+    kind: firmware
+    status: placeholder
+    note: "no bus-hosted factory image today; built locally from cyd/ (-DQUALIA_DISPLAY=1). A prebuilt image WOULD live at bus://assets/firmware/qualia/<ver>.bin"
+
+verify:
+  machine:
+    - check: serial-token
+      expect: "RGB panel up: 720x720"
+      note: "115200 baud; preceded by the boot log sequence (firmware banner / board profile / 'Panel: 720x720 round' / 'Device id: qualia-<mac3>') (recipe §4)"
+    - check: capture-pixel-diff
+      expect: "GET http://<ip>/capture.bmp"
+      note: "UNRELIABLE for this board — 720x720x3 ~= 1.5MB BMP truncates over HTTP (client sees IncompleteRead). Do NOT gate bring-up on a full capture (recipe §4/§5)"
+  human: >
+    Eyes on the round glass — the boot sequence paints a color wheel (device id + connection status)
+    BEFORE any network dependency, so panel geometry/colors/orientation are verifiable with zero network
+    config. Because the full-framebuffer capture truncates (~1.5MB IncompleteRead), the serial line
+    'RGB panel up: 720x720 ...' plus a direct look at the panel are the source of truth for hardware
+    bring-up, not a capture.bmp pull succeeding.
+
+quirks:
+  - id: native-usb-flash-errno6
+    resolved: true
+    note: "transient native-USB CDC re-enumeration during flash -> Errno 6; retry the upload once (by design; same as the C3/S3 siblings). Handled by flash.retries."
+  - id: pclk-horizontal-flicker
+    value: 10000000
+    resolved: true
+    note: "kQualiaPclkHz 16MHz -> 10MHz (commit f84f048): at 16MHz DMA lacked PSRAM bandwidth headroom/line -> horizontal flicker. 10MHz yields ~15Hz refresh (recipe §3)."
+  - id: bounce-buffer-20-line
+    value: 14400
+    resolved: true
+    note: "kQualiaBounceBufferPx = 720*20 = 14400 px -> two ~29KB SRAM bounce buffers (14400px x 2B RGB565 = 28.8KB each), rides out ~1.6ms ISR stalls (1Hz uxTaskGetSystemState CPU-load sampler); 720*20 divides 720*720 evenly (=36 refills/frame). NOTE: qualia.md's descriptor block prints bounce_px: 25920, which contradicts its own prose ('720*20' + 'two ~29KB buffers'); 14400 is the value consistent with the prose+SRAM sizing — flagged for owner adjudication (recipe §3)."
+  - id: iram-safe-off
+    value: "CONFIG_LCD_RGB_ISR_IRAM_SAFE=n"
+    resolved: true
+    note: "matched pair with the bounce buffer: the PSRAM-fb refill runs in the RGB ISR; with IRAM_SAFE=y it faults during flash ops (cache disabled -> PSRAM unreachable) -> Guru Meditation cache-error reboot loop. =n + CONFIG_GDMA_CTRL_FUNC_IN_IRAM=y (recipe §3)."
+  - id: restart-in-vsync
+    value: "CONFIG_LCD_RGB_RESTART_IN_VSYNC=y"
+    resolved: true
+    note: "resyncs RGB DMA at every VSYNC — backstop for the rare refill stall during a flash write, and required to present the R5 num_fbs=2 zero-copy pointer-swap (commit 6137a49) (recipe §3)."
+  - id: num-fbs-2-zero-copy
+    value: 2
+    resolved: true
+    note: "two PSRAM scan-out buffers; compose into back, present = pointer swap (esp_lcd zero-copy) + one-vsync wait. 2.4->3.3fps, busiest-core 99%->85%, zero tearing (commit 6137a49) (recipe §3)."
+  - id: animated-fps-ceiling
+    value: "10-12fps"
+    resolved: false
+    note: "full-disc animation is PSRAM-bandwidth bound (~11MB/s effective; restore memcpy ~93ms + beam alpha-blend ~123ms dominate). Accepted PoC limit (David 2026-07-10, 'option C'), NOT a bug; real fix = regional dirty-rect restore or a low-fps afterglow aesthetic. Static scenes unaffected (recipe §3/§5)."
+  - id: capture-truncation
+    resolved: false
+    note: "the /capture.bmp endpoint (capture_http_fb.cpp) was built for ~1.5MB and reliably truncates (IncompleteRead); needs chunked/streamed transfer, a compressed/scaled format, or a documented max-size caveat. Until fixed, captures are best-effort, not a bring-up gate (recipe §5)."
+  - id: no-touch
+    resolved: true
+    note: "Adafruit 5793 panel has no touchscreen; QualiaProfile::touch() returns nullptr. By design (recipe §1)."
+  - id: panel-no-own-framebuffer
+    resolved: true
+    note: "NV3052C is TTL/RGB only, no internal GRAM; LCD_CAM DMA continuously scans a PSRAM framebuffer; panel controller is config-only over a bit-banged 9-bit SPI via the PCA9554 I2C expander. Every MCU data pin is on the parallel bus (recipe §1)."
+
+variants: []   # single physical board

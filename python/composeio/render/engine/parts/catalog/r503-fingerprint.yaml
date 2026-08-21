@@ -1,0 +1,294 @@
+# Part catalog entry — R503 round capacitive fingerprint sensor MODULE.
+#
+# A PERIPHERAL and a SENSOR (like pot-10k), not an MCU.  It speaks a framed
+# command/response protocol over UART and asserts a touch-induction line; it is
+# the fleet's first BIOMETRIC input and the first peripheral whose failure mode
+# is DESTRUCTIVE TO THE HOST rather than merely wrong.
+#
+# ⛔ NOTHING IN THIS FILE HAS BEEN OBSERVED ON HARDWARE (2026-08-15).  No R503
+# has been connected to anything in this project.
+#
+# ⚠ BUT DISTINGUISH TWO KINDS OF UNVERIFIED, because they are not the same and
+# the file marks them differently throughout:
+#   * MANUAL-READ — the R503 User Manuals V1.1 (2019.6), V1.2.1 (2022.03) and
+#     V1.4/R503-M22 (2023.07) were obtained and read directly, so pin order,
+#     WAKEUP polarity, the touch-rail rating and the working current are CITED
+#     FACTS with a revision behind them.  Marked ✅ below.
+#   * NOT PUBLISHED ANYWHERE — idle current, any VCC tolerance band, a V1.4.1
+#     manual.  These are HOLES, and they are recorded AS holes rather than
+#     filled with plausible figures.  Marked ⛔ below.
+# Neither kind has touched a bench.  The ones that decide a WIRE carry a
+# `facts:` row with an EMPTY evidence slot in the scene that places this part
+# (r503_tm1637_panel.compose.yaml).
+#
+# ⚠ VENDOR NAME, DELIBERATELY.  The de-vendoring ruling (David, 2026-08-15:
+# "take R503 out of the taxonomy everywhere except the R503 side of the HAL")
+# puts the vendor name BELOW the seam and forbids it above.  A parts-catalog
+# entry is the sensor side of the HAL — it is the one place the name belongs.
+# ⛔ THE COROLLARY BINDS ON THE SCENE, NOT HERE: no namespace, widget id or
+# message field that a scene placing this part publishes may contain "r503".
+#
+# ===========================================================================
+# ⛔ THE ONE THING ON THIS PART THAT CAN DESTROY THE HOST MCU
+# ===========================================================================
+# `WAKEUP` IS AN OUTPUT REFERENCED TO `3V3T`, NOT TO `VCC`.  Whatever rail feeds
+# 3V3T is the rail WAKEUP swings to.
+#
+# ⛔ THE MANUAL PROVES BOTH HALVES OF THIS, IN ITS OWN WORDS (V1.2.1 / V1.4):
+#   * "the touch signal output is CMOS output, and the output voltage is
+#     ROUGHLY THE SAME AS THE INPUT VOLTAGE"  — it tracks its supply;
+#   * §6.5 Low power standby: the host "can cut off the main power supply of the
+#     module (CAN NOT CUT OFF THE TOUCH-SENSITIVE POWER SUPPLY).  Once the
+#     module detects a finger, it outputs a signal"  — WAKEUP KEEPS WORKING WITH
+#     `VCC` REMOVED ENTIRELY, which it could not do if VCC powered it.
+#
+# ⛔⛔ AND HERE IS THE PART THAT MAKES THIS GENUINELY DANGEROUS RATHER THAN
+# MERELY WRONG: `3V3T` IS RATED `DC 3-5 V`.  FIVE VOLTS ON IT IS IN SPEC FOR
+# THE SENSOR.  The module will sit there working perfectly.  It is the HOST
+# GPIO that dies — a 3.3 V ESP32 pad with V_IH max = VDD + 0.3 V (~3.6 V) and a
+# 3.6 V absolute maximum.  So the usual defence does not exist here: there is no
+# damaged sensor, no smoke, and no datasheet violation ON THE PART BEING WIRED
+# to warn anyone off.  A builder reading the manual sees "3-5 V" on that pin and
+# is CORRECT about the sensor while destroying the microcontroller.
+#
+# ⛔ AND IT IS CONTINUOUS, NOT A TRANSIENT.  WAKEUP IDLES HIGH — standby-high,
+# finger-low.  The overvoltage is present from the moment 3V3T comes up and
+# stays there; it is not a pulse that occurs only when someone touches the ring.
+#
+# ⚠ ASYMMETRY IS THE TRAP.  On this one connector, `3V3T` is rated 3-5 V and
+# `VCC` is rated 3.3 V flat.  Two adjacent pins, two different answers, and the
+# permissive one is the one that kills the host.  Generalising either pin's
+# rating to the module is a mistake in both directions.
+#
+# ⛔ THE FLEET'S EXISTING 5 V-TOLERANCE REASONING ALSO DOES NOT COVER IT.  The
+# TM1637 analysis ([DD-TM1637-LEVEL], res-470r.yaml) concluded that a 5 V line
+# is safe against an ESP32 pin because the current is held to 110-440 uA BY THE
+# PERIPHERAL'S OWN 10 kOhm PULL-UP — the line is a passive pull-up, not a
+# driver.  WAKEUP is a driver.  A reader who has internalised "5 V peripherals
+# are fine on this fleet, the clamp handles it" and applies it here kills the
+# pin.  The two cases LOOK identical on a wiring diagram.
+#
+# 3V3T MUST TIE TO THE HOST'S 3.3 V RAIL.  In the scene this is CHECKED, not
+# merely written: `must_not: {distinct_nets: [mcu.5V, fp.3V3T]}` refuses the
+# netlist if the two ever land on one net.
+
+r503-fingerprint:
+  description: >-
+    R503 round capacitive fingerprint sensor module (Hangzhou GROW) — 6-wire
+    JST pigtail, UART command/response protocol, on-module matching and
+    template storage, RGB aura LED ring, and a separate touch-induction
+    WAKEUP output on its own 3.3 V rail.
+
+  # Canonical pin map — the netlist (hookup.wires) speaks EXACTLY these names.
+  # A wire endpoint naming a pin not in this list is a hard parse error (S2).
+  #
+  # SIX pins, SIX nets — no pass-throughs, no internal ties, so no `same_net`.
+  #
+  # ⚠ NAMES ARE THE MANUAL'S, WITH ONE DELIBERATE SPELLING CHANGE.  The manual
+  # writes the touch rail as `3.3VT`.  A leading digit and an embedded dot are
+  # both hostile here: the netlist endpoint grammar is `<part>.<pin>` split on
+  # the FIRST dot, so `fp.3.3VT` parses (pin = "3.3VT") but reads as a typo, and
+  # an fnmatch pattern over it is a trap.  Spelled `3V3T` to mirror the host
+  # board's own `3V3` pad, which is exactly what it must connect to.
+  #
+  # ⚠ TXD/RXD ARE NAMED FROM THE SENSOR'S POINT OF VIEW.  TXD is the sensor
+  # TALKING (-> host RX); RXD is the sensor LISTENING (<- host TX).  UART
+  # CROSSES.  Stated because the fleet's other new-link convention — CAN — does
+  # NOT cross (H<->H, L<->L), and the habit from the last link carries into the
+  # next one.
+  pins:
+    - VCC              # main 3.3 V supply — ⛔ NOT 5 V, see vdd_volts below
+    - GND
+    - TXD              # sensor -> host.  UART crosses: goes to the host's RX pin
+    - RXD              # host -> sensor.  UART crosses: comes from the host's TX pin
+    - WAKEUP           # touch-induction output.  ⛔ swings to 3V3T, not to VCC
+    - 3V3T             # manual spells this `3.3VT` — touch-circuit supply rail
+
+  # No adc_pins: a DIGITAL/serial sensor, not an analog one.  The host talks to
+  # it; it does not source a voltage.
+
+  # ---- the facts a WIRING decision actually turns on ------------------------
+  # SOURCE FOR THIS WHOLE BLOCK: R503 User Manual V1.1 (2019.6), V1.2.1
+  # (2022.03) and V1.4 / R503-M22 (2023.07), read directly.  Where the three
+  # revisions disagree, BOTH readings are carried and the change is named —
+  # a spec that quietly moved is worth more than a tidy single number.
+  vdd_volts: 3.3
+  # ⛔ NO TOLERANCE BAND IS PUBLISHED, AND THE ABSENCE IS THE FACT.  Every
+  # revision states a flat "DC 3.3V".  V1.2.1's Power Supply Requirements adds
+  # only a ripple limit (<= 50 mV peak-to-peak) and no min/max.  ⚠ AN EARLIER
+  # DRAFT OF THIS FILE CARRIED "3.0 - 3.6 V"; that band could not be found in
+  # ANY revision and was REMOVED rather than kept as a convenient-looking
+  # range.  Do not reintroduce it without a page number.
+  vdd_ripple_max_mv_pp: 50
+  # ⛔ 5 V IS A DIFFERENT PART, NOT A TOLERANCE.  GROW sells `R503-5V` as a
+  # SEPARATE SKU with a different connector (MX1.25-6pin).  That the vendor
+  # ships a distinct 5 V product is stronger evidence than any absolute-maximum
+  # figure would be: if the standard part tolerated 5 V, the 5 V SKU would not
+  # exist.  Unlike the TM1637 — where 5 V is MANDATORY, because a white tube's
+  # forward voltage leaves no headroom at 3.3 V — this part wants 3.3 V.  A
+  # board carrying BOTH legitimately runs TWO RAILS, and the two peripherals
+  # want OPPOSITE answers to "what voltage?".
+
+  touch_rail_volts: 3.3          # what to ACTUALLY connect
+  touch_rail_rating: "DC 3-5 V (V1.2.1, V1.4)"
+  touch_rail_rating_v1_1: "DC 3-6 V — the rating was REDUCED in later revisions"
+  touch_rail_note: >-
+    ⛔ `3V3T` IS A POWER INPUT AND A REFERENCE AT THE SAME TIME.  It supplies
+    the touch-detection circuit AND sets the high level of the `WAKEUP` output
+    ("the output voltage is roughly the same as the input voltage").
+    ⛔⛔ ITS 3-5 V RATING IS A TRAP, NOT A PERMISSION.  Five volts here is fine
+    FOR THE SENSOR and fatal for a 3.3 V host GPIO reading WAKEUP.  The rating
+    describes what the MODULE survives; it says nothing about what is on the
+    other end of the wire.  Connect it to 3.3 V.
+    ⚠ AND NOTE THE VENDOR MOVED IT: V1.1 rated this pin 3-6 V, V1.2.1 and V1.4
+    rate it 3-5 V.  Anyone working from an old manual has a wider — and now
+    unsupported — number.
+    ⚠ THE ONE LEGITIMATE REASON TO SEPARATE IT FROM `VCC` IS POWER, NOT
+    VOLTAGE.  §6.5 is explicit that the host may cut main VCC while leaving
+    this rail up, so a touch wakes a sleeping system.  Both rails are still
+    3.3 V in that design.  If a board does that, note that the R503's DC load
+    on the 3.3 V rail disappears while it is gated — which matters on any board
+    that also carries 5 V pull-ups clamping into that rail.
+
+  wakeup_output_type: "CMOS output, referenced to 3V3T (NOT VCC-referenced)"
+  wakeup_output_type_note: >-
+    ⚠ "CMOS output" IS THE MANUAL'S WORD; "PUSH-PULL" IS AN INFERENCE.  The
+    manuals say CMOS and never say push-pull.  Push-pull is the reasonable
+    reading — the part's stated ability to drive the line high to its rail
+    argues against open-drain — but it is not quoted, and the distinction
+    decides whether a series resistor or a divider is a sufficient mitigation.
+    Recorded as inference so nobody later quotes it as a datasheet fact.
+  wakeup_polarity: "active LOW — standby HIGH, finger present LOW"
+  wakeup_polarity_note: >-
+    ✅ CONFIRMED, and it is the best-sourced item on this part: stated twice,
+    independently, in BOTH V1.2.1 and V1.4 — in the pin table ("Standby-high
+    level, have finger-output low level") and again in Hardware Connection
+    ("When there is no finger touch, the default touch sensing signal outputs
+    high level; When a finger touches, the default touch sensing signal outputs
+    low level").
+    ⚠ V1.1 (2019) SAYS ONLY "Finger Detection Signal" WITH NO POLARITY AT ALL.
+    Anyone working from the original manual is guessing — which is a fair
+    explanation for why the community answer is inconsistent, and a reason to
+    cite the revision whenever this is quoted.
+    ⛔ CONSEQUENCE FOR PIN CHOICE, NOT JUST FOR FIRMWARE: because it IDLES HIGH,
+    this line must not land on a host strapping pin that is pulled DOWN by
+    default and read at reset.  On an ESP32-S3 that rules out GPIO45 and GPIO46.
+  wakeup_response_ms: 120       # max touch response, quoted "@ vt = 3.3 V"
+  wakeup_recalibration_s: 4.0   # untouched recalibration period
+
+  uart_default_baud: 57600      # N=6 in the module's baud register (9600 x N)
+  uart_frame: "8N1"
+  uart_logic_volts: 3.3
+  default_address: "0xFFFFFFFF"
+  default_password: "0x00000000"
+
+  # ---- current: one solid number, one weak one, and they are labelled -------
+  vcc_working_current_ma: 20    # fingerprint acquisition — MANUAL, all revisions
+  vcc_peak_current_ma: 60
+  # ⚠ THE PEAK IS THE WEAKEST NUMBER ON THIS PAGE.  60 mA appears ONLY on the
+  # vendor's product page; NO manual revision states a peak current at all.
+  # Size a supply with margin ABOVE it rather than treating it as a spec.
+  touch_rail_current_ua: 2      # ~average on 3V3T — MANUAL
+  idle_current_note: >-
+    ⛔ THE IDLE (POWERED, NOT ACQUIRING) CURRENT ON `VCC` IS NOT PUBLISHED IN
+    ANY REVISION.  Recorded as a hole rather than filled with a plausible
+    figure, because a number invented here gets quoted back as if measured.
+    It matters wherever the sensor's DC load is being relied on for something —
+    e.g. to sink another peripheral's clamp injection into a shared 3.3 V rail.
+    A meter in series with VCC settles it in a minute.
+
+  template_capacity: 200        # slots on-module
+  template_bytes: 1536
+  # ✅ BOTH CONFIRMED by independent arithmetic in the R503 spec audit
+  # (compose_projects/bsg/dsds/DSD-r503-spec-audit-2026-08-15.md §4): the audit
+  # verified `20 x 1536 = 30,720 bytes` and `200 slots / 2 = 100 people`.
+  # Evidence class SECONDARY-DOCUMENT, not manual-read and not meter-measured.
+
+  timing_note: >-
+    Manufacturer timings, as quoted in the architect's brief: image acquisition
+    < 0.2 s, feature generation < 0.5 s, 1:N search < 10 ms.
+    ⚠ "1:N < 10 ms" IS GENUINELY AMBIGUOUS and is NOT resolved here.  It reads
+    either as 10 ms for a WHOLE SWEEP of the populated set, or as 10 ms PER
+    TEMPLATE COMPARED.  At 20 templates that is 10 ms or 200 ms — a 20x spread
+    on the only term that scales with roster size.  The ambiguity is RECORDED
+    rather than decided; picking one silently is how a capacity limit gets
+    designed against a number nobody checked.  (The prior audit's M1 finding
+    turns on exactly this term: 200 ms against a ~0.7 s capture-dominated
+    transaction is a 29% increase, not the "noise" the spec called it.)
+
+  aura_led_note: >-
+    ⚠ THE LIBRARY IS NARROWER THAN THE HARDWARE.  `AuraLedConfig` (0x35) drives
+    the ring with SEVEN colours; the widely-used Adafruit fingerprint library
+    exposes THREE.  A semantic-state -> colour mapping written against the
+    library will silently lose four states and there is no error anywhere — the
+    ring simply shows the nearest exposed colour.  Drive the opcode directly if
+    the mapping needs more than red/blue/purple.
+    ⚠ David's one stated UX preference for this sensor is that "ready for
+    authentication" be BLUE OR PURPLE, reserving green/red for matched/failed
+    (DSD C8).  As of this writing that intent is normative NOWHERE — the
+    identity spec disclaims it and the device spec never received it.
+
+  protocol_traps: >-
+    ⛔ TWO WAYS A CORRECT ONE-RESPONSE-PER-COMMAND READER DESYNCS.
+    (1) STRAY BYTE AT POWER-ON — the module emits a single spurious 0x55 once
+    after power-up, before any command.  A reader that treats the first byte on
+    the line as the head of a response frame is misaligned from the start, and
+    the symptom is a checksum failure on a command that is perfectly formed.
+    Flush the RX buffer after power-on, or resynchronise on the 0xEF01 header
+    rather than trusting byte alignment.
+    (2) INTERMEDIATE ACKS — `AutoEnroll` / `AutoIdentify` with Config3 = 1
+    return a STREAM of progress acknowledgements before the final result.  A
+    reader that issues a command and reads exactly one response returns the
+    FIRST PROGRESS STEP as if it were the outcome — a well-formed success
+    reported before the operation has happened.
+
+  # ---- pin ORDER: confirmed.  Wire COLOUR: disclaimed by the vendor ---------
+  pin_order: "1 VCC · 2 GND · 3 TXD · 4 RXD · 5 WAKEUP · 6 3.3VT"
+  pin_order_note: >-
+    ✅ THE ORDER IS CONFIRMED and is IDENTICAL across V1.1, V1.2.1 and V1.4 —
+    it did not move when the connector did.  So the sequence above may be
+    relied on.
+    ⛔ WHAT MAY NOT BE RELIED ON IS WHICH PHYSICAL CONDUCTOR IS PIN 1.  The
+    manual prints its own warning inside the pin table, verbatim: "Note: The
+    line order has nothing to do with color."  NO revision assigns colours at
+    all — the manufacturer explicitly declines to.  ⚠ THAT MAKES EVERY WIRE-
+    COLOUR CHART FOR THIS PART, INCLUDING EVERY ONE ONLINE, AN UNSOURCED GUESS
+    THE VENDOR HAS PRE-EMPTIVELY DISOWNED.
+    ⛔ A reversed VCC/GND here is DESTRUCTIVE, not functional.  Identify pin 1
+    against the MODULE BODY — meter continuity from a pigtail conductor to the
+    module's GND plane — before the first power-up.  Do not trust a colour, and
+    do not trust this file for it either.
+
+  connector_note: >-
+    ⚠ THE CONNECTOR CHANGED AT SOME REVISION AND THE FAMILIES DO NOT MATE.
+    What is actually sourced: V1.1, V1.2.1 and V1.4 ALL state `MX1.0--6P`.  The
+    current vendor product page lists `SH1.0-6pin`, so a later revision plainly
+    did change.
+    ⛔ BUT THE ATTRIBUTION TO "V1.4.1" IS NOT CONFIRMED: no V1.4.1 manual could
+    be obtained, and V1.4's own revision history (V1.2 2021.10, V1.2.1 2022.03,
+    V1.2.2 2022.10, V1.3 2023.06, V1.4 2023.07) DOES NOT LIST A V1.4.1 at all.
+    So "SH1.0 on V1.4.1" is a plausible reconciliation of a product page with a
+    revision number, NOT a documented fact, and it is recorded as the former.
+    ⚠ SEPARATELY, `R503-5V` — the 5 V SKU — uses `MX1.25-6pin`, a THIRD family.
+    Do not let a 5 V part's connector into this comparison by accident.
+    Which connector is in hand is a MEASURE-BEFORE-BUILD row in the placing
+    scene, with an EMPTY slot.  It is settled by looking at the module.
+
+  # ---- Hookup-SVG art (S3) -------------------------------------------------
+  # Deliberately NO `fritzing:` art — renders with the clean GENERATED
+  # footprint, like res-470r.
+  #
+  # ⛔ THIS IS A REFUSAL, NOT AN OMISSION.  Drawing the module would mean
+  # drawing its 6-way pigtail in a specific pin order, and `connector_note`
+  # above says plainly that this file cannot assert that order.  Art is not
+  # neutral: a builder matches wire colours to a picture faster than they read a
+  # caveat, and a picture that asserts an unconfirmed pin order on a part where
+  # reversal is destructive is worse than no picture.  A labelled generated
+  # footprint carries the netlist — which is the whole content — and asserts
+  # nothing it cannot back.  Fit real art when a confirmed .fzpz exists.
+
+  # Future KiCad interpreter target (documented; not built).  No stock symbol
+  # for this module; a generic 1x6 connector plus a hand symbol applies.
+  kicad:
+    symbol: "Connector_Generic:Conn_01x06"
+    footprint: "Connector_JST:JST_SH_SM06B-SRSS-TB_1x06-1MP_P1.00mm_Horizontal"

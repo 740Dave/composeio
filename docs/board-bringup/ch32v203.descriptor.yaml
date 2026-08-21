@@ -1,0 +1,86 @@
+# Unified board bring-up descriptor — SINGLE SOURCE for this board.
+# Schema shared byte-for-byte with cyd/qualia/esp32c3 .descriptor.yaml (same keys, same order).
+# The markdown recipe (ch32v203.md) is the generated human view; the app consumes THIS file.
+# LOCAL-FIRST: eyeball before pushing. Not on the bus yet (future home: doc://board_profiles/*).
+# First non-ESP32 / non-esptool board — the flash dispatch is wchisp + a manual BOOT0 strap.
+# Every value traceable to ch32v203.md (recipe §refs + commit 83f7a58 cited inline).
+
+board_id: ch32v203
+name: "MuseLab nanoCH32V203 v1.1 (CH32V203C8T6, WCH QingKe V4B)"
+
+chip:
+  part: ch32v203c8t6         # WCH QingKe V4B core, silicon ID 0x3119 (recipe Identity)
+  arch: riscv32              # RV32 QingKe-V4B; 2nd RISC-V core, 1st WCH/QingKe part
+  flash_kb: 64               # datasheet-marked; die physically carries ~128KB (extended, per-unit) — see quirk extended-flash-per-unit
+  ram_kb: 20                 # 20KB RAM (recipe Identity)
+
+connect:
+  bus: usb
+  kind: wch-isp               # flashable ONLY in the ROM USB-ISP bootloader (VID:PID 4348:55e0, libusb — NOT a serial port)
+  port_glob: "/dev/cu.usbmodem*"     # the POST-flash native CDC (1a86:8010), present only on -DPIO_FRAMEWORK_ARDUINO_USBD builds
+  baud: 115200                # CDC console baud (recipe Post-flash serial)
+
+flash:
+  tool: wchisp                # the app's dispatch key — a Rust CLI, NOT esptool/idf.py; no DTR/RTS auto-reset
+  cmd: "cd firmware/ch32v203_bringup && pio run -e <env> && wchisp flash .pio/build/<env>/firmware.bin"
+  enter_bootloader: boot0-reset-manual   # physical strap every reflash; no software trick on this board (automatable:false)
+  retries: []                 # wchisp flash write+verify+reset is atomic; no retry pattern
+  notes: >
+    ENTER-ISP (every reflash): hold BOOT0, tap reset (or replug USB) while holding, release; confirm ISP enumerated with
+    `system_profiler SPUSBDataType | grep 0x55e0` (empty => redo the strap). wchisp flash writes+VERIFIES+resets-to-run
+    automatically; the board must already be in ISP mode. INSTALL wchisp: `cargo install wchisp --locked` (needs `brew
+    install libusb` + `rustup default stable` set — cargo install silently misbehaves with no default toolchain — +
+    export PKG_CONFIG_PATH for libusb). PlatformIO side: platform=ch32v (Community-PIO-CH32V) auto-pulls on first pio run.
+    board_upload.maximum_size=131072 targets the extended flash region so >64KB images link. Keep -Os: do NOT enable
+    -Ofast/-ffast-math (breaks the soft-double bit-exactness the DSL corpus proves). board=genericCH32V203C8T6,
+    framework=arduino (openwch core). Two USB-C ports — only one is MCU native USB (D+/D- PA11/PA12); the other is power/aux.
+
+config_source: null   # toolchain bring-up / register-level blink; main.cpp is throwaway, reactive-core port pending (recipe Known issues #4)
+
+requires:
+  - ref: null
+    kind: firmware
+    status: placeholder
+    note: "no bus-hosted image today; firmware.bin is built locally in firmware/ch32v203_bringup/. A prebuilt image WOULD live at bus://assets/firmware/ch32v203/<env>.bin for reproducible bring-up"
+  - ref: null
+    kind: package-set
+    status: placeholder
+    note: "no bus-hosted board package-set today; a required package/blob set WOULD be referenced here"
+
+verify:
+  machine:
+    - check: dsl-corpus-token
+      expect: "231/234"
+      note: "env ch32v203_dsl_test (same 234-case [SPEC:CXC-DSL] corpus, compiled by reference via dsl_reuse.py, never forked). ALL soft-double/IEEE-754 float cases PASS (bit-exact on a 3rd independent RISC-V toolchain). The 3 failures are ALL in canon_equality (string<->bool/number), NOT float — see quirk canon-equality-char-signedness (recipe Verify)"
+    - check: wchisp-verify
+      expect: "wchisp flash reports a clean write+verify"
+      note: "verify is atomic in `wchisp flash`; exercised for real on the 82.8KB ch32v203_dsl_test image (>64KB) on THIS unit — extended flash confirmed clean (recipe >64KB gotcha)"
+  human: >
+    The BOOT0/ISP strap is manual and PER REFLASH (no software trick) — confirm ISP enumeration (grep 0x55e0) by eye
+    before flashing; the 4348:55e0 ISP interface disappears once user code runs. The >64KB image path relies on unmarked
+    per-unit silicon margin: each NEW physical unit needs its own clean wchisp verify of a 64-96KB image before being
+    trusted for extended flash. The blink build (env:nanoCH32V203) has NO serial console (eyes on the LED); the native
+    CDC (1a86:8010) appears only on -DPIO_FRAMEWORK_ARDUINO_USBD builds (recipe BOOT dance / >64KB / Post-flash).
+
+quirks:
+  - id: wchisp-rustup-default
+    resolved: true
+    note: "rustup may have NO default toolchain on fresh macOS; `cargo install wchisp` silently fails/misbehaves without `rustup default stable` first (recipe Toolchain install)"
+  - id: pio-windows-toolchain-lock
+    resolved: false
+    note: "a stale `pio pkg install -g -p ch32v` process can be caught mid deep-clone of the WINDOWS toolchain variant (wrong OS) and hold PlatformIO's package lock; symptom = a pio run that stalls indefinitely with empty output. Fix: find+kill the stale pio/pip/git-clone process, retry (recipe Toolchain install gotcha)"
+  - id: isp-strap-every-reflash
+    resolved: true
+    note: "the 4348:55e0 USB-ISP interface exists ONLY in the ROM bootloader; user firmware does not expose it, so every reflash needs the physical BOOT0 strap. No DTR/RTS software entry like esptool. By design/hardware (recipe BOOT dance)"
+  - id: extended-flash-per-unit
+    value: 131072
+    resolved: false
+    note: "C8T6 is datasheet-marked 64KB but the die physically carries more (~128KB typical). maximum_size=131072 targets it; the 82.8KB dsl_test image wrote+verified clean on THIS unit — but this is per-unit silicon margin, NOT a datasheet commitment. Verify each new unit (flash+verify a 64-96KB build) before relying on >64KB; fallback = CH32V203RB (128KB OFFICIAL, same env otherwise) or a size-reduced build (recipe >64KB gotcha / Known issues #2)"
+  - id: canon-equality-char-signedness
+    resolved: false
+    note: "THE DSL finding: 3/234 fail, all in canon_equality (string<->bool/number: 1=='on', 'off'==0, ns('d')==1). ESP32-C3 is ALSO RISC-V and passes 234/234, so this is WCH-TOOLCHAIN-specific, NOT RISC-V-generic. Leading suspect: WCH riscv-none-elf-gcc defaults `char` to UNSIGNED where the ESP toolchains default signed; likely fix = build flag `-fsigned-char` first, else a canon-equality code tweak. Re-run the corpus on hardware to confirm any fix — open (recipe Verify / Known issues #1)"
+  - id: softdouble-os-only
+    resolved: true
+    note: "soft-double bit-exactness requires staying at -Os (core default); -Ofast/-ffast-math would break the bit-exactness proof. A build constraint, not a defect (recipe Optimization constraint)"
+
+variants: []   # single unit under bring-up (nanoCH32V203 v1.1); RB (128KB official) is the documented larger-flash fallback, same env

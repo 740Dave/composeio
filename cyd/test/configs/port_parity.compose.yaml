@@ -1,0 +1,103 @@
+# Port-parity test scene ([CXC-PRIM-TIER-PARITY]) — exercises the widgets
+# ported to the embedded tier in this batch so a board capture can be
+# pixel-crosschecked against the Skia reference:
+#   gauge style=bar (vertical + horizontal) · relay · checkbox · callout ·
+#   emit_button.
+#
+# STATIC render only (no bus): every widget shows its config/default
+# visual so both tiers render identically without a live bus.  Drive
+# `value:`/state over the bus for the dynamic path.
+#
+#   Reference:  cd python && python scripts/cyd_config_crosscheck.py \
+#                 ../cyd/test/configs/port_parity.compose.yaml <capture.bmp>
+
+design:
+  title: Port Parity
+  width: 240
+  height: 320
+  background: "#1E1E2E"
+
+widgets:
+  # vertical fader (fill warms teal->amber->red on thresholds)
+  - type: gauge
+    id: fader_v
+    style: bar
+    orientation: vertical
+    x: 6
+    y: 6
+    w: 64
+    h: 190
+    min_val: 0
+    max_val: 100
+    value: 62
+    label: THR
+    warning_threshold: 70
+    danger_threshold: 90
+
+  # horizontal level bar
+  - type: gauge
+    id: bar_h
+    style: bar
+    orientation: horizontal
+    x: 78
+    y: 6
+    w: 156
+    h: 66
+    min_val: 0
+    max_val: 255
+    value: 180
+    label: LEVEL
+
+  # relay status circles (default state -> gray on both tiers)
+  - type: relay
+    id: relay_bin
+    state_engine: binary
+    x: 78
+    y: 80
+    w: 72
+    h: 78
+    label: PUMP
+
+  - type: relay
+    id: relay_tri
+    state_engine: tri_level
+    x: 158
+    y: 80
+    w: 72
+    h: 78
+    label: VALVE
+
+  # checkbox (unchecked default)
+  - type: checkbox
+    id: chk_arm
+    x: 78
+    y: 166
+    w: 150
+    h: 30
+    label: ARM SYSTEM
+    namespace: panel/arm
+
+  # emit_button (fires a fixed bus sequence on tap)
+  - type: emit_button
+    id: emit_test
+    x: 78
+    y: 200
+    w: 156
+    h: 36
+    label: TEST DRADIS
+    emits:
+      - {namespace: "dradis/contacts", value: [{id: cal, allegiance: unknown}]}
+      - {namespace: "dradis/contacts", value: [{id: cal, allegiance: hostile}]}
+
+  # callout chip + leader line over the lower area
+  - type: callout
+    id: note
+    x: 6
+    y: 206
+    w: 228
+    h: 108
+    text: CONTACT 042
+    target: [0.5, 0.86]
+    offset: [-40, -40]
+    color: "#FFA726"
+    font_size: 12

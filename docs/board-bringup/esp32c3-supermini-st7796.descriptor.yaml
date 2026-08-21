@@ -1,0 +1,499 @@
+# Unified board bring-up descriptor — SINGLE SOURCE for this board+role.
+# Schema shared byte-for-byte with cyd/qualia/hosyond-s3/waveshare-c6/
+# esp32c3-supermini-can/ch32v203.  The markdown recipe
+# (esp32c3-supermini-st7796.md) is the human view; the app consumes THIS file.
+# LOCAL-FIRST: eyeball before pushing.  Not on the bus yet (future home:
+# doc://board_profiles/*).
+#
+# DISTINCT FROM esp32c3-supermini-can.descriptor.yaml, which is the SAME
+# PHYSICAL BOARD AND THE SAME MAC in a different ROLE: a headless CAN
+# first-light node with no glass.  ROLE, not part, is what makes an entry —
+# this one drives a 480x320 panel and takes throttle values OFF the segment,
+# so it has a display pin map, a render tier, a scene, and a completely
+# different set of failure modes.  Only ONE of the two firmwares can be on the
+# board at a time; both are built from cyd/.
+
+board_id: esp32c3-supermini-st7796
+name: "ESP32-C3 Super Mini + LCDWIKI MSP3525 — 3.5in ST7796S 480x320 IPS, CAN-fed engine-thrust panel"
+
+chip:
+  part: esp32-c3             # QFN32 rev v0.4, read off the device
+  arch: riscv32              # RV32IMAC — SINGLE core, 160MHz. NO FPU: see quirk no-fpu-decides-the-scene
+  flash_kb: 4096             # 4MB embedded XMC; 40MHz crystal
+  ram_kb: 0                  # NO PSRAM. 321,296 B DRAM total -> BAND TIER, forced (quirk band-tier-is-not-a-preference)
+
+connect:
+  bus: usb
+  kind: native-usb-cdc        # native USB-Serial-JTAG; flash + console share one port
+  port_glob: "/dev/cu.usbmodem*"     # ini pins usbmodem11301 — see quirk port-path-is-not-identity
+  baud: 115200
+
+flash:
+  tool: esptool               # via PlatformIO / ESP-IDF
+  cmd: "cd cyd && pio run -e esp32_c3_st7796 -t upload"
+  enter_bootloader: auto      # native-USB auto-download; BOOT button IS brought out
+  retries:
+    - errno6-native-usb        # transient native-USB CDC re-enumeration; retry the upload ONCE (family-wide)
+  notes: >
+    Layers sdkconfig.defaults -> sdkconfig.c3.defaults (shared with
+    env:esp32c3_dsl_test and env:esp32_c3_can_bringup — the requirement is identical, native-USB console
+    on a C3), plus -DCXC_C3_ST7796=1, a CMake CACHE VAR that selects the branch in src/CMakeLists.txt and
+    NEVER reaches the compiler.  Every compile-time switch (CXC_DEVICE_PREFIX, CXC_BUS_TRANSPORT_DEFAULT,
+    CXC_CAN_LISTEN_ONLY, CXC_CAN_TX_GPIO/RX_GPIO/BITRATE) is a target_compile_definitions in that branch.
+    VERIFIED in compile_commands.json 2026-08-12: all six present in 14 of 936 TUs (47 command entries),
+    and the bare cache var CXC_C3_ST7796 present in ZERO — the trap, demonstrated.  The branch MUST sit
+    above the "not esp32 -> DSL only" early-return: esp32c3 hits that guard and this board drives glass.
+    USES ITS OWN PARTITION TABLE, partitions_c3_st7796.csv — see quirk nvs-too-small-starves-everything
+    and quirk growing-nvs-moved-the-app.
+
+config_source: http           # bus://assets/displays/c3lcd-c28020.compose.yaml on bus_storage :8420
+                              # (config-over-CAN is blocked — see quirk config-over-can-is-blocked)
+
+requires:
+  - ref: "hardware://lcdwiki-msp3525-st7796s"
+    kind: display
+    status: present
+    note: >
+      3.5in IPS 480x320, ST7796S over 4-wire SPI mode 0, MSB first.  VCC fed 5V DELIBERATELY (onboard
+      XC6206 LDO; the user manual states feeding 3.3V loses its dropout and dims the backlight); logic
+      3.3V through a 74LVC245PW.  Wiring owner-confirmed against the module's J2 silkscreen 2026-08-12:
+      GPIO4->J2.7 SCK, GPIO7->J2.6 SDI(MOSI), GPIO10->J2.3 LCD_CS, GPIO3->J2.5 LCD_RS (=DC),
+      GPIO1->J2.4 LCD_RST, GPIO0->J2.8 LED, 5V->J2.1 VCC, GND->J2.2.  J2.9 SDO(MISO) unconnected
+      (write-only panel).  J2.10-13 CTP_* unconnected — TOUCH IS DISABLED, see quirk no-pins-left-for-touch.
+      J2.14 SD_CS unconnected with the module's own 10K pull-up (R8), so no SD bus exists at all.
+  - ref: "hardware://sn65hvd230-transceiver"
+    kind: transceiver
+    status: degraded
+    note: >
+      RECEIVE ONLY.  The transceiver's DRIVER is dead and its RECEIVER works; the firmware runs
+      TWAI_MODE_LISTEN_ONLY as a WORKAROUND, not a design.  See quirk listen-only-is-a-workaround.
+      CTX=GPIO5, CRX=GPIO6, 500 kbit/s.
+  - ref: "can://pi.example.local/can0"
+    kind: segment
+    status: present
+    note: >
+      Waveshare 2-CH CAN HAT on rpi5, 500 kbit/s, sample point 0.875, clock 8MHz, brp 1.  can1 is
+      jumpered to the same segment with its terminator OFF and is the INDEPENDENT WITNESS — never the
+      interface the bridge uses.  Measured 2026-08-12: can0 ERROR-ACTIVE, bus-errors 0.
+  - ref: "deploy/can_mqtt_bridge/composeio-can-bridge.env"
+    kind: bridge-config
+    status: present
+    note: >
+      NO CHANGE WAS NEEDED, and that is the point of choosing an EXISTING vocabulary.  This panel
+      subscribes throttle/left and throttle/right, which CAN_BRIDGE_ALLOWLIST already relays MQTT->CAN.
+      A new device on established namespaces is a new PEER, not a new vocabulary.  Contrast the headless
+      CAN node, whose nine CAN-only `_device/c3can-*` namespaces each had to be hand-typed into
+      CAN_BRIDGE_REGISTER.
+  - ref: "http://mqtt-broker.local:8420"
+    kind: asset-store
+    status: present
+    note: "bus_storage — the scene is PUT to assets/displays/c3lcd-c28020.compose.yaml"
+  - ref: "compose_projects/bsg/game_hardware/engine_thrust_panel/engine_thrust_480x320.compose.yaml"
+    kind: scene
+    status: present
+    note: >
+      The landscape redesign, not a rescale.  16 widgets, 6 bindings, 2 subscriptions.  led_bar / rect /
+      label only — see quirk no-fpu-decides-the-scene.  Kept DELIBERATELY sparse on comments: see quirk
+      yaml-arena-is-sized-from-raw-length.
+  - ref: "docs/board-bringup/factory-images/esp32c3-supermini-c28020-factory-4mb.bin"
+    kind: rollback-image
+    status: present
+    note: >
+      NO NEW BACKUP TAKEN AND NONE NEEDED — same physical board, same MAC AA:BB:CC:DD:EE:FF, dumped
+      before the first write on 2026-08-12 by the CAN bring-up.  SHA-256 re-verified 2026-08-12 for this
+      bring-up: 13961a23051013f7143caacc868bae02cb2becdd8a5f81ac638878dbb4b56905.  Restore:
+      esptool --port <port> write-flash 0 <file>.
+
+verify:
+  machine:
+    - check: build
+      expect: "pio run -e esp32_c3_st7796 -> SUCCESS"
+      note: "VERIFIED 2026-08-12. 1,421,568 byte image; DRAM 46.97% at link (150,904 of 321,296)."
+    - check: compile-definitions-reached-compiler
+      expect: "CXC_DEVICE_PREFIX, CXC_BUS_TRANSPORT_DEFAULT, CXC_CAN_LISTEN_ONLY=1, CXC_CAN_TX_GPIO=5, CXC_CAN_RX_GPIO=6, CXC_CAN_BITRATE=500000 in 47 entries; bare CXC_C3_ST7796 in 0"
+      note: >
+        VERIFIED 2026-08-12 against .pio/build/esp32_c3_st7796/compile_commands.json, WITH a negative
+        control.  The zero is the point: a `#if defined(CXC_C3_ST7796)` in a source file would be dead
+        code that looked correct.  Also confirmed CXC_BAND_HEIGHT absent (0) — this board must NOT get
+        the full-frame tier.  Note the string defines appear as -DCXC_DEVICE_PREFIX=\"c3lcd\" with
+        escaped quotes; grep for the NAME, not the name-plus-value, or the check reads 0 and lies.
+    - check: serial-token
+      expect: "build: <date> <time> — matches the firmware just flashed"
+      note: "VERIFIED 2026-08-12. Compiler-written __DATE__/__TIME__, never a hand-maintained tag."
+    - check: serial-token
+      expect: "Device id: c3lcd-c28020"
+      note: >
+        VERIFIED 2026-08-12. CXC_DEVICE_PREFIX=\"c3lcd\" + last 3 bytes of STA MAC AA:BB:CC:DD:EE:FF.
+        DISTINCT from the headless role's `c3can-c28020` on purpose — two roles on one MAC must not
+        answer to one id or they fight over one scene.
+    - check: serial-token
+      expect: "Board profile: esp32c3-supermini-st7796 ... | Panel: 480x320 rect"
+      note: "VERIFIED 2026-08-12."
+    - check: band-tier-reached-the-compile
+      expect: "Band-rendered surface: 480x320, band=16 scanlines, buffer=15360 bytes | Dirty quantum: 16 rows/band, 20 bands, repaint mode: band walk"
+      note: >
+        VERIFIED 2026-08-12.  The `band=16` is the load-bearing number: a dropped CXC_BAND_HEIGHT
+        falls back to 16 and everything still "works", so on THIS board 16 is the correct value AND
+        the proof that nothing set it otherwise.  20 bands is inside the 32-bit dirty mask.
+    - check: spi-clock-achieved-not-requested
+      expect: "SPI2 requested 10000000 Hz, ACHIEVED 10000 kHz (ceiling ~15150 kHz)"
+      note: >
+        VERIFIED 2026-08-12 via spi_device_get_actual_freq.  Requested and achieved are different
+        numbers — only exact 80 MHz dividers are reachable — and it is the ACHIEVED one that must be
+        checked against the datasheet.  CROSS-CHECKED INDEPENDENTLY: 307,200 B at 10 MHz predicts
+        245.8 ms of transfer; the measured [PERF] xfer is 248.4 ms, within 1.1%.  That agreement is
+        what makes the clock a measurement rather than a claim.
+    - check: perf-full-frame
+      expect: "[PERF] full frame: 320 rows, draw ~74 ms + xfer ~248 ms = ~322 ms"
+      note: >
+        VERIFIED 2026-08-12 (74.0 + 248.4 = 322.3 ms).  TRANSFER IS 77% OF A FULL REPAINT, so this board
+        is wire-bound, not renderer-bound — do NOT dispatch composeux-render-engineer at it.  The felt
+        number is not this one: a reactive throttle move repaints 1-2 bands (15,360 B, ~12 ms of SPI).
+    - check: boot-to-first-frame
+      expect: "[CXC-R-C9] boot -> first config-driven frame: ~3.0 s"
+      note: "VERIFIED 2026-08-12: 2,974 ms (scene 'ENGINE THRUST', 16 widgets)."
+    - check: heap-headroom
+      expect: "Free heap before config fetch 76,888 B -> 128,108 B after releasing the logo; 52,596 B after scene build"
+      note: >
+        VERIFIED 2026-08-12.  These three numbers exist because the middle one is a FIX, not a
+        statistic — see quirk boot-logo-outlives-its-usefulness.  Re-read them before adding anything
+        to boot on a no-PSRAM board.
+    - check: transport-and-config-source
+      expect: "Bus transport: can (from nvs|default) | config source: http (from default)"
+      note: >
+        VERIFIED 2026-08-12.  WiFi comes up because `config: http` needs it, NOT because the bus does —
+        the log says so explicitly: "WiFi REQUIRED — transport 'can' does NOT need an IP stack, config
+        source 'http' needs one".  Keeping the radio up is what preserves GET /capture.bmp.
+    - check: listen-only-announced
+      expect: "mode LISTEN-ONLY in the started line, then a six-line ERROR banner naming it a workaround"
+      note: >
+        VERIFIED 2026-08-12.  A node that cannot transmit and does not SAY so is a node whose publishes
+        vanish with no error.  The refusal is also enforced: publish attempts log 'TX REFUSED ...'
+        (rate-limited to 1 line / 10 s so a per-frame publish path cannot flood the console — the
+        diagnostic-causes-the-failure shape).
+    - check: scene-built-and-wired
+      expect: "scene 'ENGINE THRUST': 16 widgets built, 6 reactive bindings (2 subscriptions); subscribed throttle/left (0x03F6) and throttle/right (0x0D9E)"
+      note: >
+        VERIFIED 2026-08-12.  The two hashes were derived INDEPENDENTLY with composeio.config.namespace_hash
+        and with a local CRC-16/CCITT reimplementation, and both agree with what the firmware printed —
+        three sources, not one read back to itself.
+    - check: can-receive-end-to-end
+      expect: "a frame injected on can1 arrives as `BUS <ns> = <value>` on the console"
+      note: >
+        VERIFIED 2026-08-12, WITH AN INSTRUMENT THIS PROJECT DID NOT WRITE.  `cansend can1
+        088740A4#0468747470` on rpi5 (arbitration id computed in Python from [BP-CAN-ID], value
+        [len][utf8]) produced `BUS _device/c3lcd-c28020/config_source = 'http'` on the C3.  That proves
+        the WHOLE receive path in one shot: transceiver -> GPIO6 -> TWAI listen-only -> id decode ->
+        ns-hash resolution -> value codec -> BusEvent -> the app shell's drain.  A `_device/*` namespace
+        was chosen rather than `throttle/*` DELIBERATELY: the bridge's registry has learned the throttle
+        names from MQTT, so injecting one would have been republished and would have moved the owner's
+        LIVE game state.
+    - check: bus-control-plane-persists
+      expect: "`_device/c3lcd-c28020/transport` = \"can\" over CAN -> 'transport selection stored' -> next boot reads 'from nvs'"
+      note: >
+        VERIFIED 2026-08-12 across a reboot.  This is the escape hatch that takes the board out of
+        listen-only without a reflash, and it was BROKEN until the NVS partition was enlarged — see
+        quirk nvs-too-small-starves-everything.  ⚠ It is also SUBSTRATE-LIMITED: see quirk
+        recovery-command-does-not-fit-the-frame.
+    - check: capture-server
+      expect: "GET /capture.bmp -> 460,854 bytes (54 B header + 480*320*3)"
+      note: >
+        VERIFIED 2026-08-12.  Required widening capture_http.cpp's row buffer from 240*3 to 480*3 —
+        see quirk capture-row-buffer-sized-for-today.  ⚠ AND IT CANNOT VERIFY COLOUR: the capture
+        decodes the same band buffer with the same big-endian assumption that wrote it.
+    - check: no-regression-in-other-envs
+      expect: "cyd, hosyond_s3, waveshare_c6, qualia_display, esp32_can_relay, esp32_c3_can_bringup all still build"
+      note: >
+        VERIFIED 2026-08-12, all six SUCCESS.  This bring-up edited FIVE shared files (main.cpp,
+        bus_can.cpp/.h, bus_transport_select.cpp, capture_http.cpp), and none of those boards is on the
+        bench, so a clean build is the only equivalence evidence available and is recorded as exactly
+        that much.
+  human: >
+    ACCEPTANCE PASSED 2026-08-12, ON THE GLASS AND ON THE LEVERS.
+    (1) COLOUR, on the labelled pure-RGB565 baseline built into the boot splash — David: "I see the
+    Compose logo on the screen along with the color bars which are all correct."
+    (2) THE WIDGET UNDER LIVE TRAFFIC — the bars track his physical throttle levers, and: "yes, and it's
+    really snappy too."  That is 307,200 B/frame (2.8x the C6's framebuffer) on single-core RISC-V with
+    no PSRAM and no FPU, responsive at roughly 10 Hz of throttle traffic; a FULL frame is 322 ms, so the
+    dirty-band repaint is doing all of the work behind that verdict.
+    (3) LANDSCAPE ORIENTATION reviewed and kept — "That's not a problem, per se."
+    So the full chain is proven on hardware: physical lever -> C3 dual-throttle controller -> Mac app ->
+    MQTT -> composeio-can-bridge on rpi5 -> CAN -> this ESP32-C3 in LISTEN-ONLY -> ST7796S 480x320.
+    THE FIRST MCU IN THIS FLEET TO DO REAL WORK ON THE COMPOSEBUS CAN SEGMENT rather than only
+    instrument one.
+    DETAIL ON (1), because the distinction is the whole point.  David, on the labelled pure-RGB565 baseline built
+    into the boot splash: "I see the Compose logo on the screen along with the color bars which are all
+    correct."  That settles, in one sentence, BOTH properties that no instrument on this device can
+    reach: RGB565 BYTE order (the vendor init never writes the endian register, so the reset default
+    applies and it matches canvas_esp32.cpp's rgb565_be) and colour CHANNEL order (MADCTL 0x28, bit 3
+    BGR set).  Inversion (0x21 INVON, the IPS quirk) is confirmed by the same look — the dark background
+    is dark rather than a photo negative.
+    ⚠ IT WAS EYES, NOT A CAPTURE, AND THAT DISTINCTION IS THE WHOLE POINT.  GET /capture.bmp was
+    returning a well-formed 460,854-byte image the entire time and would have looked equally perfect
+    over a byte-swapped panel, because it decodes the same buffer with the same assumption that wrote it
+    ([CXC-BOARD-HW-SELF-CONFIRMING]).  The C6 lost an evening to precisely that.
+    NOTHING WAS PUBLISHED TO throttle/* FROM THIS SESSION, deliberately — it is live game state — so
+    every claim about the throttle binding above comes from the OWNER'S OWN LEVERS, which is the
+    stronger evidence anyway.  The one row not separately exercised is the AHEAD FLANK banner at >= 230
+    on either engine; it shares its expr binding with nothing else, so it is proven by construction
+    only.
+
+quirks:
+  - id: listen-only-is-a-workaround
+    resolved: false
+    note: >
+      ⚠ TWAI_MODE_LISTEN_ONLY: THIS NODE RECEIVES AND CANNOT TRANSMIT.  It is a WORKAROUND FOR A BROKEN
+      PART, not a design, and the firmware says so at ERROR level in six lines on every boot.  The
+      SN65HVD230's DRIVER is dead while its RECEIVER works, established 2026-08-12 by three independent
+      instruments: the Pi's bus-errors counter unmoved across ten 1.5 s dominant attempts; a differential
+      of -0.6 mV across CANH/CANL with the driver input held low; and identical behaviour from two
+      separate modules.  Receive is PROVEN — 1,136 frames at 500 kbit/s with bus_err=0, verified twice an
+      hour apart.  WHY IT MATTERS THAT IT IS LISTEN-ONLY RATHER THAN NORMAL: in normal mode the node
+      tries to ACK, fails, accumulates TEC and reaches BUS-OFF in about five seconds — after which
+      ESP-IDF does NOT auto-recover (bus_can.cpp never enables TWAI_ALERT_BUS_OFF and never calls
+      twai_initiate_recovery()), so it stops RECEIVING too.  Listen-only never ACKs, never accumulates,
+      and listens indefinitely.  DEFAULT 0 EVERYWHERE ELSE: CXC_CAN_LISTEN_ONLY is set in exactly one
+      CMake branch, is NVS-overridable as can.listen, and every publish through the transport is REFUSED
+      with a rate-limited ERROR rather than silently dropped.  DELETE THE DEFINITION once the
+      replacement transceivers are soldered.
+  - id: recovery-command-does-not-fit-the-frame
+    resolved: false
+    note: >
+      ⚠ THE OBVIOUS ESCAPE HATCH IS UNSENDABLE ON THIS SUBSTRATE, and the first version of the boot
+      banner promised it anyway.  A classic-CAN state value is [len][utf8...] in EIGHT bytes = SEVEN
+      characters, so `_device/<id>/transport = "can listen=0"` is 13 bytes and publish_state REFUSES it —
+      correctly, because a truncated string decodes cleanly as a DIFFERENT command.  A CAN-only board
+      therefore cannot be handed ANY wiring key; only bare transport names fit ("can" 4 B, "mqtt" 5 B).
+      THE REAL ROUTE OUT IS TWO HOPS: publish transport = "mqtt" over CAN, reboot onto MQTT, publish
+      transport = "can listen=0" over MQTT (no 8-byte limit), reboot.  Or reflash without the define, or
+      write NVS can.listen=0 directly.  The banner and bus_can.h now say this; they used to say the
+      one-hop form, which was a documented instruction that could never have worked.  GENERALIZES: a
+      control plane's vocabulary has to be checked against the NARROWEST substrate it can arrive on, not
+      the widest.
+  - id: nvs-too-small-starves-everything
+    resolved: true
+    note: >
+      ⚠ THE LOUD ERROR NAMED THE WRONG THING.  config_cache_store() writes the WHOLE scene into NVS on
+      every successful fetch — boot AND every 60 s re-poll — and this board's scene is 8,139 B.  In the
+      shared partitions.csv `nvs` is 0x6000 = 24 KB (six pages) and also holds WiFi calibration, so the
+      blob filled it and never recovered.  The message it produced was benign-sounding and accurate:
+      "config cache write failed (ESP_ERR_NVS_NOT_ENOUGH_SPACE) — the board still runs, but `config:
+      cached` has nothing fresh to load".  THE ACTUAL DAMAGE WAS ELSEWHERE: a full NVS partition starves
+      every OTHER key, so `_device/<id>/transport` and `_device/<id>/config_source` — the control planes
+      whose entire purpose is re-pointing a board WITHOUT a reflash — silently stopped storing.  Measured
+      after a COMPLETE `esptool erase-region 0x9000 0x6000`: a FOUR-BYTE selection still failed with
+      "nvs write failed (ESP_ERR_NVS_NOT_ENOUGH_SPACE) — selection NOT stored".  FIXED for this board by
+      a per-env partitions_c3_st7796.csv giving nvs 0x10000 = 64 KB; the cache then stored first try
+      ("config cached: 8139 bytes, hash 0x0ECA") and the transport selection survived a reboot ("from
+      nvs").  NOT FIXED IN SHARED CODE: the cross-cutting fix is to BOUND what config_cache_store is
+      willing to write and refuse rather than churn, but that lands in a module four boards use and three
+      of them are not on the bench.  Widening the shared partitions.csv is worse — it would move the NVS
+      of every board in the fleet and lose their stored calibration and selections on the next flash.
+  - id: growing-nvs-moved-the-app
+    resolved: true
+    note: >
+      ⚠ FIXING THE PARTITION TABLE BOOT-LOOPED THE BOARD, and the first table was the obvious one.
+      Enlarging `nvs` in place at 0x9000 pushed `factory` from 0x10000 to 0x20000 — but PlatformIO still
+      wrote the app image at 0x10000, so the bootloader read the new table, looked at 0x20000 and
+      reported `image at 0x20000 has invalid magic byte (nothing flashed here?)` / `No bootable app
+      partitions in the partition table`, forever.  RECOVERED BY A NORMAL REFLASH: the ROM bootloader is
+      untouched and the board keeps enumerating, so this is a stall, not a brick — which is exactly the
+      property the pre-flash factory dump exists to guarantee and, this time, did not have to provide.
+      THE FIX IS THE LAYOUT, NOT THE TOOL: `nvs` now sits AFTER the app at 0x210000, taking its extra
+      40 KB from the unused SPIFFS region, so `factory` stays at 0x10000 and the image offset every tool
+      assumes stays true.  NVS has no required address; only the partition table is authoritative.
+  - id: boot-logo-outlives-its-usefulness
+    resolved: true
+    note: >
+      ⚠ AN 8 KB SCENE FAILED TO PARSE ON A BOARD WITH 128 KB FREE, and the reason was ordering, not size.
+      The decoded boot logo is W*H*2 = 51,200 B for the 160 px hero, and main.cpp freed it AFTER the
+      scene was built — so it was resident across the two largest transient allocations in the whole
+      boot: the config fetch and the yaml_min parse arena.  Result: `config parse failed: yaml arena
+      malloc failed`, on every retry, forever, with the config fetching successfully each time.  MOVING
+      THE FREE to just before the fetch loop took free heap from 76,888 B to 128,108 B and the same scene
+      parsed first try.  Both numbers are logged on every boot so the trade can be re-checked rather than
+      trusted.  WHAT IT COSTS: a RETRY splash falls back to the ComposeUX wordmark instead of the logo,
+      because the decode buffer is gone.  The logo pixels already on the glass are unaffected — freeing a
+      decode buffer does not erase a panel — and on a healthy board that frame is never seen.
+  - id: yaml-arena-is-sized-from-raw-length
+    resolved: false
+    note: >
+      yaml_min sizes its parse arena as len*2 + 8192 + (len/8)*sizeof(YamlNode) from the RAW input
+      length, INCLUDING comments — even though comments are blanked to spaces before parsing.  On a
+      24-byte YamlNode that is ~3.4 bytes of scarce contiguous heap per byte of prose.  A 9,803 B scene
+      (a normal amount of commenting for this project) asks for 57 KB; trimming the same scene to 7,331 B
+      asked for 45 KB and parsed.  CONSEQUENCE FOR AUTHORS: scenes for no-PSRAM boards must be sparse on
+      comments and the reasoning must live in the .md, which inverts this project's usual habit and is
+      worth stating out loud in the file itself.  NOT FIXED: computing the node budget from the
+      POST-STRIP content is a small change to a parser four boards share, and three of them cannot be
+      verified today.
+  - id: capture-row-buffer-sized-for-today
+    resolved: true
+    note: >
+      capture_http.cpp's BMP row buffer was `uint8_t row_buf[240*3]` with a guard that set an error flag
+      above that — sized exactly for the panels that existed when it was written, which is the
+      kMaxPersist=4 shape recurring.  The first 480-wide board would have 500'd on every /capture.bmp
+      with a guard that was loud but a dead endpoint either way.  Now kMaxCaptureWidth = 480, file-static
+      rather than on the httpd task's stack (safe because capture_http_lock() serialises the whole
+      render+stream), and the guard logs the actual mismatch.  VERIFIED: 460,854 bytes = 54 + 480*320*3.
+  - id: no-pins-left-for-touch
+    resolved: false
+    note: >
+      TOUCH IS OFF, AND NOT BECAUSE THE HARDWARE LACKS IT.  An FT6336U capacitive controller is fitted on
+      the MSP3525 module; the C3 simply has no pins.  Full occupancy: GPIO0 backlight, GPIO1 LCD reset,
+      GPIO2 STRAPPING, GPIO3 LCD DC, GPIO4 LCD SCLK, GPIO5 CAN CTX, GPIO6 CAN CRX, GPIO7 LCD MOSI,
+      GPIO8/9 STRAPPING, GPIO10 LCD CS, GPIO18/19 native USB (console + flashing), GPIO20/21 UART0.
+      The six display pins are LITERALLY every remaining free GPIO.  CONSEQUENCES: adding touch means
+      giving up CAN or the UART console, not finding a pin; and THIS BOARD CANNOT BE UART-SLAVED while it
+      drives glass and CAN, because GPIO20/21 are free only if the console is surrendered.
+  - id: band-tier-is-not-a-preference
+    resolved: true
+    note: >
+      480*320*2 = 307,200 B and this part has 321,296 B of DRAM total, of which the linked image already
+      takes 150,904 B before any heap.  A full framebuffer is not tight, it is impossible, so there is
+      deliberately NO CXC_BAND_HEIGHT in this board's CMake branch and the 16-scanline default stands:
+      480*16*2 = 15,360 B of internal DMA-capable SRAM, 20 bands per frame, inside the 32-bit dirty mask.
+      This is the WIDEST panel in the fleet on the SMALLEST RAM budget, which is the interesting
+      combination: width costs band buffer linearly while the tier decision is about the whole frame.
+  - id: no-fpu-decides-the-scene
+    resolved: true
+    note: >
+      RV32IMAC has no FPU and the band canvas is float-heavy, so every float is software-emulated.  This
+      does not disqualify the board; it decides which SCENE PRIMITIVES are affordable.  Measured on the
+      C6 (same ISA class, same binary, only the scene changed): dial gauges 892.9 ms/frame vs led_bar
+      rectangles 31.2 ms — 28x from scene authoring alone.  engine_thrust_480x320 is led_bar / rect /
+      label only, and its label sizes are NATIVE atlas sizes (COMMP 12/14/16/20/24) so glyphs skip the
+      per-glyph scale multiply as well.  Do NOT respond to this by de-floating the shared canvas.
+  - id: transfer-dominates-so-do-not-dispatch-the-renderer
+    resolved: true
+    note: >
+      Full frame measured 2026-08-12: draw 74.0 ms + xfer 248.4 ms = 322.3 ms.  TRANSFER IS 77%.  Per
+      RUNBOOK.md's dispatch test the dominant cost is the WIRE, not the renderer, so
+      composeux-render-engineer is the wrong tool here; the lever is the SPI clock, which is a board
+      constant.  The clock is 10 MHz (80/8) against a datasheet ceiling of 15.15 MHz (TSCYCW 66 ns), and
+      80/6 = 13.33 MHz is the only in-spec step up — worth 33% of the transfer and to be tried ONE change
+      at a time, remembering that the C6 improved every machine signal at 40 MHz while the glass got
+      worse.  Also note the felt number is not the full frame: a throttle move repaints 1-2 bands.
+  - id: backlight-was-on-before-the-firmware
+    resolved: true
+    note: >
+      ⚠ A LIT PANEL PROVES THE 5V RAIL AND NOTHING ABOUT THE MCU.  The module's LED line has a 10K
+      pull-up into a BSS138 gate, and the schematic says so in as many words: "LED unconnected OR driven
+      HIGH, backlight always on" / "LED driven LOW, backlight off".  So the backlight is at full
+      brightness from the instant the module has power, before any code runs.  The profile claims GPIO0
+      (LEDC, active HIGH) so brightness is OWNED rather than defaulted, and logs that fact at boot.
+      NO CLAMP, DELIBERATELY: the Waveshare C6 clamps to 50% because Waveshare publish a panel-LIFETIME
+      directive for that specific glass; this vendor's documented normal operating condition is the LED
+      pin unconnected, i.e. 100%.  Copying the C6's limit would be cargo cult and inventing one here
+      would be a number no evidence supports.
+  - id: no-gram-offset-but-ask-anyway
+    resolved: true
+    note: >
+      The ST7796S GRAM is 320x480 and this glass is 320x480, so there is NO column or row bias — unlike
+      the C6, where 172 columns of a 240-column GRAM meant a +34 offset on every address and getting it
+      wrong slid the whole image sideways.  kC3LcdColOffset/kC3LcdRowOffset are declared as 0 rather than
+      omitted so the next reader can see the question was ASKED.  With MADCTL's MV bit set the address
+      counter follows the transformed axes: CASET spans 0..479, RASET 0..319.
+  - id: madctl-landscape-is-0x28
+    resolved: true
+    note: >
+      The vendor's LCD_direction() table enumerates four rotations and EVERY one sets bit 3 (BGR):
+      0x48 portrait 320x480, 0x28 LANDSCAPE 480x320, 0x88 portrait flipped, 0xE8 landscape flipped.  We
+      take 0x28.  The vendor's LCD_Init() writes 0x36=0x48 inside the sequence and LCD_direction()
+      OVERWRITES it after DISPON; MADCTL is a plain register, so writing the final value ONCE in the
+      table's 0x36 slot lands the identical end state with one fewer transaction.  If the image is ever
+      upside down the fix is 0x28 -> 0xE8.  CONFIRMED CORRECT ON THE GLASS 2026-08-12.
+  - id: extended-command-set-must-be-unlocked
+    resolved: true
+    note: >
+      ST7796S command 0xF0 is Command Set Control: C3 then 96 UNLOCKS the extended set, 3C then 69 LOCKS
+      it.  The unlock/lock pair brackets every extended register the vendor writes (0xB4, 0xB7, 0xC0-C5,
+      0xE8, 0xE0, 0xE1), and dropping either half silently turns the writes between them into no-ops —
+      a panel that initialises "successfully" with default gamma and power settings.  Transcribed from
+      ST7796_Init.txt verbatim, as a reviewable data table.
+  - id: config-over-can-is-blocked
+    resolved: false
+    note: >
+      The scene arrives over HTTP, not over the bus, and that is a constraint rather than a preference.
+      Config-over-CAN is blocked by two defects found 2026-08-12: the terminating ACK is 13 bytes and
+      classic CAN refuses anything over 8, and BusMessage.to_json() cannot serialise the `bytes` of a
+      config chunk.  Compiling the scene into the firmware was rejected instead: it would make this the
+      first binary in the tree carrying composition, which is precisely the property
+      [CXC-R-BOOT-FUNGIBLE] exists to protect, and it would cost a reflash per layout tweak while
+      somebody is standing at the bench.  So `config: http` — which also keeps the radio up and
+      therefore keeps GET /capture.bmp alive.  The honest cost: this board is NOT yet a radio-free
+      slaved node; only its DATA rides CAN.
+  - id: yaml-default-0-is-boolean-false
+    resolved: true
+    note: >
+      A binding's `default: "0"` renders as "OFF", not "0".  yaml_min's as_bool applies YAML-1.1
+      truthiness canonicalization (on/true/yes/1, off/false/no/0) BEFORE add_scene_binding tries the
+      number branch, so the scalar "0" becomes DslValue::boolean(false) and reactive_format_text emits
+      "off" — which the uppercase-only COMMP atlas draws as "OFF".  Caught on this board's FIRST
+      /capture.bmp.  The 240- and 172-wide engine_thrust variants carry `default: "0"` and have the same
+      behaviour at idle.  Fixed HERE by using `default: "---"`, which is also the better design
+      independent of the bug: an instrument that has never heard from the bus must not claim a READING,
+      and "0" is a measurement while "---" is the absence of one.  The coercion ORDER was not changed —
+      bool-before-number is deliberate for visible:/checked:, and reordering it would alter truthiness
+      bindings on every board.
+  - id: existing-vocabulary-cost-zero-configuration
+    resolved: true
+    note: >
+      This board needed NO bridge configuration at all, and that is a result worth naming.  It subscribes
+      throttle/left and throttle/right, which CAN_BRIDGE_ALLOWLIST already relays MQTT->CAN, so a new
+      device on established namespaces is a new PEER rather than a new vocabulary.  Contrast the headless
+      CAN node on the SAME SILICON, every one of whose nine `_device/c3can-*` namespaces is CAN-ONLY and
+      therefore unlearnable by the bridge's MQTT-observing registry — nine hand-typed CAN_BRIDGE_REGISTER
+      entries whose only error report is a 16-bit hash nobody can reverse.  Search the fleet's existing
+      namespaces BEFORE inventing one.
+  - id: port-path-is-not-identity
+    resolved: true
+    note: >
+      /dev/cu.usbmodem11301 changed device FOUR times on this bench in one evening, and iterating over
+      ports once reset a live controller that had been explicitly ring-fenced.  Both C3s here share the
+      MAC prefix AA:BB:CC, so a prefix match is NOT enough — this board is AA:BB:CC:DD:EE:FF and the LIVE
+      dual-throttle controller is AA:BB:CC:DD:EE:FF.  Verify the FULL USB serial passively before every
+      destructive operation: `ioreg -r -c IOUSBHostDevice -l -w0`, pairing "USB Serial Number" to
+      "IOCalloutDevice".  Native-USB ESP32s publish their MAC as the USB serial number.  `esptool
+      chip-id` is NOT an acceptable identity check: it RESETS the board, which is the harm being
+      prevented.  Done before every one of the five flashes in this bring-up.
+  - id: no-hand-maintained-build-tag
+    resolved: true
+    note: >
+      The boot banner and the splash both print __DATE__ and __TIME__, written by the compiler.  A
+      hand-bumped tag read 'TF13' through roughly ten flashes across three boards on 2026-08-11,
+      including one that did not exist when the string was written — the instrument built to detect
+      staleness had itself gone stale.  A value no human maintains cannot rot; one that requires
+      maintenance will.
+
+  - id: geometry-native-vs-shipped
+    resolved: true
+    note: >
+      RECORD BOTH OR THE NEXT PERSON RE-DERIVES IT.  The panel's NATIVE geometry is 320x480 PORTRAIT —
+      that is LCD_W/LCD_H in the vendor ST7796_Init.txt, and the ST7796S GRAM is exactly that.  This
+      fleet ships it ROTATED to 480x320 LANDSCAPE via MADCTL's MV bit (0x28).  Landscape was reviewed by
+      the owner and KEPT ("That's not a problem, per se.").  Because GRAM and glass are the same size
+      there is no column or row offset in EITHER orientation.
+  - id: touch-recovery-path
+    resolved: false
+    note: >
+      THE BOOT-SAFE WIRING IF TOUCH IS EVER WANTED, and it works WITH the strapping pins rather than
+      against them: GPIO2 -> CTP_SDA, GPIO8 -> CTP_SCL, GPIO9 -> CTP_INT, ALL WITH PULL-UPS TO 3.3V;
+      CTP_RST to 3.3V or omitted.  The reason it is safe is that I2C IDLES HIGH, which is exactly what
+      the C3's strapping requirement is — nothing may hold 2/8/9 LOW at reset — so a pulled-up idle-high
+      bus SATISFIES the constraint instead of fighting it.  CAVEATS THAT REMAIN: GPIO8 also drives the
+      onboard LED and GPIO9 is the BOOT button, so both already carry a load; and ⚠ beware anything that
+      drives a strap through an LED or a transistor (the fleet's C3 + BC337 finding).  The driver
+      already exists: cyd/src/touch_ft6336.cpp, written for the Hosyond's FT6336G — same family, I2C
+      0x38, self-calibrating so it reports panel-native pixels and needs NO calibration step.  What this
+      costs is not pins-in-the-abstract: those three are free only if something else gives them up.
+  - id: rom-bootloader-prints-on-uart0
+    resolved: true
+    note: >
+      GPIO20/21 are UART0 and the ESP32 ROM bootloader prints on TX at 115200 at EVERY reset regardless
+      of the app's console config.  Recorded as an INSTRUMENT rather than a caveat: on a new UART link a
+      reset produces a banner that proves TX, ground and baud with no firmware of yours involved, so a
+      later transport failure has the wiring already excluded.  On THIS board those pins are unused
+      because the console rides native USB.
+
+variants: []   # single physical board

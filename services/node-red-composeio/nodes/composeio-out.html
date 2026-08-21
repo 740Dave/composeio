@@ -1,0 +1,105 @@
+<script type="text/javascript">
+    RED.nodes.registerType('composeio-out', {
+        category: 'ComposeIO',
+        color: '#4DB6AC',
+        defaults: {
+            name: { value: '' },
+            config: { value: '', type: 'composeio-config', required: true },
+            namespace: { value: '' },
+            messageType: { value: 'state' },
+            scope: { value: 'global' },
+            source: { value: '' },
+            validate: { value: true }
+        },
+        inputs: 1,
+        outputs: 2,
+        icon: 'bridge-dash.svg',
+        label: function () {
+            return this.name || this.namespace || 'composeio out';
+        },
+        paletteLabel: 'composeio out',
+        labelStyle: function () {
+            return this.name ? 'node_label_italic' : '';
+        },
+        outputLabels: ['published', 'validation error'],
+        align: 'right'
+    });
+</script>
+
+<script type="text/html" data-template-name="composeio-out">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-config"><i class="fa fa-cogs"></i> Config</label>
+        <input type="text" id="node-input-config">
+    </div>
+    <div class="form-row">
+        <label for="node-input-namespace"><i class="fa fa-bookmark"></i> Namespace</label>
+        <input type="text" id="node-input-namespace" placeholder="e.g. ftl_arm (or from msg.composeio.namespace)">
+    </div>
+    <div class="form-row">
+        <label for="node-input-messageType"><i class="fa fa-envelope"></i> Type</label>
+        <select id="node-input-messageType">
+            <option value="state">state</option>
+            <option value="event">event</option>
+            <option value="log_entry">log_entry</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label for="node-input-scope"><i class="fa fa-sitemap"></i> Scope</label>
+        <select id="node-input-scope">
+            <option value="global">global</option>
+            <option value="local">local</option>
+            <option value="remote">remote</option>
+            <option value="auto">auto</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label for="node-input-source"><i class="fa fa-user"></i> Source</label>
+        <input type="text" id="node-input-source" placeholder="(uses config clientId if empty)">
+    </div>
+    <div class="form-row">
+        <label for="node-input-validate"><i class="fa fa-check-circle"></i> Validate</label>
+        <input type="checkbox" id="node-input-validate" style="width: auto;">
+        <span>Validate against state engine before publishing</span>
+    </div>
+</script>
+
+<script type="text/html" data-help-name="composeio-out">
+    <p>Publishes messages to a ComposeIO namespace with proper 7-field message
+    format, state engine validation, and correct QoS/retain per message type.</p>
+
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">string | number | object</span></dt>
+        <dd>The value to publish as the ComposeIO <code>val</code> field.</dd>
+        <dt class="optional">composeio <span class="property-type">object</span></dt>
+        <dd>Optional metadata overrides: namespace, type, scope, source.</dd>
+    </dl>
+
+    <h3>Outputs</h3>
+    <ol class="node-ports">
+        <li>Published
+            <dl class="message-properties">
+                <dt>payload <span class="property-type">any</span></dt>
+                <dd>Pass-through of the published message.</dd>
+            </dl>
+        </li>
+        <li>Validation Error
+            <dl class="message-properties">
+                <dt>error <span class="property-type">object</span></dt>
+                <dd>Error details with message and validValues.</dd>
+            </dl>
+        </li>
+    </ol>
+
+    <h3>Details</h3>
+    <p>When <b>Validate</b> is enabled and the namespace has a known state engine,
+    the node checks <code>msg.payload</code> against valid values before publishing.
+    Invalid values are routed to the error output without reaching the bus.</p>
+    <p>The node blocks publishing to <code>_bus/</code> infrastructure namespaces.</p>
+    <p><b>QoS/Retain</b>: state = QoS 1 retained, event = QoS 0 not retained,
+    log_entry = QoS 1 not retained.</p>
+</script>

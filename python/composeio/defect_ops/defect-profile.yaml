@@ -1,0 +1,63 @@
+# ==============================================================================
+# Defect-Registry FactLattice Domain Profile  ([SPEC:CIO-DEFECT-REGISTRY])
+# ==============================================================================
+# The `defect` profile is a NEW CONSUMER of the ONE canonical FactLattice engine
+# ([DEC-ONE-FACTLATTICE-PARSER]) — NOT a second engine. It registers the DEFECT-
+# node prefix + the defect lifecycle vocabulary + the recurrence edge kinds so a
+# defect corpus (defects/defect-graph.lts) parses/lints with the correct
+# namespace registered and the DEFECT- prefix known (no S007 unregistered-prefix
+# noise).  It is loaded exactly like the ComposeIO domain profile
+# (99-composeio-profile.yaml) — factlattice.load_profile() reads `domain` for the
+# registered namespace and the richer `prefixes`/`relationship_verbs`/`enums`
+# blocks for documentation + lint hints.
+#
+# Reuse-by-reference: this profile does NOT restate the FactLattice core edge
+# vocabulary; it names only the defect-domain additions.
+# ==============================================================================
+
+domain:
+  id: "defect"
+  name: "Defect Registry (fix-resistant-defect history)"
+  version: "1.0"
+  # The one namespace this profile authorizes for the defect corpus.  `core` is
+  # always registered by the engine; declaring `defect` future-proofs a
+  # `<defect.TYPE>`-namespaced edge without a core change.
+  namespaces:
+    - "defect"
+
+# ------------------------------------------------------------------------------
+# Registered node-ID prefixes.  DEFECT- is the defect-instance node; an ATTEMPT
+# node is a DEFECT-<slug>-A<n> child of a defect (same prefix root), so the one
+# registered prefix covers both the defect and its per-attempt narrative nodes.
+# ------------------------------------------------------------------------------
+prefixes:
+  - { prefix: "DEFECT-", document: "defects/defect-graph", note: "A defect instance (or a DEFECT-<slug>-A<n> fix-attempt child)" }
+
+# ------------------------------------------------------------------------------
+# The defect lifecycle vocabulary (informational — the ops layer advances a
+# node through these; the engine never hard-rejects an unknown value).  The
+# lifecycle is the fix-resistance arc a fresh investigator reads to stop
+# re-digging: reported -> investigating -> fix-attempted -> verified, and
+# recurred when a "verified" fix did not hold (the loudest process signal).
+# ------------------------------------------------------------------------------
+enums:
+  lifecycle-position:
+    - "reported"        # a symptom filed; no root-cause hypothesis yet
+    - "investigating"   # a hypothesis is being pursued
+    - "fix-attempted"   # a fix landed on a branch/commit; awaiting verification
+    - "verified"        # the fix held (closed)
+    - "recurred"        # a verified fix did NOT hold — the fix-resistant signal
+  attempt-outcome:
+    - "held"            # the fix held on verification
+    - "recurred"        # the defect came back after this attempt
+
+# ------------------------------------------------------------------------------
+# The recurrence edge kinds (the typed relationships a flat SQLite table cannot
+# express — this is why the graph half exists).  supersedes/reopens/related-to
+# are the ratified set; investigates ties an attempt node to its parent defect.
+# ------------------------------------------------------------------------------
+relationship_verbs:
+  - { verb: "supersedes",  note: "a NEW fix-attempt supersedes the prior attempt (the recurrence chain, walkable)" }
+  - { verb: "reopens",     note: "a recurrence reopens the defect (attempt whose outcome=recurred points at the defect)" }
+  - { verb: "related-to",  note: "kin defects in the same area (the neighbourhood a fresh investigator should also read)" }
+  - { verb: "investigates", note: "an attempt node investigates its parent defect (parent link; keeps attempts walkable from the defect)" }

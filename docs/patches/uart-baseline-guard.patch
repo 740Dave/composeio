@@ -1,0 +1,162 @@
+--- a/cyd/src/CMakeLists.txt
++++ b/cyd/src/CMakeLists.txt
+@@ -1,5 +1,159 @@
+ # ESP-IDF component CMakeLists.txt for the main component
+ # PlatformIO with framework=espidf uses this to build the main/ directory
++
++
++# ==================================================================
++# [POLICY-UART-BASELINE] — UART IS BASELINE, NOT A FEATURE.
++#
++# David, 2026-08-12: "our baseline firmware now and forever more should
++# have UART support baked in, unless we have to waive it for extremely
++# slow/limited MCUs."
++#
++# WHY, so the next person does not "clean up" this file by dropping a
++# transport a board "doesn't use": a board with bus_uart.cpp compiled in
++# can be recovered, reconfigured and re-pointed over THREE WIRES with no
++# IP address and no working radio.  A board without it is only as
++# reachable as its radio.  That is the difference between a bricked board
++# and a recoverable one, and this tree has already used exactly that path
++# to configure a board whose WiFi was deliberately off (hosyond-d1afe8).
++#
++# THE RULE — an env that speaks the bus AT ALL must be able to speak it
++# over wire:
++#     bus_can.cpp | bus_mqtt.cpp | bus_transport_select.cpp
++#         ==> bus_uart.cpp
++# An env that registers NONE of those is not a bus node (the on-device
++# DSL conformance runners) and is exempt without needing to be listed —
++# no allow-list to keep in step with platformio.ini.
++#
++# WAIVER (docs/POLICY-uart-baseline.md) — an EXPLICIT act, never a silent
++# omission.  Pass BOTH cache vars from board_build.cmake_extra_args:
++#     -DCXC_UART_WAIVED=1 -DCXC_UART_WAIVER_REASON="<part>: <ram>/<flash>"
++# The REASON is mandatory: a waiver with no reason is fatal, because a
++# reasonless waiver is the accident this guard exists to catch.  A waiver
++# mints CXC_UART_WAIVED_BUILD=1 into every compile of that env — grep
++# .pio/build/<env>/compile_commands.json to audit it.  It does NOT print
++# a banner; see the note on the waiver branch for why that is impossible
++# here, and read docs/POLICY-uart-baseline.md for where the loudness
++# actually lives.
++#
++# MECHANISM — cmake_language(DEFER) and not a call in each branch, on
++# purpose: every board branch below ends in return(), so a check written
++# at the bottom of this file would audit only the fallthrough env.  A
++# deferred call runs at the END OF THIS DIRECTORY'S SCOPE, which return()
++# does not skip — so a NEW board branch added anywhere in this file is
++# audited without its author having to remember to opt in.  That is the
++# whole point: the guard has to cover the branch nobody has written yet.
++# ==================================================================
++function(cxc_assert_uart_baseline)
++    # ESP-IDF processes a component's CMakeLists more than once, and only
++    # the pass that really created the component target can be audited.
++    if(NOT COMPONENT_LIB OR NOT TARGET ${COMPONENT_LIB})
++        return()
++    endif()
++    get_target_property(_cxc_srcs ${COMPONENT_LIB} SOURCES)
++    if(NOT _cxc_srcs)
++        return()
++    endif()
++
++    # The env name.  NOT $ENV{PIOENV} — PlatformIO does not export it into
++    # the cmake process, and it printed EMPTY in the first proof run.  The
++    # build dir is .pio/build/<env>, which is always right.
++    get_filename_component(_cxc_env "${CMAKE_BINARY_DIR}" NAME)
++
++    set(_cxc_has_uart OFF)
++    set(_cxc_triggers "")
++    foreach(_cxc_s IN LISTS _cxc_srcs)
++        get_filename_component(_cxc_n "${_cxc_s}" NAME)
++        if(_cxc_n STREQUAL "bus_uart.cpp")
++            set(_cxc_has_uart ON)
++        elseif(_cxc_n STREQUAL "bus_can.cpp"
++                OR _cxc_n STREQUAL "bus_mqtt.cpp"
++                OR _cxc_n STREQUAL "bus_transport_select.cpp")
++            list(APPEND _cxc_triggers "${_cxc_n}")
++        endif()
++    endforeach()
++
++    if(NOT _cxc_triggers)
++        return()   # not a bus node — exempt, and exempt by SHAPE, not by name
++    endif()
++    if(_cxc_has_uart)
++        return()   # policy met
++    endif()
++
++    list(REMOVE_DUPLICATES _cxc_triggers)
++    list(JOIN _cxc_triggers ", " _cxc_triggers_str)
++
++    if(CXC_UART_WAIVED)
++        if(NOT CXC_UART_WAIVER_REASON)
++            message(FATAL_ERROR
++                "[POLICY-UART-BASELINE] CXC_UART_WAIVED is set with no "
++                "CXC_UART_WAIVER_REASON. A waiver must name the part and its "
++                "RAM/flash. See docs/POLICY-uart-baseline.md.")
++        endif()
++        # A waiver CANNOT be made loud in the console, and pretending
++        # otherwise would be worse than admitting it.  PROVEN on a scratch
++        # copy, in this order:
++        #   - message(WARNING) : swallowed by PlatformIO.
++        #   - message(STATUS)  : also swallowed — on a SUCCESSFUL configure
++        #                        PlatformIO echoes nothing from cmake at all.
++        #   - POST_BUILD echo  : never runs.  For framework=espidf PlatformIO
++        #                        uses cmake only to EXTRACT the build config
++        #                        and then compiles + links with SCons, so no
++        #                        cmake target is ever built.
++        # What DOES reach the build is a compile DEFINITION — the one channel
++        # this file already documents as surviving (three defects' worth of
++        # evidence in the branches below).  So a waiver mints a real,
++        # greppable definition and the loudness lives where it can be
++        # ENFORCED rather than merely printed: the board descriptor's
++        # uart_waiver: block and the corpus policy node.
++        #   verify: grep -c CXC_UART_WAIVED_BUILD on
++        #           .pio/build/<env>/compile_commands.json
++        target_compile_definitions(${COMPONENT_LIB} PUBLIC
++            CXC_UART_WAIVED_BUILD=1)
++        message(WARNING
++            "[POLICY-UART-BASELINE] UART TRANSPORT WAIVED for env "
++            "'${_cxc_env}' (IDF_TARGET=${IDF_TARGET}): "
++            "${CXC_UART_WAIVER_REASON}. This board is only as reachable as "
++            "its radio, and cannot be recovered over three wires. It MUST "
++            "declare its substitute recovery path in its "
++            "docs/board-bringup/*.descriptor.yaml.")
++        return()
++    endif()
++
++    message(FATAL_ERROR
++        "\n"
++        "[POLICY-UART-BASELINE] VIOLATION — this build registers a ComposeBus "
++        "transport but NOT bus_uart.cpp.\n"
++        "    env         : ${_cxc_env}\n"
++        "    IDF_TARGET  : ${IDF_TARGET}\n"
++        "    component   : ${COMPONENT_LIB}\n"
++        "    found       : ${_cxc_triggers_str}\n"
++        "    missing     : bus_uart.cpp\n"
++        "\n"
++        "UART is the BASELINE recovery path: a board with it can be recovered, "
++        "reconfigured and re-pointed over three wires with no IP address. A "
++        "board without it is only as reachable as its radio.\n"
++        "\n"
++        "FIX — add \"bus_uart.cpp\" to this branch's idf_component_register "
++        "SRCS (it is a peer of bus_can.cpp / bus_mqtt.cpp and needs no board "
++        "support beyond two GPIOs).\n"
++        "\n"
++        "If and ONLY if this part is below the waiver floor in "
++        "docs/POLICY-uart-baseline.md, add to this env's "
++        "board_build.cmake_extra_args:\n"
++        "    -DCXC_UART_WAIVED=1 -DCXC_UART_WAIVER_REASON=\"<part>: <ram>/<flash>\"\n")
++endfunction()
++
++# ESP-IDF re-reads this file in SCRIPT mode (cmake -P, via
++# component_get_requirements.cmake) to expand component requirements.  A
++# script-mode run has no directory scope, so DEFER cannot be scheduled
++# there — and there is nothing to audit anyway, because in that pass
++# idf_component_register returns before creating any target.  Proven the
++# hard way on a scratch copy: without this guard EVERY espidf env fails
++# with "cmake_language DEFER CALL may not be scheduled in directory".
++if(NOT CMAKE_SCRIPT_MODE_FILE)
++    cmake_language(DEFER CALL cxc_assert_uart_baseline)
++endif()
+ 
+ # [SPEC:CXC-CONFIG-BUS] [CXC-CONFIG-BUS-RELAY] — the headless RELAY node
+ # (env:esp32_can_relay, cache var CXC_RELAY=1).  CAN upstream, UART

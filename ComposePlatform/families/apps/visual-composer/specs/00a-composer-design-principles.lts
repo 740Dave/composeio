@@ -1,0 +1,162 @@
+---
+scope: "Core design principles governing the ComposeIO Composer — the visual layout tool for building ComposeIO UX configurations, itself built as a ComposeIO bus application"
+audience: "Composer developers, ComposeIO spec authors, UX tooling contributors"
+boundary: "Principles only; architecture in 01-composer-architecture.lts; internal bus in 02-composer-internal-bus.lts; module contracts in 03-composer-modules.lts"
+not-this: "Not the ComposeIO bus protocol (see ../spec/01-composeio-bus-protocol.smd); not a user manual; not the config schema (see ../spec/02-composeio-config-schema.smd)"
+depends-on: ["../spec/00-composeio-design-principles.smd", "../spec/01-composeio-bus-protocol.smd", "../spec/02-composeio-config-schema.smd"]
+confidentiality: internal-only
+artifact-readiness: system-design
+domain: PLT.CUX
+---
+# ComposeIO Composer Design Principles [SPEC:CXC-PRINCIPLES]
+
+> Non-negotiable architectural principles for the ComposeIO Composer — a visual UX layout tool that is itself a ComposeIO bus application, dogfooding the platform it designs for.
+
+---
+
+## Governing Analogy
+
+ComposeIO moved the specificity boundary from firmware to configuration ([DP-CIO-7]). The Composer moves the specificity boundary from code to visual layout. A builder who can arrange widgets in the Composer and configure their namespace bindings should never need to write Python to produce a working ComposeIO UX. The Composer is to ComposeIO UX what the YAML config is to ComposeIO hardware: the primary artifact the builder creates.
+
+The Composer itself is a ComposeIO application. Its internal panels — palette, canvas, property editor, binding editor, preview, bus inspector — are autonomous modules communicating over an internal ComposeIO bus. This is not metaphor. The Composer's widget palette publishes to `composer/selection`. The canvas subscribes. The property editor subscribes and publishes. The same namespace-based pub/sub that wires physical buttons to relays wires the Composer's own UI together.
+
+---
+
+## Principles
+
+### [DP-CXC-1] The Composer Is a ComposeIO Application
+
+> The Composer runs on its own internal ComposeIO bus. Every panel is a module. Every inter-panel communication is a bus message. No panel holds a direct reference to another panel.
+
+- implication: The Composer's internal architecture validates ComposeIO's design principles. If ComposeIO cannot build a complex desktop tool, the platform has expressiveness gaps that need fixing.
+- implication: The internal bus uses the same `ComposeIOBus` class, the same message types, the same namespace semantics as any ComposeIO application. The only difference is scope — all namespaces are local (in-process).
+- implication: Each Composer module can be developed and tested in isolation. A palette module with a mock bus is a valid test fixture. A canvas module driven by scripted bus messages is a valid integration test.
+- test: If any Composer module imports another module's class or calls another module's method directly, the design has failed. All communication flows through the bus.
+- learned-from: Formation Studio's tight coupling between `ComponentPane`, `Designer`, and `StylePane` — each holds direct references to the others, making testing and modification difficult.
+
+### [DP-CXC-2] Visual Layout Is the Primary Artifact
+
+> The builder's primary workflow is visual: drag widgets onto a canvas, arrange them spatially, configure properties in a panel. The Composer generates ComposeIO YAML config as output. The builder should not edit the YAML to achieve layout.
+
+- implication: Every layout property expressible in ComposeIO config (grid position, column weight, padding, sizing) must be manipulable visually on the canvas. If a layout property requires YAML editing, the Composer's canvas is incomplete.
+- implication: The generated YAML is always valid against [SPEC:CIO-CONFIG-SCHEMA]. The Composer does not produce intermediate formats that require post-processing.
+- implication: Visual layout and YAML config are kept in sync bidirectionally. Editing the YAML externally and reloading it in the Composer must produce the correct visual state.
+- test: If a builder needs to open a text editor to achieve a layout that the Composer's canvas supports conceptually, the design has failed.
+- contrast-with: Formation Studio, which produces tkinter-specific XML that cannot be used outside the Formation ecosystem.
+
+### [DP-CXC-3] Namespace Binding Is Visual, Not Textual
+
+> Assigning a namespace to a widget, configuring its state engine, and defining sensor-to-actuator bindings must be achievable through visual interaction — selection, drag-connect, dropdown, or dedicated editor panel.
+
+- implication: The binding editor provides a visual representation of namespace connections: source widgets, transform chains, and target widgets. Compound bindings with conditions are expressed as visual rule cards, not raw YAML.
+- implication: The namespace registry for the design-in-progress is a first-class, always-visible artifact. The builder sees all registered namespaces, their state engines, current publishers, and current subscribers at a glance.
+- implication: State engine selection is a dropdown or picker, not a text field. The builder selects `binary`, `tri_level`, `stop_light`, `continuous_0_255`, or defines a custom `enum` with values — all visually.
+- test: If creating a simple button-to-relay binding requires typing a namespace string, the design has failed. The builder should be able to drag from a button to a relay (or select from a namespace list) to create the binding.
+
+### [DP-CXC-4] Live Preview With Real Bus
+
+> The Composer includes a live preview that instantiates actual ComposeIO widgets connected to a real ComposeIO bus. Clicking a button in the preview publishes state. Bound gauges respond. The preview is not a static mockup — it is a running ComposeIO system.
+
+- implication: The preview bus is a separate `ComposeIOBus` instance from the Composer's internal bus. The Composer's internal bus carries tool messages (`composer/selection`, `composer/layout`). The preview bus carries the user's design messages (`ftl_arm`, `sublight_engines`).
+- implication: Preview updates on every canvas change. Adding a widget, moving it, changing a binding — the preview rebuilds automatically. The feedback loop is visual and immediate.
+- implication: Dual-renderer preview is supported: CTk (desktop approximation) and LVGL (pixel-accurate embedded preview via `LVGLCanvas`). The builder sees both side-by-side when designing for embedded targets.
+- test: If a binding that works in the preview produces different behavior when deployed to a real ComposeIO runtime, the preview is broken.
+- see-also: [DP-CIO-4] for state engine semantics that the preview must faithfully reproduce.
+
+### [DP-CXC-5] Decomposition Over Monolith
+
+> The Composer is not a single application class with methods for everything. It is a constellation of small, focused modules — each a CTkFrame, each subscribed to specific bus namespaces, each replaceable.
+
+- implication: The palette module only knows how to display available widgets and publish selection events. It does not know about the canvas, the property editor, or the preview. It publishes to `composer/palette/selected` and its job is done.
+- implication: Module boundaries are namespace boundaries. To understand what a module does, read its namespace subscriptions and publications. The bus namespace registry is the Composer's architecture diagram.
+- implication: Modules can be added, removed, or replaced without modifying other modules. A builder who wants a custom property editor for a specific widget type adds a module that subscribes to `composer/selection` and publishes to `composer/config` — the existing property editor continues to work alongside it.
+- implication: The Composer's own layout (which panels are where, their sizes, their visibility) is itself a ComposeIO config. The Composer is bootstrapped from its own output format.
+- test: If removing the binding editor module causes the canvas or palette to malfunction, module boundaries are violated.
+- learned-from: Formation Studio's `StudioFeature` base class attempted this separation but enforced it weakly — features accessed the main studio object and each other directly.
+
+### [DP-CXC-6] Configuration Hierarchy: Design > Module > Widget
+
+> A Composer design file describes a complete ComposeIO UX — multiple modules, each containing multiple widgets, arranged in a spatial layout with namespace bindings between them. The hierarchy is explicit: design contains modules, modules contain widgets.
+
+- implication: The Composer canvas supports nested composition. A module frame contains widget slots. A design contains module frames arranged in a grid. This mirrors how ComposeIO systems actually work: modules are physical boards containing buttons/relays/gauges, and the system is a collection of modules.
+- implication: Module boundaries are visible on the canvas. A `ButtonPanelWidget` module is a distinct visual group, not a flat collection of buttons mixed with other widgets.
+- implication: Bindings between modules are visually distinct from bindings within a module. Cross-module bindings use global scope; intra-module bindings use local scope. The Composer enforces this automatically.
+- test: If a builder cannot tell which module owns which widget by looking at the canvas, the visual hierarchy is inadequate.
+
+### [DP-CXC-7] Round-Trip Fidelity
+
+> Loading a saved design into the Composer, making no changes, and saving again must produce byte-identical output. The Composer does not normalize, reformat, reorder, or "improve" the builder's YAML.
+
+- implication: The internal representation preserves source ordering, comments (where supported), and whitespace conventions. The Composer is a faithful editor, not an opinionated formatter.
+- implication: YAML generated by the Composer is human-readable. Property keys appear in a consistent, logical order. Indentation is standard. The output is something a builder would be comfortable reading and could hand-edit if needed.
+- implication: Loading YAML that was hand-edited outside the Composer must work correctly. The Composer is not the only way to create ComposeIO configs — it is the visual way. Hand-authored YAML and Composer-generated YAML are interchangeable.
+- test: `diff original.yaml <(compose-composer load original.yaml | compose-composer save -)` must produce no output for any valid ComposeIO config.
+
+### [DP-CXC-8] The Widget Catalog Is Extensible
+
+> The set of widgets available in the palette is not hardcoded. Builders can register custom widget types — their own CTkFrame subclasses — and they appear in the palette with their own property definitions.
+
+- implication: The palette discovers widgets from a registry. Built-in widgets (ButtonWidget, RelayWidget, GaugeWidget, CoordinateEntryWidget, BusMonitorWidget) ship with the Composer. Custom widgets are registered via a plugin directory or config entry.
+- implication: Each registered widget type declares its configurable properties, its namespace requirements (how many namespaces it consumes/produces), and its visual preview behavior. This metadata drives the property editor and binding editor automatically.
+- implication: ZeroWidgets (`zb_widgets`) is a first-class plugin. All ZB widgets — ZBWidget, ZBAsyncWidget, SliderWithLabel, MetricsCardWidget, etc. — are registerable in the palette without modifying Composer source.
+- test: If registering a new widget type requires modifying any Composer source file, the extension mechanism is broken.
+- see-also: [DP-CIO-1] — same principle applied to UX widgets instead of hardware modules.
+
+### [DP-CXC-9] Undo Is Structural, Not Textual
+
+> Every canvas operation (add, move, resize, delete, rebind, property change) is recorded as a reversible command. Undo/redo operates on the command stack, not on text diffs.
+
+- implication: Commands are published to the bus as events on `composer/history`. The undo system is itself a bus module — it subscribes to command events, maintains the stack, and publishes undo/redo actions back to the bus.
+- implication: Each command captures the minimum state needed for reversal. A move command stores old and new positions. A property change stores old and new values. A binding change stores the old and new binding configs.
+- implication: Undo is available during live preview. If the builder changes a binding and the preview shows wrong behavior, undo reverts both the canvas and the preview.
+- test: Any sequence of N operations followed by N undos must restore the design to its original state.
+
+### [DP-CXC-10] Intelligence-Friendly by Default
+
+> The Composer's bus architecture makes it inherently observable by AI agents. An Intelligence can subscribe to the Composer's internal bus to understand what the builder is doing, suggest improvements, or drive the Composer programmatically.
+
+- implication: Every user action is a bus message. An Intelligence watching `composer/canvas/widget_added`, `composer/binding/created`, and `composer/config/changed` has a complete, structured event stream of the builder's design session.
+- implication: The Composer can be driven headlessly via bus messages. An Intelligence that publishes to `composer/canvas/add_widget` and `composer/binding/create` can generate UX layouts programmatically. The visual canvas is a view of the bus state, not the source of truth.
+- implication: Layout reporting from `zb_widgets` (`report_layout()`, `report_layout_flat()`) works on the Composer's own UI and on the preview, giving Intelligences pixel-accurate spatial understanding.
+- see-also: ZBWidget's EventBus integration for interaction tracing and simulated input.
+
+---
+
+## Derived Constraints
+
+| Constraint | Source Principle(s) |
+|---|---|
+| All inter-module communication via bus messages | [DP-CXC-1], [DP-CXC-5] |
+| No direct object references between modules | [DP-CXC-1], [DP-CXC-5] |
+| Generated YAML validates against [SPEC:CIO-CONFIG-SCHEMA] | [DP-CXC-2], [DP-CXC-7] |
+| Bidirectional YAML sync (visual <-> text) | [DP-CXC-2], [DP-CXC-7] |
+| Namespace assignment via visual interaction | [DP-CXC-3] |
+| Preview uses real ComposeIOBus instance | [DP-CXC-4] |
+| Separate buses: internal (tool) vs. preview (user design) | [DP-CXC-4] |
+| Module removal does not break other modules | [DP-CXC-5] |
+| Design hierarchy: design > module > widget | [DP-CXC-6] |
+| Save/load round-trip is byte-identical | [DP-CXC-7] |
+| Custom widgets via plugin registry | [DP-CXC-8] |
+| Command-based undo via bus events | [DP-CXC-9] |
+| Full session observability for Intelligences | [DP-CXC-10] |
+
+## Anti-Patterns
+
+| Anti-Pattern | Violated Principle | What To Do Instead |
+|---|---|---|
+| Module A calls Module B's method directly | [DP-CXC-1], [DP-CXC-5] | Publish a bus message; let B subscribe |
+| Layout property only editable in YAML | [DP-CXC-2] | Add visual manipulation to canvas |
+| Namespace assigned by typing a string | [DP-CXC-3] | Provide picker/dropdown/drag-connect |
+| Static preview image instead of live widgets | [DP-CXC-4] | Instantiate real widgets on real bus |
+| Monolithic App class with feature methods | [DP-CXC-5] | Decompose into bus-connected modules |
+| Flat widget list without module grouping | [DP-CXC-6] | Enforce design > module > widget hierarchy |
+| Composer reformats YAML on save | [DP-CXC-7] | Preserve source ordering and formatting |
+| Hardcoded widget list in palette source | [DP-CXC-8] | Use discoverable widget registry |
+| Text-diff undo on generated YAML | [DP-CXC-9] | Command-stack undo via bus events |
+| Opaque internal state invisible to agents | [DP-CXC-10] | All state changes are bus messages |
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-27
+**Status**: Draft

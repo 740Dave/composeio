@@ -1,0 +1,61 @@
+# ComposeUX demo — Red Alert ([SPEC:CXC-BIND] [CXC-BIND-C2])
+#
+# State on the bus, behavior in the widget: any publisher — a human, a
+# script, an Intelligence — flips ONE bit (ship/red_alert = on) and the
+# badge appears and blinks at $alert_period ms.  Frames are never
+# streamed over the bus; the temporal presentation is engine-owned.
+#
+# Run from this directory (the badge asset resolves relatively):
+#   cd python/composeio/render/examples
+#   python3 -m composeio.render.engine.runtime red_alert.compose.yaml
+#
+# Then, from any bus peer:  publish ship/red_alert = on | off
+
+app:
+  id: demo-red-alert
+
+design:
+  title: "Red Alert"
+  width: 320
+  height: 240
+
+variables:
+  alert_period: 1000          # blink period in ms — declare once, reuse
+
+namespaces:
+  - name: ship/red_alert
+    state_engine: binary
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 320
+    height: 240
+    background: "#101318"
+    children:
+      - type: rect
+        id: hull
+        x: 20
+        y: 20
+        w: 280
+        h: 200
+        fill_color: "#28283C"
+        corner_radius: 10
+      - type: label
+        id: caption
+        text: "bridge status"
+        font_size: 12
+        color: "#AAAABB"
+        x: 36
+        y: 32
+      - type: image
+        id: alert_img
+        src: file://assets/red_alert.png
+        x: 100
+        y: 90
+        w: 120
+        h: 60
+        visible: ship/red_alert            # bound: hidden until the alarm
+        behaviors:
+          - when: { namespace: ship/red_alert, is: on }
+            do:   { behavior: blink, target: visible, period_ms: $alert_period }

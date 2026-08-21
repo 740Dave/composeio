@@ -1,0 +1,22 @@
+# Waveshare ESP32-C6-LCD-1.47 overrides (env:waveshare_c6) —
+# layered after sdkconfig.defaults.
+# [CXC-BRINGUP], [CXC-ER-BOARDS].
+#
+# A band-tier board (NO PSRAM), so it inherits the CYD app config almost
+# wholesale; only the things the C6 silicon and this board's fit-out
+# change are overridden here.
+
+# 4 MB embedded flash (ESP32-C6FH4) — same size as the CYD, so
+# partitions.csv applies unchanged.  Restated because sdkconfig.defaults
+# sets it for the CYD and this board must not silently inherit a guess.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# The board enumerates over the C6's native USB-Serial-JTAG (no onboard
+# USB-serial bridge), so flashing and the console share one port — same
+# idiom as sdkconfig.c3.defaults and sdkconfig.s3.defaults.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Single core.  The CYD/Hosyond configs assume nothing about core count,
+# but stating it documents why no task is pinned to core 1 here.
+CONFIG_FREERTOS_UNICORE=y

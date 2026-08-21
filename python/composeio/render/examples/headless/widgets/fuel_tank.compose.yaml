@@ -1,0 +1,44 @@
+# ComposeUX headless widget — fuel_tank
+# ([SPEC:CXC-HEADLESS] [CXC-HW-MODEL] · re-authored for [SPEC:CXC-DSL]
+# Pass 2, [CXC-DSL-TRIAD])
+#
+# Publishes fuel/remaining continuously — draining at the PUMP'S LIVE
+# RATE.  This is the real variable-rate integration Pass 1 could only
+# approximate with a fixed-duration ramp (harvested DSL use-case #1):
+#
+#     outputs expr:  ns('fuel/remaining') - ns('pump/flow_rate') * dt
+#
+# Read-modify-write, [CXC-DSL-STATE]: the BUS is the state — each tick
+# reads the current value, computes the next, publishes; the expression
+# stays a pure function of (namespaces, dt).  `initial:` seeds the state
+# the integration reads (published at start iff the bus holds nothing).
+#
+# The gauge itself just mirrors the namespace (binding-value expr site):
+# point a VISUAL gauge at fuel/remaining on any display and it shows
+# this tank live — same unit, minus the render.
+
+app:
+  id: headless-fuel-tank
+
+headless:
+  schedule:
+    mode: continuous          # [CXC-HW-SCHEDULE]: daemon on the 10 Hz sim clock
+
+variables:
+  capacity: 100.0
+
+namespaces:
+  - name: fuel/remaining
+    state_engine: json
+    initial: $capacity        # the state the RMW expression integrates
+
+widgets:
+  - type: gauge
+    id: tank
+    label: "Fuel"
+    min: 0
+    max: $capacity
+    value: { expr: "ns('fuel/remaining')" }   # mirror the bus state
+    outputs:
+      - namespace: fuel/remaining
+        expr: "ns('fuel/remaining') - ns('pump/flow_rate') * dt"

@@ -1,0 +1,83 @@
+# DRADIS-as-Lottie — [SPEC:CXC-LOTTIE] flagship demo ([CXC-LOT-C5]).
+#
+# The sweep is a hand-authored Lottie (assets/dradis_lottie.json, markers
+# "sweep" [0,120] and "calibrate" [120,180]); its transport is namespace-
+# bound per [SPEC:CXC-BIND], so an Intelligence (or any bus peer) drives
+# the radar by publishing state — never frames:
+#
+#   dradis/speed    float     playback-rate multiplier   ([CXC-LOT-C2])
+#   dradis/segment  marker    playSegments range         ([CXC-LOT-C4])
+#   dradis/hold     frame|0-1 goToAndStop jump-and-hold  ([CXC-LOT-C3])
+#   dradis/scanning on/off    autoplay gate
+#
+# Run:   python3 -m composeio.render.engine.runtime \
+#            composeio/render/examples/dradis_lottie.compose.yaml
+# Drive: publish dradis/speed 2.0  ->  the sweep doubles rate next frame.
+#
+# The src below is a local file for offline runs; the same JSON is served
+# from bus://assets/animations/dradis_lottie.json ([CXC-LOT-C7]).
+
+app:
+  id: dradis-lottie
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+design:
+  title: "DRADIS — Lottie"
+  width: 480
+  height: 320
+  theme: dark
+
+namespaces:
+  - {name: dradis/speed,    label: "Sweep rate multiplier"}
+  - {name: dradis/segment,  label: "Active segment (marker name)"}
+  - {name: dradis/hold,     label: "goToAndStop frame / progress"}
+  - {name: dradis/scanning, label: "Sweep on/off", state_engine: binary}
+  - {name: dradis/contacts, label: "Contact count"}
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 480
+    height: 320
+    background: "#0A0F0A"
+    children:
+      - type: lottie
+        id: dradis
+        src: composeio/render/examples/assets/dradis_lottie.json
+        x: 20
+        y: 32
+        w: 256
+        h: 256
+        fit: contain
+        autoplay: {namespace: dradis/scanning, default: true}
+        loop: true
+        speed: {namespace: dradis/speed, default: 1.0}
+        play_segments: {namespace: dradis/segment, default: sweep}
+        go_to_and_stop: {namespace: dradis/hold}
+
+      - {type: label, id: title, x: 300, y: 36, text: "DRADIS",
+         font_size: 22, font_weight: bold, color: "#3BE06B"}
+      - {type: label, id: subtitle, x: 300, y: 64,
+         text: "lottie · bus-bound transport",
+         font_size: 11, color: "#5C8A68"}
+
+      - {type: label, id: speed_lbl, x: 300, y: 108,
+         text: {namespace: dradis/speed, default: "1.0"},
+         font_size: 15, color: "#E0E0E0"}
+      - {type: label, id: speed_cap, x: 300, y: 128,
+         text: "speed  (dradis/speed)", font_size: 10, color: "#66788A"}
+
+      - {type: label, id: seg_lbl, x: 300, y: 156,
+         text: {namespace: dradis/segment, default: "sweep"},
+         font_size: 15, color: "#E0E0E0"}
+      - {type: label, id: seg_cap, x: 300, y: 176,
+         text: "segment  (dradis/segment)", font_size: 10, color: "#66788A"}
+
+      - {type: led, id: scan_led, x: 300, y: 204, label: "SCANNING",
+         namespace: dradis/scanning, color: "#3BE06B"}
+      - {type: label, id: contacts_lbl, x: 396, y: 232,
+         text: {namespace: dradis/contacts, default: "2 contacts"},
+         font_size: 12, color: "#8AA890"}

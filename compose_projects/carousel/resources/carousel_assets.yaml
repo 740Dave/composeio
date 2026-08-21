@@ -1,0 +1,41 @@
+# Carousel launcher — bus asset manifest ([SPEC:CXC-PRIM-CAROUSEL]).
+#
+# The DRADIS-console model (game_hardware/dradis_console/device.yaml) applied to
+# the launcher's own tile icons: the launcher scene renders its tile FACES from
+# the BUS ASSET STORE, resolved BY REFERENCE at render time. The scene holds only
+# the references (launcher.compose.yaml tile image `src: bus://…`); this manifest
+# declares them. NO art is vendored into the runtime closure — only the refs.
+#
+# David's AUTHORING sources (below) are the migrated CTk-launcher icon copies,
+# co-located here. They are what the publish step PUTs to the store; they are
+# DELIBERATELY OMITTED from the deploy closure (deploy.manifest) — the kiosk is
+# always on the bus network (mqtt-broker.local), so the store serves them.
+#
+# The generic `image` widget (render/widgets/image.py) resolves a `bus://assets/…`
+# src through the engine AssetManager -> canvas.load_image -> resolve_bytes
+# (verified 2026-08-04). It has NO package-bundled offline-fallback slot (unlike
+# the CIC svg_art module) — its only fallback is a placeholder swatch. None is
+# needed here: the kiosk is store-reachable at runtime.
+
+carousel:
+  id: maker-launcher
+  # The bus asset store is the bus master (mqtt-broker.local:8420 == mqtt-broker.local).
+  store: http://mqtt-broker.local:8420
+
+  # AUTHORING sources — the migrated CTk Maker-launcher icons (David's tracked
+  # art, co-located here). Hands-off for the render engine; PUBLISHED to the refs
+  # below and NOT shipped to the kiosk.
+  authoring:
+    fiat_logo:  fiat-logo-2.png        # FIAT roundel — the fiat tile face
+    bsg_shield: bsg_shield_scaled.png  # BSG shield — the battlestar tile face
+    power_off:  power_off.png          # power glyph — the shutdown tile face
+
+# Asset refs — the bus:// assets the launcher tiles pull at render time. All
+# served from the bus asset store; the image widget resolves each ref.
+# Re-publish (after David re-arts an icon) with:
+#     cd python && PYTHONPATH=. python3 -m scripts.publish_carousel_assets
+assets:
+  icons:
+    fiat_logo:  bus://assets/icons/carousel/fiat_logo.png
+    bsg_shield: bus://assets/icons/carousel/bsg_shield.png
+    power_off:  bus://assets/icons/carousel/power_off.png

@@ -1,0 +1,913 @@
+---
+scope: "Integration specification for Node-RED as a ComposeIO bus participant — custom node design, MQTT-based transport with ComposeIO semantic overlay, state engine awareness, and deployment topology"
+audience: "Node-RED flow developers, ComposeIO platform maintainers, infrastructure operators deploying Node-RED on mqtt-broker.local"
+boundary: "Node-RED integration nodes and patterns only; bus protocol in 01-composeio-bus-protocol.smd; app framework in 08-composeio-app-framework.smd; config schema in 02-composeio-config-schema.smd"
+not-this: "Not a Node-RED tutorial; not a replacement for the ComposeIO Python bus library; not a Node-RED admin or security guide"
+depends-on: [SPEC:CIO-PRINCIPLES, SPEC:CIO-BUS-PROTOCOL, SPEC:CIO-CONFIG-SCHEMA, SPEC:CIO-APP, AMEND:BP-EXT]
+status: "Draft — for review"
+created: 2026-03-28
+---
+
+# ComposeIO Node-RED Integration [SPEC:CIO-NODERED]
+
+> Node-RED is a flow-based programming tool with excellent MQTT support and a
+> visual wiring model that maps naturally to ComposeIO's namespace-to-namespace
+> binding pattern. This spec defines how Node-RED participates on the ComposeIO
+> bus as a first-class citizen: subscribing to namespace state changes, publishing
+> state and events, validating against state engines, and bridging ComposeIO
+> namespaces to the broader Node-RED ecosystem (HTTP endpoints, dashboards,
+> home automation, databases, notification services).
+
+---
+
+## 1. Architecture Decision: Hybrid Integration [NR-ARCH]
+
+### 1.1 The Three Options Evaluated [NR-ARCH-OPTIONS]
+
+| Approach | Pros | Cons | Verdict |
+|----------|------|------|---------|
+| **Raw MQTT** | Zero custom code. Node-RED's mqtt-in/mqtt-out nodes work today with `composeio/{scope}/{namespace}` topics. | No state engine validation. No message format enforcement. No namespace discovery. No log mode awareness. Developer must manually construct JSON payloads. | Insufficient |
+| **Direct bus library** | Full protocol awareness. Embeds the ComposeIO Python bus library (or a JS port) into Node-RED. | Massive implementation effort. Python library cannot run in Node-RED's JS runtime. A JS port duplicates 3,000+ lines of protocol logic. Maintenance burden doubles. | Overkill |
+| **Hybrid: MQTT transport + semantic overlay nodes** | MQTT handles transport (zero custom transport code). Custom nodes add ComposeIO message formatting, state engine validation, namespace discovery, and log mode awareness on top. | Requires custom node development (moderate effort). State engine definitions must be loaded from config. | **Selected** |
+
+### 1.2 Design Rationale [NR-ARCH-RATIONALE]
+
+The hybrid approach respects three ComposeIO principles:
+
+- **[DP-CIO-6]** (transport is an implementation detail): MQTT is already the primary networked transport. Node-RED nodes use the same `composeio/{scope}/{namespace}` topic structure as any other MQTT participant. No protocol changes needed.
+- **[DP-CIO-25]** (proposed in [AMEND:BP-EXT]: services are bus participants, not bus extensions): Node-RED joins the bus as a participant. It publishes to namespaces, subscribes to namespaces, and follows the bus protocol. Node-RED-specific concerns (flow wiring, dashboard rendering, HTTP integration) stay inside Node-RED.
+- **[DP-CIO-7]** (configuration is the product): The custom nodes load namespace definitions and state engines from `.compose.yaml` files or from bus discovery messages. The flow developer configures which namespaces to watch — the node handles the wire format.
+
+### 1.3 Integration Topology [NR-ARCH-TOPOLOGY]
+
+```
+mqtt-broker.local
++---------------------------------------------------------+
+|                                                         |
+|  MQTT Broker (:1883)                                    |
+|    |                                                    |
+|    +-- composeio/global/ftl_arm                         |
+|    +-- composeio/global/engine_rpm                      |
+|    +-- composeio/global/_bus/discovery                  |
+|    +-- composeio/global/_bus/heartbeat                  |
+|    +-- composeio/global/nexus/governance/*              |
+|    +-- ...                                              |
+|                                                         |
+|  Node-RED (:1880)                                       |
+|    |                                                    |
+|    +-- composeio-in nodes (MQTT subscribe)              |
+|    +-- composeio-out nodes (MQTT publish)               |
+|    +-- composeio-config node (shared MQTT connection    |
+|    |   + namespace registry)                            |
+|    +-- composeio-state-engine node (validation)         |
+|    +-- composeio-log-query node (HTTP to bus storage)   |
+|                                                         |
+|  ComposeIO MCP Server (:8433)                           |
+|  ComposeIO Bus Storage (HTTP API)                       |
++---------------------------------------------------------+
+         |
+    MQTT / HTTP
+         |
++-----------------+       +------------------+
+| David's Mac     |       | CAN Bus Devices  |
+| ComposeUX       |       | (via CAN-MQTT    |
+| Claude Code     |       |  bridge on RPi)  |
++-----------------+       +------------------+
+```
+
+Node-RED runs on `mqtt-broker.local` alongside the MQTT broker. This co-location
+means MQTT connections are localhost — zero network latency, maximum throughput. The
+Node-RED instance connects to `localhost:1883` just like the MCP server does
+([MCP-ARCH-TOPOLOGY]).
+
+---
+
+## 2. Node-RED Configuration Node: `composeio-config` [NR-CONFIG]
+
+### 2.1 Purpose [NR-CONFIG-PURPOSE]
+
+A shared configuration node that manages the MQTT connection to the ComposeIO
+broker and maintains a namespace registry. All ComposeIO nodes in a flow
+reference a single `composeio-config` node instance.
+
+This follows the Node-RED pattern where a config node (like `mqtt-broker`) is
+shared across multiple working nodes.
+
+### 2.2 Configuration Properties [NR-CONFIG-PROPS]
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `name` | string | `"ComposeIO Bus"` | Display name in the Node-RED editor |
+| `broker` | mqtt-broker | (required) | Reference to a standard Node-RED `mqtt-broker` config node. The composeio-config node does NOT manage its own MQTT connection — it delegates transport to the built-in broker node |
+| `clientId` | string | `"nodered-{random}"` | ComposeIO module identifier. Used as `src` in published messages. This is distinct from the mqtt-broker's clientId |
+| `scope` | string | `"global"` | Default scope for published messages |
+| `configPath` | string | `""` | Optional path to a `.compose.yaml` file. When set, the node loads namespace definitions and state engines from this file at startup |
+| `busStorageUrl` | string | `""` | Optional URL of the ComposeIO bus storage HTTP API. When set, enables log queries and namespace registry sync |
+
+### 2.3 Namespace Registry [NR-CONFIG-REGISTRY]
+
+The config node maintains an in-memory namespace registry populated from two sources:
+
+1. **Static config**: If `configPath` is set, parse the `.compose.yaml` and extract all namespace definitions (name, state engine type, values, label, mode). This gives the config node knowledge of the namespace contract before any messages arrive.
+
+2. **Dynamic discovery**: The config node subscribes to `composeio/+/_bus/discovery` (MQTT wildcard). When discovery messages arrive ([BP-TYPE-DISCOVERY]), it extracts the `namespaces` field and merges into the registry. This captures namespaces from all bus participants — hardware modules, ComposeApps, the MCP server, other Node-RED instances.
+
+The registry is available to all ComposeIO nodes via `node.composeioConfig.getNamespace(name)`. It returns:
+
+```javascript
+{
+  name: "ftl_arm",
+  label: "FTL Arm",
+  stateEngine: {
+    type: "binary",
+    values: ["off", "on"],
+    default: "off"
+  },
+  mode: "state",           // "state", "event_only", or "log"
+  sources: ["panel-1"],    // known publishers from discovery
+  lastValue: "on",         // last observed value (from retained MQTT)
+  lastUpdated: 1742169600  // timestamp
+}
+```
+
+### 2.4 MQTT Connection Management [NR-CONFIG-MQTT]
+
+The config node references a standard Node-RED `mqtt-broker` config node for all
+MQTT transport. It does NOT create its own MQTT connection. The built-in
+mqtt-broker already handles connection lifecycle (reconnect, birth/will messages,
+graceful shutdown with 2-second disconnect timeout), and the composeio-config
+node benefits from this without reimplementing it.
+
+The config node registers itself as a user of the mqtt-broker using the standard
+`register()/deregister()` pattern ([NR-CONFIG-CONNMGR]). This ensures the broker
+connection is active whenever ComposeIO nodes are deployed. Internal subscriptions
+to `_bus/discovery` and `_bus/heartbeat` are added via the broker's subscription
+management API — these are invisible to the flow developer and do not conflict
+with other subscriptions on the same broker node.
+
+Connection behavior (via the referenced mqtt-broker):
+- Auto-reconnect is handled by the mqtt-broker config node
+- On broker connect callback: subscribe to `composeio/+/_bus/discovery` for registry population
+- On broker connect callback: subscribe to `composeio/+/_bus/heartbeat` for bus health monitoring
+- Publish discovery announcement: `composeio/global/_bus/discovery` with Node-RED's capabilities
+
+Flow developers who already have an `mqtt-broker` config node connected to the
+same MQTT broker can reuse it — no duplicate TCP connection is created.
+
+### 2.5 User Tracking: register/deregister Pattern [NR-CONFIG-USERS]
+
+The composeio-config node implements the standard Node-RED config node user
+tracking pattern ([NR-CONFIG-CONNMGR]):
+
+- **`register(childNode)`**: Called by each `composeio-in`, `composeio-out`,
+  `composeio-state-engine`, and `composeio-log-query` node during its
+  initialization. When the first child node registers, the config node registers
+  itself with the referenced `mqtt-broker` config node (triggering the MQTT
+  connection if no other users exist) and subscribes to `_bus/discovery` and
+  `_bus/heartbeat` in the broker's connect callback.
+
+- **`deregister(childNode, done)`**: Called when a child node is removed or the
+  flow is re-deployed. When the last child node deregisters, the config node
+  deregisters from the mqtt-broker (allowing the broker to close the connection
+  if no other users remain) and clears the namespace registry. The `done`
+  callback is invoked after cleanup completes.
+
+This pattern prevents resource leaks: no MQTT connection or bus subscriptions
+exist when no ComposeIO nodes are deployed in the flow.
+
+### 2.6 Discovery Announcement [NR-CONFIG-DISCOVERY]
+
+On connection, the config node publishes a discovery message identifying Node-RED
+as a bus participant:
+
+```json
+{
+  "ns": "_bus/discovery",
+  "type": "discovery",
+  "val": {
+    "module_id": "nodered-{clientId}",
+    "role": "flow_engine",
+    "hw": "node-red",
+    "fw_ver": "1.0.0",
+    "namespaces": {
+      "publish": [],
+      "subscribe": []
+    },
+    "capabilities": ["flow_engine", "http", "dashboard", "automation"]
+  },
+  "src": "nodered-{clientId}",
+  "ts": 1742169600,
+  "scope": "global",
+  "seq": 1
+}
+```
+
+The `publish` and `subscribe` arrays are populated dynamically as composeio-in and
+composeio-out nodes are deployed. When a flow is deployed or updated, the config
+node re-publishes discovery with the current namespace lists.
+
+---
+
+## 3. Input Node: `composeio-in` [NR-NODE-IN]
+
+### 3.1 Purpose [NR-NODE-IN-PURPOSE]
+
+Subscribes to a ComposeIO namespace and outputs messages to the flow when state
+changes or events arrive. The node understands ComposeIO message semantics —
+it parses the JSON payload, extracts typed fields, and presents them in
+Node-RED's `msg` object model.
+
+### 3.2 Configuration Properties [NR-NODE-IN-PROPS]
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `name` | string | `""` | Display name (auto-fills from namespace label if available) |
+| `config` | composeio-config | (required) | Reference to shared config node |
+| `namespace` | string | (required) | ComposeIO namespace to subscribe to. Supports MQTT-native wildcards: `+` matches any single topic level, `#` matches namespace subtrees. Examples: `composeio/+/+` subscribes to all namespaces on all scopes; `composeio/+/nexus/#` subscribes to all `nexus/` subtree namespaces. Glob-style partial wildcards (e.g., `engine_*`) are NOT supported — MQTT wildcards replace entire topic levels, not partial strings |
+| `scope` | string | `"global"` | Scope filter: `"global"`, `"remote"`, or `"any"` (subscribes to all scopes) |
+| `messageTypes` | string[] | `["state"]` | Which message types to pass through: `"state"`, `"event"`, `"log_entry"`, `"all"` |
+| `outputFormat` | string | `"parsed"` | `"parsed"` (structured msg object) or `"raw"` (original JSON string as payload) |
+| `onlyOnChange` | boolean | `true` | For state messages: only output when value differs from previous. Matches ComposeIO's on-change-only semantics [BP-TYPE-STATE] |
+
+### 3.3 Output Message Format [NR-NODE-IN-OUTPUT]
+
+When `outputFormat` is `"parsed"` (default), the node outputs:
+
+```javascript
+msg = {
+  topic: "composeio/global/ftl_arm",     // original MQTT topic
+  payload: "on",                          // the val field — the semantic value
+  composeio: {
+    namespace: "ftl_arm",
+    type: "state",                        // message type
+    value: "on",                          // same as payload, for explicit access
+    source: "panel-1",
+    timestamp: 1742169600,
+    scope: "global",
+    sequence: 42,
+    label: "FTL Arm",                     // from namespace registry, if available
+    stateEngine: {                        // from namespace registry, if available
+      type: "binary",
+      values: ["off", "on"]
+    }
+  }
+}
+```
+
+**Design decision**: `msg.payload` is the ComposeIO value (`val` field), not the
+full JSON message. This makes composeio-in nodes directly chainable with standard
+Node-RED nodes (switch, change, template, dashboard) that operate on `msg.payload`.
+The full ComposeIO metadata lives in `msg.composeio` for nodes that need it.
+
+For event messages:
+```javascript
+msg = {
+  topic: "composeio/global/ftl_arm",
+  payload: "pressed",                     // event value
+  composeio: {
+    namespace: "ftl_arm",
+    type: "event",
+    value: "pressed",
+    source: "panel-1",
+    // ...
+  }
+}
+```
+
+For log_entry messages ([BP-EXT-LOG]):
+```javascript
+msg = {
+  topic: "composeio/global/audit_trail",
+  payload: { action: "widget_added", widget_id: "btn_001" },  // JSON object
+  composeio: {
+    namespace: "audit_trail",
+    type: "log_entry",
+    value: { action: "widget_added", widget_id: "btn_001" },
+    source: "design_dispatcher",
+    // ...
+  }
+}
+```
+
+### 3.4 Node Status Display [NR-NODE-IN-STATUS]
+
+The node displays status in the Node-RED editor:
+
+| State | Status Text | Color |
+|-------|-------------|-------|
+| Connected, no messages yet | `"connected"` | green ring |
+| Connected, last value received | `"{value}"` (e.g., `"on"`, `"128"`) | green dot |
+| Disconnected from broker | `"disconnected"` | red ring |
+| Namespace not found in registry | `"unknown namespace"` | yellow ring |
+
+### 3.5 MQTT Subscription [NR-NODE-IN-MQTT]
+
+The node subscribes to MQTT topic:
+
+```
+composeio/{scope}/{namespace}
+```
+
+Where `{scope}` is the configured scope or `+` (MQTT single-level wildcard) when
+scope is `"any"`. The namespace field supports MQTT-native wildcards directly:
+`+` matches any single namespace level and `#` matches namespace subtrees. No
+glob-to-MQTT translation is performed — the namespace value is used as-is in the
+MQTT topic subscription.
+
+QoS follows the ComposeIO spec ([BP-MQTT-QOS]):
+- State subscriptions: QoS 1 (to receive retained messages)
+- Event subscriptions: QoS 0
+
+---
+
+## 4. Output Node: `composeio-out` [NR-NODE-OUT]
+
+### 4.1 Purpose [NR-NODE-OUT-PURPOSE]
+
+Publishes messages to a ComposeIO namespace with proper message formatting.
+The node constructs a valid ComposeIO bus message ([BP-MSG-FIELDS]) from the
+incoming `msg` object, validating against the state engine if known.
+
+### 4.2 Configuration Properties [NR-NODE-OUT-PROPS]
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `name` | string | `""` | Display name |
+| `config` | composeio-config | (required) | Reference to shared config node |
+| `namespace` | string | `""` | Target namespace. If empty, uses `msg.composeio.namespace` or `msg.topic` (parsed) |
+| `messageType` | string | `"state"` | `"state"`, `"event"`, or `"log_entry"` |
+| `scope` | string | `"global"` | Scope for published messages |
+| `source` | string | `""` | Source module ID. Default: config node's clientId |
+| `validate` | boolean | `true` | Validate value against state engine before publishing. If validation fails, the node outputs on its second output (error port) instead of publishing |
+
+### 4.3 Input Message Handling [NR-NODE-OUT-INPUT]
+
+The node accepts `msg.payload` as the value to publish. It constructs the
+full ComposeIO message:
+
+```javascript
+// Incoming msg:
+msg = { payload: "on" }
+
+// Published MQTT message on composeio/global/ftl_arm:
+{
+  "ns": "ftl_arm",
+  "type": "state",
+  "val": "on",
+  "src": "nodered-main",
+  "ts": 1742169600,
+  "scope": "global",
+  "seq": 43
+}
+```
+
+If the incoming `msg` has a `msg.composeio` object, the node uses those fields
+as overrides (namespace, type, scope, source). This enables chaining
+composeio-in -> processing -> composeio-out where the metadata flows through.
+
+### 4.4 State Engine Validation [NR-NODE-OUT-VALIDATE]
+
+When `validate` is true and the namespace's state engine is known (from the
+config node's registry):
+
+1. Look up the state engine for the target namespace
+2. Check if `msg.payload` is a valid value for that engine:
+   - `binary`: must be `"off"` or `"on"`
+   - `tri_level`: must be `"off"`, `"half"`, or `"full"`
+   - `stop_light`: must be `"green"`, `"yellow"`, or `"red"`
+   - `continuous_0_255`: must be an integer 0-255
+   - `enum`: must be a member of the defined values list
+   - `json`: must be valid JSON ([BP-EXT-JSON])
+3. If valid: publish to MQTT
+4. If invalid: do NOT publish. Send the message to the node's error output
+   (second output port) with `msg.error = { message: "Invalid value 'xyz' for state engine binary on namespace ftl_arm", validValues: ["off", "on"] }`
+
+This prevents malformed values from reaching the bus — a guardrail that raw
+MQTT nodes lack.
+
+### 4.5 Sequence Number Management [NR-NODE-OUT-SEQ]
+
+The config node maintains a per-source rolling sequence counter. Each
+composeio-out node increments the sequence on each publish. The counter wraps
+at 65535 per [BP-MSG-FIELDS].
+
+### 4.6 QoS and Retain [NR-NODE-OUT-QOS]
+
+QoS and retain flags follow [BP-MQTT-QOS]:
+
+| Message Type | QoS | Retain |
+|-------------|-----|--------|
+| `state` | 1 | Yes |
+| `event` | 0 | No |
+| `log_entry` | 1 | No |
+
+### 4.7 Node Status Display [NR-NODE-OUT-STATUS]
+
+| State | Status Text | Color |
+|-------|-------------|-------|
+| Connected, idle | `"connected"` | green ring |
+| Last published value | `"-> {value}"` (e.g., `"-> on"`) | green dot |
+| Validation error | `"invalid: {value}"` | red dot |
+| Disconnected | `"disconnected"` | red ring |
+
+---
+
+## 5. Validation Node: `composeio-state-engine` [NR-NODE-ENGINE]
+
+### 5.1 Purpose [NR-NODE-ENGINE-PURPOSE]
+
+A standalone validation node that checks whether `msg.payload` is valid for a
+given state engine. Useful in flows where processing generates values that
+need validation before reaching a composeio-out node, or where validation
+results drive branching logic.
+
+### 5.2 Configuration Properties [NR-NODE-ENGINE-PROPS]
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `name` | string | `""` | Display name |
+| `config` | composeio-config | (required) | Reference to shared config node |
+| `namespace` | string | `""` | Namespace to validate against. If empty, uses `msg.composeio.namespace` |
+| `engineOverride` | object | `null` | Explicit state engine definition (overrides registry lookup). Useful when the namespace isn't in the registry yet |
+
+### 5.3 Behavior [NR-NODE-ENGINE-BEHAVIOR]
+
+Two outputs:
+- **Output 1 (valid)**: Message passes through unchanged if `msg.payload` is valid for the state engine
+- **Output 2 (invalid)**: Message routed here if validation fails. `msg.error` is added with details
+
+Additionally, the node enriches `msg.composeio.stateEngine` with the engine
+definition if not already present. This enables downstream nodes to make
+state-aware decisions.
+
+### 5.4 State Advance Function [NR-NODE-ENGINE-ADVANCE]
+
+When `msg.payload` is the special string `"__advance"`, the node computes the
+next value in the state engine's value cycle and sets `msg.payload` to that value.
+This enables flows that implement toggle behavior without hardcoding state values:
+
+```
+[inject: "__advance"] -> [composeio-state-engine: ftl_arm] -> [composeio-out: ftl_arm]
+```
+
+The node reads the current value from the config node's namespace registry
+(`lastValue`), advances to the next value in the engine's value list (wrapping),
+and outputs the new value. This mirrors the firmware's toggle behavior in a
+flow-native way.
+
+---
+
+## 6. Log Query Node: `composeio-log-query` [NR-NODE-LOG]
+
+### 6.1 Purpose [NR-NODE-LOG-PURPOSE]
+
+Queries the ComposeIO bus storage HTTP API for log namespace history
+([BP-EXT-LOG]). Returns past entries from `log` mode namespaces. This node
+is not MQTT-based — it makes HTTP requests to the bus storage REST API.
+
+### 6.2 Configuration Properties [NR-NODE-LOG-PROPS]
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `name` | string | `""` | Display name |
+| `config` | composeio-config | (required) | Reference to shared config node (uses `busStorageUrl`) |
+| `namespace` | string | (required) | Log namespace to query |
+| `since` | string | `""` | Timestamp filter. Supports `msg.since` override. Empty = all entries |
+| `limit` | integer | `100` | Maximum entries to return |
+
+### 6.3 Output [NR-NODE-LOG-OUTPUT]
+
+```javascript
+msg = {
+  payload: [
+    { val: { action: "widget_added", widget_id: "btn_001" }, src: "designer", ts: 12345, seq: 50 },
+    { val: { action: "widget_moved", widget_id: "btn_001" }, src: "designer", ts: 12346, seq: 51 }
+  ],
+  composeio: {
+    namespace: "audit_trail",
+    total: 142,
+    hasMore: true
+  }
+}
+```
+
+The API endpoint is `GET {busStorageUrl}/api/v1/log/{namespace}?since={since}&limit={limit}`
+per [BP-EXT-LOG].
+
+---
+
+## 7. Namespace Browser Node: `composeio-browse` [NR-NODE-BROWSE]
+
+### 7.1 Purpose [NR-NODE-BROWSE-PURPOSE]
+
+An editor-only sidebar panel (Node-RED sidebar plugin) that displays the live
+namespace registry from the config node. Flow developers use this to discover
+available namespaces, their state engines, current values, and labels without
+leaving the Node-RED editor.
+
+### 7.2 Features [NR-NODE-BROWSE-FEATURES]
+
+- **Live namespace list**: Shows all namespaces from the registry, grouped by source module
+- **State engine display**: Shows the type and valid values for each namespace
+- **Current value**: Shows the last observed value (from MQTT retained messages)
+- **Click-to-copy**: Clicking a namespace copies its name to the clipboard for pasting into node configuration fields
+- **Create Node button**: A "Create Node" button on each namespace entry adds a pre-configured `composeio-in` node to the current flow via the Admin API
+- **Search/filter**: Filter namespaces by name, label, state engine type, or source
+- **Bus health**: Shows MQTT connection status, bus master heartbeat, and connected module count
+- **Stretch goal — Drag-to-flow**: Dragging a namespace from the browser onto the flow canvas creates a pre-configured `composeio-in` node. This requires undocumented editor internals and may break across Node-RED versions; implement only if the documented Admin API approach proves insufficient
+
+---
+
+## 8. Message Object Model Mapping [NR-MSG-MODEL]
+
+### 8.1 ComposeIO to Node-RED Mapping [NR-MSG-CIO-TO-NR]
+
+The mapping between ComposeIO bus messages and Node-RED's `msg` object:
+
+| ComposeIO Field | `msg` Property | Notes |
+|-----------------|----------------|-------|
+| `ns` | `msg.composeio.namespace` | Also used to construct `msg.topic` |
+| `type` | `msg.composeio.type` | |
+| `val` | `msg.payload` | The primary value — directly usable by standard nodes |
+| `src` | `msg.composeio.source` | |
+| `ts` | `msg.composeio.timestamp` | |
+| `scope` | `msg.composeio.scope` | |
+| `seq` | `msg.composeio.sequence` | |
+| `ttl` | `msg.composeio.ttl` | Only if present |
+| `pri` | `msg.composeio.priority` | Only if present |
+| `cid` | `msg.composeio.correlationId` | Only if present |
+| (MQTT topic) | `msg.topic` | Full MQTT topic: `composeio/{scope}/{ns}` |
+
+### 8.2 Node-RED to ComposeIO Mapping [NR-MSG-NR-TO-CIO]
+
+When composeio-out publishes, it constructs the bus message from:
+
+| `msg` Property | ComposeIO Field | Fallback |
+|----------------|-----------------|----------|
+| `msg.payload` | `val` | (required) |
+| `msg.composeio.namespace` | `ns` | Node's configured namespace |
+| `msg.composeio.type` | `type` | Node's configured messageType |
+| `msg.composeio.scope` | `scope` | Node's configured scope |
+| `msg.composeio.source` | `src` | Config node's clientId |
+| (auto-generated) | `ts` | Current unix timestamp |
+| (auto-incremented) | `seq` | Config node's sequence counter |
+
+---
+
+## 9. Common Flow Patterns [NR-PATTERNS]
+
+### 9.1 Namespace-to-Namespace Binding [NR-PATTERN-BINDING]
+
+The simplest ComposeIO pattern in Node-RED: wire one namespace to another with
+a transform in between.
+
+```
+[composeio-in: laser_power] -> [function: threshold map] -> [composeio-out: vent_fan_speed]
+```
+
+This replicates a ComposeIO binding ([CS-BINDINGS]) but with the full power of
+Node-RED's function nodes for the transform. Use this when the transform is too
+complex for ComposeIO's declarative binding syntax ([DP-CIO-10]), or when you
+need side effects (logging, notifications, HTTP calls) during the transform.
+
+**When to use Node-RED bindings vs ComposeIO config bindings**: If the binding
+is a simple map/threshold/scale that needs to survive host failure, declare it
+in `.compose.yaml` and let the bus handle it ([DP-CIO-11]). If the binding needs
+external API calls, conditional logic based on time/history, or integration with
+non-bus systems, use a Node-RED flow.
+
+### 9.2 HA Entity Bridge [NR-PATTERN-HA-BRIDGE]
+
+Bridge a Home Assistant entity to a ComposeIO namespace using Node-RED's
+`node-red-contrib-home-assistant-websocket` nodes:
+
+```
+[ha-entity: sensor.office_temperature] -> [change: scale] -> [composeio-out: office_temp]
+[composeio-in: office_heater] -> [ha-service: climate.set_temperature]
+```
+
+This is the lightweight alternative to a full ComposeIO HA adapter ([DP-CIO-20])
+for one-off integrations that don't justify a dedicated adapter.
+
+### 9.3 Dashboard with ComposeIO State [NR-PATTERN-DASHBOARD]
+
+Use Node-RED Dashboard 2.0 nodes fed by composeio-in nodes:
+
+```
+[composeio-in: engine_rpm] -> [ui-gauge: RPM]
+[composeio-in: test_progress] -> [ui-chart: Progress Over Time]
+[ui-button: Start] -> [composeio-out: dashboard_cmd (val: "start")]
+```
+
+Because `msg.payload` carries the ComposeIO value directly, dashboard nodes
+work without any adapter functions.
+
+### 9.4 Notification on State Change [NR-PATTERN-NOTIFY]
+
+```
+[composeio-in: engine_rpm] -> [switch: val > 5000]
+    -> [email/pushover/telegram node]
+```
+
+Node-RED's notification ecosystem (email, Pushover, Telegram, Slack, Discord)
+becomes available for any ComposeIO bus event. Subscribe to any namespace and
+use Node-RED's switch/function nodes to filter for conditions worth alerting on.
+
+### 9.5 Capture-to-Database [NR-PATTERN-DB]
+
+```
+[composeio-in: engine_rpm (messageTypes: all)] -> [function: format]
+    -> [influxdb-out: composeio_metrics]
+```
+
+Feed ComposeIO namespace traffic into InfluxDB, PostgreSQL, or any database
+Node-RED supports. The `composeio` metadata object provides namespace, source,
+and timestamp for structured storage.
+
+### 9.6 HTTP API for ComposeIO State [NR-PATTERN-HTTP]
+
+```
+[http-in: GET /api/composeio/:namespace] -> [function: lookup registry]
+    -> [http-response: 200 JSON]
+
+[http-in: POST /api/composeio/:namespace] -> [composeio-state-engine]
+    -> [composeio-out] -> [http-response: 200]
+    |-> (invalid) -> [http-response: 400 error]
+```
+
+Expose ComposeIO namespaces as a REST API. The state engine validation node
+gates incoming values before they reach the bus — invalid requests get a 400
+response without polluting the bus.
+
+---
+
+## 10. Deployment [NR-DEPLOY]
+
+### 10.1 Target Environment [NR-DEPLOY-TARGET]
+
+Node-RED runs on `mqtt-broker.local` (Ubuntu server with Docker and K3s).
+The MQTT broker is already on the same host at port 1883.
+
+### 10.2 Docker Deployment [NR-DEPLOY-DOCKER]
+
+```yaml
+# docker-compose.yml
+services:
+  node-red:
+    image: nodered/node-red:latest
+    ports:
+      - "1880:1880"
+    volumes:
+      - nodered-data:/data
+      - /opt/composeio/configs:/composeio/configs:ro  # .compose.yaml files
+    environment:
+      - TZ=America/Los_Angeles
+    restart: always
+    network_mode: host    # localhost MQTT access (same pattern as MCP server)
+
+volumes:
+  nodered-data:
+```
+
+Using `network_mode: host` provides localhost access to the MQTT broker at
+port 1883 without Docker networking overhead. This matches the MCP server's
+deployment pattern ([MCP-DEPLOY-DOCKER]).
+
+### 10.3 K8s Deployment (Alternative) [NR-DEPLOY-K8S]
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-red
+  namespace: composeio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: node-red
+  template:
+    spec:
+      hostNetwork: true
+      containers:
+        - name: node-red
+          image: nodered/node-red:latest
+          ports:
+            - containerPort: 1880
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: configs
+              mountPath: /composeio/configs
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nodered-pvc
+        - name: configs
+          hostPath:
+            path: /opt/composeio/configs
+```
+
+### 10.4 Custom Node Installation [NR-DEPLOY-NODES]
+
+The ComposeIO custom nodes are packaged as a single npm module:
+`@composeio/node-red-contrib-composeio`.
+
+```bash
+cd /data  # Node-RED user directory
+npm install @composeio/node-red-contrib-composeio
+```
+
+Or via the Node-RED Palette Manager UI.
+
+The package includes:
+- `composeio-config` (configuration node)
+- `composeio-in` (input node)
+- `composeio-out` (output node)
+- `composeio-state-engine` (validation node)
+- `composeio-log-query` (log query node)
+- `composeio-browse` (sidebar plugin)
+
+### 10.5 Migration from David's Mac [NR-DEPLOY-MIGRATION]
+
+Node-RED is currently running on David's Mac. Migration to mqtt-broker.local:
+
+1. Export all flows from David's Mac: `GET http://localhost:1880/flows` (or use the Node-RED export UI)
+2. Deploy Node-RED container on mqtt-broker.local per section 10.2
+3. Import flows: `POST http://mqtt-broker.local:1880/flows`
+4. Update any `mqtt-broker` config nodes in existing flows to point to `localhost:1883` (since Node-RED will now be co-located with the broker)
+5. Install `@composeio/node-red-contrib-composeio` on the new instance
+6. Gradually migrate existing MQTT-based flows to use composeio-in/out nodes for state engine awareness and validation
+7. Verify all flows are operational, then decommission Node-RED on the Mac
+
+Existing flows that use raw MQTT nodes with `composeio/` topics will continue
+to work without modification — the custom nodes are additive, not a replacement
+for raw MQTT access.
+
+---
+
+## 11. Bus Participation Contract [NR-BUS-CONTRACT]
+
+### 11.1 Node-RED as a Bus Citizen [NR-BUS-CITIZEN]
+
+When the `composeio-config` node is connected, Node-RED is a full ComposeIO bus
+participant with the same obligations as any other participant:
+
+| Obligation | Implementation |
+|------------|----------------|
+| Discovery announcement | Config node publishes to `_bus/discovery` on connect and every 60s |
+| Heartbeat | Config node publishes to `_bus/heartbeat/nodered-{id}` every 30s |
+| Source identification | All published messages carry `src: "nodered-{clientId}"` |
+| Scope compliance | Messages respect configured scope; `auto` is resolved per [BP-NS-AUTO-RESOLVE] |
+| Message format | All published messages conform to [BP-MSG-FIELDS] |
+| Size constraint | All messages under 256 bytes ([BP-MSG-SIZE]) |
+| Deduplication | Incoming messages deduplicated by `(src, seq)` per [BP-SCOPE-DEDUP] |
+
+### 11.2 What Node-RED Does NOT Do [NR-BUS-LIMITATIONS]
+
+Node-RED's integration is MQTT-only. It does not:
+
+- Act as a bus master (no time_sync publishing, no config_push authority)
+- Participate in CAN bus directly (CAN traffic reaches Node-RED via the CAN-MQTT bridge)
+- Implement a critical ack protocol as an acker (it can observe ack messages but does not respond to `pri: critical` messages with acks)
+- Enforce namespace access policies ([BP-EXT-ACCESS]) at the Node-RED level (access control is enforced by the bus runtime, not by individual participants)
+- Replace the ComposeIO Python bus library for Python applications (use the library directly for ComposeApps; use Node-RED for flow-based integration and glue)
+
+---
+
+## 12. npm Package Structure [NR-PACKAGE]
+
+### 12.1 Package Layout [NR-PACKAGE-LAYOUT]
+
+```
+@composeio/node-red-contrib-composeio/
+  package.json
+  nodes/
+    composeio-config.js        # Configuration node
+    composeio-config.html      # Editor UI for config node
+    composeio-in.js            # Input node
+    composeio-in.html          # Editor UI with namespace autocomplete
+    composeio-out.js           # Output node
+    composeio-out.html         # Editor UI with state engine display
+    composeio-state-engine.js  # Validation node
+    composeio-state-engine.html
+    composeio-log-query.js     # Log query node
+    composeio-log-query.html
+    composeio-browse.js        # Sidebar plugin
+    composeio-browse.html      # Sidebar UI
+  lib/
+    state-engines.js           # State engine validation logic (JS port of engine types)
+    message-builder.js         # ComposeIO message construction utility
+    yaml-parser.js             # .compose.yaml parser for namespace extraction
+  test/
+    composeio-in_spec.js
+    composeio-out_spec.js
+    state-engines_spec.js
+    message-builder_spec.js
+```
+
+### 12.2 Dependencies [NR-PACKAGE-DEPS]
+
+```json
+{
+  "name": "@composeio/node-red-contrib-composeio",
+  "version": "0.1.0",
+  "description": "ComposeIO bus integration nodes for Node-RED",
+  "node-red": {
+    "version": ">=2.0.0",
+    "nodes": {
+      "composeio-config": "nodes/composeio-config.js",
+      "composeio-in": "nodes/composeio-in.js",
+      "composeio-out": "nodes/composeio-out.js",
+      "composeio-state-engine": "nodes/composeio-state-engine.js",
+      "composeio-log-query": "nodes/composeio-log-query.js",
+      "composeio-browse": "nodes/composeio-browse.js"
+    }
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}
+```
+
+No `mqtt` npm dependency is needed — the composeio-config node delegates all MQTT
+transport to Node-RED's built-in `mqtt-broker` config node (see [NR-CONFIG-MQTT]).
+`js-yaml` parses `.compose.yaml` files for namespace extraction.
+
+**Version constraint note**: Requires Node-RED 2.0+ for env var access
+(`NR_*` environment variables added in 2.2) and modern editor APIs.
+
+---
+
+## 13. Compliance Requirements [NR-COMPLIANCE]
+
+A compliant ComposeIO Node-RED integration MUST:
+
+1. **[NR-C1]** Publish all messages in valid ComposeIO JSON format with all seven mandatory fields ([BP-MSG-FIELDS])
+2. **[NR-C2]** Use the MQTT topic format `composeio/{scope}/{namespace}` per [BP-MQTT-TOPICS]
+3. **[NR-C3]** Follow QoS and retain mapping per [BP-MQTT-QOS] for all published message types
+4. **[NR-C4]** Publish discovery announcements to `_bus/discovery` on connection and every 60 seconds
+5. **[NR-C5]** Publish heartbeat to `_bus/heartbeat/{module_id}` every 30 seconds
+6. **[NR-C6]** Include a valid `src` field on all published messages identifying the Node-RED instance
+7. **[NR-C7]** Maintain a rolling 16-bit sequence counter per source, wrapping at 65535
+8. **[NR-C8]** The `composeio-in` node MUST present `msg.payload` as the ComposeIO `val` field, with full metadata in `msg.composeio`
+9. **[NR-C9]** The `composeio-out` node MUST validate values against the state engine when validation is enabled and the engine is known
+10. **[NR-C10]** All published messages MUST be under 256 bytes ([BP-MSG-SIZE])
+11. **[NR-C11]** The `composeio-config` node MUST subscribe to `_bus/discovery` and maintain a namespace registry
+12. **[NR-C12]** The `composeio-out` node MUST NOT publish to `_bus/` infrastructure namespaces via flow wiring. Infrastructure namespace publishing (`_bus/discovery`, `_bus/heartbeat`) is handled internally by the `composeio-config` node as part of bus participation and is not accessible to flow developers
+
+A compliant implementation SHOULD:
+
+13. **[NR-S1]** Support namespace wildcard subscriptions in `composeio-in` via MQTT wildcards
+14. **[NR-S2]** Support loading namespace definitions from `.compose.yaml` files
+15. **[NR-S3]** Provide the namespace browser sidebar panel for live discovery
+16. **[NR-S4]** Support the `__advance` state engine function in `composeio-state-engine`
+17. **[NR-S5]** Support `log_entry` message type for `log` mode namespaces ([BP-EXT-LOG])
+18. **[NR-S6]** Deduplicate incoming messages by `(src, seq)` per [BP-SCOPE-DEDUP]
+
+---
+
+## 14. Implementation Priority [NR-IMPL-PRIORITY]
+
+### Build Together (single implementation pass)
+
+| Node | Rationale |
+|------|-----------|
+| `composeio-config` | Foundation — all other nodes depend on it |
+| `composeio-in` | Read from bus |
+| `composeio-out` | Write to bus with message formatting |
+| `composeio-state-engine` | Pure validation logic — no dependency on seeing core nodes "proven" first |
+
+These four nodes are independent enough to build in parallel and have no evaluation gate between them. State engine validation is not a "phase 2" add-on — it is core to the value proposition (preventing malformed values from reaching the bus). Building it separately creates a window where flows run without validation, which is strictly worse.
+
+### Deferred: Evaluation Gate
+
+| Node | Gate | Rationale |
+|------|------|-----------|
+| `composeio-browse` | Real flow usage feedback | Editor sidebar UX benefits from seeing how flows feel in practice before investing in drag-to-flow and live registry display. Build after the core nodes are used in at least one real flow. |
+
+### Deferred: External Dependency
+
+| Node | Dependency | Rationale |
+|------|------------|-----------|
+| `composeio-log-query` | `bus_storage` HTTP API deployed and validated | Cannot test without the API endpoint. Build when bus_storage is running on mqtt-broker.local. |
+
+---
+
+## Relationships
+
+- depends-on: [SPEC:CIO-BUS-PROTOCOL] (message format, MQTT topic mapping, QoS rules)
+- depends-on: [SPEC:CIO-PRINCIPLES] ([DP-CIO-6], [DP-CIO-7], [DP-CIO-25])
+- depends-on: [SPEC:CIO-CONFIG-SCHEMA] (namespace declarations, state engine definitions)
+- depends-on: [SPEC:CIO-APP] (dual-bus architecture context, transport configuration)
+- depends-on: [AMEND:BP-EXT] (json state engine, log mode, access policy)
+- see-also: [SPEC:CIO-MCP] (parallel integration pattern — MCP server also uses MQTT on localhost)
+- see-also: [AMEND:BP-CAPTURE-REPLAY] (replay transport — Node-RED could consume replayed traffic for testing)
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-28
+**Status**: Draft -- specification for review
+**Deployment Target**: mqtt-broker.local (Docker or K8s, alongside MQTT broker and MCP server)

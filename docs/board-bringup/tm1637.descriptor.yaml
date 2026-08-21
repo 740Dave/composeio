@@ -1,0 +1,339 @@
+# Unified bring-up descriptor — TM1637 4/6-digit LED display driver.
+# [PLACEMENT UNRATIFIED] — this is a PERIPHERAL, not a board, and it is the
+# first of its class in docs/board-bringup/. It uses `peripheral_id` where the
+# board descriptors use `board_id`; every other section keeps the shared shape
+# so the same reader and the same tooling work. Whether peripherals belong in
+# this directory at all is David's ruling, not this file's.
+#
+# WHY IT EXISTS SEPARATELY FROM ANY HOST BOARD. A TM1637 is not silicon that
+# boots; it is a realization surface that ANY host board can carry, and the
+# facts worth writing down (the protocol, the shared-clock topology, the
+# 3.3V/5V hazard, the unverifiable segment map) are properties of the PART.
+# Duplicating them into every host descriptor is the hand-maintained-list
+# failure this repo keeps paying for.
+
+peripheral_id: tm1637
+name: "TM1637 — 4/6-digit 7-segment LED driver, two-wire (CLK/DIO), NOT I2C"
+
+part:
+  vendor: "Shenzhen Titan Micro Electronics"
+  datasheet: "TM1637 V2.4 (English)"
+  datasheet_sha256: "see docs/board-bringup/factory-images/README — NOT YET RECORDED"
+  package: "DIP20 / SOP20"
+  role: "output — 7-segment digits; ALSO an 8x2 key-scan input the common breakout does not populate"
+  grids: 6            # p.5: display registers C0H..C5H drive GRID1..GRID6
+  segments: 8         # SEG1..SEG8; the 8th is conventionally the decimal point
+  populated_digits: 4 # on the common breakout. The DIE always has six.
+
+# ------------------------------------------------------------------------
+# THE INTERFACE. Every claim cites a page of TM1637 V2.4.
+# ------------------------------------------------------------------------
+# ------------------------------------------------------------------------
+# THE PIN CONTRACT — the MODULE's header, machine-readable and CHECKED.
+# ------------------------------------------------------------------------
+# `interface.pins` below is the DIE's two-wire signal pair.  This is the
+# BREAKOUT's eight pads, which is what a netlist actually solders to, and it is
+# the thing the parts catalog must agree with pin-for-pin.  Consumed by
+# render/engine/hookup_descriptor.py::check_pin_parity.
+#
+# ⛔ THE `-B` PADS ARE NOT SPARE CAPACITY AND ARE NOT RESERVED EITHER.  They are
+# the SAME FOUR NETS as the A header (the catalog declares that identity in
+# `same_net:`, which is what lets a `distinct_nets:` constraint see through a
+# butt-joint).  Using a B pad for the net it already carries is fine; using DIO-B
+# to link two modules commons DIO and produces identical displays.  That is a
+# TOPOLOGY choice, so it is enforced per-scene in `hookup.must_not:` and not
+# banned fleet-wide here.
+pin_contract:
+  complete: true
+  source: >-
+    TM1637 V2.4 p.1 pinout for the signal names; the four-pad-per-header
+    breakout geometry is the physical module in hand (David, 2026-08-15).
+    ⚠ PAD ORDER varies between clones (several ship GND,VCC,DIO,CLK reversed) —
+    the ORDER is not asserted here, only the SET.
+  pins:
+    CLK: "header A — serial clock, host -> module always"
+    DIO: "header A — serial data, BIDIRECTIONAL (the chip pulls it low to ACK)"
+    VCC: "header A — 5 V (a white tube will not light at 3.3 V; p.8 note 3)"
+    GND: "header A — ground"
+    CLK-B: "header B — SAME NET as CLK"
+    DIO-B: "header B — SAME NET as DIO"
+    VCC-B: "header B — SAME NET as VCC"
+    GND-B: "header B — SAME NET as GND"
+  reserved: {}
+  not_broken_out: []
+
+interface:
+  kind: two-wire-bitbang
+  pins: [CLK, DIO]
+  is_i2c: false
+  has_device_address: false
+  address_evidence: >
+    p.3 "Interface interpretation", VERBATIM: "Microprocessor data realize the
+    communication with TM1637 by means of two-wire bus interface (Note: The
+    communication method is not equal to I2C bus protocol totally BECAUSE THERE
+    IS NO SLAVE ADDRESS)." The manufacturer states it outright and
+    parenthetically. The only "address" in the part is the DISPLAY REGISTER
+    address C0H..C5H (p.5), which selects a DIGIT within one chip.
+  start_condition: "p.3 — CLK HIGH and DIO falls high->low. Data input starts."
+  stop_condition:  "p.3 — CLK HIGH and DIO rises low->high. Data input ends."
+  data_valid:      "p.2/p.3 — DIO changes while CLK is LOW; latched on the CLK RISING edge."
+  ack: >
+    p.3 — "an answering signal ACK is generated inside the chip to lower the
+    DIO pin at the falling edge of the 8th clock. DIO interface wire is
+    released at the end of the 9th clock." Nine clocks per byte, not eight.
+  stop_reinitializes: >
+    p.4 — "When STOP command is sent during command or data transfer, serial
+    communication is initialized and command or data transferring becomes
+    invalid (Command or data transferred before remain effective.)" This is
+    what bounds a desynchronisation to one transaction.
+
+commands:            # p.4 (data), p.5 (address, display control). B7:B6 selects the class.
+  data_write_autoinc: 0x40
+  data_write_fixed:   0x44
+  data_read_keys:     0x42
+  address_base:       0xC0   # | 0..5
+  display_base:       0x80   # | brightness 0..7 | 0x08 if ON
+  brightness_steps: >
+    p.5 — EIGHT steps, and they are NOT linear and NOT 1..8/16: pulse widths are
+    1/16, 2/16, 4/16, 10/16, 11/16, 12/16, 13/16, 14/16. There is no 3/16 and
+    no 5..9/16. A bus brightness fraction therefore maps to a STEP INDEX, never
+    to a duty cycle.
+
+timing:              # p.10 "Timing character" / "Switching character"
+  clk_high_min_us: 1        # tWAIT, CLK rising -> CLK falling. THE BINDING CONSTRAINT.
+  clk_pulse_width_min_ns: 400   # PWCLK
+  data_setup_min_ns: 100        # tSETUP
+  data_hold_min_ns: 100         # tHOLD
+  f_max_khz: 500                # at 50% duty — the same 1 us high time
+  f_max_khz_keyread: 250        # p.3: "the clock frequency should be less than 250K" WHEN READING KEYS
+  internal_oscillator_khz: 450  # fosc typ. Display refresh runs off THIS, not off CLK.
+  driver_default_half_period_us: 5   # 100 kHz. Deliberately slack, see the .md.
+
+electrical:          # p.9-10
+  vdd_typ_v: 5.0
+  vih_min: "0.7 * VDD"          # 3.5 V at VDD=5V
+  vil_max: "0.3 * VDD"
+  input_hysteresis_v: 0.35      # VH typ — CLK/DIN are Schmitt inputs
+  input_capacitance_pf: 15      # CI max
+  input_leakage_ua: 1           # II, +/-1 uA at VI = VDD/VSS
+  seg_sink_ma: {min: 20, typ: 30, max: 50}
+  grid_source_ma: {min: 80, typ: 120, max: 180}   # at Vo = vdd-2V
+  reference_network: >
+    p.8 "Hardware connection drawing": 10 kOhm pull-up to VCC on EACH of CLK and
+    DIO (R1, R2), plus a 100 pF cap from each line to GND (p.8 note 2, for RF
+    quieting). The common breakout fits all four parts. p.8 note 3: "Since
+    blue-ray nixie tube break over step-down voltage is 3V, TM1637 power supply
+    should be 5V."
+
+# ------------------------------------------------------------------------
+# MULTI-DISPLAY. The question this descriptor was written to settle.
+# ------------------------------------------------------------------------
+multi_display:
+  is_shift_register_chain: false
+  chain_evidence: >
+    DEFINITIVE, from absence: the pin list (p.1 pinout, p.2 pin functions) is
+    GND, SEG1-8/KS1-8, GRID1-6, VDD, DIO, CLK, K1, K2 — twenty pins with NO
+    serial-out pin of any kind. There is nothing to daisy-chain INTO. A MAX7219
+    has DOUT; this part does not. The pass-through headers on the breakout are
+    FOUR NETS BUSSED ALONG A ROW (VCC/GND/CLK/DIO) — wiring convenience, not
+    topology.
+  beware_idout_row: >
+    ⚠ ONE LINE IN THE DATASHEET LOOKS LIKE EVIDENCE OF A CHAIN AND IS NOT. The
+    p.9 electrical table carries a row "DOUT pin output low current, Idout,
+    4 mA min, Vo=0.4V, dout" — but no DOUT pin exists in the pinout or the pin
+    function table. It is the DIO pin's output-low drive (used for ACK and for
+    key-read data), mislabelled, a copy-paste artifact of Titan Micro reusing
+    tables across the TM16xx family. Recorded because a reader who finds it
+    while looking for chaining will otherwise take it as confirmation.
+  shared_clk_shared_dio: >
+    LEGITIMATE, and it is the ONLY thing two fully-shared wires can express:
+    with no device address, both parts latch every command and display
+    IDENTICAL content. Use it deliberately for mirrored displays (a value read
+    from two sides); never expect independent content from it.
+  recommended_topology: "shared CLK, one DIO per display — N displays = N+1 host pins"
+  recommended_topology_basis: >
+    STRONG INFERENCE from the stated start condition (p.3: data input starts on
+    a DIO high->low edge while CLK is high), not a verbatim guarantee. A display
+    whose DIO never moves is never armed. Two independent facts make it safe
+    rather than merely likely: (1) refresh runs off the internal RC oscillator
+    (fosc typ 450 kHz, p.10), NOT off CLK, so an unaddressed part keeps
+    multiplexing its own SRAM regardless of clock traffic — there is no
+    clock-starvation state; (2) every transaction is bracketed by a START on
+    that part's OWN DIO and p.4 says a STOP "initializes serial communication",
+    so even under the pessimistic assumption that some die counts edges without
+    a start, each transaction RESYNCHRONISES it and the damage from a phantom
+    bit is bounded by one transaction.
+  driver_obligation: >
+    ⛔ THE RULE THAT MAKES IT TRUE: a non-selected DIO must be PARKED HIGH and
+    never touched. Pulling an idle display's DIO low while CLK is high IS a
+    start condition and WOULD arm it. Selection is "drive exactly one DIO,
+    leave the rest released".
+  fallback_if_falsified: >
+    SHARED DIO + one CLK per display, non-selected CLK parked LOW. Same pin
+    count (N+1), and MECHANICALLY STRONGER: latching is defined on the CLK
+    RISING edge (p.2), so a part whose CLK never rises cannot latch a bit at
+    all — the gate is on the latch itself rather than on start detection. The
+    cost is that all parts share the ACK line, so a wedged part can hold DIO
+    low for everyone; and selection may only change while DIO is idle high.
+    Recorded so it is not re-derived under bench pressure.
+  practical_max: >
+    BOUNDED BY HOST PINS AND THE 5V SUPPLY, NOT BY THE BUS. See the .md for the
+    RC arithmetic; the short form is that each module brings BOTH a 10k pull-up
+    AND ~115 pF, so the shared-CLK time constant is essentially N-INVARIANT
+    (~1.2-2.0 us) and actually IMPROVES with N as the parallel pull-ups stiffen.
+    Low-side sink is N * 0.5 mA (4 mA at N=8 — trivial). The real ceiling is
+    host GPIO count (4-6 on an ESP32-C3 Super Mini after strapping exclusions)
+    and LED supply current (a 4-digit module is roughly 20-80 mA at 5 V
+    depending on brightness, so four modules can ask for ~320 mA).
+
+# ------------------------------------------------------------------------
+hazards:
+  - id: three-volt-three-host-is-out-of-spec-on-paper
+    resolved: false
+    note: >
+      VIH min is 0.7*VDD (p.10) = 3.5 V at VDD = 5 V. A 3.3 V push-pull HIGH
+      does NOT reach it. The fix is the one the driver already enforces: drive
+      both lines OPEN-DRAIN (sink, or release), so the module's own 10k pull-up
+      takes the line to 5 V and the spec is met. THE CONVERSE HAZARD IS REAL —
+      a released line sits at 5 V, and an ESP32 GPIO is NOT 5V tolerant. Either
+      level-shift, or add a series resistor, or run the TM1637 at VDD = 3.3 V
+      (which makes VIH 2.31 V and is comfortably in spec, at the cost of
+      brightness — and p.8 note 3 says blue/white tubes will not light at all).
+      THIS IS A BOARD DECISION AND IT IS UNMADE. It must be settled before a
+      harness is soldered, not after.
+  - id: segment-map-is-a-module-fact-and-is-unverified
+    resolved: false
+    note: >
+      ⛔ THE CANONICAL SILENT-WRONG-ANSWER FOR THIS PART. The die exposes
+      SEG1..SEG8; which physical bar each drives is decided by the breakout's
+      traces to the tube. The near-universal wiring is SEG1..SEG8 =
+      a,b,c,d,e,f,g,dp, which is what the driver defaults to and what has NOT
+      been checked on a part. A wrong table produces CONFIDENT, WELL-FORMED,
+      INCORRECT glyphs: every write ACKs, every host test passes, and the only
+      observer able to notice is a human looking at a lit tube. There is no
+      machine signal anywhere in the system that distinguishes a correct table
+      from a permuted one.
+  - id: digit-order-is-a-module-fact
+    resolved: false
+    note: >
+      Whether GRID1 is the LEFTMOST tube is a PCB decision. Most 4-digit
+      breakouts map GRID1->leftmost; several 6-digit boards scramble the order
+      (a common one is 2,1,0,5,4,3). Same silent class as the segment map:
+      "4321" instead of "1234" is well-formed and wrong.
+  - id: colon-wiring-has-no-portable-answer
+    resolved: false
+    note: >
+      On the common 4-digit CLOCK module the colon is ONE bit — conventionally
+      the dp bit of digit index 1 — and the other digits have no decimal point
+      at all. On the non-clock 4-digit variant every digit has its own dp and
+      there is no colon. The driver folds ':' into the preceding digit's dp,
+      which is right for the clock module and needs a board override otherwise.
+  - id: key-scan-reads-0xFF-on-a-display-only-module
+    resolved: false
+    note: >
+      The common 4-digit display breakout populates NO keys, so tm1637_read_keys
+      returns the no-key-pressed pattern (0xFF / 1111_1111, p.2 note) forever.
+      That is a CORRECT result, not a fault — and it must not be read as
+      evidence that the link works, because a disconnected DIO with a pull-up
+      returns the identical byte. An instrument whose output does not
+      distinguish the two hypotheses it was run to distinguish.
+  - id: autoincrement-must-be-one-frame
+    resolved: true
+    note: >
+      p.4 diagram 2: the address command and ALL N data bytes share ONE
+      start..stop bracket. The address auto-increments only WITHIN a frame, so
+      splitting the data run rewrites digit 0 N times — a bug that displays a
+      plausible single digit rather than obvious garbage. Pinned by the
+      three-frame assertion in tm1637_selftest.cpp.
+  - id: nine-clocks-per-byte-not-eight
+    resolved: true
+    note: >
+      The ACK is a NINTH clock (p.3). A driver that clocks eight and stops
+      leaves the part holding DIO low, and the NEXT start condition cannot be
+      generated because DIO is already low. Pinned by the invariant checker's
+      multiple-of-9 rule — which itself had an off-by-one found on first run,
+      because the STOP sequence contributes one CLK rising edge of its own.
+
+# ------------------------------------------------------------------------
+verify:
+  machine:
+    - check: build
+      expect: "pio run -e native_tm1637 -> SUCCESS"
+      note: "VERIFIED 2026-08-14. Two compile steps (tm1637.o, tm1637_selftest.o) + link, 0.98 s cold."
+    - check: selftest
+      expect: ".pio/build/native_tm1637/program prints ALL PASS and exits 0"
+      note: "VERIFIED 2026-08-14. 108 checks passed, 0 failed."
+    - check: glyph-parity-vs-raster-widget
+      expect: "26 characters agree with seven_segment.lit_segments()"
+      note: >
+        VERIFIED 2026-08-14. The ORACLE is the RASTER realization
+        (python/composeio/render/widgets/seven_segment.py), NOT a C++ round
+        trip — encoding and decoding with the same code passes with a fully
+        PERMUTED table because both halves make the same mistake. This is the
+        checkable content of [CXC-VISION-SEMANTIC-REALIZATION]: the claim that
+        one semantic value reads the same on a panel and on a tube.
+    - check: justification-parity-vs-raster-widget
+      expect: "17 (value, digits) cases agree with SevenSegmentDisplay._display_value()"
+      note: >
+        VERIFIED 2026-08-14. Cases deliberately span shorter-than / exactly /
+        longer-than the surface: a corpus of only exact-fit cases cannot tell
+        right-justification from left-justification.
+    - check: golden-waveform
+      expect: "cmd 0x8F emits the pin sequence transcribed BY HAND from V2.4 p.3"
+      note: >
+        VERIFIED 2026-08-14, and it MATCHED FIRST RUN. Golden hand-derived from
+        the datasheet prose, not captured from the driver. MUTATION-TESTED: an
+        MSB-first bit order (the classic defect) is caught by both the golden
+        and the independent byte decoder (0x8F read back as 0xF1).
+    - check: protocol-invariants
+      expect: "every transaction obeys p.3 — DIO moves only while CLK is low except START/STOP; CLK high >= tWAIT; whole 9-clock bytes"
+      note: "VERIFIED 2026-08-14 across 7 transaction shapes including the 6-digit and minimum-half-period cases."
+    - check: negative-controls
+      expect: "the invariant checker REJECTS 4 deliberately corrupted traces AND still accepts a valid one"
+      note: >
+        VERIFIED 2026-08-14. [CXC-VISION-EPISTEMICS] rule-negative-control: an
+        instrument that can only report success is not an instrument. The four
+        injected faults are a spurious mid-frame START (exactly what a
+        shared-clock harness produces if the driver touches an idle DIO), a
+        CLK high shorter than tWAIT, a STOP at a non-byte boundary, and an
+        unclosed frame. The paired accept-a-valid-trace check guards the
+        mirror-image failure of a checker that rejects everything.
+    - check: nak-is-reported
+      expect: "with the virtual part not ACKing, tm1637_set_brightness returns false"
+      note: >
+        VERIFIED 2026-08-14. A driver that ignores the ACK reports success
+        against a DISCONNECTED part forever — 'MCP2515 successfully
+        initialized' in another costume.
+    - check: timing-clamp-is-recorded
+      expect: "half_period_us 0 clamps to 1 us AND sets timing_was_clamped"
+      note: >
+        VERIFIED 2026-08-14. A silent clamp is a limit that lies about having
+        been hit; the flag is what makes it assertable.
+  human: >
+    ⛔ NOTHING BELOW HAS BEEN DONE. THERE IS NO TM1637 ON ANY BENCH, AND EVERY
+    ITEM HERE IS IN THE CLASS WHERE A MACHINE SIGNAL EXISTS AND AGREES WITH THE
+    WRONG ANSWER. Ask about SPECIFIC glyphs, never "does it look right".
+      1. SEGMENT MAP — display "0". All six outer bars lit, centre bar DARK?
+         If any single bar is wrong, the map is permuted; note WHICH bar.
+      2. SEGMENT MAP, discriminating — display "1" then "7". "1" must light the
+         two RIGHT-HAND vertical bars only; "7" must add the TOP bar. If "1"
+         lights two bars on the LEFT, b/c are swapped with e/f.
+      3. DIGIT ORDER — display "1234". Is the leftmost tube showing 1? If it
+         shows 4, GRID1 is the rightmost and the buffer needs reversing.
+      4. JUSTIFICATION — display value "42" on a 4-digit surface. Expect two
+         BLANK tubes then 4 then 2 — right-justified and blank-padded, NOT
+         "42  " and NOT "0042".
+      5. DECIMAL POINT — display "12.34". Expect exactly four lit tubes with the
+         point after the 2. Five characters must occupy four digits.
+      6. BRIGHTNESS — step 0 then step 7. Both must be visibly lit and clearly
+         different; step 0 is 1/16 duty and is dim, not off.
+      7. DISPLAY OFF — the OFF command must blank ALL tubes while the host keeps
+         writing values. Distinguishes 'display off' from 'wrote zeros'.
+      8. MULTI-DISPLAY, THE LOAD-BEARING ONE — two modules, shared CLK,
+         separate DIO. Write "1111" to A and "2222" to B, then write A REPEATEDLY
+         for a minute. B must not flicker, blank, or change. THEN power-cycle
+         only A and repeat: B must be undisturbed. This is the only test that
+         can falsify the shared-clock inference.
+      9. NEGATIVE CONTROL FOR (8) — deliberately wire both DIO lines together
+         and confirm the two displays go IDENTICAL. If they do not, the harness
+         is not what you think it is and test 8 proved nothing.

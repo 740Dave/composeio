@@ -1,0 +1,168 @@
+# Unified board bring-up descriptor — SINGLE SOURCE for this board.
+# Schema shared byte-for-byte with cyd/qualia/esp32c3/ch32v203 .descriptor.yaml (same keys, same order).
+# The markdown recipe (hosyond-s3.md) is the generated human view; the app consumes THIS file.
+# LOCAL-FIRST: eyeball before pushing. Not on the bus yet (future home: doc://board_profiles/*).
+# Every value traceable to hosyond-s3.md (recipe §refs) or to the vendor kit / the live device.
+
+board_id: hosyond-s3
+name: "Hosyond ESP32-S3 2.8-inch IPS (ES3C28P) + ILI9341V 240x320 + FT6336G capacitive touch"
+
+chip:
+  part: esp32-s3              # QFN56 rev v0.2, dual core + LP core, 240MHz (read off the device 2026-08-11)
+  arch: xtensa-lx7
+  flash_kb: 16384            # 16MB quad, 3.3V per eFuse (esptool flash-id); CONFIG_ESPTOOLPY_FLASHSIZE=16MB
+  ram_kb: 8192               # 8MB embedded OCTAL PSRAM @80MHz; load-bearing — holds the 153,600B full-frame band buffer (recipe §3)
+
+connect:
+  bus: usb
+  kind: native-usb-cdc        # native USB-Serial-JTAG, VID 0x303a/PID 0x1001. NO onboard USB-serial bridge — vendor README confirms; flash + monitor share the one port
+  port_glob: "/dev/cu.usbmodem*"     # ini pins usbmodem31101
+  baud: 115200
+
+flash:
+  tool: esptool               # via PlatformIO / ESP-IDF
+  cmd: "cd cyd && pio run -e hosyond_s3 -t upload"
+  enter_bootloader: auto      # native-USB auto-download; the BOOT button (GPIO0) is NOT brought out, so there is no manual button dance available
+  retries:
+    - errno6-native-usb        # transient native-USB CDC re-enumeration -> "OSError [Errno 6] Device not configured"; retry the upload ONCE (same as the C3/Qualia siblings)
+  notes: >
+    Build wiring layers sdkconfig.defaults -> sdkconfig.s3.defaults -> sdkconfig.hosyond.defaults, plus
+    -DHOSYOND_S3=1 (CMake cache var switching src/CMakeLists.txt onto boards/hosyond_s3.cpp +
+    touch_ft6336.cpp instead of the CYD's classic_cyd/ili9341/touch_xpt2046 set). Everything ABOVE the
+    board seam — main.cpp, canvas_esp32, the scene builder, every widget, the capture server — is the
+    CYD's, unchanged. monitor: pio device monitor -e hosyond_s3.
+    ALL panel constants live in cyd/include/hosyond_s3_panel.h — the ONE place to retune.
+    CAUTION: platformio.ini build_flags do NOT reach ESP-IDF component compiles; the full-frame band
+    height is a target_compile_definitions in src/CMakeLists.txt (see quirk pio-build-flags-dropped).
+
+config_source: "bus://assets/displays/{device_id}.compose.yaml"   # same fungible fetch as CYD/Qualia
+
+requires:
+  - ref: "bus://assets/displays/{device_id}.compose.yaml"
+    kind: scene-config
+    status: present
+    note: "fetched at boot from bus_storage (same fungible path as CYD), re-polled every 60s; falls back to displays/default.compose.yaml when the per-device asset is absent. AS OF 2026-08-11 this board carries the BSG engine-thrust panel — source at compose_projects/bsg/game_hardware/engine_thrust_panel/engine_thrust.compose.yaml, PUT to displays/hosyond-d1afe8.compose.yaml. Reflash-free: PUT a new scene and wait, or power-cycle."
+  - ref: null
+    kind: firmware
+    status: placeholder
+    note: "no bus-hosted factory image today; built locally from cyd/ (-DHOSYOND_S3=1). A prebuilt image WOULD live at bus://assets/firmware/hosyond-s3/<ver>.bin"
+  - ref: "docs/board-bringup/factory-images/hosyond-s3-factory-16mb.bin"
+    kind: rollback-image
+    status: present
+    note: "full 16MB dump of the as-shipped vendor image (arduino-lib-builder bb76cb1, IDF v5.4.1, built Mar 28 2025), taken BEFORE the first flash. Restore: esptool.py --port <port> write-flash 0 <file>"
+
+verify:
+  machine:
+    - check: build
+      expect: "pio run -e hosyond_s3 -> SUCCESS"
+      note: "VERIFIED 2026-08-11. Also re-verified env:cyd builds clean afterwards — the shared canvas gained a configurable band height and must not regress the floor board."
+    - check: serial-token
+      expect: "Board profile: hosyond-s3 (ES3C28P, ILI9341V 240x320 IPS, FT6336G touch)"
+      note: "115200 baud on the native-USB CDC port; preceded by the firmware banner and followed by 'Panel: 240x320 rect'"
+    - check: serial-token
+      expect: "Band-rendered surface: 240x320, band=320 scanlines, buffer=153600 bytes"
+      note: "THE RENDERING-TIER PROOF. band=320 (not 16) is how you know CXC_BAND_HEIGHT actually reached the compile — a dropped define silently falls back to the CYD's 16-line bands and everything still 'works'."
+    - check: serial-token
+      expect: "band buffer (153600 bytes) placed in PSRAM"
+      note: "confirms the frame lives in PSRAM rather than eating the internal DMA heap that WiFi needs"
+    - check: serial-token
+      expect: "frame buffer at 0x... is DMA-reachable — transmitting in place"
+      note: "the alternative ('NOT DMA-reachable — staging through an internal-SRAM bounce') is also CORRECT, just slower. Either line proves the driver resolved the route deliberately instead of handing the DMA engine a pointer it cannot read."
+    - check: serial-token
+      expect: "FT6336 up on SDA=16 SCL=15 @400000 Hz — chip 0x64"
+      note: "VERIFIED 2026-08-11: chip 0x64 (FT6336G), firmware 0x02, panel 0x11. A NACK here instead logs 'no ACK from 0x38' and would mean EITHER this board is the ES3N28P (no capacitive touch fitted) OR the I2C bus is wrong. The ACK ANSWERS the [CXC-BRINGUP] §4 SKU question: this is the ES3C28P."
+    - check: serial-token
+      expect: "Device id: hosyond-d1afe8"
+      note: "VERIFIED 2026-08-11 (after the prefix fix — see quirk pio-build-flags-dropped). The first boot announced 'cyd-d1afe8' and 404'd its per-device config."
+    - check: capture-pixel-diff
+      expect: "GET http://<ip>/capture.bmp"
+      note: "240x320 BMP is ~150KB — well within what the pull server handles on the CYD, so unlike the Qualia this capture is expected to be reliable. NOT a substitute for eyes (see the hazard below)."
+  human: >
+    SATISFIED 2026-08-11 — David: "The screen is live and the touch interactions work fine." That closes
+    the second tier: panel lit, scene displaying, colour order and inversion correct on the glass, and the
+    capacitive touch mapping (identity — no swap, no invert) correct for this portrait glass.
+    WHY THIS TIER EXISTS, for whoever brings up the next board: the canonical failure in this project was
+    the classic CYD rendering "perfectly" — every SPI write ACKing ESP_OK, capture.bmp showing the
+    framebuffer advancing — over a panel frozen on frame 0. Three green machine signals, one dead display.
+    Had this panel been dead, every machine signal recorded above would have read exactly as green as it
+    does. The rows to re-run on any panel-revision change: (1) backlight on and a known colour fills the
+    panel; (2) the boot splash shows the logo, device id, AND a 'build: <date> <time>' tag matching the
+    firmware just flashed — a stale panel shows a stale tag, which is the whole point of the tag;
+    (3) colours not inverted, red/blue not swapped (single-constant retunes — kHosyondInvCmd and
+    kHosyondMadctlPortrait); (4) a press lands where the finger is, corners included — the driver logs RAW
+    controller coordinates next to mapped ones, so one corner press says which orientation flag to flip.
+
+quirks:
+  - id: no-lcd-reset-gpio
+    value: "CHIP_PU"
+    resolved: true
+    note: "THE defining hazard of this board. The panel's reset line is tied to CHIP_PU (vendor IO table row 4): resetting the ESP32 resets the panel, and nothing else can. There is no LCD reset GPIO, so the vendor's LCD_RESET() in ILI9341V_Init.txt DOES NOT APPLY. Consequence: a COLD boot arrives with the panel already hardware-reset, but esp_restart() does NOT reset it. The init table therefore opens with a SOFTWARE reset (0x01) — an SPI command, not a pin. Same substitution the classic CYD makes (CYD_TFT_RST == -1)."
+  - id: pio-build-flags-dropped
+    value: "-DCXC_BAND_HEIGHT=320"
+    resolved: true
+    note: "For framework=espidf, PlatformIO's build_flags NEVER reach the IDF component compile — they are silently dropped (verified against .pio/build/hosyond_s3/compile_commands.json, 2026-08-11: only ESP_PLATFORM/IDF_VER/SOC_* survive). The first build of this board was therefore rendering in 16-line bands while the config claimed full-frame, with zero warning. Fixed by target_compile_definitions(${COMPONENT_LIB} PUBLIC ...) in the HOSYOND_S3 branch of src/CMakeLists.txt. SECOND VICTIM, caught on the first live boot: src/config_fetch.cpp gated its device-id prefix on #ifdef QUALIA_DISPLAY — also build_flag-only — so this board announced itself as 'cyd-d1afe8' and 404'd fetching displays/cyd-d1afe8.compose.yaml. Prefix is now CXC_DEVICE_PREFIX (CMake definition), with the QUALIA_DISPLAY fallback preserved verbatim so no existing board's identity shifts. AUDIT OWED: env:qualia_display passes -DQUALIA_DISPLAY and -DREACTIVE_TRANSFORM_ATTRS the same dropped way."
+  - id: full-frame-band
+    value: 320
+    resolved: true
+    note: "THE RENDERING-TIER CALL ([CXC-BRINGUP] §5). The CYD streams 16-line bands because it has no room for a frame; this board has 8MB PSRAM and needs 150KB. The seam did NOT need widening — DisplayDriver::transfer_band already accepts any band, and one full-height band IS the frame. What widened is the BACKEND: kBandHeight became a build-time constant (canvas_esp32.h). The win is NOT the SPI transfer (identical bytes either way) — it is that render_bands walks the whole scene ONCE per frame instead of 20 times. Cost: the rasteriser now writes into PSRAM rather than SRAM."
+  - id: dirty-quantum-decoupled
+    value: 16
+    resolved: true
+    note: "THE FOLLOW-UP THE full-frame-band CALL OWED (2026-08-11, same day). Making the buffer one 320-row band made num_bands 1, so the reactive tier's widget-level dirty repaint re-rasterised AND re-transferred all 153,600 bytes on every bus arrival — measured 47.9 ms per arrival on the BSG engine-thrust panel. FIX: the dirty QUANTUM is now decoupled from the BUFFER HEIGHT — kBandHeight (320 = how much buffer exists) vs kDirtyBandHeight (16 everywhere = repaint granularity). On this tier the buffer IS the frame and PERSISTS between renders, so a repaint re-rasterises the dirty ROW SPAN in place at its true offsets (still ONE scene pass, writes gated by the canvas's active row window) and transfers only those rows. NO seam change was needed: transfer_band already documents band_buf as starting at y_start, so `_band_buf + y0*_width` is the whole trick. This is the QualiaCanvas _limit_y0/_limit_y1 idiom ported to the band canvas, not a new invention. env:cyd is untouched (quantum == band there). MEASURED before/after, one binary, same traffic: repaint 47.9 -> 35.8 ms (320 -> 224 rows on this scene), bus->glass 124.9 -> 57.1 ms mean (median 127.8 -> 45.0) once the touch-poll burst fix landed too. PROVEN: after a sweep of dirty-only repaints the capture is BYTE-IDENTICAL to a full render of the same state (0 of 230,400)."
+  - id: capture-streams-framebuffer
+    resolved: true
+    note: "On the full-frame tier GET /capture.bmp now streams the framebuffer AS-IS instead of re-rendering the scene into it (the band tier still re-renders — its buffer holds 16 rows). Cheaper, but the REASON is honesty: a capture that re-renders reports what the scene WOULD look like, which papers over exactly the stale-region bug a sub-frame dirty repaint can introduce. It is now a true readout of the pixels last SENT to the panel — and still proves only the framebuffer, never the glass."
+  - id: spi-transfer-is-the-floor
+    value: "107 us/row"
+    resolved: false
+    note: "MEASURED 2026-08-11: a repaint costs draw + transfer, and the transfer is wire-bound — 24.4 ms for 224 full-width rows = 107 us/row = 4.4 MB/s = 88% of the 5 MB/s the 40 MHz SPI clock allows. It scales with BYTES SENT and nothing else, and it is ~70% of a repaint. Two levers remain, NEITHER taken: (1) an X-RANGE dirty rect — the led_bar gauges are 56 px of 240, so a windowed transfer would cut the 24.4 ms to ~5.7 ms when one engine moves (~16.3 ms when both do, x 40..200). It needs a new DisplayDriver rect-transfer seam + a column window in the canvas hot path. DELIBERATELY DEFERRED: a wrong X address window is invisible to EVERY machine signal available here — the framebuffer capture stays correct, the SPI writes still return ESP_OK, and only eyes on the glass would catch it. The row-range transfer that DID ship is not new panel behaviour (the CYD clocks 20 partial-row transfers per frame), only new arithmetic on a proven shape. (2) SPI clock 40 -> 80 MHz on the native IOMUX pins would halve it outright, but the vendor demo runs 40 and first-frame corruption is a glass-only symptom. Both want a human in front of the panel."
+  - id: i2c-shared-with-audio-codec
+    value: "GPIO15/16"
+    resolved: false
+    note: "The FT6336G touch controller and the ES8311 audio codec share one I2C bus (vendor IO table rows 21/22). Harmless TODAY because nothing initializes audio — this profile claims the bus exclusively. The moment audio is enabled ([SPEC:CXC-HAL-ACTUATE]), that bus needs arbitration. Not a bug; a scheduled collision."
+  - id: backlight-active-high
+    value: "GPIO45"
+    resolved: true
+    note: "Active HIGH on this board — LEDC duty IS brightness, no inversion. Do NOT inherit a polarity from another profile. Default duty is 255 (full): unlike the CYD's TN panel, IPS does not wash out."
+  - id: display-inversion-on
+    value: "0x21"
+    resolved: true
+    note: "This IPS panel ships inverted: the vendor init issues 0x21 (Display Inversion ON) and their LVGL config sets CONFIG_LV_INVERT_COLORS=y to match. CONFIRMED ON THE GLASS 2026-08-11 (David) — not a photo negative. Retune kHosyondInvCmd to 0x20 if a future panel revision differs."
+  - id: madctl-bgr
+    value: "0x08"
+    resolved: true
+    note: "MADCTL 0x08 = MY/MX/MV all 0 (portrait 240x320) with the BGR bit SET, compensating for the panel's physical subpixel order so standard RGB565 data shows correct colours. CONFIRMED ON THE GLASS 2026-08-11 (David) — colours correct; the capture independently agrees (DANGER renders red, ACK blue). Clear bit 3 if a future panel revision swaps red and blue. NOTE: differs from the CYD, which uses 0x20 (MV set, RGB order) — do not copy one panel's MADCTL to the other."
+  - id: capacitive-no-calibration
+    resolved: true
+    note: "The FT6336G is capacitive and self-calibrating: it reports PANEL-NATIVE PIXELS, so unlike the CYD's XPT2046 there is NO four-corner calibration ([CYD-TOUCH-CAL] does not apply). Only orientation remains — kHosyondTouchSwapXY/InvertX/InvertY, all false for portrait, CONFIRMED ON THE GLASS 2026-08-11 (David: touch interactions work). The vendor's own LVGL demo sets SWAPXY+invert, but it runs the panel LANDSCAPE; those settings do not carry over."
+  - id: spi-iomux-native-pins
+    value: 40000000
+    resolved: true
+    note: "GPIO 10/11/12/13 are the S3's NATIVE IOMUX pins for FSPI (CS0/D/CLK/Q), so SPI2_HOST takes the fast direct route rather than the GPIO matrix — which is why 40MHz is comfortable. The vendor demo runs the same clock (80MHz / divider 2). Drop kHosyondSpiFreqHz to 20MHz if the glass shows init or first-frame corruption (the CYD's documented failure at 27MHz)."
+  - id: gdma-not-explicit-channel
+    value: "SPI_DMA_CH_AUTO"
+    resolved: true
+    note: "The S3 uses GDMA, where the driver allocates channels — the ESP32-era 'pin channel 1' idiom (ili9341.cpp) does not apply. The CYD's shared-DMA freeze class is ALSO structurally absent here: this board's SD card is on its own SDIO pins (38-41/47/48), not on the display's SPI bus, and no SD bus is ever initialized. Revisit if SD is ever enabled."
+  - id: psram-dma-reachability
+    resolved: true
+    note: "The heap allocator does not tag PSRAM MALLOC_CAP_DMA even where GDMA can reach it, so whether the full-frame buffer is directly transmittable is a RUNTIME question. HosyondDisplay resolves it once at first transfer (esp_ptr_dma_capable / esp_ptr_dma_ext_capable), logs the answer, and stages through an internal-SRAM bounce buffer if the answer is no. This is deliberate: handing the DMA engine a pointer it cannot read is precisely how you get ESP_OK over a dead panel."
+  - id: boot-button-not-brought-out
+    value: "GPIO0"
+    resolved: false
+    note: "The BOOT button is GPIO0 and is NOT brought out (vendor IO table row 5). There is no manual bootloader entry. Recovery from a firmware that breaks native-USB enumeration is therefore NOT straightforward — which is why the as-shipped image was dumped to factory-images/ before the first flash."
+  - id: free-gpio-superset
+    value: "2, 3, 14, 21"
+    resolved: true
+    note: "The bring-up briefing lists free GPIO as 2/3/21; the vendor IO allocation table ALSO frees GPIO14 (brought out, no external device). GPIO15/16 and 43/44 are conditionally free — only while touch+audio, resp. UART0, are unused. Corrected here against the authoritative table."
+  - id: unclaimed-peripherals
+    resolved: false
+    note: "This board carries more than a display and is NOT just a bigger CYD: I2S audio in+out (GPIO4-8) with an FM8002E amp enable (GPIO1, active LOW), an ES8311 codec, a WS2812B RGB LED (GPIO42), an SD slot on SDIO (38-41/47/48), and a battery-voltage ADC (GPIO9) behind a TP4054 charger. NONE are initialized by this profile — out of scope for first bring-up, recorded in hosyond_s3_panel.h because [SPEC:CXC-HAL-ACTUATE] will want them and because a silently-occupied pin is a bug waiting to happen."
+  - id: display-driver-not-shared-with-cyd
+    resolved: false
+    note: "boards/hosyond_s3.cpp carries its OWN ILI9341V driver rather than parameterizing src/ili9341.cpp. Deliberate: the panels differ in pins, power rails (0xC0/0xC1 = 0x13 vs the CYD's 0x23/0x10), gamma tables, inversion, colour order and MADCTL — and folding them together would put a regression on the classic CYD, the project's performance floor, which is not on the bench to re-verify. The in-tree precedent agrees (boards/qualia_rgb666.cpp owns its driver). DEFERRED CONSOLIDATION: revisit when both boards can be regression-tested in one sitting."
+
+variants:
+  - id: ES3C28P
+    note: "capacitive touch (FT6336G) — what this profile assumes, and CONFIRMED 2026-08-11 as the board on the desk: the controller ACKs at 0x38 and reports chip id 0x64 / firmware 0x02 / panel 0x11."
+  - id: ES3N28P
+    note: "the vendor kit covers both SKUs; the N variant has NO capacitive touch. On that board FT6336::init() logs 'no ACK from 0x38' and touch() reads return not-touched — the display half still works."

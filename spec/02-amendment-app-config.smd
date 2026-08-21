@@ -1,0 +1,272 @@
+---
+scope: "Amendment to 02-composeio-config-schema.smd — adds 'app' as a top-level config type with export/import and transport configuration"
+audience: "Same as parent spec"
+boundary: "Schema extension only; application framework semantics in 08-composeio-app-framework.smd"
+depends-on: [02-composeio-config-schema.smd, 08-composeio-app-framework.smd]
+amends: 02-composeio-config-schema.smd
+status: "Draft — pending review"
+created: 2026-03-28
+---
+
+# Amendment: Application Config Type [AMEND:CS-APP]
+
+> Adds `app` as a sixth top-level config type alongside `module`, `composite_device`,
+> `adapter`, `workload`, and `bindings`. Extends namespace declarations with `export`
+> and `import` fields. Adds transport configuration for external bus connectivity.
+
+---
+
+## 1. New Top-Level Type: `app` [CS-TOP-LEVEL-6]
+
+**Insert after [CS-TOP-LEVEL-5] in 02-composeio-config-schema.smd.**
+
+### [CS-TOP-LEVEL-6] Application Config
+
+```yaml
+app:
+  id: <app-id>              # REQUIRED. String. Unique application identifier.
+  transports: [...]          # OPTIONAL. External bus transport configuration.
+
+namespaces: [...]            # REQUIRED. Namespace declarations with export/import.
+bindings: [...]              # OPTIONAL. Bindings between namespaces (same syntax as CS-BINDINGS).
+```
+
+The `app` type defines a bus-native application with dual-bus architecture
+(08-composeio-app-framework.smd). Unlike `module` configs which describe firmware
+for a single role, `app` configs describe a complete application with multiple
+namespaces, explicit external bus visibility, and transport configuration.
+
+**Update validation rule**: A document MUST contain exactly one of: `module`,
+`composite_device`, `adapter`, `workload`, `bindings`, or `app` as its primary root key.
+
+---
+
+## 2. App ID [CS-APP-ID]
+
+```yaml
+app:
+  id: biometric-tester    # Lowercase alphanumeric + hyphens. Max 32 chars.
+```
+
+The app ID is used as:
+- Bus ID prefix (`{id}-internal`, `{id}-external`)
+- MQTT client ID (when MQTT transport connected)
+- Source field in bus messages published by the app framework
+- Discovery announcement identifier
+
+---
+
+## 3. Transport Configuration [CS-APP-TRANSPORTS]
+
+```yaml
+app:
+  transports:
+    - type: mqtt
+      broker: 192.0.2.10       # REQUIRED for mqtt
+      port: 1883                 # OPTIONAL. Default: 1883
+      client_id: biometric-01    # OPTIONAL. Default: app.id
+      username: ...              # OPTIONAL
+      password: !secret mqtt_pw  # OPTIONAL. Supports !secret tag (CS-SECRETS)
+
+    - type: uart
+      port: /dev/ttyUSB0         # REQUIRED for uart
+      baudrate: 115200           # OPTIONAL. Default: 115200
+
+    - type: can
+      interface: can0            # REQUIRED for can
+      bitrate: 250000            # OPTIONAL. Default: 250000
+```
+
+Transport types:
+
+| Type | Required Fields | Platform |
+|------|----------------|----------|
+| `mqtt` | `broker` | Python, ESP32 |
+| `uart` | `port` | Python, CH32V003, ESP32 |
+| `can` | `interface` | Python (python-can), CH32V003, ESP32 |
+
+Transports are additive. Multiple entries of different types are allowed and
+activate simultaneously. Multiple entries of the same type are NOT allowed
+(use separate app instances for multiple MQTT brokers).
+
+On CH32V003 targets, the transport config is compiled to binary: transport type
+byte + connection parameters. The firmware initializes hardware peripherals from
+this config on boot.
+
+---
+
+## 4. Namespace Extensions [CS-APP-NAMESPACE]
+
+The existing namespace declaration syntax ([CS-NAMESPACE]) is extended with
+visibility and routing fields when used inside an `app` config.
+
+### 4.1 Public Namespaces (non-`_app/`) [CS-APP-NS-PUBLIC]
+
+Namespaces that don't start with `_app/` are public-eligible. They use `export`
+and `import` to control external bus visibility:
+
+```yaml
+namespaces:
+  # Exported namespace — visible on external bus
+  - name: test_progress
+    state_engine: continuous_0_255
+    export: true                     # Forward to external bus
+    export_as: progress              # OPTIONAL. Name on external bus. Default: same as name
+    label: "Test Progress"
+
+  # Imported namespace — receives from external bus
+  - name: dashboard_cmd
+    state_engine:
+      type: enum
+      values: [none, start, stop, reset]
+    import: true                     # Forward from external bus
+    import_from: operator_cmd        # OPTIONAL. Name on external bus. Default: same as name
+    label: "Dashboard Command"
+
+  # Bidirectional — both exported and imported
+  - name: mode_select
+    state_engine:
+      type: enum
+      values: [auto, manual, calibrate]
+    export: true
+    import: true
+    label: "Mode Selection"
+
+  # Non-exported (internal-only, but not in the _app/ boundary)
+  - name: temp_workspace
+    state_engine: binary
+    # No export/import — internal only, but could be exported later without renaming
+```
+
+### 4.2 Private Namespaces (`_app/`) [CS-APP-NS-PRIVATE]
+
+Namespaces starting with `_app/` are **private by default** — they exist only on
+the internal bus and are blocked from the external bus. This is enforced, not advisory.
+
+`_app/` namespaces CANNOT use `export: true`. They use a separate routing mechanism
+that makes the exception explicit and auditable:
+
+```yaml
+namespaces:
+  # Private — default behavior, no extra fields needed
+  - name: _app/pipeline_stage
+    state_engine:
+      type: enum
+      values: [init, loading, processing, scoring, reporting]
+
+  # Private with explicit routing exception (for debugging/monitoring)
+  - name: _app/batch_queue_depth
+    state_engine: continuous_0_255
+    route_external: true                    # Explicit bridge — overrides default-deny
+    route_as: debug/batch_queue_depth       # REQUIRED. External bus name. MUST NOT start with _app/
+```
+
+The routing mechanism uses different field names (`route_external`/`route_as` vs
+`export`/`export_as`) to signal that this is an exception to a security boundary,
+not a normal export. The framework logs a WARN at startup for every routed `_app/`
+namespace.
+
+### 4.3 Field Definitions [CS-APP-NS-FIELDS]
+
+**For public namespaces (non-`_app/`):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `export` | bool | `false` | Forward internal state changes to external bus |
+| `export_as` | string | (same as `name`) | Name on external bus. Allows internal/external name divergence |
+| `import` | bool | `false` | Forward external state changes to internal bus |
+| `import_from` | string | (same as `name`) | Name on external bus to subscribe to |
+
+**For `_app/` namespaces:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `route_external` | bool | `false` | Bridge this private namespace to external bus (exception to default-deny) |
+| `route_as` | string | (none) | **REQUIRED** when `route_external: true`. Name on external bus. MUST NOT start with `_app/` |
+
+### 4.4 Validation Rules [CS-APP-NS-VALIDATE]
+
+**Structural rules:**
+
+- **[CS-APP-V1]**: A namespace with `export: true` MUST have a state engine defined (the external bus needs to know the value domain)
+- **[CS-APP-V2]**: A namespace with `import: true` MUST have a state engine defined (the internal bus needs to validate incoming values)
+- **[CS-APP-V3]**: `export_as` is only valid when `export: true`
+- **[CS-APP-V4]**: `import_from` is only valid when `import: true`
+- **[CS-APP-V5]**: A namespace with both `export: true` and `import: true` MUST NOT have different `export_as` and `import_from` values (bidirectional crossover requires the same external name)
+
+**`_app/` boundary rules (enforced):**
+
+- **[CS-APP-V6]**: `_app/` namespaces MUST NOT have `export: true`. Use `route_external` instead. Config validation error: `"_app/ namespaces cannot be exported directly. Use route_external with route_as to bridge explicitly."`
+- **[CS-APP-V7]**: `_app/` namespaces with `route_external: true` MUST have `route_as` set. Config validation error: `"route_as is required when routing an _app/ namespace to external bus."`
+- **[CS-APP-V8]**: `route_as` value MUST NOT start with `_app/`. The `_app/` prefix must not appear on the external bus. Config validation error: `"route_as must not start with _app/ — the external name must be outside the private boundary."`
+- **[CS-APP-V9]**: `route_external` and `route_as` are only valid on `_app/` namespaces. Non-`_app/` namespaces use `export`/`export_as`. Config validation error: `"route_external is only valid on _app/ namespaces. Use export instead."`
+
+**Runtime behavior for routed `_app/` namespaces:**
+
+- **[CS-APP-V10]**: The framework MUST log at WARN level on startup for every `_app/` namespace with `route_external: true`:
+  `WARN [composeio.app] _app/batch_queue_depth bridged to external bus as debug/batch_queue_depth — verify this is intentional`
+- **[CS-APP-V11]**: `composeio status` MUST display routed `_app/` namespaces with a `BRIDGED` marker and the external name
+
+---
+
+## 5. Bindings in App Config [CS-APP-BINDINGS]
+
+Bindings within an `app` config use the same syntax as [CS-BINDINGS]. They operate
+on the internal bus. If a binding's source or target is an exported namespace,
+the state change is forwarded to the external bus automatically by the crossover.
+
+```yaml
+bindings:
+  - source: test_status
+    target: _app/pipeline_stage
+    transform:
+      - type: map
+        map: {idle: init, running: processing, complete: reporting, error: init}
+
+  - source: dashboard_cmd
+    target: test_status
+    transform:
+      - type: map
+        map: {start: running, stop: idle, reset: idle, none: idle}
+```
+
+---
+
+## 6. Binary Compilation [CS-APP-BINARY]
+
+The `app` config compiles to binary for MCU targets using the same binary format
+as module configs ([CS-BINARY-FORMAT]), with extensions:
+
+- **Header role ID**: `0x10` (application, distinct from module roles 0x01-0x07)
+- **Body structure**: namespace_count(1) + per-namespace: ns_hash(2) + engine_type(1) + flags(1)
+- **Flags byte**: bit 0 = export, bit 1 = import, bit 2 = route_external (for `_app/`), bit 3 = _app prefix, bits 4-7 reserved
+- **Route-as hash**: When bit 2 is set, an additional 2 bytes follow the flags byte: ns_hash of the `route_as` external name. The firmware crossover loop uses this hash for the external CAN/UART frame.
+- **Transport config**: appended after namespace records. transport_count(1) + per-transport: type(1) + params(variable)
+
+Transport type bytes:
+
+| Type | Byte | Params |
+|------|------|--------|
+| MQTT | 0x01 | broker_len(1) + broker_string + port(2) |
+| UART | 0x02 | baudrate(4) |
+| CAN | 0x03 | bitrate(4) |
+
+The binary fits the CH32V003 128-byte config region for apps with up to ~20
+namespaces and one transport.
+
+---
+
+## 7. Design Principle Reference [CS-APP-PRINCIPLES]
+
+| Section | Principle |
+|---------|-----------|
+| CS-APP (dual bus) | DP-CIO-6 (transport agnostic), DP-CIO-11 (graceful degradation) |
+| CS-APP-TRANSPORTS | DP-CIO-6, DP-CIO-9 (remote loop) |
+| CS-APP-NAMESPACE (export) | DP-CIO-2 (namespace-based API), DP-CIO-5 (scope) |
+| CS-APP-BINARY | DP-CIO-7 (config is product), DP-CIO-8 (platform neutral) |
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-28
+**Status**: Draft — amendment pending review, not yet merged into parent spec

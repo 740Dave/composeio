@@ -1,0 +1,436 @@
+---
+scope: "Board Manager — a ComposeApp for managing project boards with selective export to ComposeIO namespaces, enabling cross-posting of board content to Nexus and other bus participants"
+audience: "Builder agents (implementation), deployer agents (deployment via service hub)"
+boundary: "IN: Web UI, SQLite persistence, MCP interface, multiple boards, per-board namespace export, activity logging, document attachments. OUT: Nexus governance (Nexus manages its own namespace rules), ComposeApp framework internals (08-composeio-app-framework.smd)"
+not-this: "Not a detailed project management tool (Jira, Linear). Not a time tracker. Not a sprint board. The one-page constraint applies: if a board doesn't fit on one screen, it's too detailed. Not the service hub (13-service-hub-v2.smd) — deployed on it."
+depends-on: [08-composeio-app-framework.smd, 13-service-hub-v2.smd]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# Board Manager [SPEC:CIO-BOARD-MANAGER]
+
+> A ComposeApp that manages project boards — collections of major tasks, minor tasks, objectives, activity logs, and document attachments. Each board is an independent one-page view. Boards can selectively export their content to ComposeIO namespaces, enabling cross-posting to Nexus, dashboards, or any bus participant. Deployed on the ComposeIO service hub.
+
+---
+
+## 1. Design Principles
+
+### [BM-DP-1] One Screen Per Board
+
+A board fits on one screen. Major items are initiatives. Minor items are their steps. That's two levels, no deeper. Activity logs and document attachments add context without adding hierarchy. If a board requires scrolling to grasp project status, it has too much detail.
+
+### [BM-DP-2] Selective Export
+
+Not every board is public. A "Maker" board stays internal — it's David's private work surface. A "Nexus" board exports its content to David's Nexus namespace, making project status visible to Nexus participants. The export decision is per-board, declared in config, and uses the standard ComposeApp export/import mechanism.
+
+### [BM-DP-3] Intelligence-Native
+
+The Board Manager is equally usable by humans (web UI) and Intelligences (MCP tools). An Intelligence at session start calls `board_status` to see the current board, logs activity as work happens, and attaches documents to tasks. The MCP interface mirrors every UX capability.
+
+### [BM-DP-4] Bus-Native State Changes
+
+Every state change (task created, status updated, activity logged, document attached) publishes to the internal bus. Exported boards forward those changes to the external bus. A Nexus participant subscribing to `board/nexus/tasks` sees task updates in real time.
+
+### [BM-DP-5] Multi-Tenant by Design
+
+The Board Manager serves multiple Nexus-identified participants, not just one user. Any Intelligence with a Nexus identity can create boards, track work, and publish their backlog. Board ownership maps to Nexus identity. Access control follows Nexus governance.
+
+---
+
+## 2. Multi-Tenancy and Visibility
+
+### [BM-TENANT] Nexus Identity Integration
+
+Every board has an **owner** — a Nexus identity (signatory ID). The owner is set at board creation and determines access:
+
+| Actor | Can create boards | Can modify boards | Can view boards |
+|-------|-------------------|-------------------|-----------------|
+| Owner | Yes | Own boards only | Own boards + boards with `nexus` or `world` visibility |
+| Nexus participant (not owner) | No (unless governance grants it) | No (unless governance grants write access) | Boards with `nexus` visibility on the same Nexus instance |
+| World (anonymous) | No | No | Boards with `world` visibility (via scraper, read-only) |
+
+MCP tools enforce ownership: `board_add_task`, `board_update`, `board_delete_task`, etc. check that the caller's Nexus identity matches the board owner. Governance can grant explicit exceptions.
+
+### [BM-VISIBILITY] Three-Tier Visibility Model
+
+Each board declares a visibility level:
+
+| Visibility | Internal bus | External bus (MQTT) | Public website | Use case |
+|------------|-------------|---------------------|----------------|----------|
+| `private` | Owner's MCP and web UI only | Not exported | Not scraped | Personal work surface, draft backlogs |
+| `nexus` | Exported to owner's Nexus namespace | `board/{owner}/{board}/tasks` etc. | Not scraped | Shared backlog visible to Nexus participants |
+| `world` | Exported to Nexus namespace | Same as `nexus` | Scraped and published | Public-facing roadmap, open-source backlog, Lattice enhancement list |
+
+`world` is a superset of `nexus` — a world-visible board is also nexus-visible. The scraper service (a simple workload on the service hub) finds boards with `visibility: world` and publishes rendered HTML to a public web server.
+
+### [BM-VISIBILITY-EXPORT] Export Namespace Pattern
+
+Exported boards publish to namespaces scoped by owner and board name:
+
+```
+board/{owner_id}/{board_name}/tasks
+board/{owner_id}/{board_name}/activity
+board/{owner_id}/{board_name}/objectives
+```
+
+Example: David's Nexus board exports to `board/david/nexus/tasks`. An Intelligence named "architect-01" exports its backlog to `board/architect-01/backlog/tasks`. Each owner's boards occupy their own namespace subtree.
+
+The world publisher/scraper process is out of scope for this spec — it is a separate service that consumes the visibility flag and exported namespaces. The Board Manager's responsibility ends at setting the visibility flag and exporting to the bus.
+
+---
+
+## 3. ComposeApp Architecture
+
+### [BM-ARCH] Dual-Bus Topology
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Board Manager (ComposeApp)                                  │
+│                                                              │
+│  ┌────────────────────────────────────────────────────┐      │
+│  │  Internal Bus (board-manager-internal)             │      │
+│  │                                                    │      │
+│  │  _app/board/{id}/tasks      ← StorageModule pub    │      │
+│  │  _app/board/{id}/activity   ← StorageModule pub    │      │
+│  │  _app/board/{id}/documents  ← StorageModule pub    │      │
+│  │  _app/board/{id}/objectives ← StorageModule pub    │      │
+│  │  _app/ui/refresh            → WebModule sub        │      │
+│  │  _app/mcp/command           → McpModule sub/pub    │      │
+│  │                                                    │      │
+│  │  board/nexus/tasks ─────────┼──── export ────────┐ │      │
+│  │  board/nexus/activity ──────┼──── export ────────┤ │      │
+│  └────────────────────────────────────────────────────┘ │      │
+│                                                         │      │
+│  ┌──────────────────────────────────────────────────┐   │      │
+│  │  External Bus (board-manager-external)           │◀──┘      │
+│  │                                                  │          │
+│  │  board/nexus/tasks ──▶ MQTT ──▶ Nexus namespace  │          │
+│  │  board/nexus/activity ──▶ MQTT ──▶ Nexus         │          │
+│  └──────────────────────────────────────────────────┘          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### [BM-ARCH-MODULES] Application Modules
+
+| Module | Publishes | Subscribes | Responsibility |
+|--------|-----------|------------|----------------|
+| `StorageModule` | `_app/board/{id}/*` (all state changes) | `_app/mcp/command` | SQLite read/write, publishes state changes to internal bus on every mutation |
+| `WebModule` | (none — reads from SQLite) | `_app/ui/refresh` | HTTP server for web UI on configured port. Listens for refresh signals. |
+| `McpModule` | `_app/mcp/command` | (none — reads MCP requests) | MCP SSE endpoint. Translates MCP tool calls into internal bus commands. |
+| `ExportModule` | (none) | `_app/board/{id}/*` for exported boards | Watches internal bus for changes on exported boards. Forwards to external bus under the board's export namespace. |
+
+### [BM-ARCH-EXPORT] Per-Board Export Configuration
+
+Export is driven by the board's `visibility` field, not static config. The ExportModule watches all boards and exports those with visibility `nexus` or `world`:
+
+- `private` → no export, internal bus only
+- `nexus` → ExportModule forwards state changes to external bus under `board/{owner_id}/{board_name}/*`
+- `world` → same as `nexus` (export to bus), plus the visibility flag is queryable by external scrapers
+
+Visibility is set per-board at runtime (via web UI or MCP), not in the `.compose.yaml`. The `.compose.yaml` declares the namespace patterns and transport — the boards themselves are data, not config.
+
+---
+
+## 4. Data Model
+
+### [BM-SCHEMA] SQLite Schema
+
+```sql
+CREATE TABLE boards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    owner_id TEXT NOT NULL,            -- Nexus signatory ID
+    visibility TEXT DEFAULT 'private'
+        CHECK(visibility IN ('private', 'nexus', 'world')),
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(owner_id, name)
+);
+
+CREATE TABLE objectives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT DEFAULT 'active'
+        CHECK(status IN ('active', 'achieved', 'dropped')),
+    UNIQUE(board_id, code)
+);
+
+CREATE TABLE tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    parent_id INTEGER REFERENCES tasks(id),
+    status TEXT DEFAULT 'not_started'
+        CHECK(status IN ('not_started', 'in_progress', 'completed', 'blocked', 'parked', 'archived')),
+    owner TEXT DEFAULT 'David+Intelligence',
+    priority TEXT DEFAULT 'medium'
+        CHECK(priority IN ('critical', 'high', 'medium', 'low')),
+    project TEXT,
+    target_date TEXT,
+    completed_date TEXT,
+    notes TEXT DEFAULT '',
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT
+);
+
+CREATE TABLE task_objectives (
+    task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+    objective_id INTEGER REFERENCES objectives(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, objective_id)
+);
+
+CREATE TABLE task_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    path TEXT NOT NULL,
+    added_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    entry TEXT NOT NULL,
+    session TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### [BM-HIERARCHY] Task Hierarchy
+
+- **Major items**: `parent_id IS NULL`. Initiatives displayed as accordion sections.
+- **Minor items**: `parent_id` references a major item. Steps within the initiative.
+- **Maximum depth**: 2 levels. Enforced by UI and MCP tools.
+- **Activity log**: Third level of detail, append-only, subordinate to any task.
+
+---
+
+## 5. Web UI
+
+### [BM-UI] Web Interface
+
+Single-page web application served by WebModule. Dark theme (Material for MkDocs slate/indigo palette). Two tabs: Board (default) and Activity.
+
+### [BM-UI-ICONS] Icon System
+
+Google Material Symbols Outlined loaded from CDN. Icon color: `#e3e3e3`, size: 24px.
+
+| Icon | Purpose |
+|------|---------|
+| `add` | Add major item (column header), add minor item (beside major) |
+| `note_add` | Attach document |
+| `edit` | Edit task (name + notes) |
+| `delete` | Delete with confirmation |
+| `archive` / `unarchive` | Archive management |
+| `circle` | Minor item with no activity (static) |
+| `expand_circle_down` | Accordion toggle (major items, minor items with activity) |
+| `low_priority` | Reorder trigger |
+
+### [BM-UI-LAYOUT] Board Tab
+
+- **Board switcher** at top — dropdown or tab bar, one board visible at a time. Includes a "New Board" action (+ icon or button) that opens a popup to create a board (name, visibility). Board creation must be available from the web UI, not only via MCP.
+- **Major items** as accordion sections — `expand_circle_down` toggles visibility of minor items. Expanded by default.
+- **Minor item bullets** — `circle` (no activity) or `expand_circle_down` (has activity, toggles accordion showing entries)
+- **Add major** — `add` icon beside "Major / Minor Tasks" column header, popup form
+- **Add minor** — `add` icon beside major item name, popup form
+- **Document badges** — `note_add` icon with count badge on tasks with attachments
+- **Reorder** — `low_priority` icon opens reorder page with up/down controls
+- **Edit task popup** — `edit` icon opens an "Edit Task" popup with fields for task name and notes (textarea). Submit button labeled "Save". The popup is used for both major and minor tasks.
+- **No bottom forms** — all add/edit via popups or dedicated pages
+- **Objectives** section below Projects, editable (rename, achieve, drop, add)
+
+### [BM-UI-ACTIVITY] Activity Tab
+
+Time-filtered view of activity log entries. Filters: 24h, 7 days, 30 days, all. Entries grouped by timestamp showing major → minor → entry text.
+
+### [BM-UI-PERFORMANCE] Tab Switching Performance
+
+Switching between Board and Activity tabs MUST complete in under 500ms. If the current implementation uses full-page reloads with heavy SQLite queries, optimize by: (1) pre-computing activity counts, (2) limiting default activity query to 24h, (3) using lightweight queries for tab content that is not immediately visible.
+
+### [BM-UI-COMPLIANCE] UI Constraints
+
+- No JavaScript frameworks. Vanilla JS for popups and accordions only.
+- Page renders without JavaScript except popups/accordions (progressive enhancement).
+- All mutations via HTML forms with POST + redirect.
+- Delete confirmation via server-rendered confirmation page.
+
+---
+
+## 6. MCP Interface
+
+### [BM-MCP] MCP Tool Definitions
+
+Full MCP parity with all web UI capabilities:
+
+| Tool | Purpose |
+|------|---------|
+| `board_status` | Get board state — objectives, tasks, projects, document counts |
+| `board_add_task` | Add major or minor task |
+| `board_update` | Update task status, priority, notes |
+| `board_rename_task` | Rename a task |
+| `board_delete_task` | Delete with confirmation |
+| `board_archive_task` | Archive/unarchive completed major items |
+| `board_set_target_date` | Target date on major items |
+| `board_attach_document` | Attach document to any task |
+| `board_detach_document` | Remove document attachment |
+| `board_get_documents` | List documents on a task |
+| `board_manage_objective` | Add, achieve, drop objectives |
+| `board_log_activity` | Log progress entry against a task |
+| `board_get_activity` | Get activity entries filtered by interval |
+| `board_reorder_tasks` | Reorder tasks by ID list |
+| `board_manage_board` | Create, rename, delete boards; set visibility |
+| `board_set_visibility` | Set board visibility (private/nexus/world) |
+| `board_list_boards` | List boards visible to the caller (own boards + nexus/world boards from others) |
+
+All tools accept `board_id` or `board` (name) to target a specific board. Mutating tools enforce ownership — caller's Nexus identity must match `owner_id` (unless governance grants access).
+
+### [BM-MCP-TRANSPORT] MCP Server
+
+SSE endpoint served by McpModule on the same port as the web UI. MCP tool calls translate to internal bus commands via `_app/mcp/command` namespace.
+
+---
+
+## 7. Bus Integration
+
+### [BM-BUS-EVENTS] Namespace Event Schema
+
+When a state change occurs on an exported board, the ExportModule publishes a JSON event to the external bus:
+
+```json
+{
+  "event": "task_updated",
+  "board": "Nexus",
+  "owner": "david",
+  "task_id": 42,
+  "task_name": "Finalize cross-domain architecture",
+  "parent": "Prepare Lattice for Open Source Publication",
+  "field": "status",
+  "old_value": "not_started",
+  "new_value": "in_progress",
+  "timestamp": "2026-03-29T14:32:00Z"
+}
+```
+
+Event types: `task_created`, `task_updated`, `task_deleted`, `task_archived`, `activity_logged`, `document_attached`, `document_detached`, `objective_changed`.
+
+### [BM-BUS-NEXUS] Nexus Integration
+
+When a board has visibility `nexus` or `world`, Nexus participants can:
+- Subscribe to `board/{owner}/nexus/tasks` to see task state changes
+- Subscribe to `board/{owner}/nexus/activity` to see work progress
+- Query the Board Manager's MCP via `board_list_boards` to discover visible boards
+- Use `board_status` to read full board state (respecting visibility rules)
+
+The Board Manager does not write to Nexus's governance graph — it publishes bus events. How Nexus consumes those events is Nexus's concern. An Intelligence with Nexus identity can create its own boards and set visibility to share its backlog with other participants.
+
+---
+
+## 8. ComposeApp Configuration
+
+### [BM-CONFIG] board-manager.compose.yaml
+
+```yaml
+app:
+  id: board-manager
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+docker:
+  build: .
+  container_name: board-manager
+  ports:
+    - "8889:8889"
+  volumes:
+    - board-manager-data:/app/data
+  restart: always
+
+namespaces:
+  # Internal state (private)
+  - name: _app/board/tasks
+    state_engine: json
+  - name: _app/board/activity
+    state_engine: json
+  - name: _app/board/documents
+    state_engine: json
+  - name: _app/board/objectives
+    state_engine: json
+  - name: _app/ui/refresh
+    state_engine: binary
+  - name: _app/mcp/command
+    state_engine: json
+
+  # Exported namespaces (configured per-board at runtime)
+  # These are dynamically registered when a board has export: true
+  # Pattern: board/{export_prefix}/tasks, board/{export_prefix}/activity
+```
+
+---
+
+## 9. Deployment
+
+### [BM-DEPLOY] Service Hub Deployment
+
+Deployed via the ComposeIO service hub v2 ([SPEC:CIO-SERVICE-HUB-V2]):
+
+1. Place build context in hub's `/var/lib/composeio/hub/apps/board-manager/`
+2. Push `.compose.yaml` to bus storage or hub apps directory
+3. Deploy: `POST /api/v1/apps/board-manager/deploy`
+4. Hub builds Docker image, starts container with MQTT credentials injected
+5. Board Manager connects external bus to MQTT, registers exported namespaces
+
+### [BM-DEPLOY-MIGRATE] Migration from OPPM Tracker
+
+The existing OPPM tracker's SQLite data migrates to the Board Manager:
+
+1. Copy `tracker.db` from the OPPM Docker volume to the Board Manager volume
+2. Board Manager's `init_db()` detects existing schema and applies migrations (add `owner_id`, `visibility` columns to boards table)
+3. Existing "Maker" board preserved with `visibility: private`, `owner_id` set to David's Nexus identity
+
+---
+
+## 10. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| BM-C1 | Board fits on one screen | Active tasks render without scrolling at reasonable count |
+| BM-C2 | Multiple boards, one visible at a time | Board switcher changes view, URL param persists selection |
+| BM-C3 | Three-tier visibility | Set visibility to nexus → MQTT export. Set to world → MQTT export + world flag queryable. Set to private → no export. |
+| BM-C4 | Private boards stay private | Board with visibility=private → no MQTT messages, not visible to other participants |
+| BM-C5 | Major item accordion | Click expand icon → minor items show/hide |
+| BM-C6 | Minor item activity accordion | Click expand icon → activity entries show/hide |
+| BM-C7 | Add major via popup | Click add in header → popup → submit → task created |
+| BM-C8 | Add minor via popup | Click add on major → popup → submit → minor created |
+| BM-C9 | Document attachments | Attach doc → badge count increments, doc viewable |
+| BM-C10 | Reorder via popup | Click low_priority → reorder page → reorder → persisted |
+| BM-C11 | MCP parity with web UI | Every UI action has a corresponding MCP tool |
+| BM-C12 | Material Symbols icons | All icons render from CDN, no emoji fallbacks |
+| BM-C13 | Deploys on service hub | POST /api/v1/apps/board-manager/deploy → container running |
+| BM-C14 | MQTT transport connected | Exported board changes → MQTT messages published |
+| BM-C15 | SQLite persistence across restarts | Container restart → all data intact |
+| BM-C16 | Activity log append-only | Log entry via MCP → entry appears in Activity tab |
+| BM-C17 | Dark theme (slate/indigo) | Visual inspection: charcoal bg, teal/red/amber status |
+| BM-C18 | Board ownership enforced | Intelligence A cannot modify Intelligence B's board via MCP |
+| BM-C19 | Nexus identity required for board creation | MCP board_manage_board(create) without Nexus identity → rejected |
+| BM-C20 | Visibility controls export | Board set to nexus → appears on MQTT. Set to private → disappears from MQTT. |
+| BM-C21 | Multi-tenant board listing | board_list_boards returns own boards + nexus/world boards from others |
+| BM-C22 | Owner-scoped export namespaces | Two owners with "backlog" board → separate namespace subtrees on MQTT |
+
+---
+
+## Relationships
+
+- depends-on: [SPEC:CIO-APP] (dual-bus architecture, AppModule pattern, export/import)
+- depends-on: [SPEC:CIO-SERVICE-HUB-V2] (deployment target)
+- see-also: [BM-BUS-NEXUS] (board export consumed by Nexus participants)
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-29
+**Status**: Draft

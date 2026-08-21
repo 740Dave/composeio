@@ -1,0 +1,65 @@
+<script type="text/javascript">
+    RED.nodes.registerType('composeio-config', {
+        category: 'config',
+        defaults: {
+            name: { value: 'ComposeIO Bus' },
+            broker: { value: '', type: 'mqtt-broker', required: true },
+            clientId: { value: '' },
+            scope: { value: 'global' },
+            configPath: { value: '' },
+            busStorageUrl: { value: '' }
+        },
+        label: function () {
+            return this.name || 'ComposeIO Bus';
+        }
+    });
+</script>
+
+<script type="text/html" data-template-name="composeio-config">
+    <div class="form-row">
+        <label for="node-config-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-config-input-name" placeholder="ComposeIO Bus">
+    </div>
+    <div class="form-row">
+        <label for="node-config-input-broker"><i class="fa fa-globe"></i> MQTT Broker</label>
+        <input type="text" id="node-config-input-broker">
+    </div>
+    <div class="form-row">
+        <label for="node-config-input-clientId"><i class="fa fa-id-card"></i> Client ID</label>
+        <input type="text" id="node-config-input-clientId" placeholder="nodered-xxxx (auto-generated if empty)">
+    </div>
+    <div class="form-row">
+        <label for="node-config-input-scope"><i class="fa fa-sitemap"></i> Default Scope</label>
+        <select id="node-config-input-scope">
+            <option value="global">global</option>
+            <option value="local">local</option>
+            <option value="remote">remote</option>
+            <option value="auto">auto</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label for="node-config-input-configPath"><i class="fa fa-file-code-o"></i> Config Path</label>
+        <input type="text" id="node-config-input-configPath" placeholder="Path to .compose.yaml (optional)">
+    </div>
+    <div class="form-row">
+        <label for="node-config-input-busStorageUrl"><i class="fa fa-database"></i> Bus Storage URL</label>
+        <input type="text" id="node-config-input-busStorageUrl" placeholder="http://localhost:8420 (optional)">
+    </div>
+</script>
+
+<script type="text/html" data-help-name="composeio-config">
+    <p>Shared configuration node for all ComposeIO nodes. References a standard
+    MQTT broker config node for transport and maintains a namespace registry
+    populated from .compose.yaml files and bus discovery messages.</p>
+
+    <h3>Details</h3>
+    <p><b>MQTT Broker</b>: Select an existing mqtt-broker config node pointed at the
+    ComposeIO MQTT broker (typically localhost:1883 on mqtt-broker.local).
+    This node does NOT manage its own MQTT connection.</p>
+    <p><b>Client ID</b>: Used as the <code>src</code> field in published messages.
+    Auto-generated if left empty.</p>
+    <p><b>Config Path</b>: Optional path to a <code>.compose.yaml</code> file.
+    Namespace definitions and state engines are loaded from this file on startup.</p>
+    <p><b>Bus Storage URL</b>: Optional URL of the ComposeIO bus storage HTTP API
+    for log queries.</p>
+</script>

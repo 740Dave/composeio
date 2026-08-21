@@ -1,0 +1,454 @@
+---
+scope: "MkDocs-based documentation site that renders SMD files as internally hyperlinked, navigable pages with cross-document reference resolution, traceability matrices, and corpus-level graph visualization"
+audience: "Plugin implementers, corpus authors, SMD toolchain maintainers"
+boundary: "IN: MkDocs plugin architecture, SMD parsing for navigation, cross-reference resolution, traceability generation, d3.js graph integration. OUT: SMD authoring tools (see smd-editor agent), linting (see smd-linter agent), corpus analysis (see smd-corpus-analyzer agent)"
+depends-on: [SYSTEM:CIO-SMD-CONVENTIONS]
+status: "Draft — ready for design review"
+created: 2026-03-29
+artifact-readiness: code-generation
+---
+
+# SMD MkDocs Documentation Site [SPEC:SMD-MKDOCS]
+
+> A MkDocs plugin that transforms SMD files into an internally hyperlinked documentation site where every bracketed ID is a clickable link, every relationship is traversable, and the semantic graph that AI reads via grep is visible to humans via browser.
+
+---
+
+## 1. Problem Statement
+
+### [SD-PROBLEM] The Traversal Gap
+
+SMD files are designed for dual readership: human-readable Markdown AND machine-parseable semantic structure. An Intelligence traverses the graph by grepping for `[DP-CIO-5]`, reading the file, following `depends-on` to the next spec, reading relationship sections to find edges. Three tool calls, sub-second.
+
+A human opens the same file in a Markdown renderer and sees flat text. Bracketed IDs are inert strings. `depends-on` lists are text, not links. Relationship sections declare edges that go nowhere. The semantic structure — the thing that makes SMD more than Markdown — is invisible.
+
+- rationale: The gap is not in the format (SMD is well-designed for both audiences) but in the rendering toolchain. Standard Markdown renderers discard the semantic layer because they don't know it exists.
+- constraint: The solution must preserve SMD's property of being valid Markdown. The plugin adds navigation ON TOP of standard rendering, it does not replace it.
+
+### [SD-PROBLEM-PRIMER] Prior Design Work
+
+A design primer exists at `ux_composer/specs/PRIMER-smd-navigator.md` documenting working knowledge from authoring 8 SMD specs and running spec-gap-analyzer against them. That primer informs this spec.
+
+Full knowledge navigator specs exist at `~/icpd/22-knowledge-navigator.smd` (system architecture) and `~/icpd/23-knowledge-navigator-style.smd` (visual design). Those are future scope — this spec builds the foundation they will extend.
+
+- external-ref: Existing d3.js navigator work at `~/icpd/src/navigator/` (Vue/Svelte, partially complete)
+
+---
+
+## 2. Architecture
+
+### [SD-ARCH] MkDocs + Material + Plugin
+
+MkDocs with Material theme provides ~60% of the navigator for free: dark mode, navigation tabs, full-text search, sidebar TOC, admonitions, and native Mermaid diagram support. The custom `mkdocs-smd` Python plugin adds the semantic layer.
+
+- rationale: SMD is valid Markdown by design (SMD v2 specification, Section 2). Building a custom renderer from scratch would reimplement what MkDocs already does. The plugin architecture lets us add semantic navigation without owning the rendering stack.
+- constraint: Python — matches ComposeIO ecosystem. Plugin parser can share code with spec-gap-analyzer and smd-linter in the future.
+
+### [SD-ARCH-PLUGIN] Plugin Structure
+
+```
+mkdocs-smd-plugin/
+  setup.py                    # Package entry point
+  mkdocs_smd/
+    __init__.py               # MkDocs plugin class (hook registration)
+    parser.py                 # Regex extraction: nodes, properties, edges, refs
+    indexer.py                # Cross-document [ID] -> (page, anchor, title, first_property)
+    rewriter.py               # Markdown rewriting: [IDs] -> links, frontmatter -> nav
+    traceability.py           # Relationship chain -> matrix page generation
+    graph_exporter.py         # Emit graph.json for d3.js consumer (phase 2)
+```
+
+- compliance: Plugin MUST register as a standard MkDocs plugin via `entry_points` in setup.py
+- compliance: All state between hooks MUST be stored on the plugin instance, not in module globals
+
+### [SD-ARCH-HOOKS] MkDocs Hook Lifecycle
+
+The plugin uses three MkDocs hooks in sequence:
+
+**`on_files` (build start):** Scan all `.smd` files in the docs directory. Run parser on each. Build the cross-document index. Generate traceability matrix pages. Emit `graph.json`.
+
+**`on_page_markdown` (per page):** Rewrite the Markdown before MkDocs renders it:
+1. Resolve `[BRACKETED-IDS]` in prose to hyperlinks with hover tooltips
+2. Transform frontmatter `depends-on` into navigation links
+3. Transform relationship sections into linked references
+4. Transform causal graph declarations into Mermaid diagrams
+5. Render `scope` and `boundary` as banner admonitions
+
+**`on_page_context` (per page):** Inject "referenced by" data — reverse-lookup from the index showing every page/node that references nodes defined on this page.
+
+- compliance: Hook execution order MUST be: on_files (once) -> on_page_markdown (per page) -> on_page_context (per page). The indexer must complete before any rewriting begins.
+
+---
+
+## 3. Parser
+
+### [SD-PARSER] Regex Extraction
+
+SMD is deliberately regex-friendly. The parser extracts five element types using patterns from the SMD v2.0 specification:
+
+| Element | Pattern | Yields |
+|---------|---------|--------|
+| Document header | `^#\s+(.+)\s+\[([A-Z][A-Z0-9]+):([A-Z0-9_\-]+)\]$` | title, doc_type, doc_id |
+| Node header | `^(#{2,4})\s+\[([A-Z][A-Z0-9_\-]+)\]\s+(.+)$` | level, node_id, title |
+| Property | `^-\s+([a-z][a-z0-9_\-]*)\s*:\s+(.+)$` | key, value |
+| Bracketed reference | `\[([A-Z][A-Z0-9_\-]+)\]` | ref_id |
+| Causal declaration | `\[([A-Z][A-Z0-9_\-]+)\]\s+(CAUSES\|ENABLES\|PREVENTS\|CASCADES_TO\|PRECONDITION_FOR)\s+\[([A-Z][A-Z0-9_\-]+)\]` | source, edge_type, target |
+
+- compliance: Parser MUST handle YAML frontmatter via PyYAML or ruamel.yaml, not regex
+- compliance: Parser MUST build section hierarchy from heading levels (h2 contains h3 contains h4) to infer CONTAINS edges
+- compliance: Parser MUST extract the first property value for each node (used in hover tooltips)
+
+### [SD-PARSER-SCOPE] What the Parser Does NOT Do
+
+The parser extracts structure for navigation. It does NOT:
+- Validate SMD format correctness (that is the smd-linter's job)
+- Analyze semantic content quality (that is smd-corpus-analyzer's job)
+- Modify source .smd files (read-only)
+
+---
+
+## 4. Indexer
+
+### [SD-INDEX] Cross-Document Reference Index
+
+The indexer builds a dict mapping every bracketed ID to its location and metadata:
+
+```python
+index: dict[str, NodeEntry]
+# where NodeEntry contains:
+#   page: str          — relative path to the MkDocs page
+#   anchor: str        — HTML anchor (slugified node ID)
+#   title: str         — node title text
+#   first_property: str — first property value (for tooltip)
+#   doc_type: str      — SPEC, AMEND, SYSTEM
+#   doc_id: str        — document-level ID
+```
+
+- compliance: Index MUST be built from ALL `.smd` files before any page rewriting occurs
+- compliance: Index MUST handle ID collisions by preferring the definition site (node header) over reference sites (prose mentions)
+- compliance: Document-level IDs (`SPEC:CIO-BUS-PROTOCOL`) and node-level IDs (`BP-MSG-FIELDS`) MUST both be indexed
+
+### [SD-INDEX-REVERSE] Reverse Reference Index
+
+A second index maps each node ID to the set of pages/nodes that reference it:
+
+```python
+reverse_index: dict[str, list[ReferenceEntry]]
+# where ReferenceEntry contains:
+#   page: str          — page containing the reference
+#   node_id: str|None  — enclosing node (if reference is inside a node section)
+#   context: str       — brief surrounding text
+```
+
+- rationale: Powers the "referenced by" sidebar on each page. When reading `[DP-CIO-5]`, you can see everywhere it's cited across the corpus.
+
+---
+
+## 5. Rewriter
+
+### [SD-REWRITE] Markdown Transformation Rules
+
+The rewriter modifies page Markdown before MkDocs renders it to HTML. Transformations in order:
+
+### [SD-REWRITE-REFS] Bracketed ID Resolution
+
+Every `[BRACKETED-ID]` in prose that exists in the index becomes a hyperlink:
+
+```markdown
+<!-- Input -->
+See [DP-CIO-5] for the rationale.
+
+<!-- Output -->
+See [DP-CIO-5](../00-composeio-design-principles/#dp-cio-5 "Explicit State Engine — State machines are defined in config, not code"){.smd-ref} for the rationale.
+```
+
+- compliance: References to IDs NOT in the index MUST be left as-is (they may be forward references to unloaded documents, not errors)
+- compliance: Self-references (ID referencing its own definition on the same page) MUST link to the anchor but not open a new page
+- compliance: References inside code blocks and code fences MUST NOT be rewritten
+
+### [SD-REWRITE-FRONTMATTER] Frontmatter Navigation
+
+`depends-on` entries become a navigation banner at the top of the page:
+
+```markdown
+!!! abstract "Dependencies"
+    [SPEC:CIO-BUS-PROTOCOL](../01-composeio-bus-protocol/) | [SPEC:CIO-APP](../08-composeio-app-framework/)
+```
+
+`scope` becomes the page subtitle. `boundary` becomes a collapsed admonition.
+
+- compliance: Frontmatter MUST be consumed by the plugin and NOT rendered as raw YAML
+
+### [SD-REWRITE-RELATIONSHIPS] Relationship Section Links
+
+Relationship section entries become hyperlinked:
+
+```markdown
+<!-- Input -->
+- depends-on: [SPEC:CIO-BUS-PROTOCOL] (transport interface)
+
+<!-- Output -->
+- **depends-on**: [SPEC:CIO-BUS-PROTOCOL](../01-composeio-bus-protocol/ "ComposeIO Bus Protocol"){.smd-rel} — transport interface
+```
+
+### [SD-REWRITE-CAUSAL] Causal Graph Visualization
+
+Causal graph sections with `[A] CAUSES [B]` declarations are transformed into Mermaid diagrams:
+
+```markdown
+<!-- Input -->
+[DP-CIO-1] CAUSES [CXC-DUAL-BUS]
+[CXC-DUAL-BUS] ENABLES [CXC-CROSSOVER]
+
+<!-- Output -->
+```mermaid
+graph LR
+    DP-CIO-1["DP-CIO-1"] --> |CAUSES| CXC-DUAL-BUS["CXC-DUAL-BUS"]
+    CXC-DUAL-BUS["CXC-DUAL-BUS"] --> |ENABLES| CXC-CROSSOVER["CXC-CROSSOVER"]
+    click DP-CIO-1 "../00-composeio-design-principles/#dp-cio-1"
+    click CXC-DUAL-BUS "../page/#cxc-dual-bus"
+    click CXC-CROSSOVER "../page/#cxc-crossover"
+`` `
+```
+
+- compliance: Mermaid node labels MUST be the bracketed ID (not the full title — too long for graph readability)
+- compliance: Mermaid click handlers MUST navigate to the node definition page/anchor
+- rationale: Material for MkDocs renders Mermaid natively as interactive SVG. No custom JS needed.
+
+### [SD-REWRITE-REFBY] Referenced-By Sidebar
+
+Each page gets an injected section (via `on_page_context` or appended Markdown) showing reverse references:
+
+```markdown
+---
+## Referenced By
+| ID | From | Context |
+|----|------|---------|
+| [DP-CIO-5](link) | node-red-integration | "Per [DP-CIO-5], state validation..." |
+| [DP-CIO-5](link) | widget-renderers | "Implements [DP-CIO-5] via RendererContext" |
+```
+
+---
+
+## 6. Traceability
+
+### [SD-TRACE] Relationship Chain Matrices
+
+The traceability generator scans the parsed corpus for directional relationship chains and produces auto-generated matrix pages.
+
+### [SD-TRACE-PATTERN] Chain Detection
+
+ComposeIO specs follow a recurring pattern: Design Principles → Derived Constraints → Anti-patterns. The generator detects these chains from:
+
+1. **Explicit causal edges**: `[DP-CIO-1] CAUSES [CXC-DUAL-BUS]`
+2. **Property references**: `- derives-from: [DP-CIO-1]` or `- see-also: [DP-CIO-1]`
+3. **Structural inference**: Anti-pattern sections that reference the principle they guard against
+
+### [SD-TRACE-MATRIX] Matrix Output
+
+Generated as a Markdown page (added to MkDocs nav):
+
+```markdown
+# Traceability: Design Principles
+
+| Principle | Derived Constraints | Anti-patterns | Specs Referencing |
+|-----------|-------------------|---------------|-------------------|
+| [DP-CIO-1](link) | [CXC-DUAL-BUS](link), [BP-SCOPE](link) | [AP-CXC-1](link) | 3 specs |
+| [DP-CIO-5](link) | [CS-STATE](link) | [AP-CXC-3](link) | 5 specs |
+| [DP-CIO-7](link) | — | — | 1 spec |
+```
+
+- rationale: Makes coverage gaps visible at a glance. A principle with no derived constraints is aspirational. A constraint with no anti-pattern has no guardrail. A principle referenced by zero specs is disconnected from the corpus.
+- compliance: Matrix pages MUST be regenerated on every build (not cached)
+- compliance: Empty cells (no constraints, no anti-patterns) MUST be rendered as `—` not hidden — gaps are information
+
+### [SD-TRACE-CUSTOM] Extensible Chain Types
+
+The traceability generator is not hardcoded to the principles → constraints → anti-patterns chain. Any typed relationship chain can produce a matrix:
+
+- `SPEC → AMEND` (which amendments modify which specs)
+- `depends-on` chains (transitive dependency graph as a table)
+- `CAUSES/ENABLES` chains (causal propagation paths)
+
+- compliance: The generator MUST accept chain type configuration, not assume a fixed set
+
+---
+
+## 7. d3.js Graph Explorer (Phase 2)
+
+### [SD-GRAPH] Corpus-Level Visualization
+
+- phase: 2
+- status: specified, not yet delegation-ready
+
+The graph explorer provides a "zoom out" view that per-page Mermaid diagrams cannot: seeing 50+ nodes and their cross-document relationships at once as an interactive force-directed graph.
+
+### [SD-GRAPH-DATA] Graph Export
+
+The plugin's indexer emits a `graph.json` file alongside the MkDocs site containing:
+
+```json
+{
+  "nodes": [
+    {"id": "DP-CIO-1", "title": "Bus-Centric Architecture", "doc": "design-principles", "type": "principle"},
+    {"id": "CXC-DUAL-BUS", "title": "Dual Bus Architecture", "doc": "composer-arch", "type": "constraint"}
+  ],
+  "edges": [
+    {"source": "DP-CIO-1", "target": "CXC-DUAL-BUS", "type": "CAUSES"},
+    {"source": "SPEC:CIO-RENDERERS", "target": "SPEC:CIO-BUS-PROTOCOL", "type": "depends-on"}
+  ]
+}
+```
+
+- compliance: graph.json MUST be emitted during `on_files` alongside the site build
+- compliance: Node types MUST be inferred from prefix registry (principles, constraints, anti-patterns, modules, etc.)
+
+### [SD-GRAPH-UI] Interactive Graph Page
+
+A dedicated page in the MkDocs site loads `graph.json` and renders via d3.js force-directed layout:
+
+- **Click node** → navigate to the MkDocs page/anchor for that node
+- **Hover node** → tooltip with title + first property
+- **Filter by edge type** — show only CAUSES, only depends-on, only CONTAINS, etc.
+- **Filter by document** — isolate one spec's nodes and their external edges
+- **Color by node type** — principles, constraints, anti-patterns, modules visually distinct
+- **Zoom/pan** — standard d3.js interaction
+
+### [SD-GRAPH-EXISTING] Existing Work
+
+Partial d3.js implementation exists at `~/icpd/src/navigator/` (Vue/Svelte, d3, dagre). Phase 2 should evaluate this work for reuse before building from scratch.
+
+- constraint: The graph page must integrate cleanly into the MkDocs site (as a custom page or iframe), not require a separate server
+- see-also: Full knowledge navigator specs at `~/icpd/22-knowledge-navigator.smd` and `~/icpd/23-knowledge-navigator-style.smd` for future feature scope
+
+---
+
+## 8. Knowledge Navigator (Future)
+
+### [SD-KNAV] Full Interactive Navigation
+
+- phase: future
+- status: scope-setting only — see `~/icpd/22-knowledge-navigator.smd` for full spec
+
+The knowledge navigator extends the d3.js graph with:
+
+- View modes: Mind Map, Hierarchy, Flow, Change Impact
+- Composable overlays: Test Coverage, Contradictions, Retirement candidates
+- Role-gated access (different views for different audiences)
+- Backend API for live corpus queries
+
+This is specified in `~/icpd/22-knowledge-navigator.smd` and `~/icpd/23-knowledge-navigator-style.smd`. Those specs become actionable once phase 1 (rewriter + traceability) and phase 2 (d3.js graph) are proven.
+
+- constraint: Phase 1 and 2 MUST be designed so the knowledge navigator can extend them, not replace them
+
+---
+
+## 9. Site Configuration
+
+### [SD-SITE-CONFIG] MkDocs Configuration
+
+```yaml
+site_name: ComposeIO Specification Corpus
+theme:
+  name: material
+  palette:
+    scheme: slate          # Dark mode default
+  features:
+    - navigation.tabs      # Top-level spec categories as tabs
+    - navigation.sections  # Collapsible sidebar sections
+    - search.highlight     # Highlight search terms in results
+    - content.tooltips     # Native tooltip support
+
+plugins:
+  - search
+  - mkdocs-smd            # The custom plugin
+
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - admonition
+  - pymdownx.details
+  - attr_list             # For .smd-ref CSS class on rewritten links
+```
+
+### [SD-SITE-NAV] Navigation Structure
+
+Auto-generated from the docs directory structure. Each `.smd` file becomes a page. Suggested grouping:
+
+```yaml
+nav:
+  - Platform:
+    - spec/00-composeio-design-principles.smd
+    - spec/01-composeio-bus-protocol.smd
+    - spec/02-composeio-config-schema.smd
+    - ...
+  - Composer:
+    - ux_composer/specs/00-...smd
+    - ...
+  - Amendments:
+    - spec/01-amendment-*.smd
+    - spec/02-amendment-*.smd
+  - Traceability:
+    - _generated/traceability-principles.md
+    - _generated/traceability-dependencies.md
+  - Graph: graph.md        # Phase 2
+```
+
+- compliance: Navigation grouping SHOULD be configurable in mkdocs.yml, not hardcoded in the plugin
+
+---
+
+## 10. Compliance Summary
+
+### [SD-COMPLIANCE] Phase 1 Requirements
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| SD-C1 | Every bracketed ID in prose resolves to a hyperlink if the target exists in the index | Click any `[ID]` → navigates to definition |
+| SD-C2 | Hover on a resolved reference shows title + first property | Tooltip appears within 200ms |
+| SD-C3 | `depends-on` frontmatter rendered as navigation links | Links at top of page, all clickable |
+| SD-C4 | Relationship section entries are hyperlinked | Both `[ID]` references in relationship lines are clickable |
+| SD-C5 | Causal graph sections produce Mermaid diagrams | Diagram renders, nodes are clickable |
+| SD-C6 | Referenced-by section appears on pages with inbound references | Table shows all pages referencing nodes on this page |
+| SD-C7 | Traceability matrix auto-generated for principle chains | Matrix page exists in nav, all cells linked |
+| SD-C8 | Traceability gaps visible as empty cells | Principles with no constraints show `—` |
+| SD-C9 | References in code blocks are NOT rewritten | Code samples preserve original text |
+| SD-C10 | Unresolved references left as-is | No broken links for IDs not in corpus |
+| SD-C11 | Full-text search works across all SMD pages | Material search returns results from any page |
+| SD-C12 | Site builds from SMD files without modifying them | Source .smd files unchanged after build |
+
+### [SD-COMPLIANCE-P2] Phase 2 Requirements
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| SD-C13 | graph.json emitted on build | File exists in site output |
+| SD-C14 | Graph page renders all nodes and edges | Visual inspection: node count matches index |
+| SD-C15 | Click graph node navigates to MkDocs page | Navigation occurs on click |
+| SD-C16 | Filter by edge type works | Toggling filter hides/shows edges |
+| SD-C17 | Filter by document works | Toggling filter isolates nodes |
+
+---
+
+## Relationships
+
+- depends-on: [SYSTEM:CIO-SMD-CONVENTIONS] (prefix registry for parser)
+
+## External References
+
+- [SMD v2.0 Specification](~/.claude/zerocontext/00-semantic-markdown-specification-v2.smd) — authoritative format reference for parser implementation
+- [Design Primer](ux_composer/specs/PRIMER-smd-navigator.md) — working knowledge from authoring 8 SMD specs
+- [Knowledge Navigator Spec](~/icpd/22-knowledge-navigator.smd) — full system architecture (future scope)
+- [Knowledge Navigator Style](~/icpd/23-knowledge-navigator-style.smd) — visual design tokens (future scope)
+- [d3.js Navigator](~/icpd/src/navigator/) — existing partial implementation (phase 2 input)
+- [MkDocs Material](https://squidfunk.github.io/mkdocs-material/) — theme documentation
+- [pymdownx.superfences](https://facelessuser.github.io/pymdown-extensions/extensions/superfences/) — Mermaid integration
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-29
+**Status**: Draft — ready for design review
+**Intelligence**: Claude Opus 4.6 (1M context)

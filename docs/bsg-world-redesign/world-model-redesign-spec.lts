@@ -1,0 +1,543 @@
+---
+scope: "The BSG world-model rebuild as an ENTITY-MODEL spec: a typed Entity/Ship/Body taxonomy with hierarchical sub-ship inventories replacing the World god-object field-scatter + the motion-record dataclasses; own-ship as a first-class Ship; a System = star Body + N coordinate-bearing planet Bodies; per-entity bus namespaces (`ship/<id>/*`, `system/<id>/planet/<pid>/*`) that keep `dradis/contacts`+`dradis/bodies` as the sensed/projected display frame; a versioned in-repo ship-definition catalog; and the fog-of-war published-vs-derived invariant preserved verbatim. This spec formalizes docs/bsg-world-redesign/world-model-redesign-notes.md and records the architect's resolved forks (1-4, pending David) + one genuinely-open fork (5)."
+audience: "David (fork ratification); the ComposeUX architect; the world-engine rebuild builder; the reactive render tier"
+boundary: "IN: the entity taxonomy (Entity/Ship/Body/sub-ship/inventory/FleetGroup), own-ship-as-Ship, the System+Planets coordinate model, the cartesian-canonical/polar-at-boundary frame, the per-entity namespace scheme + state-engine discipline, the fog-of-war invariant restated, the ship-definition catalog schema, and the resolved forks (1-4) + the open fork (5). OUT: the PHYSICS NUMBERS (positions, velocities, fuel/delta-v budgets, ship roster stats, missile kinematics, picket geometry, civilian-box dimensions) — those are [SPEC:CXC-DPM]'s and are REFERENCED here, not restated; the sensor/command/event/loop seams — KEPT verbatim ([SPEC:CXC-DRADIS-GAME], [SPEC:CXC-GM-SEAM]) and named as the reuse surface, not re-specified; campaign/scoring/win-lose (still open)."
+not-this: "Not a loop/seam rebuild — the sensor fog-of-war, the three-tier command seam, the Event/crisis abstraction, the dradis narrow-waist contract, and the director-agnostic loop are the reasons the rebuild is TRACTABLE and ride it almost untouched (see [CXC-WM-REUSE]). Not a physics spec — where a number hangs on the entity model it is cited to [SPEC:CXC-DPM] (spec-11), never duplicated. Not a from-scratch rewrite — this is an entity-model rebuild of a well-factored state machine + physics substrate. Not a committed change — the forks below are architect recommendations PENDING David's ratification; fork 5 is deliberately left OPEN."
+depends-on: [SPEC:CXC-DRADIS-GAME, SPEC:CXC-DPM]
+domain: PLT.CUX
+bsg-migration-note: "DESIGN-CAPTURE (2026-07-26): authored INTO the composeio repo at docs/bsg-world-redesign/world-model-redesign-spec.lts as a capture artifact alongside its source notes (world-model-redesign-notes.md). It formalizes a rebuild of `~/maker/bsg` `world/` and is written AS a bsg-domain sibling of spec/10-dradis-game.lts / 11-dradis-physical-model.lts / 12-gm-command-seam.lts — it RELOCATES to `~/maker/bsg/spec/` (as e.g. `13-world-model.lts`) WHEN the rebuild actually starts; bsg is NOT touched by this capture pass. It follows the established CXC-* sub-family node-prefix convention with a NEW family [CXC-WM-*] (World Model) — the same pattern by which CXC-GAME-/CXC-DPM-/CXC-GM- extend the registered CXC- prefix — KEPT pending the DEFERRED bundled rename (domain PLT.CUX->bsg + register a bsg profile + CXC-*->BSG-*). Intra-bsg refs to the sibling specs use their node IDs ([SPEC:CXC-DRADIS-GAME], [SPEC:CXC-DPM], [SPEC:CXC-GM-SEAM] and their [CXC-GAME-*]/[CXC-DPM-*]/[CXC-GM-*] nodes); those resolve in `~/maker/bsg/spec/`, so while this file lives in composeio docs they are qualified-but-out-of-corpus references (valid per [plt.cio:SYSTEM:CIO-SMD-CONVENTIONS] [CONV-XREF]/[CONV-XREF-NODE], warning-not-error). Cross-repo PLATFORM refs use the cross-domain form [plt.cux:SPEC:...] (composeux) / [plt.cio:SPEC:...] (composeio). The dradis contract is `contract/dradis-contacts.md`."
+confidentiality: internal-only
+artifact-readiness: system-design
+prefix-note: "New ID family [CXC-WM-*] (World Model / entity-object model) — flagged for registration in the composeio profile / 99-composeio-conventions.smd [CONV-PREFIX], same as [CXC-GAME-*], [CXC-DPM-*], and [CXC-GM-*] extended [CXC-*] before it."
+status: "DESIGN-CAPTURE — the entity-model redesign settled at the architect tier, forks 1-4 architect-decided PENDING David's ratification, fork 5 deliberately OPEN. Formalizes the design review in world-model-redesign-notes.md. NOT built; NOT yet relocated to bsg."
+created: 2026-07-26
+---
+# BSG World Model — the Entity-Model Rebuild [SPEC:CXC-WM]
+
+> The BSG `world/` today is a well-factored **state machine + physics substrate** whose DATA MODEL is
+> hotwired for a single-ship, single-planet demo: state lives as fields on a `World` god-object, as
+> ad-hoc *motion-record* dataclasses (`ViperContact`, `TrueContact`), and as a frozen single-planet
+> `System`. It will not carry the multi-ship / sub-ship-inventory / Raptor future. This spec is the
+> **entity-model rebuild** — a typed `Entity`/`Ship`/`Body` taxonomy with hierarchical sub-ship
+> inventories, own-ship as a first-class Ship, a System with N coordinate-bearing planets, and
+> per-entity bus namespaces — done BEHIND the existing publish contract so the display, the sensor
+> fog-of-war, the command seam, and the director loop ride it almost untouched ([CXC-WM-REUSE]). It is
+> NOT a physics rewrite: where a number hangs on an entity, it is cited to [SPEC:CXC-DPM] (spec-11),
+> never duplicated. The forks below (1-4) are architect recommendations **pending David's ratification**;
+> fork 5 (campaign persistence) is left **OPEN** for David's campaign-design call.
+
+---
+
+## 1. Intent
+
+### [CXC-WM-INTENT] The Rebuild is an Entity-Model Rebuild, not a Loop/Seam Rebuild
+
+- definition: replace the `World` field-scatter + the motion-record dataclasses + the frozen
+  single-planet `System` with a small typed entity hierarchy ([CXC-WM-ENTITY]) whose objects have
+  **stable, lifetime identity**, real **position + velocity**, and — for ships — an **inventory**
+  container that can hold sub-ship Ships. Everything the current model cannot express (a Viper that
+  persists across a jump with its fuel/damage; Galactica owning a typed hangar; a system with several
+  positioned planets; a basestar owning its raider squadrons) becomes expressible because there is
+  finally an object to hang it on.
+- root-gap-addressed: this dissolves the root gap (L1 in the notes) — *there is no first-class entity
+  model at all* — from which every other gap is a symptom (own-ship-as-god-object-fields L2; flat
+  ephemeral Vipers L3; no spatial coordinates L4; World-rebuilt-on-jump L5; string-typed ships S8).
+- what-stays: the crown jewels stay — the sensor fog-of-war authority, the three-tier command seam,
+  the Event/crisis abstraction, the `dradis/contacts`+`dradis/bodies` narrow waist, and the
+  director-agnostic loop. They are named as the reuse surface in [CXC-WM-REUSE] and are why this is a
+  rebuild, not a rewrite.
+- physics-layer-relationship: [SPEC:CXC-DPM] (spec-11) already specifies the richer *physics/units*
+  target — absolute positions + velocities, per-ship delta-v/fuel budgets, the full ship roster, Raptor
+  picket doctrine, the aggregate civilian fleet. This spec is the *entity/object* layer UNDER those
+  numbers: spec-11 says WHAT NUMBERS a ship has; this spec says WHAT A SHIP IS as an object and where it
+  lives on the bus. Several spec-11 migration steps are blocked today purely because there is nowhere to
+  hang the numbers; the entity model unblocks them ([CXC-WM-CATALOG], [CXC-WM-SHIP], [CXC-WM-FLEETGROUP]).
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-REUSE] The Reuse-by-Reference Surface — What the Rebuild EXTENDS, Never Forks
+
+- definition: the rebuild MUST reuse the following existing contracts by REFERENCE and MUST NOT fork or
+  reimplement them. Each is the notes' "KEEP verbatim" appendix made a normative dependency:
+
+  | surface | reused contract (by ref) | how the entity model touches it |
+  |---|---|---|
+  | fog-of-war identification + threat | [CXC-GAME-SENSOR] (`sensor.py` `SensorModel`, the 0.5 LS resolve + neutral->hostile flip) | `SensorModel.sense` reads a Cylon **entity** instead of a `TrueContact` dataclass — same authority, new input type ([CXC-WM-FOG]) |
+  | three-tier command seam | [CXC-GAME-CMDSEAM] (`game/cmd/*`+`cylon/cmd/*`) + [SPEC:CXC-GM-SEAM] (`gm/cmd/*`) | new verbs are ADDITIVE within the closed-but-extensible pattern; `gm/cmd/spawn_entity` gains a real entity to instantiate from the catalog ([CXC-WM-CATALOG]) |
+  | Event / crisis abstraction | `events.py` `Event`/`EventManager`, `crises.py` catalog | orthogonal to entities — untouched |
+  | the narrow-waist display contract | `contract/dradis-contacts.md` (`dradis/contacts`+`dradis/bodies`) | widened ADDITIVELY per [CXC-DPM-BUS] (spec-11 §14) — old displays ignore new fields; never broken |
+  | the director-agnostic loop | [CXC-GAME-LOOP] (`sim.py` — the world executes, never decides) | the loop advances physics + clocks; the entity set is the new substrate it advances |
+  | the genuine-unknown guarantee | [CXC-GM-GROUNDTRUTH] (directors read filtered `view_fn`, never ground truth) | Cylon entities are world-private ground truth; the same filter that guards the god-object guards them ([CXC-WM-FOG]) |
+
+- discipline: this is the DX narrow-waist / reuse-by-reference principle ([plt.cux:SPEC:CXC-EMBED-REACTIVE]'s
+  contract discipline). A rebuild that reimplemented any row above would pay the integration cost twice
+  and risk drifting the fog-of-war authority, which MUST remain single-homed.
+- part-of: [SPEC:CXC-WM]
+
+---
+
+## 2. The Entity Taxonomy
+
+### [CXC-WM-ENTITY] Entity — the Addressable Base with Stable Lifetime Identity
+
+- definition: `Entity` is the base type every world object specializes. It carries: **`id`** (stable for
+  the object's LIFETIME — assigned once, never regenerated per jump), **`kind`** (`ship`|`body`|`group`),
+  **`display_type`** (the icon vocabulary the contract already knows — `viper`/`raptor`/`basestar`/
+  `planet`/... , NOT the object's true class), **`position`**, and **`velocity`**. It replaces the two
+  failure modes in the current model: (a) state smeared as fields on the `World` god-object, and (b)
+  *motion-record* dataclasses (`ViperContact`, `TrueContact`) that are a motion snapshot masquerading as
+  an identity.
+- stable-identity-requirement: an Entity's `id` MUST be stable across a jump and across a
+  deliberative<->tactical transition. The current model's per-jump random `VIPER NNN` relabeling and the
+  per-engagement label counters (reset because `World` is rebuilt) are DEFECTS this dissolves — a
+  designation is a property of the entity, stable for its lifetime, not a counter on the world (S9).
+- position-and-velocity: every Entity has a real `position` + `velocity` in the canonical frame
+  ([CXC-WM-COORD]); a Body's velocity may be ~0, an aggregate's is its centroid velocity. This is the
+  substrate spec-11's sublight physics integrates over ([CXC-DPM-SUBLIGHT]).
+- what-it-is-not: an Entity is NOT a display blip. The blip is the sensed/projected PROJECTION of an
+  entity through `dradis/contacts` ([CXC-WM-FOG]); the entity is the ground truth the engine holds.
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-SHIP] Ship(Entity) — a Hull with Inventory, Fuel, Weapons, FTL, Faction
+
+- definition: `Ship` specializes `Entity` with a hull's state: **`class_id`** (-> a [CXC-WM-CATALOG]
+  definition), **`faction`** (`colonial`|`cylon`|`civilian`), **`heading`**, **`ftl`** (per-ship recharge
+  state, per-class character), **`inventory`** ([CXC-WM-INVENTORY]), and **`status`**
+  (`aloft`|`aboard`|`damaged`|... — an `enum` state, see [CXC-WM-STATE-ENGINE]). Position/velocity/heading
+  are the sublight physics; the roster numbers (accel, delta-v, weapons, ftl character) live on the
+  ship's `class_id` definition, not inline.
+- carriers-own-sub-ships: a carrier-capable Ship's `inventory` holds a list of sub-ship Ships
+  ([CXC-WM-SUBSHIP]). "Carrier" is a class property, not a subtype — Galactica and a Basestar are both
+  Ships whose class permits a sub-ship inventory.
+- motion-is-placement-not-identity: a Ship's transient in-system tactical state (the old `ViperContact`
+  `mode`/`mode_t`/transit snapshots) is a **tactical placement** ON the ship, reset on arrival — NOT the
+  ship's identity, which persists ([CXC-WM-PERSIST]).
+- realizes-physics: `Ship.position`/`.velocity`/`.heading`/`.ftl` are the containers for spec-11's
+  sublight + FTL physics ([CXC-DPM-SUBLIGHT], [CXC-DPM-FTL]); the engine COMPUTES derived quantities
+  (time-to-cross, CAP orbit speed, missile ToF) from them rather than storing them.
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-BODY] Body(Entity) — Star / Planet / Asteroid: Positioned, No Inventory, No FTL
+
+- definition: `Body` specializes `Entity` for terrain: a star, a planet, an asteroid. It has a
+  `position` and a `body_type` (the existing `dradis/bodies` type vocabulary), and it has NO inventory,
+  NO faction, and NO ftl. A Body is an addressable object with a real coordinate — replacing the current
+  model's `(bearing, range)` polar scalars pinned to own-ship, where **range is a time-driven closing
+  animation** (`_planet_range` interpolates from arrival to hold range over dwell), not a position.
+- range-becomes-projection: with a real `position`, a body's `range_ls` is a PROJECTION off the frame
+  ([CXC-WM-COORD]) — the planet "sweeps inward" because own-ship closes on a real coordinate, not because
+  a timer decrements a scalar. This is the L4 fix and aligns the arrival geometry ([CXC-GAME-JUMP]) with
+  spec-11 §8 ([CXC-DPM-SUBLIGHT]).
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-SUBSHIP] Sub-Ships ARE Ships in a Carrier's Inventory
+
+- definition: the player's launchable craft — Viper Mk-II, Viper Mk-VI, Raptor — are `Ship`s held in a
+  carrier's `inventory`, **each its own object with its own inventory** (fuel + weapons/ordnance +
+  status). A sub-ship is not a special type; it is a Ship whose `class_id` is a fighter/utility class and
+  which is currently owned by a carrier's inventory. This dissolves L3 (flat ephemeral `ViperContact`),
+  L5 (world-rebuilt-on-jump), and S9 (labels reset on rebuild) together.
+- individual-vs-aggregate: sub-ships of the player's launchable craft are INDIVIDUAL objects (fork 2,
+  decided on [CXC-WM-INVENTORY]); mass civilian and enemy-swarm populations are an aggregate
+  [CXC-WM-FLEETGROUP], NOT per-hull.
+- persists-across-jump: a sub-ship's fuel/damage/loadout persist across a jump — only its in-system
+  tactical placement (`mode`, transit) resets ([CXC-WM-PERSIST]). Whether it persists across a full
+  campaign cycle is the OPEN fork 5 ([CXC-WM-OPEN-PERSISTENCE]).
+- renders-as-a-contact: a sub-ship aloft still renders through `dradis/contacts` as a friendly `viper`/
+  `raptor` blip — adding a sub-ship class adds a catalog row + (maybe) an icon type, and ZERO display
+  logic ([CXC-WM-NAMESPACE], [CXC-WM-FOG]). This preserves the standing-CAP behavior ([CXC-GAME-VIPER-CAP]).
+- cylon-symmetry: the Cylon side has the identical flat->hierarchy move — a Basestar `Ship` owns its
+  raider-squadron sub-units (as individual Ships or a swarm FleetGroup per fork 2). `TrueContact` ground
+  truth becomes Cylon Ship entities; `SensorModel.sense` reads the entity ([CXC-WM-FOG]).
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-INVENTORY] The Inventory Container — Fuel, Weapons, and (for Carriers) Sub-Ships
+
+- definition: a Ship's `inventory` is the container the whole rebuild exists to make possible: **fuel/
+  tylium**, **weapons/ordnance**, and — for a carrier — a **list of sub-ship Ships**, each of which has
+  its OWN inventory (recursively). The container shape is decided by fork 2 (below): a `list[Ship]` of
+  individual craft for the player's launchable fighters/Raptors, and a single aggregate
+  [CXC-WM-FLEETGROUP] for mass civilian/enemy populations.
+- sub-ships-instantiated-from-classes: inventory sub-ships are instantiated by the loader from their
+  `class_id` against the catalog ([CXC-WM-CATALOG]) — an inventory is a set of live Ship instances, not a
+  count. Rollup counts (`vipers_mk2: {aloft, aboard}`) are DERIVED over the instances for the convenience
+  aggregate channels (C12), not the source of truth.
+- change: "Sub-ship granularity resolved: the player's launchable craft (Viper Mk-II, Viper Mk-VI, Raptor) are INDIVIDUAL Ship objects, each with its own inventory (fuel + weapons + status); civilians and mass enemy swarms are an AGGREGATE FleetGroup (centroid + box-width + count). This decides the inventory container shape — a `list[Ship]` for own launchable craft, a FleetGroup for populations."
+- context_for_change:
+  - prior_state: "David's directive was 'N Mk-II Vipers, N Mk-VI Vipers, N Raptors — EACH sub-ship its own object with its own inventory.' Meanwhile spec-11 §12 models the CIVILIAN fleet as an aggregate box (not per-hull), and the current Cylon side already uses `raider_squadron` (a squadron blip, not per-raider). Read literally, 'each its own object' and 'aggregate box' appear to conflict."
+  - reasoning: "They do not conflict — they apply to DIFFERENT populations. The player individually tasks, fuels, loses, and rearms their OWN launchable craft, so those need per-hull identity + inventory (a lost-and-not-rearmed Viper is a specific airframe). Nobody individually tasks 70 civilians or a raider swarm; those are a collective whose gameplay-relevant state is centroid + width + count + attrition ([CXC-DPM-FLEET]). So the split is: INDIVIDUAL Ships for the player's launchable craft (Vipers/Raptors), an aggregate FleetGroup for civilians and mass enemy swarms."
+  - rejected_alternative: "Model everything per-hull (70 civilian Ships, every raider a Ship). Rejected: it multiplies entities the player never touches individually, bloats the contact set, and buys no gameplay — spec-11 §12 already chose the aggregate for exactly this reason. Also rejected: model everything as aggregates/counts (the current `viper_count` scalar) — that is the very flatness the rebuild removes for the player's craft, which DO need per-hull inventory."
+  - counter_argument: "A named high-value civilian (Colonial One, a tanker with its own jump-charge) wants individual identity, so 'civilians are always an aggregate' is too absolute."
+  - counter_response: "The taxonomy already supports it: a named high-value civilian is simply an individual `Ship(faction=civilian)` placed alongside the FleetGroup that aggregates the anonymous remainder. Individual-vs-aggregate is a per-population MODELING choice the taxonomy permits both ways, not a global switch — spec-11 §12 flags 'a few named high-value civilians as distinct blips' as its own OPEN question, and this taxonomy leaves that door open without deciding it here."
+  - invalidating_assumption: "That the player tasks their own launchable craft individually but never tasks civilians/swarm-enemies individually. If a future mode let the player micro-task individual raiders or civilians (e.g. escort a specific tanker as a first-class order), that population graduates from FleetGroup to individual Ships — the taxonomy already allows it, so this is a modeling reclassification, not a rebuild."
+  - implication: "The inventory container is `list[Ship]` for own launchable craft + a FleetGroup for populations; [CXC-WM-FLEETGROUP] is a first-class Entity kind; the Cylon `raider_squadron` stays a swarm (FleetGroup or squadron-Ship), while individual named hostiles (a specific Basestar) are individual Ships."
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-OWNSHIP] Own-Ship (Galactica) is Just a Ship
+
+- definition: Galactica is **a `Ship` with `faction=colonial`** and a rich sub-ship inventory (the CAP +
+  the hangar) — NOT a scatter of `World` fields. `own_heading`, `thrust_left`/`thrust_right`,
+  `civilians`, `vipers`, `jump_state`, and the per-engagement label counters move ONTO the Galactica Ship
+  (or become derived rollups). This dissolves L2 (the P1 god-object smell) and makes own-ship the
+  exemplar Ship that proves the hierarchy — the ship that owns the CAP and the hangar inventory.
+- published-on-its-own-namespace: own-ship state publishes on `ship/galactica/*` ([CXC-WM-NAMESPACE]),
+  retiring the lone `game/own_heading` scalar via a dual-publish alias during migration (notes §4 step 2).
+  Because you OWN your fleet, publishing your own ship's truth is not a fog-of-war leak ([CXC-WM-FOG]).
+- keeps-the-center-pin: own-ship has a REAL position but KEEPS the scope-center pin as a DISPLAY
+  convention (fork 4, decided on [CXC-WM-CENTERPIN]) — so the published-heading invariant's rationale
+  survives intact.
+- helm-retargets: the throttle helm (today a vendored shortcut driving `World.thrust_left/right` ->
+  `game/own_heading`, C10) retargets `ship/galactica/thrust` — it remains a peer publisher, exactly as
+  its own docstring already concedes it should.
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-FLEETGROUP] FleetGroup(Entity) — the Aggregate Box for Populations
+
+- definition: `FleetGroup` specializes `Entity` for a population modeled as ONE object with geometry:
+  a **centroid** (position), a **box-width**, a live **count**, and (per spec-11 §12) a **spacing floor**
+  + **straggler ceiling**. It renders as a shaded box or 1-3 `CIVILIAN FLEET` blips, not per-ship. It is
+  the container for the civilian fleet and for mass enemy swarms (a raider squadron), per fork 2
+  ([CXC-WM-INVENTORY]).
+- realizes-fleet-physics: FleetGroup is the entity-model home for [CXC-DPM-FLEET]'s aggregate-with-extent
+  — the ~10-20 km box, the constantly-spooled emergency-jump protocol, and the interposition geometry.
+  The numbers are spec-11's; the container is this node's.
+- civilians-were-a-scalar: this replaces `World.civilians` (an int) + the strategic civilian concern
+  (S6) with one shared vocabulary both layers project — strategic = coarse zoom (count/attrition),
+  tactical = fine zoom (centroid/box/spacing).
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-WORLD] World Stops Being a God-Object — a Thin Entity Container
+
+- definition: `World` becomes a THIN container, not a state bag: the `current_system`, the set of present
+  Entities (own fleet + contacts + bodies), and the genuinely-global engagement clocks (detection, jump
+  sequencing). Own-ship fields move to the Galactica Ship ([CXC-WM-OWNSHIP]); per-engagement counters
+  become entity properties ([CXC-WM-ENTITY]); the frozen `System` scalars become a System object
+  ([CXC-WM-SYSTEM]).
+- unifies-the-two-worlds: the single Entity model is the shared vocabulary that STRATEGIC
+  (`StrategicState`) and TACTICAL (the sim) both project (S6) — `civilians` int + `tylium` reserve project
+  onto the entity model (a civilian FleetGroup; per-ship fuel deriving from / feeding the strategic tylium
+  reserve) rather than living as two parallel state bags.
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-PERSIST] Entities Persist Across a Jump — Only Placement Resets
+
+- definition: the per-jump `World`-wholesale-rebuild (`_arrive` does `self.world = World(...)`, L5) is
+  replaced by: **persistent entities STAY; only their in-system tactical placement + the transient
+  contact set reset.** An entity that must survive a jump does not get hand-threaded through a
+  constructor by field name — it simply persists, because it has a home of its own.
+- what-persists-vs-resets: PERSISTS across a jump — every own-fleet Ship's identity, inventory (which
+  Vipers are aboard, which are damaged, fuel remaining, loadout). RESETS on arrival — each sub-ship's
+  in-system placement (`mode`/transit), the sensed contact set, the per-system body layout. This is the
+  prerequisite for sub-ship inventory to mean anything: a damaged Viper carried through a jump is the
+  validating test (notes §4 step 3).
+- scope-boundary: persistence ACROSS A SINGLE JUMP is REQUIRED and decided here. Persistence across a
+  full deliberative<->tactical CAMPAIGN cycle (a Viper lost in engagement N stays gone in N+1) is the
+  OPEN fork 5 ([CXC-WM-OPEN-PERSISTENCE]) — the entity model MUST be built to allow EITHER.
+- part-of: [SPEC:CXC-WM]
+
+---
+
+## 3. The System + Planets Coordinate Model
+
+### [CXC-WM-SYSTEM] System = a Star Body + `planets: [Body]`, Each Positioned
+
+- definition: `System` becomes: an **`id`**, its **galaxy position** (`x_ly`, `y_ly` — KEPT; they already
+  work and drive jump distance), a **`star`** Body, and a **list `planets: [Body]`**, each with an
+  in-system `position`. This replaces the frozen (`frozen=True`) single-star + single-planet dataclass
+  whose bodies are bearing scalars (`star_bearing`, `planet_bearing`), not objects. Multiple planets fall
+  out for free; the `_bodies_frame` builder iterates `planets` instead of emitting one.
+- galaxy-becomes-data: the module-level `GALAXY` list of 8 systems becomes DATA loaded alongside the ship
+  catalog ([CXC-WM-CATALOG]) rather than Python literals — the same config-over-code move.
+- galaxy-vs-system-frames-are-separate-axes: `x_ly`/`y_ly` are GALAXY-level coordinates used only for
+  inter-system jump distance (light-YEARS); in-system positions are the canonical LS/km frame
+  ([CXC-WM-COORD]). These are distinct axes — jumps are ly between systems; everything inside a system is
+  LS/km (spec-11 [CXC-DPM-OPEN] Q14 flags this exact clarity point).
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-COORD] Canonical Cartesian `(x,y)`; Project to Polar at the Contract Boundary
+
+- definition: an entity's canonical stored `position` is **CARTESIAN `(x, y)` in LS** (with velocity a
+  cartesian vector). Polar `(bearing, range_ls)` — what the own-ship-centered scope and the
+  `dradis/contacts`/`dradis/bodies` contract carry — is a **PROJECTION computed at the contract/display
+  boundary**, not the stored form. This is fork 1 (decided, pending David).
+- projection-boundary: the engine integrates physics in cartesian; the publish step projects each
+  entity's `(x,y)` (relative to own-ship's `(x,y)`) to the polar `(bearing, range_ls)` the contract
+  already defines. The narrow waist ([contract/dradis-contacts.md]) is UNCHANGED in shape — `range` was
+  already LS ([CXC-DPM-BUS], spec-11 §14); only its source (a projection, not a stored scalar) changes.
+- change: "In-system position is stored CARTESIAN `(x,y)` LS as the canonical frame; polar `(bearing, range)` is projected at the contract/display boundary. This replaces the current polar-scalar-pinned-to-own-ship store where `range` is a time-driven closing animation, not a coordinate."
+- context_for_change:
+  - prior_state: "The current model has no `(x,y)` for anything within a system — own-ship, star, planet, and contacts are all polar `(bearing, range)` relative to an implicit own-ship-at-center origin, and `range` is synthesized by time-driven interpolation (`_planet_range`/`_star_range`/`_cylon_range`), not derived from a position. spec-11 §8 [CXC-DPM-SUBLIGHT] leaves the frame as 'polar OR cartesian.'"
+  - reasoning: "Cartesian generalizes cleanly to the whole target: multiple bodies at real positions, velocity vectors and Newtonian integration, 'fly to body X' orders, a Raptor picket sphere at real 1-5 LS positions, and own-ship-not-at-center later. Polar is a trivial projection OFF a cartesian store (bearing = atan2, range = hypot), so nothing is lost at the display; but deriving cartesian from a polar store as objects move and interact is where polar gets expensive and ambiguous. Store the general frame; project the specific view."
+  - rejected_alternative: "Keep polar `(bearing, range)` as the canonical store (a trivial migration since the contract is already polar). Rejected: multi-body interaction, velocity, and fly-to all want a metric cartesian space; a polar store forces per-interaction conversions and cannot cleanly express a second planet or an off-center own-ship. The display being polar is not a reason to STORE polar — projection is cheap."
+  - counter_argument: "Storing cartesian adds a projection step on every publish and a code-shape cost, when the display and the entire existing contract are polar — YAGNI until multi-body actually ships."
+  - counter_response: "The projection is a few lines at the one publish boundary (the narrow waist already localizes it), and the cost is paid ONCE there rather than at every physics interaction. The multi-planet System ([CXC-WM-SYSTEM]) and spec-11's positioned picket/roster are IN the target, not hypothetical, so the cartesian frame is load-bearing now, not speculative. It is also the enabler for own-ship-off-center later without a store migration."
+  - invalidating_assumption: "That the target genuinely needs multi-body metric interactions (velocity, fly-to, positioned picket, >1 planet). If the game deliberately stayed single-planet + own-ship-pinned forever, a polar store would suffice and this cartesian move would be over-engineering — reopen only if the multi-body target is abandoned."
+  - implication: "Entities store `(x,y)` + velocity vector; the publish step projects to polar for the contract (unchanged shape, additive `velocity`/`emcon`/`light_lag_s` per [CXC-DPM-BUS]); the time-driven `_planet_range`/`_cylon_range` animations are replaced by real position+velocity->range projection ([CXC-WM-BODY]); own-ship position feeds the center-pin projection ([CXC-WM-CENTERPIN])."
+- part-of: [SPEC:CXC-WM]
+
+---
+
+## 4. The Per-Entity Namespace Scheme
+
+### [CXC-WM-NAMESPACE] `ship/<id>/*` + `system/<id>/planet/<pid>/*` — Define-Once, Render-Many
+
+- definition: the bus gains per-entity GROUND-TRUTH / own-fleet namespaces, generalizing today's
+  `game/own_heading`. The dradis renders ANY ship/body from its namespace; adding a ship class adds a
+  catalog row + maybe an icon, and ZERO display logic. The scheme:
+
+  | namespace | carries | example |
+  |---|---|---|
+  | `ship/<id>/heading`,`/thrust`,`/position`,`/status`,`/ftl_ready` | own-fleet ship state | `ship/galactica/heading`, `ship/galactica/ftl_ready` |
+  | `ship/<id>/inventory/<class>` | carrier rollup counts (aloft/aboard) | `ship/galactica/inventory/vipers_mk2` |
+  | `ship/<subid>/position`,`/fuel`,`/mode`,`/status` | per sub-ship, where individually tracked | `ship/viper-017/fuel`, `ship/viper-017/mode` |
+  | `system/<id>/star/position` | the system star | `system/caprica/star/position` |
+  | `system/<id>/planet/<pid>/position`,`/type` | each planet (multiple fall out free) | `system/caprica/planet/1/position` |
+
+- ground-truth-vs-projected-split: the `ship/*` (own-fleet) and `system/*` (bodies) namespaces are
+  GROUND-TRUTH / own-fleet channels. The SENSED view of hostiles still rides `dradis/contacts` +
+  `dradis/bodies` through the SensorModel — the crucial fog-of-war split ([CXC-WM-FOG]). Own-fleet is
+  publishable on `ship/*` because you own it; Cylon ground truth is NEVER published on a
+  `ship/cylon-*/*` channel a display can read.
+- aggregate-rollups-kept: `game/threat`, `game/civilians`, `game/vipers`, `game/alert`, `game/jump`,
+  `game/ftl_ready` remain as DERIVED convenience summaries over the per-entity namespaces (C12) — kept,
+  but now rollups, not the sole representation.
+- define-once: the dradis widget subscribes `dradis/contacts`+`dradis/bodies` and renders any blip from
+  `{id, type, bearing, range, allegiance, label}` — it does NOT grow per ship type. This is the same
+  narrow-waist define-once the platform already proves ([plt.cux:SPEC:CXC-ER-DRADIS]).
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-STATE-ENGINE] State-Engine Discipline — `json` for Free-Form, NEVER `binary`
+
+- definition: per the ComposeIO state-engine model (`binary`/`enum`/`continuous`/`json`), the per-entity
+  namespaces MUST choose engines by value shape: headings/positions/fuel are `continuous`/`json`; a
+  Ship `status` (`aloft`|`aboard`|`damaged`) is an `enum` engine; a `position` (a coordinate pair) is
+  `json`. **Free-form ids, `class_id`s, status strings, and selection targets MUST use the `json` engine,
+  never `binary`.**
+- sigabrt-hazard: this is a load-bearing safety rule, not style. An empty or out-of-domain string fed
+  into a strict `binary` engine aborts the process (SIGABRT). Free-form/open-domain values (ship ids,
+  class ids, selection targets) are exactly the values that can be empty or novel at runtime — they MUST
+  ride `json`. Only a genuinely closed two-state value may be `binary`.
+- part-of: [SPEC:CXC-WM]
+
+---
+
+## 5. The Fog-of-War Invariant — Preserved Verbatim
+
+### [CXC-WM-FOG] Published-vs-Derived: Ground Truth World-Private, Reaches a Display Only via `SensorModel.sense`
+
+- definition: THE load-bearing invariant, preserved VERBATIM across the rebuild. Its rationale is
+  unchanged; only the INPUT TYPE to the sensor moves (a Cylon entity instead of a `TrueContact`
+  dataclass). The rules:
+  - **Cylon ground truth stays world-private.** Cylon Ship entities (position/inventory/faction) live in
+    the world's entity set but are NEVER published on a `ship/cylon-*/*` ground-truth channel a display
+    can read. They reach a display ONLY through `SensorModel.sense` -> `dradis/contacts`, exactly as today.
+    The 0.5 LS resolve threshold + the neutral->hostile flip stay the SINGLE authority in `SensorModel`
+    ([CXC-GAME-SENSOR]).
+  - **Own-fleet is publishable** on `ship/galactica/*` and own sub-ships — publishing your OWN ship's
+    truth is not a fog-of-war leak (already true of `game/own_heading`).
+  - **Heading rule intact.** Contact heading is display-DERIVED from screen-space motion
+    ([plt.cux:SPEC:CXC-ER-DRADIS-MOTION]) — still true for off-center contacts, now backed by real
+    velocities. Own-ship heading is PUBLISHED ([CXC-GAME-OWNSHIP]) because own-ship at center is not
+    motion-derivable — now on `ship/galactica/heading` instead of `game/own_heading`; only the namespace
+    name moves.
+  - **Define-once holds.** A Raptor, a Mk-VI, a basestar are all just contacts with a `type` icon; adding
+    a ship class adds ZERO display logic ([CXC-WM-NAMESPACE]).
+- guarded-by-the-same-filter: because directors read the world ONLY through their `view_fn`
+  ([CXC-GM-GROUNDTRUTH]), a Cylon entity in the entity set cannot leak — the same architecture that made
+  the god-object's `basestar_system` safe makes the Cylon entity safe. The GM writing a Cylon entity's
+  ground truth ([CXC-GM-VOCAB] `spawn_entity`/`set_ground_truth`) still reaches a non-GM director only via
+  the sensor path.
+- unchanged-authority: `SensorModel.sense` now reads an entity's true `class_id`/position instead of a
+  `TrueContact`'s fields — the fog-of-war AUTHORITY is unchanged, just its input type (notes §4 step 6).
+- part-of: [SPEC:CXC-WM]
+
+### [CXC-WM-CENTERPIN] Own-Ship Keeps the Scope-Center Pin as a DISPLAY Convention
+
+- definition: own-ship (Galactica) has a REAL `position` in the canonical frame ([CXC-WM-COORD]), but the
+  display KEEPS the scope-center pin (own-ship at range 0) as a DISPLAY CONVENTION — the polar projection
+  ([CXC-WM-COORD]) is taken relative to own-ship's position, so she renders at center regardless of her
+  absolute coordinate. This is fork 4 (decided, pending David).
+- change: "Own-ship has a real position (it integrates like any entity) but the scope-center pin is KEPT as a display convention; the published-heading invariant's rationale survives intact."
+- context_for_change:
+  - prior_state: "Today own-ship is scope-center-by-convention with NO `(x,y)` at all — center IS the model. spec-11 §8 pins Galactica as 'effectively stationary' (sub-pixel drift over an engagement). With the entity model she gains a real position; the question is whether the display USES it (she can drift off-center on a zoomed scope) or keeps the center-pin."
+  - reasoning: "Keeping the center-pin as a DISPLAY convention (project polar relative to own-ship's position) preserves the published-heading invariant's rationale EXACTLY: own-ship at center has zero motion in her own frame, so a display cannot motion-derive her heading, so it is published ([CXC-GAME-OWNSHIP]). She still integrates a real position (physics is consistent, interposition works), but the SCOPE stays own-ship-centric. Letting her visibly drift off-center would complicate the invariant for a marginal benefit at this stage."
+  - rejected_alternative: "Use the real position on the display so own-ship drifts off-center on a zoomed scope. Rejected FOR NOW: it complicates the published-heading rationale (own-ship would gain derivable motion in some frames) for little gameplay gain; spec-11 already models her as effectively stationary (tens of km over a 10^6 km engagement — sub-pixel)."
+  - counter_argument: "If own-ship has a real position, not using it on the display is storing state you throw away — and it blocks a future zoomed-scope where seeing her drift matters."
+  - counter_response: "The position is NOT thrown away — it drives interposition, integration, and the polar projection origin; only the CENTERING choice is a convention. Because the position exists, a future mode CAN choose to un-pin her by changing one display convention, with no model change — the entity model already supports it. Keeping the pin now is a display decision, reversible for free later, not a model limitation."
+  - invalidating_assumption: "That own-ship's engagement-scale drift stays sub-pixel on the scopes in use (spec-11's 'effectively stationary'). If a scope/zoom ever made her drift visually significant, or a mode needed her visibly maneuvering across the scope, un-pin her — the real position is already there, so it is a display-convention change, not a rebuild."
+  - implication: "The polar projection ([CXC-WM-COORD]) is taken relative to own-ship's `(x,y)`; own-ship renders at center; her heading stays published on `ship/galactica/heading` ([CXC-WM-FOG]); the invariant's rationale is untouched."
+- part-of: [SPEC:CXC-WM]
+
+---
+
+## 6. The Ship-Definition Catalog
+
+### [CXC-WM-CATALOG] A Versioned In-Repo `ShipClass` Catalog — the SDR / Config-Over-Code Move
+
+- definition: ship/airframe types stop being bare strings scattered across code (`"basestar"`,
+  `"raider_squadron"`, `viper_count`) and become **data**: a `ShipClass` catalog keyed by `class_id`
+  (Galactica, Viper Mk-II, Viper Mk-VI, Raptor, Basestar, Raider Squadron, Civilian), carrying the
+  spec-11 §7 roster numbers (size, accel, delta-v/fuel, weapons, ftl character). A registry/loader
+  instantiates Ships from classes. This is the SDR move — push ship specificity out of firmware (Python
+  literals) into configuration (S8). It is the natural home for the [CXC-DPM-ROSTER] numbers.
+- schema (per class): `class_id`, `display_name`, `faction`, `display_type` (icon), `size`, `accel`,
+  `delta_v`/`fuel_capacity`, `weapons` (loadout spec), `ftl` (character: pinpoint vs hop, max_jump_ly,
+  recharge character — [CXC-DPM-FTL]/[CXC-DPM-RAPTOR]), `carrier` (whether it may hold a sub-ship
+  inventory), and `default_inventory` (what a fresh instance is stocked with). The catalog is the input;
+  a live Ship instance ([CXC-WM-SHIP]) is the output.
+- change: "Ship definitions are stored as a versioned IN-REPO YAML catalog NOW (simple, git-reviewable); a doc://ships/* document_store backing comes LATER when a GM authors ships at runtime. This is fork 3."
+- context_for_change:
+  - prior_state: "The roster is Python literals today (`_spawn_cylons` hardcodes a basestar + a raider squadron; `GALAXY` is a module list; `viper_count` is a config scalar). The SDR/config-over-code instinct says externalize to data — but WHERE: an in-repo versioned catalog, or `doc://ships/*` in document_store (which gives a query API + hot-editability + runtime GM authoring)?"
+  - reasoning: "The fork is really about WHO authors ships and WHEN. Today only devs author ships, at build time — an in-repo YAML catalog is simpler, reviewable in git, and has no runtime dependency. document_store's value (a query API, hot-editability, a GM authoring a Pegasus at runtime) is not needed until a GM authors ships live. So: repo catalog NOW; migrate to doc-store-backed LATER when runtime ship-authoring is a real requirement. The loader abstraction is the same either way — only the backing store changes."
+  - rejected_alternative: "Go straight to doc://ships/* in document_store now. Rejected: it adds a runtime store dependency + a query API for a capability (runtime GM ship-authoring) nothing yet needs; git review of a YAML catalog is simpler and sufficient for dev-authored ships. Premature."
+  - counter_argument: "Building the repo catalog now means a second migration later when the GM needs runtime authoring — pay twice."
+  - counter_response: "The loader interface is designed store-agnostic (instantiate a Ship from a `class_id` against a catalog SOURCE), so swapping an in-repo YAML source for a doc-store source is a source swap behind the loader, not a rebuild — the same define-once discipline the command seam uses. The 'pay twice' is a thin adapter, and the repo catalog is useful in its own right (git-reviewable ship balance) even after the doc store arrives, as spec-11's roster is a review artifact."
+  - invalidating_assumption: "That ships are dev-authored at build time for the foreseeable rebuild, and runtime GM ship-authoring is a LATER need. If runtime GM ship-authoring (`gm/cmd/spawn_entity` of a NOVEL class a GM designed live) becomes a near-term requirement, move to doc://ships/* sooner — the loader abstraction makes it a source swap."
+  - implication: "A versioned in-repo YAML ship-definition catalog + a store-agnostic loader; the `GALAXY` catalog becomes data alongside it ([CXC-WM-SYSTEM]); `gm/cmd/spawn_entity` ([CXC-GM-VOCAB]) instantiates from the catalog; the doc-store backing is a future source swap, not in this pass."
+- part-of: [SPEC:CXC-WM]
+
+---
+
+## 7. Design Forks — Resolved (Pending David) + the One Open Fork
+
+The five real forks from the design review (notes §5). Forks 1-4 are RESOLVED at the architect tier
+(each recorded as an embedded `change`/`context_for_change` block on the node it is load-bearing for)
+and are **PENDING David's ratification**. Fork 5 is deliberately **OPEN** — a campaign-design call for
+David, captured below and NOT resolved.
+
+| # | fork | resolution (architect, pending David) | recorded on |
+|---|---|---|---|
+| 1 | in-system coordinate frame | store CARTESIAN `(x,y)`; project polar at the contract boundary | [CXC-WM-COORD] |
+| 2 | sub-ship granularity | INDIVIDUAL Ships for the player's launchable craft; AGGREGATE FleetGroup for civilians + mass swarms | [CXC-WM-INVENTORY] |
+| 3 | ship-definition store | versioned IN-REPO YAML catalog now; doc://ships/* in document_store later | [CXC-WM-CATALOG] |
+| 4 | own-ship position | real position, but KEEP the scope-center pin as a display convention | [CXC-WM-CENTERPIN] |
+| 5 | campaign persistence scope | **OPEN — David's campaign-design call** (below) | [CXC-WM-OPEN-PERSISTENCE] |
+
+### [CXC-WM-OPEN-PERSISTENCE] OPEN FORK 5 — Sub-Ship Persistence Across a Full Campaign Cycle
+
+- decision: OPEN — deliberately NOT resolved. This is a genuine campaign-design fork for David, not a
+  code choice. Do NOT pick one and bury it.
+- the-question: once sub-ships persist across a JUMP ([CXC-WM-PERSIST], required + decided), do they
+  persist across a full deliberative<->tactical CAMPAIGN cycle? I.e. is a Viper lost in engagement N gone
+  in engagement N+1 (fuel/damage carried, rearm only at a strategic action), or does each engagement
+  start from a fresh loadout?
+- option-A-campaign-persistent: a lost Viper stays lost; fuel/damage/loadout carry across the whole
+  campaign; rearm/repair/replace happens only at a strategic action (tied to the strategic tylium/resource
+  economy, S6). Higher stakes, attrition matters, ties the tactical entity model to the strategic layer.
+- option-B-per-engagement-reset: each engagement starts from the ship's default inventory; loss is
+  tactical-only and does not carry to the next engagement. Lower stakes, simpler strategic coupling.
+- what-is-decided-regardless: the entity model MUST be built to allow EITHER — sub-ship inventory
+  persists across a jump either way ([CXC-WM-PERSIST]); the open question is only whether that persistence
+  extends across the strategic cycle boundary. The persistence mechanism is the same; what differs is
+  where the reset boundary sits.
+- invalidating_assumption: "That the entity model's jump-persistence ([CXC-WM-PERSIST]) is independent of the campaign-cycle reset boundary — i.e. building for either option costs the same in the entity model. If campaign-persistence turned out to require a fundamentally different inventory-ownership model (e.g. a strategic-layer ship registry that OWNS tactical instances), this stops being a pure campaign-design call and reopens as an entity-model fork — but on current analysis the tactical entity model supports both with only the reset-boundary differing."
+- ties-to: the strategic layer (S6, `StrategicState` tylium/resource economy) and [CXC-WM-PERSIST];
+  resolve alongside the campaign/scoring/win-lose design (still open in [CXC-GAME-LOOP]).
+- status: OPEN (David's call — awaiting campaign-design decision)
+- part-of: [SPEC:CXC-WM]
+
+---
+
+## 8. Compliance (testable criteria the rebuild must satisfy)
+
+| id | requirement | testable criterion |
+|----|-------------|--------------------|
+| CXC-WM-C1 | First-class entity base | Every world object (ship, body, sub-ship, group) is an `Entity` with a stable lifetime `id` + `position` + `velocity`; no game state lives as a bare field on the `World` god-object. A grep of the rebuilt `world/` finds no own-ship/fleet scalar smeared on `World`. |
+| CXC-WM-C2 | Own-ship is a Ship | Galactica is a `Ship(faction=colonial)` owning the CAP + hangar inventory; `own_heading`/`thrust_left`/`thrust_right`/`civilians`/`vipers`/`jump_state` are NOT `World` fields; `ship/galactica/*` is published (with `game/own_heading` a deprecating dual-publish alias during migration). |
+| CXC-WM-C3 | Sub-ship inventory (individual) | A carrier `Ship` owns an inventory of individual sub-ship `Ship`s (Viper Mk-II/Mk-VI, Raptor), EACH with its own fuel + weapons + status; a sub-ship has a stable `id` and `class_id`, not a per-jump random label. |
+| CXC-WM-C4 | Aggregate FleetGroup | Civilians and mass enemy swarms are a `FleetGroup` (centroid + box-width + count + spacing bounds), not per-hull; a named high-value civilian MAY be modeled as an individual `Ship` alongside it. |
+| CXC-WM-C5 | System + N planets | A `System` has a `star` Body + `planets: [Body]` each with an in-system position; >1 planet is supported; the frozen single-planet-bearing dataclass is gone; `_bodies_frame` iterates `planets`. |
+| CXC-WM-C6 | Cartesian canonical, polar projected | An entity's stored `position` is cartesian `(x,y)` LS; the published `(bearing, range_ls)` is projected at the contract boundary relative to own-ship; the time-driven `_planet_range`/`_cylon_range` animations are replaced by position+velocity->range projection. |
+| CXC-WM-C7 | Per-entity namespaces, define-once | Any ship/body renders from `ship/<id>/*` + `system/<id>/planet/<pid>/*`; adding a ship class adds a catalog row + maybe an icon and ZERO display logic; `dradis/contacts`+`dradis/bodies` stay the projected display frame. |
+| CXC-WM-C8 | State-engine discipline | Free-form `id`s, `class_id`s, status strings, and selection targets use the `json` engine, never `binary` (the SIGABRT hazard); `status` is `enum`; `position` is `json`; headings/fuel are `continuous`/`json`. |
+| CXC-WM-C9 | Persist across a jump | On jump-arrival, persistent entities STAY and only in-system placement + the transient contact set reset (no wholesale `World(...)` rebuild that hand-carries fields); a Viper marked `damaged` before a jump is still `damaged`, with its fuel, after it. |
+| CXC-WM-C10 | Fog-of-war preserved verbatim | Cylon entities are world-private ground truth, reaching a display ONLY via `SensorModel.sense` -> `dradis/contacts` (no `ship/cylon-*/*` ground-truth channel a display reads); own-fleet is publishable on `ship/*`; own-ship heading is published because center is not motion-derivable; the 0.5 LS resolve + neutral->hostile flip remain single-homed in `SensorModel`. |
+| CXC-WM-C11 | Data-driven ship catalog | `ShipClass` definitions load from a versioned in-repo YAML catalog via a store-agnostic loader; a Ship instance is instantiated from its `class_id`; roster numbers are the [CXC-DPM-ROSTER] values, carried on the class not inline in code; `GALAXY` is likewise data. |
+| CXC-WM-C12 | Seams ride unchanged | The three-tier command seam, the Event/crisis abstraction, and the director loop are unchanged in kind; new command verbs (e.g. `game/cmd/launch`, `game/cmd/order`, `gm/cmd/spawn_entity`) are additive; `SensorModel.sense` reads an entity instead of a `TrueContact` with no change to its authority. |
+
+---
+
+## Relationships
+
+### Semantic
+
+[SPEC:CXC-WM] DEPENDS_ON [SPEC:CXC-DRADIS-GAME]
+[SPEC:CXC-WM] DEPENDS_ON [SPEC:CXC-DPM]
+[SPEC:CXC-WM] RELATED_TO [SPEC:CXC-GM-SEAM]
+[CXC-WM-REUSE] UPHOLDS [SPEC:CXC-DRADIS-GAME]
+[CXC-WM-REUSE] UPHOLDS [CXC-GM-GROUNDTRUTH]
+[CXC-WM-REUSE] RELATED_TO [plt.cux:SPEC:CXC-EMBED-REACTIVE]
+[CXC-WM-SHIP] IS_A [CXC-WM-ENTITY]
+[CXC-WM-BODY] IS_A [CXC-WM-ENTITY]
+[CXC-WM-FLEETGROUP] IS_A [CXC-WM-ENTITY]
+[CXC-WM-SUBSHIP] IS_A [CXC-WM-SHIP]
+[CXC-WM-OWNSHIP] IS_A [CXC-WM-SHIP]
+[CXC-WM-INVENTORY] PART_OF [CXC-WM-SHIP]
+[CXC-WM-INVENTORY] DEPENDS_ON [CXC-WM-CATALOG]
+[CXC-WM-SUBSHIP] USES [CXC-WM-INVENTORY]
+[CXC-WM-SUBSHIP] RELATED_TO [CXC-GAME-VIPER-CAP]
+[CXC-WM-SHIP] REALIZES [CXC-DPM-SUBLIGHT]
+[CXC-WM-SHIP] USES [CXC-WM-CATALOG]
+[CXC-WM-OWNSHIP] RELATED_TO [CXC-GAME-OWNSHIP]
+[CXC-WM-FLEETGROUP] REALIZES [CXC-DPM-FLEET]
+[CXC-WM-WORLD] RELATED_TO [CXC-GAME-LOOP]
+[CXC-WM-PERSIST] RELATED_TO [CXC-GAME-JUMPSEQ]
+[CXC-WM-SYSTEM] USES [CXC-WM-BODY]
+[CXC-WM-SYSTEM] DEPENDS_ON [CXC-WM-COORD]
+[CXC-WM-SYSTEM] RELATED_TO [CXC-GAME-JUMP]
+[CXC-WM-BODY] DEPENDS_ON [CXC-WM-COORD]
+[CXC-WM-COORD] REALIZES [CXC-DPM-SUBLIGHT]
+[CXC-WM-COORD] RELATED_TO [plt.cux:SPEC:CXC-ER-DRADIS-PROJ]
+[CXC-WM-NAMESPACE] USES [CXC-WM-ENTITY]
+[CXC-WM-NAMESPACE] RELATED_TO [plt.cux:SPEC:CXC-ER-DRADIS]
+[CXC-WM-STATE-ENGINE] RELATED_TO [CXC-WM-NAMESPACE]
+[CXC-WM-FOG] UPHOLDS [CXC-GAME-SENSOR]
+[CXC-WM-FOG] UPHOLDS [CXC-GAME-OWNSHIP]
+[CXC-WM-FOG] UPHOLDS [CXC-GM-GROUNDTRUTH]
+[CXC-WM-FOG] RELATED_TO [plt.cux:SPEC:CXC-ER-DRADIS-MOTION]
+[CXC-WM-CENTERPIN] RELATED_TO [CXC-WM-FOG]
+[CXC-WM-CENTERPIN] UPHOLDS [CXC-GAME-OWNSHIP]
+[CXC-WM-CENTERPIN] DEPENDS_ON [CXC-WM-COORD]
+[CXC-WM-CATALOG] REALIZES [CXC-DPM-ROSTER]
+[CXC-WM-CATALOG] RELATED_TO [CXC-GM-VOCAB]
+[CXC-WM-OPEN-PERSISTENCE] RELATED_TO [CXC-WM-PERSIST]
+[CXC-WM-OPEN-PERSISTENCE] RELATED_TO [CXC-GAME-LOOP]
+[CXC-WM-INTENT] RELATED_TO [CXC-DPM-MIGRATE]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-07-26
+**Updated**: 2026-07-26
+**Status**: DESIGN-CAPTURE — the entity-model redesign settled at the architect tier, formalizing
+`docs/bsg-world-redesign/world-model-redesign-notes.md`. The entity taxonomy ([CXC-WM-ENTITY]/[CXC-WM-SHIP]/
+[CXC-WM-BODY]/[CXC-WM-SUBSHIP]/[CXC-WM-INVENTORY]/[CXC-WM-FLEETGROUP]), own-ship-as-a-Ship ([CXC-WM-OWNSHIP]),
+the thin-World + jump-persistence ([CXC-WM-WORLD]/[CXC-WM-PERSIST]), the System+Planets coordinate model
+([CXC-WM-SYSTEM]/[CXC-WM-COORD]), the per-entity namespace scheme + state-engine discipline
+([CXC-WM-NAMESPACE]/[CXC-WM-STATE-ENGINE]), the fog-of-war invariant restated verbatim
+([CXC-WM-FOG]/[CXC-WM-CENTERPIN]), and the ship-definition catalog ([CXC-WM-CATALOG]) are settled. Forks
+1-4 are architect-decided PENDING David's ratification (recorded as embedded change/context_for_change
+blocks on [CXC-WM-COORD], [CXC-WM-INVENTORY], [CXC-WM-CATALOG], [CXC-WM-CENTERPIN]); fork 5 is deliberately
+OPEN ([CXC-WM-OPEN-PERSISTENCE]). NOT built; NOT relocated to bsg. Reuses [SPEC:CXC-DRADIS-GAME] +
+[SPEC:CXC-GM-SEAM] seams verbatim ([CXC-WM-REUSE]); references [SPEC:CXC-DPM] for all physics numbers.
+**Intelligence**: Claude Opus 4.8 (1M context)
+**Architect — ratifications flagged**:
+(1) **new node-prefix sub-family `CXC-WM-`** (World Model) — a sub-family of the registered `CXC-` prefix,
+the same pattern by which `CXC-GAME-`/`CXC-DPM-`/`CXC-GM-` already extend it; needs a [CONV-PREFIX] row in
+`99-composeio-conventions.smd` + `99-composeio-profile.yaml` (registry edit out of this capture pass's
+scope — bundled with the other deferred `CXC-*` sub-family registrations).
+(2) **the four resolved forks (1-4)** are architect RECOMMENDATIONS pending David's ratification —
+cartesian-canonical ([CXC-WM-COORD]), individual-craft/aggregate-swarm granularity ([CXC-WM-INVENTORY]),
+in-repo-YAML-catalog-now ([CXC-WM-CATALOG]), keep-the-center-pin ([CXC-WM-CENTERPIN]). Each carries its
+`invalidating_assumption`; David ratifies or reopens.
+(3) **the open fork 5** ([CXC-WM-OPEN-PERSISTENCE]) — campaign-cycle persistence of sub-ship inventory — is
+a David campaign-design call left explicitly UNRESOLVED; the entity model is built to allow either option.
+Resolve alongside campaign/scoring/win-lose (still open in [CXC-GAME-LOOP]).
+(4) **relationship verbs** used here are the corpus-registered set (`DEPENDS_ON`/`RELATED_TO` core;
+`USES`/`EXEMPLIFIES`/`REALIZES`/`UPHOLDS`/`DOCUMENTS` domain) plus core `IS_A`/`PART_OF`; `IS_A` is used for
+the type hierarchy (Ship IS_A Entity) — flag if the corpus prefers `SPECIALIZES`.
+(5) whether the four embedded fork `change` blocks should each spawn a companion DELTA per SPEC §8, or
+whether the in-node blocks suffice (the same open question flagged on specs 10/11/12).
+(6) **cross-corpus refs while captured in composeio**: intra-bsg refs ([SPEC:CXC-DPM], [CXC-GAME-*],
+[CXC-DPM-*], [CXC-GM-*]) resolve in `~/maker/bsg/spec/`, so they are out-of-corpus while this file lives in
+composeio docs — valid per [CONV-XREF]/[CONV-XREF-NODE] (qualified-registered-doctype OK; bare registered-
+prefix node refs are warnings-not-errors). They resolve on relocation to `~/maker/bsg/spec/`.

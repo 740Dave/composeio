@@ -1,0 +1,132 @@
+---
+scope: "The ComposeIO-native out-of-band (OOB) management plane — a permanent, cheap, fail-independent monitoring + limited-control plane for production fleet devices"
+audience: "Fleet/network architects, firmware authors of observer/concentrator roles, anyone deploying ComposeIO for lights-out management"
+boundary: "Deployment pattern + security posture only; core bus semantics in 00-composeio-design-principles.smd; transport bindings in 01-composeio-bus-protocol.smd; module role contracts in 03-composeio-module-roles.smd"
+not-this: "Not the in-band production control plane; not a full recovery system (see OOB-7 boundaries); not enterprise BMC/IPMI (this is its cheap, unified, Compose*-native cousin)"
+depends-on: [00-composeio-design-principles.smd]
+origin: "Design conversation 2026-07-05 (David + fleet-ops intelligence). Generalized from the serial-namespace-bridge built for board bring-up/burn-in."
+---
+# ComposeIO Out-of-Band (OOB) Management Plane [SPEC:CIO-OOB]
+
+> A permanent, cheap, **fail-independent** monitoring and *limited*-control plane for production devices — the ComposeIO-native equivalent of BMC/IPMI/lights-out, built from ~$15 observers and the bus you already have. It is deployed on the **same substrate** used to bring devices up: an observer per device + a concentrator + semantic namespaces. The plumbing you build to *burn in* a device is the plumbing that keeps you *in control* of it in production.
+
+---
+
+## [OOB-1] Motivation — every single point of failure earns an observer
+
+Production infrastructure fails in the one place you can't afford: the **edge**. When a device's primary/production plane dies (bad config push, wedged box, flapping links, a cutover in flight), you lose the exact path you would use to fix it — you cannot SSH to a firewall whose network is broken. `fw1` is a single point of failure for an entire site's connectivity.
+
+The OOB plane keeps **eyes and limited hands** on a device over a path that fails *independently* of production. It converts a failure from:
+
+- **"black box, need hands"** → **"see *why* it died, console in to fix the config, cold-cycle it remotely."**
+
+Use it for any device whose loss is expensive and whose primary management path shares fate with the failure (edge firewalls, core switches, service hosts). The design rule: **every single point of failure earns a cheap, independent, well-secured observer.**
+
+---
+
+## [OOB-2] Core principle — plane separation, and the plane NEVER LISTENS
+
+Two non-negotiables define the OOB plane:
+
+1. **Plane separation.** The observe-and-recover plane must ride a path that fails *independently* of production. A serial console is inherently independent (a physical wire to the console header — an IP misconfig cannot break it). The observer's *own* network is only useful if it, too, is genuinely independent (OOB-5). A plane that shares production's switch/uplink is a *fake* second plane.
+2. **The plane never listens.** The OOB plane exposes **zero inbound attack surface**. It dials *out* to push state and to *pull* signed commands. This is what makes a root-equivalent console+power plane safe to run (OOB-4).
+
+> test: If losing the production network also blinds the OOB plane, plane separation has failed.
+> test: If the OOB plane opens any inbound listening port to obtain remote control, the security model has failed.
+
+---
+
+## [OOB-3] Architecture — observers → concentrator, over CAN by default
+
+```
+  per-device                         concentrator                 out (OOB-4)
+  ┌──────────────┐   CAN (default)   ┌──────────────┐   push ──►  signed telemetry
+  │ ESP32 observer│ ═════════════════►│ RPi4          │
+  │  · console UART                   │  bus master   │   poll ◄── signed commands
+  │  · telemetry  │   I2C (short-run) │  (relay only) │           (dials out; never listens)
+  └──────────────┘   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄►└──────────────┘
+```
+
+- **Observer (one per monitored device).** A cheap MCU (ESP32-class) wired to the device's **serial console** (UART) and any local telemetry taps. It runs a ComposeIO observer participant that drives the console *internally* (pacing, read-back, framing) and publishes **semantic** namespaces — `<device>/phase`, `<device>/temp`, `<device>/driver_panic`, `<device>/link` — never raw bytes (DP-3). It is an `i2c-gpio`/`can-node`-flavored role (see 03-module-roles).
+- **Concentrator (one head node).** An RPi4-class bus master that aggregates observer namespaces locally and decides what — if anything — leaves the room. It is a **relay, not a brain** (OOB-5).
+- **This *is* ComposeIO's loops.** Concentrator + observers + local namespaces = the local loop (mainboard + daughterboards). The concentrator↔observer wiring = the global loop over a physical transport. No new architecture — a deployment of the existing one.
+
+### Transport — CAN is the default; I2C is the short-run exception
+
+| Transport | Default? | Range | Use |
+|-----------|----------|-------|-----|
+| **CAN** | **✅ DEFAULT** | twisted pair, up to ~1 km, multi-drop | The general case — a fleet spread across a building (rack + garage + ADU + outbuildings). Differential, noise-tolerant, daisy-chained, 100+ nodes. |
+| **I2C** | short-run only | a few feet (longer needs buffers/extenders) | A **co-located, dense** set only — e.g., one MPOE rack (fw1 + servers + switch) with a single concentrator inches away. |
+| Serial (per-device console) | — | the console wire | The observer↔device link itself; inherently independent of production. |
+
+> Rationale for CAN-default: the fleet is *physically distributed*, and I2C cannot reach past a rack. Defaulting to CAN makes the common case work without extenders; I2C is a deliberate optimization for the one dense-rack case. (David's directive, 2026-07-05.)
+> test: If the OOB plane is specified as I2C for devices more than a few feet apart, the transport choice has failed.
+
+---
+
+## [OOB-4] Security model — outbound-only in BOTH directions
+
+Remote observe **and** remote control, with no inbound surface, via two outbound flows:
+
+- **Observe (push).** The concentrator pushes **signed** telemetry *out* to a target endpoint (a dashboard, a phone, a Tailscale node). One-way.
+- **Control (poll).** The concentrator **polls** an authenticated command queue and executes only **signed, narrowly-scoped** commands (`power-cycle 540`, `console: send <x>`). It dials out for instructions; it never opens a port.
+
+This is the proven idiom already used elsewhere in the fleet: the smart plug dials out to its cloud and the app *leaves it a command*; the inside host establishes the reverse tunnel. It **subsumes** the two weaker stances — a pure **airgap** (local-only) and a **one-way push** (remote-observe-only) — and adds remote control back *without* a backdoor. Cost: poll latency, which is fine for break-glass recovery.
+
+- **Sign the telemetry, not just the commands.** Otherwise an attacker who kills the real device and *spoofs* the OOB feed blinds you with fake "all's well." Authenticated **state** so green cannot be forged.
+
+> test: If a spoofed OOB feed can report a healthy device that is actually down, telemetry authentication has failed.
+> test: If an unsigned or over-broad command can be executed by the concentrator, command authorization has failed.
+
+---
+
+## [OOB-5] Defense in depth
+
+- **Power lives on a SEPARATE plane from console.** Keep nuclear-recovery (power-cycle) on an independent path — e.g., a smart plug over its own cloud — *not* folded into the console/observer plane. Then a compromise of the console plane still cannot cut power, and vice versa. Plane separation by **function**, not just by path.
+- **The concentrator is a relay, not a brain.** It is the juiciest target (it reaches every console). Minimal/immutable root, **no god-mode long-lived credentials** — each observer holds its own per-device auth; the concentrator only relays. If networked at all, place it on an isolated management segment that nothing can reach inbound.
+- **Hardware-enforce the diode where the threat model warrants.** For the push path, physically cut the RX pin (send-only UART / optocoupler) so the one-way property is *un-bypassable* — a software compromise cannot start listening. Cheap; likely overkill at home; the correct high-assurance option.
+- **Placement is a network-design decision.** "Where you connect the concentrator" determines whether it's a backdoor. Default toward airgap; step up to signed outbound-only per OOB-4 only as needed; never inbound.
+
+---
+
+## [OOB-6] Honest boundaries / non-goals
+
+- **It observes and offers LIMITED control — it does not resurrect.** Console + power-cycle + telemetry, yes. A dead NIC, a bad cable, failed silicon, an unbootable disk — still need hands. The OOB plane **shrinks the "need a human" set and makes the reason *clear*** ("here is exactly why hands are required"); it does not empty it. Sell it as that, never as invincibility.
+- **Only as independent as its weakest shared link** (OOB-2). Audit the physical path.
+- **The observer must out-reliable the observed.** An OOB plane that hangs is *worse* than none, because it will be trusted. Minimal firmware, hardware watchdog, boring on purpose.
+- **Security is the sharp edge.** By construction this is a root-equivalent console+power reach; IPMI's history is the cautionary tale. The OOB-2/OOB-4/OOB-5 posture (never-listens + signing + plane-separation + relay-not-brain) is precisely what keeps it from becoming a worse liability than the SPOF it mitigates.
+
+---
+
+## Derived constraints
+
+| Constraint | Follows from | Rationale |
+|---|---|---|
+| Default transport is CAN; I2C only for co-located racks | OOB-3 | A distributed fleet exceeds I2C range |
+| OOB plane exposes zero inbound ports | OOB-2, OOB-4 | Remote reach without a backdoor |
+| Remote control = poll a signed command queue, never listen | OOB-4 | Outbound-only preserves the never-listens property |
+| Telemetry is signed, not just commands | OOB-4 | Prevents spoofed-green blindness |
+| Power control is a separate plane from console | OOB-5 | One plane's compromise can't grant the other's authority |
+| Concentrator holds no per-device master creds | OOB-5 | Limits blast radius of a concentrator compromise |
+| Observers publish semantic events, never raw console bytes | DP-3, OOB-3 | Legibility (incl. non-technical operators) + not `{pin,value}` on the bus |
+
+## Anti-patterns
+
+| Anti-pattern | Violates | Do instead |
+|---|---|---|
+| OOB plane opens an inbound SSH/HTTPS port for remote control | OOB-2, OOB-4 | Concentrator polls a signed command queue (dials out) |
+| I2C run to a device in another room | OOB-3 | Use CAN (default) for anything beyond a co-located rack |
+| Raw `console/tx` / `console/rx` bytes on the bus | DP-3, OOB-3 | Observer emits semantic `phase`/`panic`/`temp` namespaces |
+| Unsigned telemetry push | OOB-4 | Sign state at the source; reject unsigned |
+| Power-cycle authority inside the console/observer plane | OOB-5 | Keep power on an independent plane (smart plug / own cloud) |
+| Concentrator stores root keys to every device | OOB-5 | Per-observer auth; concentrator relays only |
+| Selling OOB as "remote recovery for anything" | OOB-6 | Scope it: observe + limited control; hard failures still need hands |
+| OOB plane shares production's switch/uplink | OOB-2 | Independent path (serial is free; separate uplink/segment for network) |
+
+---
+
+## Relationship to fleet bring-up
+
+The observer + serial-namespace-bridge is the **same artifact** used in Phase-1 board bring-up (see the fleet bring-up lifecycle): a console adapter that drives flaky serial internally and emits semantic phases. In bring-up it gets a bare board *onto* the bus; in production the identical observer stays attached as the device's permanent out-of-band eyes. One wire, one set of namespaces, two jobs — dev-time burn-in and lifetime lights-out.
+
+**Version**: 0.1 · **Created**: 2026-07-05 · **Status**: Draft — pattern established; observer/concentrator role contracts to be added to 03-composeio-module-roles.smd

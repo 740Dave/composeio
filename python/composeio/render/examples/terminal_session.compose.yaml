@@ -1,0 +1,73 @@
+# Terminal Session — the console hosts the Intelligence itself ([SPEC:CXC-TERM]).
+#
+# A STANDALONE WINDOW first, then a Terminal tab in the Intelligence Console —
+# David's ruling on [DD-TERM-HOST-SURFACE] (the Graph Viewer pattern).  The widget's
+# floor is 560x380 and the console's left rail is 332px, so it structurally cannot be
+# a rail card; a whole window is the least disruptive home while TERM-C1 (the glass
+# gate) is still open.
+#
+# Run:  python3 -m composeio.render.engine.runtime \
+#           composeio/render/examples/terminal_session.compose.yaml
+#
+# The widget mounts IDLE and spawns NOTHING until you CLICK it (or Tab to it) and press
+# RETURN — the affordance is printed on the idle plate.  That default is not timidity:
+# a widget that spawned a child
+# merely by appearing in a scene would fork a `claude` on every headless capture
+# ([CXC-TERM-WIDGET]).
+#
+# Once a session is running:
+#   * every keystroke goes to the real child, including Tab (the engine's `captures_tab`
+#     opt-out, [CXC-TERM-INPUT]) — Claude Code's TUI uses it;
+#   * Ctrl-Shift-Escape RELEASES the keyboard back to the engine.  It is printed in the
+#     status strip so it is discoverable rather than remembered;
+#   * the startup dialogs render HERE and you answer them HERE, with the keyboard.  The
+#     widget injects nothing at startup, ever ([CXC-TERM-DIALOGS]);
+#   * anything V1 cannot render honestly raises a DEGRADED banner naming the sequence.
+#     A half-working terminal is worse than Terminal.app.
+
+design:
+  title: "Terminal Session"
+  theme: dark
+  width: 1100
+  height: 760
+  resizable: true
+  min_width: 640
+  min_height: 460
+  persist_geometry: true
+  window_key: terminal-session
+  reduced_motion: false
+
+widgets:
+  - type: terminal
+    id: session
+    # IDENTITY — the ROLE plus a DISTINCT instance id ([CXC-TERM-CHILD-ID],
+    # [DD-TERM-CHILD-ID-SCHEME] branch (a), ratified 2026-08-11).  This scene used to say
+    # `intelligence_id: architect` — the HOST's own id — and the first live spawn produced
+    # three defects from that one cause: the child's channel.mjs DISPLACED the host's and the
+    # host lost its voice; the console showed the HOST's telemetry under the child's name; and
+    # it showed the HOST's transcript under a label that fitted both.
+    #
+    # `role` picks the manifest the child orients from (chain leg 3 —
+    # `intelligence/meta/composeux-architect.meta.json`, so N instances of one role are
+    # possible at all).  `instance_id` is the id the child WEARS: its channel topics, its
+    # `intelligence-launcher-<id>` lock, its `self/<id>/*` telemetry and its refusal publish.
+    # It MUST differ from the host's — set `instance_id: architect` here while an Architect is
+    # running and the widget refuses BEFORE the fork and names both ids on the plate.
+    #
+    # The role is the BASENAME OF ITS ROLE DESCRIPTOR (`.claude/agents/composeux-architect.md`),
+    # which is what makes leg 3 derivable rather than a convention someone maintains.  It used
+    # to say `architect`, which resolved to the LIVE HOST's own instance manifest and is a
+    # fleet-wide collision besides (a `zb-architect` runs on this machine).  The child is still
+    # told it is `architect-hosted`: the prompt takes the INSTANCE id, never the manifest's
+    # ([CXC-TERM-CHILD-ID]) — a role manifest names the role, not the instance wearing it.
+    role: composeux-architect
+    instance_id: architect-hosted
+    # V1's target, DERIVED FROM THE CENSUS and ratified in [DD-TERM-TARGET-MODE]:
+    # a per-invocation FLAG, so no settings file is composed and your global
+    # `tui: fullscreen` is untouched.  Set this to "" and the widget REFUSES to
+    # spawn rather than guessing; set it to tui-fullscreen and you get the honest
+    # degraded banner instead of a bad render.
+    target_mode: ax-screen-reader
+    autostart: false
+    scrollback_lines: 2000
+    font_px: 12.0

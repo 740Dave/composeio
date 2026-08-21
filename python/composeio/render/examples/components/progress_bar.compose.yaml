@@ -1,0 +1,153 @@
+# ComposeUX Widget Primitive — progress_bar ([SPEC:CXC-PRIM] [CXC-PRIM-CATALOG])
+#
+# A forkable COMPONENT, not a code widget: track rect + fill rect, wired
+# entirely with declarative bindings ([SPEC:CXC-BIND]) + the expression
+# DSL ([SPEC:CXC-DSL]).  Clone this file and restyle to fork the look —
+# keep the ratified tokens (accent / track / radius / warn) for family
+# consistency ([CXC-PRIM-TOKENS]).  Zero engine code: the continuous fill
+# uses the pixel-stack geometry binding seam ([CXC-PRIM-DRAGVAL] —
+# `w:`/`x:` on a pixel_stack child resolve as an ordinary bound
+# expression in absolute px), landed for the slider/dropdown primitives
+# and reused here as-is.
+#
+#   fill.w          = expr( clamp(ns(value_ns), 0, 1) * (width - 46) )   -- CXC-PRIM-C4
+#   fill.fill_color = a THRESHOLD binding (warn_at) — never the accent
+#                      by construction ([CXC-PRIM-TOKENS]: semantic is a
+#                      separate axis from accent)
+#
+# Run:
+#   cd python/composeio/render/examples/components
+#   python3 -m composeio.render.engine.runtime progress_bar.compose.yaml
+# Then, from any bus peer:  publish demo/fuel_level = 0.0 .. 1.0
+
+app:
+  id: demo-progress-bar
+
+design:
+  title: "progress_bar"
+  width: 420
+  height: 220
+  theme: dark
+
+namespaces:
+  - name: demo/fuel_level
+    state_engine: json
+    initial: 0.62
+  - name: demo/coolant_level
+    state_engine: json
+    initial: 0.91
+
+components:
+  # -- determinate --------------------------------------------------------
+  progress_bar:
+    params: [value_ns, width, height, radius, color, warn_at, show_label]
+    defaults:
+      width: 220
+      height: 10
+      radius: 4
+      color: "#34c3d0"        # ratified accent (dark); fork for light: #159aa8
+      warn_at: 0.8
+      show_label: true
+    widget:
+      # NOTE on ids: sub-widget ids are prefixed with {{value_ns}} (a
+      # namespace, so unique-by-construction across instances) rather
+      # than fixed strings like "track"/"fill" — two progress_bar
+      # instances in the SAME tree would otherwise collide on widget_id
+      # (harmless to rendering, but breaks id-based lookup/inspection;
+      # [CXC-PRIM-C2] "forkable" implies safe multi-instantiation).
+      type: pixel_stack
+      id: "{{value_ns}}_bar"
+      width: "{{width}}"
+      height: 20
+      children:
+        # track — inset surface, always visible, never the accent
+        - type: rect
+          id: "{{value_ns}}_track"
+          x: 0
+          y: 5
+          w: { expr: "{{width}} - 46" }
+          h: "{{height}}"
+          corner_radius: "{{radius}}"
+          fill_color: "#2a3542"          # ratified track-deep (dark)
+        # fill — the ONE bound rect; width tracks value_ns, color flips
+        # at warn_at via a threshold binding (not a new widget)
+        - type: rect
+          id: "{{value_ns}}_fill"
+          x: 0
+          y: 5
+          w:
+            expr: "clamp(ns('{{value_ns}}'), 0, 1) * ({{width}} - 46)"
+            default: 0
+          h: "{{height}}"
+          corner_radius: "{{radius}}"
+          fill_color:
+            expr: "ns('{{value_ns}}') >= {{warn_at}} ? '#dd5b52' : '{{color}}'"
+        # value label — mono, right-reserved 46px; show_label is a
+        # compile-time literal (COMP-3 exact-token substitution), so a
+        # forked instance can hide it with zero engine change
+        - type: label
+          id: "{{value_ns}}_pct_label"
+          x: { expr: "{{width}} - 40" }
+          y: 0
+          w: 40
+          h: 20
+          text:
+            expr: "round(clamp(ns('{{value_ns}}'), 0, 1) * 100)"
+          font_family: monospace
+          font_size: 12
+          color: "#e6ecf3"
+          visible: "{{show_label}}"
+
+  # -- indeterminate — a looping behavior sweeping a block along the
+  # track ([CXC-PRIM-CATALOG] "Variants: determinate + indeterminate (a
+  # looping behavior)").  `pulse` triangle-waves the sweep block's
+  # pixel-stack x between from/to — engine-owned, bus-silent (no frames
+  # streamed).  from/to are kept >= 2px so the interpolated float NEVER
+  # transits the reserved [0,1] fraction-shorthand range of a *plain*
+  # (unbound) stack_x — see progress_bar.compose.yaml SUMMARY note.
+  progress_bar_indeterminate:
+    params: [id, width, height, radius, period_ms]
+    defaults: { id: pbi, width: 220, height: 10, radius: 4, period_ms: 1400 }
+    widget:
+      type: pixel_stack
+      id: "{{id}}_bar_indet"
+      width: "{{width}}"
+      height: 20
+      children:
+        - type: rect
+          id: "{{id}}_track"
+          x: 0
+          y: 5
+          w: "{{width}}"
+          h: "{{height}}"
+          corner_radius: "{{radius}}"
+          fill_color: "#2a3542"
+        - type: rect
+          id: "{{id}}_sweep"
+          x: 2
+          y: 5
+          w: 60
+          h: "{{height}}"
+          corner_radius: "{{radius}}"
+          fill_color: "#34c3d0"
+          behaviors:
+            - when: always
+              do:
+                behavior: pulse
+                target: stack_x
+                period_ms: "{{period_ms}}"
+                from: 2
+                to: 162            # tuned for the default width (220) — a
+                                   # forked instance with a different width
+                                   # should retune `to` (no arithmetic in
+                                   # a component param in v1, [COMP-5])
+
+widgets:
+  - type: stack
+    id: demo_column
+    direction: column
+    gap: 18
+    children:
+      - { use: progress_bar, value_ns: demo/fuel_level, width: 246 }
+      - { use: progress_bar, value_ns: demo/coolant_level, width: 246, warn_at: 0.85 }
+      - { use: progress_bar_indeterminate }

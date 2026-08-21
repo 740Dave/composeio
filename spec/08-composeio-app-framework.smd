@@ -1,0 +1,695 @@
+---
+scope: "Application framework specification for complex Python programs that participate on the ComposeIO bus — dual-bus architecture, namespace export/import crossover, config-driven setup, cross-platform equivalence"
+audience: "Python developers building bus-native CLI apps, service hub maintainers, firmware developers implementing the same pattern on MCUs"
+boundary: "Application-level patterns only; bus protocol in 01-composeio-bus-protocol.smd; config schema in 02-composeio-config-schema.smd; module roles in 03-composeio-module-roles.smd"
+not-this: "Not the bus protocol itself; not module firmware; not ComposeUX-specific UI behavior (ComposeUX uses this framework via composition — see ux_composer specs)"
+depends-on: [00-composeio-design-principles.smd, 01-composeio-bus-protocol.smd, 02-composeio-config-schema.smd]
+---
+
+# ComposeIO Application Framework [SPEC:CIO-APP]
+
+> A complex Python application — biometric testing suite, video processing pipeline, ML inference engine — is too rich for a service hub workload (DP-CIO-24) but still needs a visual dashboard, state introspection, and integration with hardware on the ComposeIO bus. This spec defines how such applications become first-class bus citizens using the same protocol, config format, and namespace contracts as edge firmware modules.
+
+---
+
+## 1. Problem Statement [APP-PROBLEM]
+
+### 1.1 The Gap Between Workloads and Applications [APP-PROBLEM-GAP]
+
+[DP-CIO-24] defines **workloads**: lightweight Python scripts that run on a service hub, publish/subscribe to a few namespaces, and are supervised as simple processes. Workloads are the right model for:
+- Camera frame extraction (one input namespace, one output namespace)
+- Protocol translation (bridge between bus and external API)
+- Sensor data aggregation (collect from N, publish to 1)
+
+The workload model breaks down for applications that:
+- Have **internal module decomposition** — 10+ components that communicate with each other, not just with the bus
+- Need **private state** — internal coordination namespaces that should not leak to the bus
+- Require **compute beyond the service hub** — GPU inference, large dataset processing, dedicated hardware
+- Run on **their own machine** — not a managed subprocess of the service hub
+- Have **complex lifecycle** — startup sequencing, graceful shutdown, state persistence
+
+These applications are not workloads. They are **bus-native applications** — full programs that happen to participate on the ComposeIO bus.
+
+### 1.2 The Dual-Bus Insight [APP-PROBLEM-DUAL]
+
+ComposeUX (the visual UX layout tool) solved this problem by introducing a dual-bus architecture:
+- **Internal bus**: Module-to-module plumbing (tool mode, selection state, canvas events). Never leaves the process. 30+ namespaces across 9 domains.
+- **External bus**: The live ComposeIO bus (hardware namespaces, dashboard widgets). Connected via MQTT to the rest of the ecosystem.
+
+The two buses are **never fully bridged**. Internal namespaces are invisible to external subscribers. External namespaces flow into the app only when explicitly imported. The crossover between buses is declared, not implicit.
+
+This pattern is general. Any complex application benefits from the same decomposition:
+- Biometric tester: internal `_app/test_state`, `_app/pipeline_stage` vs exported `test_progress`, `match_score`
+- Video processor: internal `_app/frame_queue_depth`, `_app/codec_state` vs exported `stream_status`, `frame_ready`
+- ML inference: internal `_app/model_loading`, `_app/batch_queue` vs exported `inference_result`, `confidence`
+
+### 1.3 Cross-Platform Equivalence [APP-PROBLEM-PLATFORM]
+
+The application framework is not Python-specific. The same dual-bus pattern applies to firmware:
+
+| Platform | Internal Bus | External Bus | Modules | Config |
+|----------|-------------|-------------|---------|--------|
+| Python CLI | In-process pub/sub | MQTT or UART | AppModule classes | .compose.yaml (YAML) |
+| CH32V003 mainboard | I2C register protocol | CAN or UART | Daughterboards | .compose.yaml → binary flash |
+| ESP32 bridge | In-process | WiFi/MQTT + CAN | Software modules | .compose.yaml (NVS) |
+| ComposeUX | In-process | MQTT (design bus) | CTk frame modules | .compose.yaml |
+
+The `.compose.yaml` is the same artifact across all platforms. `composeio push` compiles it for the target: YAML for Python, binary for MCU flash. The namespace contracts, state engines, and bindings are identical. Transport is an implementation detail [DP-CIO-6].
+
+---
+
+## 2. Architecture [APP-ARCH]
+
+### 2.1 Dual-Bus Topology [APP-ARCH-DUAL]
+
+Every ComposeApp instance operates two ComposeIO bus instances:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  ComposeApp                                             │
+│                                                         │
+│  ┌─────────────────────────────────────────┐            │
+│  │  Internal Bus (in-process only)         │            │
+│  │                                         │            │
+│  │  Module A ──pub──▶ _app/stage           │            │
+│  │  Module B ◀──sub── _app/stage           │            │
+│  │  Module C ──pub──▶ test_progress ───────┼──export──┐ │
+│  │  Module D ◀──sub── dashboard_cmd ◀──────┼──import──┤ │
+│  └─────────────────────────────────────────┘           │ │
+│                                                         │ │
+│  ┌─────────────────────────────────────────┐           │ │
+│  │  External Bus                           │◀──────────┘ │
+│  │                                         │             │
+│  │  test_progress ──▶ [MQTT] ──▶ dashboard │             │
+│  │  dashboard_cmd ◀── [MQTT] ◀── dashboard │             │
+│  └─────────────────────────────────────────┘             │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Internal bus**:
+- Transport: In-process (synchronous callback dispatch). Never leaves the process.
+- Bus ID: `{app_id}-internal`
+- Namespaces: All application namespaces — both internal-only and exported.
+- Purpose: Module-to-module communication. The application's nervous system.
+
+**External bus**:
+- Transport: Pluggable. MQTT, UART, CAN, or any Transport implementation.
+- Bus ID: `{app_id}-external`
+- Namespaces: Only those explicitly exported from the internal bus.
+- Purpose: Visibility into the ComposeIO ecosystem. Dashboards, hardware, other apps.
+
+### 2.2 The `_app/` Visibility Boundary [APP-ARCH-APPNS]
+
+The `_app/` prefix is a **default-deny visibility boundary**, not a naming convention. It defines which namespaces are private to the application and which are eligible for external visibility.
+
+**Rule**: Namespaces starting with `_app/` are **private by default**. They exist only on the internal bus and are never forwarded to the external bus — unless an explicit routing rule bridges them.
+
+This is the firewall model: deny all `_app/` traffic to the external bus, then whitelist specific namespaces via routing rules.
+
+#### Default Behavior (no routing rules)
+
+| Namespace | Internal Bus | External Bus | Behavior |
+|-----------|-------------|-------------|----------|
+| `_app/pipeline_stage` | Registered, active | **Blocked** | Private. Never leaves the process. |
+| `_app/batch_queue` | Registered, active | **Blocked** | Private. Never leaves the process. |
+| `test_progress` | Registered, active | Exported | Public. Forwarded via crossover. |
+| `dashboard_cmd` | Registered, active | Imported | Public. Received via crossover. |
+
+#### Routing Rules for `_app/` Exceptions
+
+An `_app/` namespace can be explicitly bridged to the external bus via a routing rule in the config:
+
+```yaml
+namespaces:
+  - name: _app/pipeline_stage
+    state_engine:
+      type: enum
+      values: [init, loading, processing, scoring, reporting]
+    route_external: true              # Explicit bridge — overrides default-deny
+    route_as: debug/pipeline_stage    # REQUIRED when routing _app/. Name on external bus.
+```
+
+**Routing rule requirements:**
+
+1. `route_external: true` MUST be set explicitly. There is no `export: true` shorthand for `_app/` namespaces — the field name is deliberately different to signal that this is an exception to the default-deny policy.
+2. `route_as` is REQUIRED when `route_external: true` is set on an `_app/` namespace. The `_app/` prefix MUST NOT appear on the external bus — the routing rule MUST map to a non-`_app/` external name. This prevents `_app/` prefixed names from leaking onto MQTT topics or CAN frames.
+3. The framework MUST log a **WARN** on startup for every `_app/` namespace with `route_external: true`:
+   ```
+   WARN [composeio.app] _app/pipeline_stage bridged to external bus as debug/pipeline_stage — verify this is intentional
+   ```
+4. `composeio status` MUST display routed `_app/` namespaces distinctly:
+   ```
+   Namespaces:
+     test_progress      continuous_0_255  exported
+     match_score        continuous_0_255  exported
+     _app/pipeline_stage  enum            BRIDGED → debug/pipeline_stage
+     _app/batch_queue   continuous_0_255  private
+   ```
+
+#### Enforcement
+
+The `_app/` boundary is enforced, not advisory:
+
+- **Config validation**: `composeio push` rejects an `app` config where an `_app/` namespace has `export: true` without `route_external: true` and `route_as`. Error message: `"_app/ namespaces cannot be exported directly. Use route_external with route_as to bridge explicitly."`
+- **Runtime enforcement**: The crossover wiring code skips `_app/` namespaces entirely unless a routing rule is present. Even if a bug in application code calls `export("_app/foo")` programmatically, the framework refuses and logs WARN.
+- **CAN/firmware enforcement**: On CH32V003, the crossover loop checks the namespace hash against the routing table. `_app/` namespace hashes are in a separate "deny" set. Only hashes with an explicit routing entry are forwarded. This saves bus bandwidth — internal namespaces never consume CAN frame time.
+
+#### Why Enforce, Not Advise
+
+Silent non-obvious behavior creates confusion. If `_app/` were advisory:
+- A developer could forget `export: true` on a public namespace and wonder why the dashboard doesn't see it
+- A developer could accidentally set `export: true` on `_app/pipeline_stage` and leak internal state to MQTT
+- During debugging, there's no way to tell if an `_app/` namespace appearing on CAN is intentional or a bug
+
+With enforcement, the system's behavior is predictable:
+- `_app/` on the external bus? Someone deliberately routed it. Check the config.
+- `_app/` NOT on the external bus? That's the default. No investigation needed.
+- WARN in the logs at startup? Review the routing rules.
+
+### 2.3 Namespace Visibility Rules [APP-ARCH-VISIBILITY]
+
+With the `_app/` boundary established, the complete visibility model:
+
+| Namespace Pattern | Default Visibility | Override Mechanism | Example |
+|-------------------|-------------------|-------------------|---------|
+| `_app/*` | **Private** (internal only) | `route_external` + `route_as` | `_app/pipeline_stage` |
+| `_bus/*` | **Reserved** (bus infrastructure) | None — cannot be used by apps | `_bus/time`, `_bus/heartbeat` |
+| Everything else | **Public-eligible** | `export: true` / `import: true` | `test_progress`, `dashboard_cmd` |
+
+Non-`_app/` namespaces without `export: true` are still internal-only — they just don't have the enforced boundary. The distinction: `_app/` namespaces CAN'T be exported without a routing rule. Non-`_app/` namespaces without `export` simply AREN'T exported. The first is a policy; the second is a configuration choice.
+
+### 2.4 Crossover Semantics [APP-ARCH-CROSSOVER]
+
+The crossover between internal and external buses is **declared, not implicit**. Each crossover rule is unidirectional:
+
+**Export** (internal → external) — for non-`_app/` namespaces:
+- When the internal bus namespace's state changes, the new value is published to the external bus under the mapped name.
+- Events on the internal namespace are forwarded to the external namespace.
+- The external bus namespace is registered with the same state engine config as the internal one.
+- Default mapping: same name on both buses. Override: `export_as` in config or `export("internal_name", "external_name")` in code.
+
+**Route** (internal → external) — for `_app/` namespaces:
+- Same forwarding behavior as export, but requires `route_external: true` and `route_as`.
+- Logged at WARN on startup. Displayed distinctly in `composeio status`.
+
+**Import** (external → internal):
+- When the external bus namespace's state changes (from MQTT, UART, CAN, or another transport), the new value is published to the internal bus under the mapped name.
+- Default mapping: same name on both buses.
+
+**Bidirectional**: declare both export and import for the same namespace. The framework prevents feedback loops by checking message source — a forwarded message is tagged with source `"crossover"` and ignored by the reverse direction.
+
+### 2.5 Transport Configuration [APP-ARCH-TRANSPORT]
+
+The external bus accepts any Transport implementation. Transports are **additive** — connecting MQTT does not replace UART. Multiple transports can be active simultaneously.
+
+```yaml
+# In config (proposed schema extension — see amendment to 02-config-schema)
+app:
+  id: biometric-tester
+  transports:
+    - type: mqtt
+      broker: 192.0.2.10
+      port: 1883
+    - type: uart
+      port: /dev/ttyUSB0
+      baudrate: 115200
+```
+
+Transport types:
+- `mqtt`: MQTT broker connection (paho-mqtt). Topic mapping per 01-bus-protocol section 6.2.
+- `uart`: Serial/UART connection (pyserial). Message framing per ComposeIO UART spec.
+- `can`: CAN bus connection (python-can). Frame encoding per 01-bus-protocol section 1.5.
+- Custom: Any class implementing the `Transport` interface (send, subscribe, start, stop).
+
+On a CH32V003, the equivalent configuration is compiled to binary: the mainboard's firmware reads the transport config from flash and initializes CAN/UART hardware accordingly. Same config, different runtime.
+
+---
+
+## 3. Application Modules [APP-MODULES]
+
+### 3.1 AppModule Contract [APP-MOD-CONTRACT]
+
+An AppModule is a self-contained component within a ComposeApp. It communicates with other modules exclusively through the internal bus. It never holds a direct reference to another module instance.
+
+Every AppModule declares:
+
+```python
+MODULE_NAME: str       # Unique within the app
+MODULE_MANIFEST: dict  # Namespace contract
+    {
+        "publishes": ["ns_a", "ns_b"],   # Namespaces this module publishes to
+        "subscribes": ["ns_c", "ns_d"],  # Namespaces this module consumes
+    }
+```
+
+The manifest is a **contract**. It declares the module's interface — what it produces and what it consumes. The framework uses manifests for:
+- Validation: warn if a module subscribes to a namespace nobody publishes
+- Documentation: auto-generate module dependency graphs
+- Testing: mock bus with only the declared namespaces
+
+### 3.2 Module Lifecycle [APP-MOD-LIFECYCLE]
+
+```
+ComposeApp.start() called
+  → setup() defines namespaces and modules
+  → Internal bus started
+  → External bus started
+  → Transports started
+  → Crossover bridges wired
+  → For each module: module.on_ready()
+  → app.on_ready()
+  → Application running
+
+ComposeApp.stop() called
+  → app.on_stop()
+  → For each module: module.on_stop()
+  → For each module: module.destroy() (unsubscribes)
+  → Crossover bridges torn down
+  → Transports stopped
+  → External bus stopped
+  → Internal bus stopped
+```
+
+Modules are notified in registration order for `on_ready()` and reverse order for `on_stop()`. This allows dependency ordering when needed, though modules SHOULD be order-independent if possible.
+
+### 3.3 Module Bus Access [APP-MOD-BUS]
+
+Modules have full access to the internal bus and limited access to the external bus:
+
+| Method | Bus | Purpose |
+|--------|-----|---------|
+| `subscribe(ns, callback)` | Internal | Listen for state changes from other modules |
+| `subscribe_events(ns, callback)` | Internal | Listen for events from other modules |
+| `publish_state(ns, value)` | Internal | Publish state (auto-forwarded if exported) |
+| `publish_event(ns, type, data)` | Internal | Publish event (auto-forwarded if exported) |
+| `get_state(ns)` | Internal | Query current value |
+| `subscribe_external(ns, callback)` | External | Listen for remote commands (use sparingly) |
+| `publish_external(ns, value)` | External | Publish directly to external (use sparingly) |
+
+Most modules should only use internal bus methods. The crossover handles external visibility. Direct external bus access is for modules that explicitly bridge between buses (e.g., a Connection module that manages transport lifecycle).
+
+### 3.4 Web Bus Bridge [APP-MOD-WEB]
+
+ComposeApps that serve a web UI need real-time browser updates when bus state changes. A remote Intelligence posting a task, a hardware sensor publishing a reading, a module changing state — the browser should reflect these without a full page reload.
+
+#### Server-Side: WebBusModule
+
+A base AppModule class that bridges internal bus events to connected browsers via Server-Sent Events (SSE):
+
+```python
+class WebBusModule(AppModule):
+    MODULE_NAME = "web"
+    MODULE_MANIFEST = {
+        "publishes": [],
+        "subscribes": []  # Populated dynamically from watch list
+    }
+
+    def __init__(self, host="0.0.0.0", port=8889):
+        self.host = host
+        self.port = port
+        self._sse_clients = []       # Connected browser SSE streams
+        self._watch_namespaces = []  # Namespaces to forward to browsers
+
+    def watch(self, namespace: str):
+        """Register a namespace for browser push. Call during setup."""
+        self._watch_namespaces.append(namespace)
+
+    def on_ready(self):
+        # Subscribe to watched namespaces on internal bus
+        for ns in self._watch_namespaces:
+            self.subscribe(ns, self._on_state_change)
+            self.subscribe_events(ns, self._on_bus_event)
+
+    def _on_state_change(self, namespace, new_value, old_value):
+        """State change → push to all connected SSE clients."""
+        event = {"namespace": namespace, "type": "state_change", "value": new_value}
+        for client in self._sse_clients:
+            client.send(event)
+
+    def _on_bus_event(self, namespace, event_type, data):
+        """Bus event → push to all connected SSE clients."""
+        event = {"namespace": namespace, "type": "event", "event_type": event_type, "value": data}
+        for client in self._sse_clients:
+            client.send(event)
+```
+
+The WebBusModule serves both the HTTP pages and the SSE endpoint on the same port. The SSE endpoint is at `/events`.
+
+- SSE chosen over WebSocket because the dominant flow is server → browser (push). Browser → server mutations use HTML form POST (existing pattern).
+- SSE chosen over polling because it eliminates the latency/load tradeoff — events arrive immediately, no wasted requests.
+- No JavaScript frameworks required. The browser-side JS is vanilla.
+
+#### Browser-Side: bus-events.js
+
+A minimal script (~50 lines) that connects to the SSE endpoint and dispatches DOM updates:
+
+```javascript
+// bus-events.js — ComposeApp web bus bridge (browser side)
+(function() {
+    const source = new EventSource('/events');
+    const handlers = {};
+
+    // Register a handler: busEvents.on('_app/board/tasks', updateTaskList)
+    window.busEvents = {
+        on: function(namespace, callback) {
+            if (!handlers[namespace]) handlers[namespace] = [];
+            handlers[namespace].push(callback);
+        }
+    };
+
+    source.addEventListener('bus', function(e) {
+        const event = JSON.parse(e.data);
+        const ns = event.namespace;
+        // Exact match
+        if (handlers[ns]) handlers[ns].forEach(fn => fn(event));
+        // Wildcard match: handlers registered with trailing /*
+        Object.keys(handlers).forEach(function(pattern) {
+            if (pattern.endsWith('/*') && ns.startsWith(pattern.slice(0, -1))) {
+                handlers[pattern].forEach(fn => fn(event));
+            }
+        });
+    });
+
+    source.onerror = function() {
+        // SSE auto-reconnects. No action needed.
+    };
+})();
+```
+
+A ComposeApp's page includes the script and registers handlers:
+
+```html
+<script src="/static/bus-events.js"></script>
+<script>
+    // Reload task list when any board task changes
+    busEvents.on('_app/board/*/tasks', function(event) {
+        location.reload();  // Simple: full reload
+    });
+    // Or targeted: update just the changed row
+    busEvents.on('_app/board/tasks', function(event) {
+        document.getElementById('task-' + event.value.task_id)
+            .querySelector('.status').textContent = event.value.status;
+    });
+</script>
+```
+
+#### SSE Event Format
+
+```
+event: bus
+data: {"namespace": "_app/board/42/tasks", "type": "state_change", "value": {"task_id": 7, "status": "in_progress"}}
+
+event: bus
+data: {"namespace": "_app/board/42/activity", "type": "event", "value": {"entry": "Deployed v3", "task_id": 7}}
+```
+
+Each SSE message is a JSON object with: `namespace` (which bus namespace changed), `type` (`state_change` or `event`), and `value` (the payload). The browser-side library dispatches based on namespace pattern matching.
+
+#### Progressive Enhancement
+
+The SSE bridge is progressive enhancement — the page works without it (manual refresh). JavaScript-disabled browsers see the same page, they just don't get live updates. This maintains the existing compliance constraint: page fully renders without JavaScript.
+
+---
+
+## 4. Configuration [APP-CONFIG]
+
+### 4.1 Config-Driven Setup [APP-CONFIG-DRIVEN]
+
+A ComposeApp can be initialized from a `.compose.yaml` file. The config defines:
+- Namespaces and their state engines
+- Bindings between namespaces
+- Which namespaces are exported to the external bus
+- Transport configuration
+
+```yaml
+# biometric-tester.compose.yaml
+app:
+  id: biometric-tester
+
+  transports:
+    - type: mqtt
+      broker: 192.0.2.10
+
+namespaces:
+  # Exported (visible to dashboards and hardware)
+  - name: test_status
+    state_engine:
+      type: enum
+      values: [idle, running, complete, error]
+    export: true
+    label: "Test Status"
+
+  - name: test_progress
+    state_engine: continuous_0_255
+    export: true
+    label: "Test Progress"
+
+  - name: match_score
+    state_engine: continuous_0_255
+    export: true
+    label: "Match Score"
+
+  - name: face_count
+    state_engine: continuous_0_255
+    export: true
+    label: "Face Count"
+
+  # Imported (commands from dashboard)
+  - name: dashboard_cmd
+    state_engine:
+      type: enum
+      values: [none, start, stop, reset]
+    import: true
+    label: "Dashboard Command"
+
+  # Internal-only (module plumbing) — private by default, enforced
+  - name: _app/pipeline_stage
+    state_engine:
+      type: enum
+      values: [init, loading, processing, scoring, reporting]
+    label: "Pipeline Stage"
+
+  - name: _app/batch_size
+    state_engine: continuous_0_255
+
+  # Internal with explicit routing exception (for operator monitoring)
+  - name: _app/error_count
+    state_engine: continuous_0_255
+    route_external: true                # Explicit bridge — logs WARN at startup
+    route_as: debug/error_count         # External name (no _app/ prefix on the wire)
+
+bindings:
+  - source: test_status
+    target: _app/pipeline_stage
+    transform:
+      - type: map
+        map: {idle: init, running: processing, complete: reporting, error: init}
+```
+
+### 4.2 Programmatic Setup [APP-CONFIG-PROGRAMMATIC]
+
+Applications MAY define namespaces programmatically by overriding `setup()`:
+
+```python
+class BiometricTester(ComposeApp):
+    APP_ID = "biometric-tester"
+
+    def setup(self):
+        self.register("test_status", engine="enum",
+                      values=["idle", "running", "complete", "error"],
+                      export=True, label="Test Status")
+        self.register("test_progress", engine="continuous_0_255",
+                      export=True, label="Test Progress")
+        self.register("_app/pipeline_stage", engine="enum",
+                      values=["init", "loading", "processing", "scoring", "reporting"])
+
+        self.import_namespace("dashboard_cmd")
+
+        self.add_module(TestRunner())
+        self.add_module(ScoreCalculator())
+```
+
+Programmatic setup is a convenience for Python. It produces the same bus topology as config-driven setup. For CH32V003 targets, only config-driven setup is available (the binary compiler reads the config, not Python code).
+
+### 4.3 Config-Programmatic Equivalence [APP-CONFIG-EQUIV]
+
+The config and programmatic APIs MUST produce identical bus topologies for the same logical configuration. A namespace registered via `self.register("x", engine="binary", export=True)` produces the same internal bus namespace, external bus namespace, and crossover bridge as a config entry with `{name: x, state_engine: binary, export: true}`.
+
+This equivalence is what makes the `.compose.yaml` portable across platforms. The Python framework reads the YAML. The C firmware reads the compiled binary. Both produce the same namespace registry and crossover topology.
+
+---
+
+## 5. Cross-Platform Implementation [APP-PLATFORM]
+
+### 5.1 CH32V003 Mainboard as ComposeApp [APP-PLATFORM-CH32V]
+
+A CH32V003 mainboard with I2C daughterboards IS a ComposeApp:
+
+| Framework Concept | CH32V003 Implementation |
+|-------------------|------------------------|
+| Internal bus | I2C register protocol (03-module-roles.smd [MR-CONTRACT-I2C]) |
+| External bus | CAN or UART to network |
+| AppModules | Daughterboards (each with own role, namespaces, state engines) |
+| Export | Mainboard bridges I2C messages → CAN/UART frames |
+| Import | Mainboard bridges CAN/UART frames → I2C writes to daughterboards |
+| Config | Same .compose.yaml, compiled to binary via `composeio push` |
+| Transport | CAN: 01-bus-protocol section 1.5. UART: framed serial |
+
+The mainboard firmware implements the crossover:
+1. Poll I2C daughterboards for outbound messages (10ms cycle, [MR-CONTRACT-I2C])
+2. For each message on an exported namespace: encode to CAN frame / UART packet, transmit
+3. Receive CAN frames / UART packets on imported namespaces: decode, write to target daughterboard's CMD registers
+
+The mainboard does NOT need to understand the message semantics. It bridges by namespace hash — if the namespace is in the export table, forward to external transport. If it's in the import table, forward to the I2C daughterboard that subscribes to it. The export/import tables are compiled from the same config.
+
+### 5.2 ESP32 as ComposeApp [APP-PLATFORM-ESP32]
+
+An ESP32 running MicroPython or Arduino firmware follows the same pattern:
+- Internal bus: In-process (software modules) or I2C (hardware peripherals)
+- External bus: WiFi/MQTT + optional CAN
+- Config: Loaded from NVS partition or SPIFFS, same .compose.yaml structure
+
+### 5.3 ComposeUX as ComposeApp [APP-PLATFORM-COMPOSEUX]
+
+ComposeUX (the visual layout tool) is itself a ComposeApp:
+- Internal bus: `composer-internal` (30+ namespaces, 9 domains, 10 modules)
+- External bus: `composer-design` (the live ComposeIO bus for hardware preview)
+- Modules: Palette, Canvas, PropertyEditor, BindingEditor, Preview, etc.
+- Export: Preview module publishes widget state to design bus
+- Import: Namespace inspector reads hardware discovery from design bus
+
+ComposeUX's dual-bus architecture was the proof-of-construction that this pattern works for complex desktop applications. The application framework spec generalizes what ComposeUX built.
+
+---
+
+## 6. Integration with Existing Specs [APP-INTEGRATION]
+
+### 6.1 Relationship to DP-CIO-24 (Service Hub) [APP-INTEGRATION-HUB]
+
+| Aspect | Service Hub Workload | ComposeApp |
+|--------|---------------------|------------|
+| Lifecycle | Managed by service hub (auto-restart, supervised) | Self-managed (runs as independent process) |
+| Bus topology | Single bus, all namespaces visible | Dual bus, explicit export/import |
+| Config | Workload YAML in bus storage | .compose.yaml (local or bus storage) |
+| Compute | Service hub machine (shared) | Own machine (dedicated) |
+| Complexity | Simple (one entry point, few namespaces) | Complex (multiple modules, internal state) |
+
+A ComposeApp MAY run on a service hub machine but is NOT a workload — it is not supervised by the service hub, does not pull its config from bus storage workload API, and manages its own lifecycle. It IS a bus participant, visible to `composeio status` via its exported namespaces.
+
+### 6.2 Relationship to 01-Bus-Protocol [APP-INTEGRATION-PROTOCOL]
+
+The internal and external buses both use the ComposeIO bus protocol. All message types (state, event, config_push, heartbeat, discovery, ack) work on both buses. The crossover forwards **both state changes and events** verbatim — no translation, no adaptation. This applies in all three crossover directions: export (internal → external), import (external → internal), and `route_external` bridges.
+
+When an external transport (MQTT, UART) is connected to the external bus, the bus MUST wire incoming message dispatch so that messages received from the transport are delivered to the bus's namespace subscribers (both state and event). This ensures that `import_namespace` crossover receives events published by remote applications.
+
+The external bus publishes discovery messages on connect, allowing the bus master to register the app's exported namespaces in the namespace registry [DP-CIO-23].
+
+### 6.3 Relationship to 02-Config-Schema [APP-INTEGRATION-SCHEMA]
+
+This spec introduces a new top-level config type: `app`. See the proposed schema amendment.
+
+```yaml
+# New top-level type alongside module, composite_device, adapter, workload, bindings
+app:
+  id: biometric-tester
+  transports: [...]
+
+namespaces:
+  - name: test_status
+    state_engine: ...
+    export: true
+```
+
+The `app` type extends the existing schema. Namespaces, state engines, bindings, and transforms use the same syntax as module configs. The additions are: `export`, `import`, `transports`, and the `app` top-level key.
+
+---
+
+## 7. Compliance [APP-COMPLIANCE]
+
+A compliant ComposeApp implementation MUST:
+
+1. **[APP-C1]** Maintain two separate ComposeIOBus instances (internal and external) that are not fully bridged
+2. **[APP-C2]** Forward state changes from internal to external only for explicitly exported namespaces
+3. **[APP-C3]** Forward state changes from external to internal only for explicitly imported namespaces
+4. **[APP-C4]** Use the same bus protocol (01-composeio-bus-protocol) on both buses
+5. **[APP-C5]** Support config-driven setup from .compose.yaml
+6. **[APP-C6]** Produce discovery messages on the external bus listing exported namespaces
+7. **[APP-C7]** Tag crossover-forwarded messages with source `"crossover"` to prevent feedback loops
+8. **[APP-C8]** Enforce the `_app/` default-deny boundary: `_app/` namespaces MUST NOT appear on the external bus unless an explicit routing rule (`route_external` + `route_as`) is configured
+9. **[APP-C9]** Reject (at config validation time) any `_app/` namespace with `export: true` that lacks `route_external: true` and `route_as`
+10. **[APP-C10]** Log at WARN level on startup for every `_app/` namespace with an active routing rule
+11. **[APP-C11]** Refuse programmatic `export()` calls on `_app/` namespaces at runtime (log WARN, do not forward)
+
+A compliant implementation SHOULD:
+
+12. **[APP-S1]** Support multiple simultaneous transports on the external bus
+13. **[APP-S2]** Validate module manifests against registered namespaces at startup
+14. **[APP-S3]** Publish app-level heartbeat on `_bus/heartbeat/{app_id}` when external bus is connected
+15. **[APP-S4]** Display routed `_app/` namespaces distinctly in status output (e.g., `BRIDGED → external_name`)
+
+---
+
+## 8. Examples [APP-EXAMPLES]
+
+### 8.1 Biometric Testing CLI [APP-EXAMPLE-BIOMETRIC]
+
+A Python CLI that processes face images, calculates match scores, and provides a real-time dashboard via ComposeUX on another machine.
+
+```
+Machine X (GPU workstation):               Machine Y (operator's desk):
+┌───────────────────────────┐              ┌────────────────────────┐
+│  BiometricTester          │              │  ComposeUX Dashboard   │
+│  (ComposeApp)             │              │                        │
+│                           │              │  [Progress Bar] ◀──────┤
+│  Internal bus:            │    MQTT      │  [Score Gauge]  ◀──────┤
+│    _app/pipeline_stage    │◀──────────▶  │  [Status LED]   ◀──────┤
+│    _app/batch_queue       │              │  [Start Button] ──────▶│
+│                           │              │                        │
+│  Exported:                │              └────────────────────────┘
+│    test_progress ─────────┤──▶ MQTT ──▶ composeio/global/test_progress
+│    match_score ───────────┤──▶ MQTT ──▶ composeio/global/match_score
+│    test_status ───────────┤──▶ MQTT ──▶ composeio/global/test_status
+│                           │
+│  Imported:                │
+│    dashboard_cmd ◀────────┤◀── MQTT ◀── composeio/global/dashboard_cmd
+└───────────────────────────┘
+```
+
+The dashboard is designed in ComposeUX: drag a gauge widget, bind it to `test_progress`, save as `.compose.yaml`. The biometric app exports `test_progress`. The MQTT broker connects them. Zero glue code.
+
+### 8.2 CH32V003 Button Panel [APP-EXAMPLE-MCU]
+
+The same pattern on firmware. A CH32V003 mainboard with two I2C daughterboards (6-button matrix + 4-relay controller), exporting all namespaces to CAN.
+
+```
+CH32V003 Mainboard (ComposeApp in firmware):
+┌─────────────────────────────────────────────────────┐
+│                                                     │
+│  Internal bus (I2C, 100Hz poll):                    │
+│    Daughterboard 0x20: button-matrix                │
+│      publishes: ftl_arm, red_alert, shields,        │
+│                 warp_speed, self_destruct, cloak     │
+│    Daughterboard 0x21: relay-controller             │
+│      subscribes: ftl_arm, red_alert, shields, cloak │
+│                                                     │
+│  External bus (CAN 250kbps):                        │
+│    All 6 button namespaces exported                 │
+│    All 4 relay namespaces exported                  │
+│    Import: _bus/config/{module_id} (config push)    │
+│                                                     │
+│  Crossover:                                         │
+│    I2C msg from 0x20 (ftl_arm=on)                   │
+│      → CAN frame: ns_hash(ftl_arm) | state | on    │
+│    CAN frame (shields=off) from remote panel        │
+│      → I2C write to 0x21 CMD register               │
+└─────────────────────────────────────────────────────┘
+```
+
+The config is one `.compose.yaml` that defines both daughterboards, all namespaces, and the bindings. `composeio push` compiles it to binary for the CH32V003's 128-byte flash config region.
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-28
+**Status**: Draft — specification for review
+**Depends-On**: 00-composeio-design-principles, 01-composeio-bus-protocol, 02-composeio-config-schema

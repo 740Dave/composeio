@@ -1,0 +1,293 @@
+---
+scope: "The MAKER-PROJECT METHOD GRAPH — the durable, queryable record of how a maker project flows from a soldering iron to a live ComposeUX widget. It formalizes the converged design David + the architect locked in docs/maker/maker-project-flow.md: the six-step a-f process with its OWNERS, the load-bearing storage-slot SEAM (physical pin -> named slot -> widget binding), and the single-source ARTIFACT model (one compose.yaml, N consumers). This is slice S1's method record; S2-S5 build the tooling + the first real project against it."
+audience: "A fresh Intelligence orienting to the maker workflow (this graph is a BOOTSTRAP read, wired via self/meta -> method_flow); the architect (owns steps c/d, co-owns f); provisionIO (owns step b); David (owns step a, co-owns f); the slice builders S2-S5 (each reads this to know the seam + the artifact contract they build against)."
+boundary: "IN: the a-f process + per-step owners; the pin->slot->binding seam; the one-compose.yaml-N-consumers artifact model; the hookup: schema shape + the parts/ catalog resolver shape (contracts, not implementations); the four consumer contracts (widget / hookup guide / MCU config / future KiCad); the KiCad separation line; the S1-S5 slice map; the Galactica dual-throttle validation project as the forward-registered proof. OUT: the hookup: PARSER + validator (S2 builds it); the SVG generator (S3); the MCU config-emitter (S4); the KiCad interpreter (documented-not-built); the widget render tier ([SPEC:CXC-RENDER], consumed); the project REGISTRY mechanics ([REGISTRY:PROJECTS], extended additively with maker fields, not owned here)."
+not-this: "NOT a build spec for any one consumer (each slice owns its own spec); NOT a re-statement of the compose.yaml logical schema (that exists) — it ADDS the physical half and names the seam; NOT a KiCad/PCB design authority (the graph stops at the netlist + part refs + values — [MPF-KICAD-LINE]); NOT a replacement for the human design-lock md (docs/maker/maker-project-flow.md stays the readable reference; this is the walkable one)."
+depends-on: [REGISTRY:PROJECTS, SPEC:CXC-RENDER]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: system-design
+forward-authored: true
+origin: "Built 2026-07-26 (branch build/maker-s1-method-graph, slice S1). Born from the pivot David + the architect settled: from BUILDING the console to BUILDING maker projects on ComposeIO/UX — a mix of real-world (wiring peripherals to an MCU) and digital (widget + storage + config). The converged design was locked in prose at docs/maker/maker-project-flow.md; this corpus is the forward-authored FactLattice formalization of that lock (S1 deliverable 1), decoupled from the pending SMD->LTS migration."
+slot-in: "FORWARD-AUTHORED in LTS, self-contained, lives at the repo-root maker/ corpus (NOT docs/maker/ — that path is a symlink into ~/.claude/maker and is off-limits per the S1 constraints; the readable design-lock md lives there, this walkable record lives in-tree). Slot-in actions: (1) register prefix `MPF-` + doc-id root `MAKER-PROJECT` + the `FLOW:` doctype in the domain profile (ux_composer/specs/99-composeio-profile.yaml or a new maker profile) once the maker domain gets one; (2) on the SMD->LTS migration this lands beside the other forward-authored corpora. Until (1), S007 unregistered-prefix warnings on MPF-*/FLOW-* nodes are EXPECTED and are the tracked cost of forward-authoring (same posture as [SPEC:CIO-DEFECT-REGISTRY])."
+---
+# Maker-Project Flow [FLOW:MAKER-PROJECT]
+
+> A maker project is half solder and half config, and the win is a SINGLE ARTIFACT that keeps the two halves from drifting. The project flows through six owned steps (a-f); the load-bearing idea is the SEAM — the MCU reads a physical pin, publishes to a NAMED SLOT (a bus/doc namespace), and the widget BINDS that slot. The slot is the contract between the physical world (step a) and the display (steps c/d). One `.compose.yaml` carries BOTH the logical half (namespaces/bindings, existing) and the physical half (`hookup:`, added), and FOUR consumers all read that one file: the widget, the hookup guide, the MCU pull-config, and a future KiCad board. Because it is one artifact, the hookup CANNOT drift from the widget or the MCU config. That is the whole method.
+
+- part-of: [REGISTRY:PROJECTS]
+- status: draft — S1 method graph built 2026-07-26 on build/maker-s1-method-graph, pending Architect glass
+- premise: push specificity out of firmware into configuration (the SDR credo) — the same MCU + the same baseline stack becomes ANY maker project by reading a different compose.yaml. The physical wiring is just another face of that one config.
+- readable-reference: docs/maker/maker-project-flow.md (the human design-lock; humans read the rendered md, this graph is the queryable twin)
+
+---
+
+## 1. The process — six owned steps (a-f)
+
+### [MPF-STEP-A] Wire peripherals to the MCU (physical) — owner David
+- definition: the real-world step. David solders/connects the peripherals (pots, sensors, relays) to the MCU's physical pins. This is where a maker project literally begins — a soldering iron, not a keyboard.
+- owner: David
+- produces: the physical circuit whose pin assignments the `hookup:` block ([MPF-HOOKUP]) records as a netlist. The wire's `publishes:` field is the seam that carries a pin forward to a slot ([MPF-SEAM]).
+- board-choice: `perfboard` for known/simple parts (David skips the breadboard); `breadboard` when prototyping. The choice is a `hookup.board` field, and it selects the SVG substrate renderer ([MPF-CONSUMERS] S3).
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-STEP-B] Burn a baseline ComposeIO stack onto the MCU — owner provisionIO
+- definition: flash the MCU with a BASELINE ComposeIO stack (the bus-native firmware that can read pins + publish/subscribe namespaces over the transport) BEFORE any project-specific config. The stack is generic; the project is config (SDR).
+- owner: provisionIO ([PROJECT-PROVISIONIO] — the fleet-provisioning package)
+- produces: an MCU that speaks ComposeBus and is ready to be CONFIGURED (step e) rather than reflashed per project. The stack revision is recorded as the project's `baseline_stack_rev` field ([REGISTRY:PROJECTS] maker fields).
+- rationale: separating the baseline burn (b) from the per-project config (e) is the config-over-code seam at the firmware level — reflash rarely (new stack rev), reconfigure freely (new compose.yaml).
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-STEP-C] Create the widget — owner architect
+- definition: build the ComposeUX widget (the digital control surface) that will display/command the peripheral. Declares the namespaces it consumes/produces + its bindings — the LOGICAL half of the compose.yaml.
+- owner: architect
+- produces: the widget's `.compose.yaml` logical half (namespaces + bindings). The binding TARGET of each data-bound widget is a slot namespace ([MPF-SEAM]) — the widget subscribes the slot, never polls.
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-STEP-D] Save the widget's elements to storage slots — owner architect
+- definition: persist the widget's elements/assets to doc_storage / bus_storage SLOTS — the named namespaces (`bus://assets/...`, `doc://...`) the widget resolves and the MCU targets. This step NAMES the slots the seam ([MPF-SEAM]) hangs on.
+- owner: architect
+- produces: the project's `slots` field ([REGISTRY:PROJECTS] maker fields) — the enumerated named slots (e.g. `throttle/left`, `throttle/right`) that are the contract between step-a's pins and step-c's bindings.
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-STEP-E] Configure the MCU to pull from the designated slots — owner derived
+- definition: configure the burned MCU (b) to READ its physical pins and PUBLISH to the designated slots (d). Crucially, this step is DERIVED, not hand-authored: the MCU config-emitter (S4) reads the `hookup:` pin->slot map and emits the read/publish config, so step e FALLS OUT of the one artifact.
+- owner: derived — emitted by S4 from `hookup:` (not a human author). The architect reviews the emitted config; David/derived-tooling applies it.
+- rationale: hand-authoring the pin->slot config is exactly the drift risk the single-source model kills. e is a PROJECTION of the compose.yaml, not an independent artifact.
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-STEP-F] Test / redeploy fixes — owner David + architect
+- definition: run the whole thing end to end (physical pin -> slot -> widget), find what's wrong, redeploy fixes. Iterative; loops back to a (rewire), c (widget), or e (reconfigure) as needed.
+- owner: David + architect (jointly)
+- produces: verification that the seam closes — a pot twist moves the widget; the roundtrip is live. Feeds the project's `current_step` back toward `f` (done) or back to an earlier step on a defect.
+- part-of: [FLOW:MAKER-PROJECT]
+
+---
+
+## 2. The load-bearing seam
+
+### [MPF-SEAM] The storage-slot seam — physical pin -> named slot -> widget binding
+- definition: THE load-bearing idea. The MCU reads a physical pin and publishes to a NAMED SLOT (a bus/doc namespace, e.g. `throttle/left`); the widget BINDS that same namespace. The slot is the single contract between the physical world (step a) and the display (steps c/d). Everything else in this method exists to make this seam SINGLE-SOURCE and DRIFT-PROOF.
+- three-part-shape: (1) PHYSICAL PIN — an MCU GPIO the peripheral is wired to (recorded in `hookup.wires[].to`, e.g. `mcu.GPIO0`); (2) NAMED SLOT — the namespace the pin publishes to (`hookup.wires[].publishes`, e.g. `throttle/left`); (3) WIDGET BINDING — the compose.yaml binding that subscribes the slot. The `publishes:` field on a wire IS the loop-closer — it is the ONE place the physical pin and the logical slot are stated together.
+- key-insight: because the pin->slot mapping lives on the wire (one authored fact), BOTH the MCU pull-config (step e, S4) and the widget binding (step c) are derived from / checked against the SAME fact. A pin can never publish to a slot the widget doesn't bind, because they read one source.
+- state-engine-hazard: a slot that carries a free-form string (a path/id/selection) MUST use the `json` engine, never `binary` — an out-of-domain value on a strict engine is a hard fault, not a coercion. Semantic slots (thrust levels, on/off) pick the engine that matches their domain.
+- relates-to: [MPF-STEP-A], [MPF-STEP-C], [MPF-STEP-D], [MPF-STEP-E]
+- part-of: [FLOW:MAKER-PROJECT]
+
+---
+
+## 3. The single-source artifact model
+
+### [MPF-ARTIFACT] One compose.yaml, N consumers — the narrow waist
+- definition: the widget's `.compose.yaml` is the maker project's SINGLE SOURCE OF TRUTH. It already carries the logical half (namespaces/bindings, from step c); the method ADDS the physical half (`hookup:`, [MPF-HOOKUP]). Then FOUR consumers all read the one file, so nothing can drift.
+- the-four-consumers: (1) the WIDGET — display (existing); (2) the HOOKUP GUIDE — rendered SVG (S3); (3) the MCU PULL/READ CONFIG — derived from the pin->slot map (S4), so step e is not hand-authored; (4) [future] a KiCad PCB — a netlist-reader interpreter (documented, NOT built — [MPF-KICAD-LINE]).
+- the-win: because it is all ONE artifact, the hookup CANNOT drift from the widget or the MCU config. Change a slot name once and every consumer follows. That is the whole point of the narrow waist.
+- relates-to: [MPF-SEAM]
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-HOOKUP] The hookup: schema — the physical half of the compose.yaml
+- definition: an additive `hookup:` block on the compose.yaml carrying `board` (perfboard|breadboard), `parts[]` ({id, part, at:[row,col]} — `part:` is a REFERENCE into the catalog [MPF-CATALOG]), and `wires[]` ({from, to, publishes?}). The `wires` list, resolved against the catalog's canonical pin names, IS a real netlist — which is exactly what the SVG generator and a future KiCad interpreter read.
+- seam-field: a wire's optional `publishes:` is [MPF-SEAM] made concrete — it maps a physical MCU pin to the slot the widget binds and the MCU pulls.
+- values: component values (`value: 10k`) live on the CATALOG part, not inline (needed for KiCad; the breadboard picture ignores them).
+- ownership: S2 builds the parser/validator for this schema. This node is the CONTRACT S2 implements, not the implementation.
+- depends-on: [MPF-CATALOG]
+- part-of: [MPF-ARTIFACT]
+
+### [MPF-CATALOG] The parts/ catalog — one part def, N targets
+- definition: heavy per-part data lives in a `parts/` catalog resolved by `part:` id (never inline in the maker YAML). A catalog entry carries the canonical `pins` map (the netlist speaks these), a `fritzing:` SVG footprint (-> the hookup SVG generator, S3), a `kicad:` {symbol, footprint} (-> the future interpreter), optional capability hints (`adc_pins:` -> the config-emitter, S4), and a `value:`.
+- resolver: `part:` id -> catalog def (S2 builds the resolver + seeds `esp32-c3` + `pot-10k`, the S5 parts).
+- rationale: the catalog is itself a one-def-N-consumers narrow waist at the PART level — the same ESP32-C3 def feeds the picture, the netlist, and the KiCad symbol.
+- relates-to: [MPF-HOOKUP]
+- part-of: [MPF-ARTIFACT]
+
+---
+
+## 4. The consumers + the boundary
+
+### [MPF-CONSUMERS] The four consumer contracts
+- definition: the contracts each slice implements against the one artifact ([MPF-ARTIFACT]).
+- widget (existing): the compose.yaml logical half renders the control surface; data-bound widgets SUBSCRIBE their slot and re-render on change (never poll).
+- hookup-guide (S3): `hookup:` + catalog -> SVG. TWO substrate renderers off ONE spec — breadboard (power rails + 5-hole tie-columns split by the center gap) vs perfboard (uniform 0.1in hole grid + explicit point-to-point solder traces). Component art = the catalog's Fritzing footprints. Output renders in the doc-viewer (already lowers SVG through the Canvas contract — no external app).
+- mcu-config (S4): the `hookup:` pin->slot map -> the MCU read/publish config (which ADC pin -> which slot namespace), so step e falls out of the YAML instead of being hand-written.
+- kicad (future): reads the netlist + part refs + values, asks the thru-hole/SMD questions, calls the KiCad API -> an auto-placed initial board. Documented as a READER; NOT built now.
+- depends-on: [MPF-ARTIFACT]
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-KICAD-LINE] The KiCad separation line — the boundary we do NOT cross
+- definition: the ratified boundary (David's KiCad pushback). The YAML stops at the NETLIST + part refs + values. It does NOT carry board layout — no layers, design rules, footprint geometry, placement coords. That is KiCad's domain.
+- rationale: the single-source artifact is a SEMANTIC + connectivity record, not a PCB CAD file. A future KiCad interpreter READS the netlist and hands off to KiCad's own API for placement; the maker YAML never tries to be a board file. Keeping this line is what keeps the artifact simple enough to stay drift-proof.
+- relates-to: [MPF-HOOKUP], [MPF-CONSUMERS]
+- part-of: [FLOW:MAKER-PROJECT]
+
+---
+
+## 5. The slice map + the validation project
+
+### [MPF-SLICES] S1-S6 — the build order
+- definition: the flow is delivered in six slices, each building against this graph.
+- S1 (this): the method graph ([FLOW:MAKER-PROJECT]) + wire it into BOOTSTRAP (self/meta -> method_flow, [MPF-BOOTSTRAP]) + extend [REGISTRY:PROJECTS] with maker fields so project INSTANCES flow a->f visibly.
+- S2: the `hookup:` foundation — the schema ([MPF-HOOKUP]) parsed/validated by the compose.yaml loader + the `parts/` catalog ([MPF-CATALOG]) with a resolver; seed `esp32-c3` + `pot-10k`.
+- S3: the hookup SVG generator ([MPF-CONSUMERS], breadboard + perfboard, doc-viewer output).
+- S4: the MCU config-emitter ([MPF-CONSUMERS]) — the SENSOR/INPUT half (ADC pin reads a slot -> publishes).
+- S5: the validation project ([MPF-VALIDATION]).
+- S6: the actuator/OUTPUT cover ([MPF-COVER]) — the dual of S4; a pure subscriber that drives a peripheral and never publishes. LANDED as `composeio.maker.audio_cover` (commit 183f3fb); exemplar = the DY-SV5F voice module on the Galactica dual-throttle C3.
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-VALIDATION] The Galactica dual-throttle controller — the proof
+- definition: the real maker project that exercises the whole flow end to end (forward-registered in [REGISTRY:PROJECTS] as the S5 target).
+- hardware: ESP32-C3 + 2x rotary 10k pots; wipers -> two ADC GPIOs; vcc/gnd -> 3V3/GND. HEADLESS (no display on the device).
+- semantics: the MCU reads the two ADCs, normalizes to thrust levels, and PUBLISHES `throttle/left` + `throttle/right` (semantic engine-thrust slots) — nothing else.
+- integration: the BSG dradis game ([PROJECT-DRADIS-WIDGET], ~/Dropbox/Maker/bsg) — its director reads a command namespace and swings the Galactica's heading; wire it to consume `throttle/left`/`throttle/right` (differential thrust -> heading). The throttle controller is just another PUBLISHER to the command seam (control-is-a-peer).
+- artifacts-proven: the controller's compose.yaml with a `hookup:` block (2 pots -> ESP32-C3); the generated hookup guide (perfboard); the MCU read/publish config (from S4); the dradis integration.
+- relates-to: [FLOW:MAKER-PROJECT], [MPF-SEAM], [PROJECT-DRADIS-WIDGET]
+- part-of: [MPF-SLICES]
+
+---
+
+## 6. The actuator cover — the OUTPUT dual (S6)
+
+### [MPF-COVER] The actuator cover — a pure subscriber that drives a peripheral (S6, the dual of S4)
+- definition: S6 is the OUTPUT dual of S4 ([MPF-CONSUMERS] mcu-config). Where S4 emits the MCU's SENSOR/INPUT config (an ADC pin reads a slot -> PUBLISHES), a maker "cover" SUBSCRIBES existing ComposeBus semantic traffic and drives a peripheral ACTUATOR, and NEVER publishes. Built + LANDED as `composeio.maker.audio_cover` (commit 183f3fb); the DY-SV5F voice module on the Galactica dual-throttle C3 is the exemplar.
+- data-direction: input-only from the bus, output-only to the module. A cover CONSUMES slots; it is never a slot source. This is the strict inverse of [MPF-SEAM]'s pin -> slot -> binding publisher — the cover sits at the slot -> actuator end of the same seam.
+- control-is-a-peer: adding the cover required ZERO changes to the source app (the BSG game, [PROJECT-DRADIS-WIDGET]). A whole reactive behavior plugged into the EXISTING seam as an additive subscriber — the additive-peer payoff. [MPF-VALIDATION] proved the seam-as-peer idea on the PUBLISHER side (a throttle is just another publisher to the command seam); the cover proves the SUBSCRIBER side (a peripheral behavior is just another subscriber to existing traffic).
+- relation-to-S4: same config-over-code firmware seam ([MPF-STEP-E]), opposite direction — S4 is the READ/PUBLISH projection of the compose.yaml, S6 is the SUBSCRIBE/ACTUATE projection. Together they close the round trip: pin -> slot -> widget (S4 input) and slot -> actuator (S6 output).
+- relates-to: [MPF-CONSUMERS], [MPF-SEAM], [MPF-VALIDATION], [PROJECT-DRADIS-WIDGET]
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-LEAF-EDGE] Leaf-derived edges — react to a state CHANGE, not a new event (P1b sharpening)
+- definition: a cover reacts to EDGES (a state just changed), derived AT THE LEAF from successive published frames it already holds — NOT new events the source app must emit. The source keeps publishing the same ground-truth VALUE stream; the leaf computes the transition between successive frames.
+- exemplar-identify: `condition_one` fires when a `dradis/contacts` entry flips `allegiance` neutral -> hostile (a contact is identified). The engine keeps publishing each contact's allegiance VALUE (ground truth the leaf cannot invent); the cover holds the prior frame and fires on the neutral -> hostile TRANSITION.
+- exemplar-jump: `jump` fires on `game/jump` -> "jumping" — a value the source already publishes crossing into a state, differentiated at the leaf.
+- the-rule: the identity/state VALUE stays ENGINE-PUBLISHED (ground truth the leaf can't invent); only the EDGE (the transition between successive values) is LEAF-DERIVED. This is the same rule as the dradis deriving HEADING from successive POSITIONS — the leaf never invents ground truth, it only differentiates a stream it already receives.
+- payoff: a new reactive behavior needs NO new event type from the source — the transition is recoverable from the frames already on the bus, which is exactly why the cover is a pure additive subscriber ([MPF-COVER] control-is-a-peer) and the source app stays untouched.
+- relates-to: [MPF-COVER], [MPF-SEAM]
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-COVER-CONFIG] Config-over-code — the event->action map + the peripheral protocol live in the scene config
+- definition: the cover's event->action map lives in the MCU config (the scene's `audio_cover:` block), so RE-SKINNING the behavior is a config edit, not a firmware change. This is the ACTUATE half of step e ([MPF-STEP-E]) — "configure the MCU to actuate on designated messages" — the output mirror of S4's read/publish config.
+- mapping: a cue -> action row (e.g. `condition_one -> 00008.mp3`) maps a leaf-derived edge ([MPF-LEAF-EDGE]) to a peripheral command. Change the map, change the behavior; the firmware COVER_HOOK ([MPF-COVER-ARTIFACTS]) stays generic.
+- peripheral-protocol-in-config: the actuator command spec is DOCUMENTED IN THE CONFIG, not buried in firmware. For the DY-SV5F it is a UART play-frame at 9600-8N1: `AA 07 02 <track:u16be> <checksum incl. AA>`. The cover BUILDS that frame from the mapped track id; the config is the authoritative command spec the generic hook reads.
+- symmetry-with-S4: the same compose.yaml/scene config that S4 reads for the pin -> slot map ([MPF-HOOKUP]) carries the slot -> actuate map for S6 — one artifact, both directions ([MPF-ARTIFACT]); the hookup still cannot drift from the actuation.
+- relates-to: [MPF-COVER], [MPF-LEAF-EDGE], [MPF-STEP-E], [MPF-ARTIFACT]
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-COVER-ARTIFACTS] The landed artifacts — ActuatorSpec / AudioCue / audio_cover / COVER_HOOK
+- definition: the concrete code that landed the cover pattern (`composeio.maker.audio_cover`, commit 183f3fb). Enumerated so a builder extending the pattern reuses these by reference and never forks them.
+- ActuatorSpec: the OUTPUT dual of `SensorSpec` (S4's input descriptor), in `mcu_config.py` — the subscribe/actuate counterpart to SensorSpec's read/publish; describes the peripheral the cover drives.
+- AudioCue: in `mcu_config.py` — a leaf-derived-edge -> track binding (the event->action row of [MPF-COVER-CONFIG] made a typed artifact).
+- audio_cover scene block: the `audio_cover:` config block parsed by `Composition.audio_cover` — the scene-level map from cues to tracks.
+- COVER_HOOK: the firmware description of the cover, the dual of `throttle_thrust.WORLD_APP_HOOK` (the publisher hook of the S5 validation controller, [MPF-VALIDATION]). Generic hook; all project-specific behavior lives in config ([MPF-COVER-CONFIG]).
+- relates-to: [MPF-COVER], [MPF-COVER-CONFIG]
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-COVER-CHANGE] Why the cover has this shape — the P1b sharpening
+- change: Added the OUTPUT dual to the maker method — a "cover" that SUBSCRIBES existing ComposeBus traffic and drives a peripheral actuator, never publishing. Sharpened the reactivity rule (P1b): a cover reacts to leaf-DERIVED EDGES (transitions differentiated from frames it already holds), not to new events the source must emit. Landed as `composeio.maker.audio_cover` (commit 183f3fb) with the DY-SV5F on the Galactica C3 as the exemplar.
+- context_for_change:
+    prior_state: "The method captured the INPUT direction only — the pin -> slot -> binding seam ([MPF-SEAM]) and S4's read/publish MCU config. There was no formalized OUTPUT dual: how a peripheral ACTUATOR reacts to existing bus traffic, and whether reacting required the source app to emit new events."
+    reasoning: "Reactivity is symmetric with sensing. If sensing is a config-over-code projection of the compose.yaml (S4), actuation should be too (S6): a generic firmware hook (COVER_HOOK) driven by a scene-config map (audio_cover:), so re-skinning is a config edit. Making the cover a PURE SUBSCRIBER that derives edges at the leaf means a whole reactive behavior plugs into the EXISTING seam with ZERO source-app changes — the additive-peer payoff, now proven on the subscriber side."
+    rejected_alternative: "Have the source app EMIT explicit cue events (e.g. publish `cue/condition_one`) for the cover to consume — this pushes cover-specific concerns back INTO the source, breaks control-is-a-peer, and re-couples what the seam decoupled. Rejected: the transition is already recoverable from the ground-truth value stream, so the leaf differentiates it ([MPF-LEAF-EDGE]) and the source stays untouched."
+    counter_argument: "Deriving edges at the leaf risks the leaf INVENTING ground truth (a fabricated allegiance/state) that the engine never asserted."
+    counter_response: "The rule caps exactly this: the VALUE stays engine-published (ground truth the leaf cannot invent); only the EDGE — the transition between successive published values — is leaf-derived. Same discipline as the dradis deriving heading from successive positions."
+    invalidating_assumption: "That the reacting state is recoverable as a TRANSITION between successive published frames the leaf already holds. If a behavior needs a cue the value stream does NOT carry (no frame-to-frame signal reconstructs it), the leaf cannot derive it — then the source app must publish that value as ground truth, and only THEN does the cover subscribe it (still never the source emitting a cover-specific cue)."
+    implication: "S6 joins the slice map ([MPF-SLICES]); future covers reuse ActuatorSpec/AudioCue/COVER_HOOK by reference ([MPF-COVER-ARTIFACTS]); any peripheral whose command frame can be documented in config ([MPF-COVER-CONFIG]) is a candidate cover, driven from existing traffic with no source-app change."
+- relates-to: [MPF-COVER], [MPF-LEAF-EDGE], [MPF-VALIDATION]
+- part-of: [FLOW:MAKER-PROJECT]
+
+---
+
+## 7. Bootstrap + decision record
+
+### [MPF-BOOTSTRAP] The method graph is a bootstrap read
+- definition: a fresh Intelligence is oriented to the maker workflow at wake. The readable design-lock (docs/maker/maker-project-flow.md) is surfaced as a first-class `method_flow` element on the meta-object (intelligence/meta/architect.meta.json), projected to `self/meta` by meta_publisher (as-is), seeded into the console scene (console.compose.yaml self/meta.initial), and rendered as a PROMINENT wake step by the bootstrap-manifest widget — the same mechanism the `principles` element uses.
+- why: post-pivot, the WHOLE build focus is maker projects; a cold start should meet the a-f method + the seam the way it meets the collaboration principles, not re-derive it.
+- boundary: this build surfaces method_flow as a wake-ORIENTATION step (like principles), NOT a hard `registration.required[]` gate — whether it becomes a required-read gate is the architect's glass ([MPF-OPEN]).
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-CHANGE] Why the flow has this shape
+- change: Locked the maker-project method as a six-step owned flow (a-f) whose load-bearing SEAM is pin->slot->binding and whose durability rests on a SINGLE compose.yaml with N read-only consumers (widget / hookup guide / MCU config / future KiCad). Added the physical half as a `hookup:` block over a `parts/` catalog; drew the KiCad line at netlist + refs + values. Formalized as this forward-authored corpus (S1), wired the readable md into bootstrap, and extended the project registry with maker fields.
+- context_for_change:
+    prior_state: "Maker projects lived as tacit practice + a pile of SMD notes (docs/maker/*.smd). The console/build focus was the Intelligence Console itself; there was no owned, drift-proof path from 'solder a pot to a pin' to 'a widget shows the value', and no queryable record of the owners/seam/artifact model."
+    reasoning: "The recurring maker pain is DRIFT — the hookup diagram, the firmware pin map, and the widget binding are authored three times and disagree. Naming ONE artifact (the compose.yaml) with N derived consumers kills that by construction. Deriving step e (MCU config) from the same file that step c (widget) reads means the seam is stated once. Owners on each step make the human/provisionIO/architect handoffs explicit."
+    rejected_alternative: "Three separate artifacts (Fritzing file + firmware config + widget yaml) kept in sync by discipline — this IS the drift status quo; discipline is exactly what fails across a compact/handoff. A full board-CAD source of truth (make the YAML a KiCad-equivalent) — over-reaches ([MPF-KICAD-LINE]); it would make the artifact too heavy to stay the drift-proof narrow waist, and duplicates a tool that already exists."
+    counter_argument: "One file doing logical + physical + consumed-four-ways risks becoming a god-artifact."
+    counter_response: "The consumers are READ-ONLY projections and the KiCad line caps the physical half at connectivity (netlist + refs + values, no layout). The file stays a compose.yaml with an additive `hookup:` block + catalog refs — bounded, not sprawling."
+    invalidating_assumption: "That the parts stay simple enough (2 pots + an MCU) for a perfboard netlist to be the right granularity. If projects grow to dense SMD boards, revisit whether the netlist half should hand off to KiCad EARLIER (skip the perfboard renderer) — the KiCad line moves, the seam does not."
+    implication: "S2-S5 build the consumers against these contracts; [REGISTRY:PROJECTS] gains additive maker fields (mcu / baseline_stack_rev / widget / slots / current_step) so a maker project instance flows a->f visibly; the Galactica dual-throttle controller is forward-registered as the S5 proof."
+- relates-to: [REGISTRY:PROJECTS], [PROJECT-PROVISIONIO], [PROJECT-DRADIS-WIDGET]
+- part-of: [FLOW:MAKER-PROJECT]
+
+### [MPF-OPEN] Open / glass — FLAGGED for the Architect, NOT resolved here
+- Whether `method_flow` becomes a HARD `registration.required[]` gate (every architect wake must read the maker flow) vs a wake-orientation step (this build's choice) — David's/architect's call.
+- The exact repo home + prefix registration for this corpus (repo-root maker/ now; prefix `MPF-`/`FLOW:` unregistered pending a maker domain profile — [MPF slot-in]).
+- Whether the maker fields on [REGISTRY:PROJECTS] should PROJECT through project_validator into self/projects (so the Projects tab renders current-step a->f) — this build keeps them registry-only (additive, no validator/widget change); surfacing current-step in the Projects widget is future work.
+- The Galactica controller's real root path (forward-registered as `planned`; S5 creates it).
+- part-of: [FLOW:MAKER-PROJECT]
+
+---
+
+## Relationships
+
+### Semantic
+[FLOW:MAKER-PROJECT] PART_OF [REGISTRY:PROJECTS]
+[FLOW:MAKER-PROJECT] DEPENDS_ON [SPEC:CXC-RENDER]
+[MPF-STEP-A] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-STEP-B] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-STEP-C] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-STEP-D] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-STEP-E] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-STEP-F] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-STEP-B] DEPENDS_ON [MPF-STEP-A]
+[MPF-STEP-C] DEPENDS_ON [MPF-STEP-A]
+[MPF-STEP-D] DEPENDS_ON [MPF-STEP-C]
+[MPF-STEP-E] DEPENDS_ON [MPF-STEP-B]
+[MPF-STEP-E] DEPENDS_ON [MPF-STEP-D]
+[MPF-STEP-F] DEPENDS_ON [MPF-STEP-E]
+[MPF-SEAM] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-SEAM] RELATED_TO [MPF-STEP-A]
+[MPF-SEAM] RELATED_TO [MPF-STEP-D]
+[MPF-ARTIFACT] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-ARTIFACT] RELATED_TO [MPF-SEAM]
+[MPF-HOOKUP] PART_OF [MPF-ARTIFACT]
+[MPF-HOOKUP] DEPENDS_ON [MPF-CATALOG]
+[MPF-CATALOG] PART_OF [MPF-ARTIFACT]
+[MPF-CATALOG] RELATED_TO [MPF-HOOKUP]
+[MPF-CONSUMERS] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-CONSUMERS] DEPENDS_ON [MPF-ARTIFACT]
+[MPF-KICAD-LINE] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-KICAD-LINE] RELATED_TO [MPF-HOOKUP]
+[MPF-SLICES] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-VALIDATION] PART_OF [MPF-SLICES]
+[MPF-VALIDATION] RELATED_TO [MPF-SEAM]
+[MPF-VALIDATION] RELATED_TO [PROJECT-DRADIS-WIDGET]
+[MPF-COVER] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-COVER] RELATED_TO [MPF-CONSUMERS]
+[MPF-COVER] RELATED_TO [MPF-SEAM]
+[MPF-COVER] RELATED_TO [MPF-VALIDATION]
+[MPF-COVER] RELATED_TO [PROJECT-DRADIS-WIDGET]
+[MPF-COVER] DEPENDS_ON [MPF-STEP-E]
+[MPF-LEAF-EDGE] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-LEAF-EDGE] RELATED_TO [MPF-COVER]
+[MPF-LEAF-EDGE] RELATED_TO [MPF-SEAM]
+[MPF-COVER-CONFIG] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-COVER-CONFIG] RELATED_TO [MPF-COVER]
+[MPF-COVER-CONFIG] RELATED_TO [MPF-LEAF-EDGE]
+[MPF-COVER-CONFIG] DEPENDS_ON [MPF-STEP-E]
+[MPF-COVER-CONFIG] RELATED_TO [MPF-ARTIFACT]
+[MPF-COVER-ARTIFACTS] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-COVER-ARTIFACTS] RELATED_TO [MPF-COVER]
+[MPF-COVER-ARTIFACTS] RELATED_TO [MPF-COVER-CONFIG]
+[MPF-COVER-CHANGE] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-COVER-CHANGE] RELATED_TO [MPF-COVER]
+[MPF-COVER-CHANGE] RELATED_TO [MPF-LEAF-EDGE]
+[MPF-COVER-CHANGE] RELATED_TO [MPF-VALIDATION]
+[MPF-BOOTSTRAP] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-CHANGE] PART_OF [FLOW:MAKER-PROJECT]
+[MPF-CHANGE] RELATED_TO [REGISTRY:PROJECTS]
+[MPF-OPEN] PART_OF [FLOW:MAKER-PROJECT]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-07-26 — forward-authored in LTS (S1, branch build/maker-s1-method-graph); self-contained.
+**Updated**: 2026-07-26 — added §6 the actuator/OUTPUT cover (S6, [MPF-COVER] et al.), the dual of S4; landed as `composeio.maker.audio_cover` (commit 183f3fb). Bootstrap + decision record renumbered §7.
+**Status**: Draft — pending Architect glass. Prefix `MPF-`/`FLOW:` unregistered (forward-authored; slot-in registers it). Readable twin: docs/maker/maker-project-flow.md.

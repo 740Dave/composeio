@@ -1,0 +1,56 @@
+# Checklist-parity test scene ([CXC-PRIM-TIER-PARITY]) — exercises the
+# scrollable `checklist` / `status_list` readout ported to the embedded
+# tier (port of nightwatch_checklist.py, generalized) so a board capture
+# can be pixel-crosschecked against the Skia reference.
+#
+# Type is `nightwatch_checklist` here so the desktop reference builds the
+# NightWatchChecklistWidget (parser.py _REGISTRY_ROWS); the embedded
+# dispatch (compose_scene.cpp) also accepts `checklist` / `status_list` /
+# `task_checklist` / `taskchecklist` for the generic primitive.
+#
+# The three DISTINCT states — done (filled ok disc + check), partial
+# (half-filled amber ring), deferred (faint hollow ring) — render in the
+# marker AND the right-aligned status tag.  The lower list overflows its
+# fixed box, so the shared ScrollList substrate reports a thumb + the
+# tap-zone gutter (page-scroll) — the first substrate consumer.
+#
+#   Reference:  cd python && python scripts/cyd_config_crosscheck.py \
+#                 ../cyd/test/configs/checklist_parity.compose.yaml <capture.bmp>
+
+design:
+  title: Checklist Parity
+  width: 240
+  height: 320
+  background: "#070A0F"
+
+widgets:
+  # short list — fits its box, no scrollbar (all three states shown)
+  - type: nightwatch_checklist
+    id: chk_short
+    x: 0
+    y: 10
+    w: 240
+    h: 90
+    font_size: 12.5
+    tasks:
+      - {label: Provision fleet unit, status: done}
+      - {label: Calibrate touch panel, status: partial}
+      - {label: Flash reactive core, status: deferred}
+
+  # long list — overflows h=140 (7 rows * 27 = 189 > 140), so the
+  # substrate reports overflow -> thumb drawn + gutter tap-zones active
+  - type: nightwatch_checklist
+    id: chk_long
+    x: 0
+    y: 120
+    w: 240
+    h: 140
+    font_size: 12.5
+    tasks:
+      - {label: Boot to first frame, status: done}
+      - {label: Fetch display config, status: done}
+      - {label: Wire MQTT broker, status: partial}
+      - {label: Bind gauge namespace, status: deferred}
+      - {label: Verify band renderer, status: done}
+      - {label: Soak test 540 minutes, status: deferred}
+      - {label: Ship it, status: deferred}

@@ -1,0 +1,73 @@
+# Bus-monitor-parity test scene ([CXC-PRIM-TIER-PARITY]) — exercises the
+# scrolling, colour-coded `bus_monitor` log ported to the embedded tier
+# (port of bus_monitor.py) so a board capture can be pixel-crosschecked
+# against the Skia reference.
+#
+# The Skia widget subscribes the LIVE bus (bus.on_message) and appends
+# lines as traffic arrives; on this static tier the `lines:` list is the
+# render default (like checklist `tasks:` / chat_thread `messages:`).  The
+# desktop reference is rendered by injecting the SAME `lines:` into the
+# widget's line ring — see python/scripts/render_bus_monitor_parity.py.
+#
+# Every message TYPE is present so all six colours + `other` render:
+#   state=white  event=cyan  heartbeat/time_sync=gray  discovery=yellow
+#   config_push=magenta  other=#AAAAAA
+#
+# The TOP monitor FITS its box (no scrollbar) — both tiers draw the
+# identical top-aligned block, the exact-parity case.  The BOTTOM monitor
+# OVERFLOWS its short box, so the shared ScrollList substrate reports a
+# thumb + the gutter tap-zones (page-scroll) and this tier bottom-anchors
+# the newest lines (the terminal-log default).
+#
+#   Reference:  python3 python/scripts/render_bus_monitor_parity.py \
+#                 cyd/test/configs/bus_monitor_parity.compose.yaml /tmp/ref.png
+#   Board:      cd python && python scripts/cyd_config_crosscheck.py \
+#                 ../cyd/test/configs/bus_monitor_parity.compose.yaml <capture.bmp>
+
+design:
+  title: Bus Monitor Parity
+  width: 240
+  height: 320
+  background: "#1E1E2E"
+
+widgets:
+  # fits its box -> no scrollbar, top-aligned block (exact-parity case)
+  - type: bus_monitor
+    id: mon_fit
+    x: 0
+    y: 6
+    w: 240
+    h: 150
+    label: Bus Monitor
+    lines:
+      - {stamp: "13:15:01", namespace: fleet/540/temp, type: state, value: "72.5", source: minnow-01}
+      - {stamp: "13:15:01", namespace: fleet/540/relay, type: event, value: toggled}
+      - {stamp: "13:15:02", namespace: _bus/heartbeat, type: heartbeat, value: "1"}
+      - {stamp: "13:15:02", namespace: _bus/discovery, type: discovery, value: minnow-02, source: minnow-02}
+      - {stamp: "13:15:03", namespace: _bus/config, type: config_push, value: dash.yaml}
+      - {stamp: "13:15:03", namespace: _bus/time, type: time_sync, value: "1721826903"}
+      - {stamp: "13:15:04", namespace: app/misc, type: note, value: hello}
+
+  # overflows h=128 (many lines * 15 > box) -> thumb drawn + gutter active;
+  # heartbeats shown here (show_heartbeats: true) so the gray lines appear
+  - type: bus_monitor
+    id: mon_scroll
+    x: 0
+    y: 168
+    w: 240
+    h: 146
+    label: Traffic (scroll)
+    show_heartbeats: true
+    lines:
+      - {stamp: "13:16:00", namespace: fleet/540/a, type: state, value: "1"}
+      - {stamp: "13:16:00", namespace: fleet/540/b, type: event, value: fired}
+      - {stamp: "13:16:01", namespace: fleet/540/c, type: state, value: "2"}
+      - {stamp: "13:16:01", namespace: _bus/heartbeat, type: heartbeat, value: "1"}
+      - {stamp: "13:16:02", namespace: fleet/540/d, type: discovery, value: node-9}
+      - {stamp: "13:16:02", namespace: fleet/540/e, type: config_push, value: cfg}
+      - {stamp: "13:16:03", namespace: fleet/540/f, type: state, value: "3"}
+      - {stamp: "13:16:03", namespace: fleet/540/g, type: event, value: ack}
+      - {stamp: "13:16:04", namespace: fleet/540/h, type: state, value: "4"}
+      - {stamp: "13:16:04", namespace: fleet/540/i, type: event, value: done}
+      - {stamp: "13:16:05", namespace: fleet/540/j, type: state, value: "5"}
+      - {stamp: "13:16:05", namespace: fleet/540/k, type: note, value: tail}

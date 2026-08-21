@@ -1,0 +1,55 @@
+# ComposeUX headless widget — fuel_pump
+# ([SPEC:CXC-HEADLESS] [CXC-HW-MODEL] · re-authored for [SPEC:CXC-DSL]
+# Pass 2, [CXC-DSL-TRIAD])
+#
+# Subscribes fuel/remaining + pump/damaged; publishes pump/flow_rate.
+# Bus-triggered: it recomputes only when an input publishes
+# ([CXC-HW-C5], the reactive case).
+#
+# ONE expression replaces the Pass-1 literal value map + `in:`-range
+# hold-behavior composition (harvested DSL use-cases #2 and #5):
+#
+#     min(ns('pump/damaged') ? $damaged_rate : $normal_rate,
+#         $k * ns('fuel/remaining'))
+#
+#   * conditional demand — damaged pumps at 2.5, healthy at 10
+#     (`ns()` truthiness is canon-aware: a bool True publish, "on",
+#     or 1 all read as damaged — the Pass-1 map's silent str(raw)
+#     mismatch is gone).
+#   * proportional derating — the k·remaining term derates flow as the
+#     tank empties (below remaining = rate/k) and lands it at exactly
+#     0.0 on a dry tank; no sentinel bounds, no hold/revert choreography.
+
+app:
+  id: headless-fuel-pump
+
+headless:
+  schedule:
+    mode: bus_triggered       # [CXC-HW-SCHEDULE]: wake on input publish
+    trigger:
+      - pump/damaged
+      - fuel/remaining
+
+variables:
+  normal_rate: 10.0
+  damaged_rate: 2.5
+  k: 0.25                     # derating slope near empty
+
+namespaces:
+  - name: pump/flow_rate
+    state_engine: json
+    initial: $normal_rate     # defined output until the first wake — a
+                              # bus-triggered widget ticks only on its
+                              # trigger ([CXC-HW-C5]), so its output
+                              # state is seeded declaratively
+
+widgets:
+  - type: gauge
+    id: pump
+    label: "Fuel pump"
+    min: 0
+    max: 10
+    value: { expr: "min(ns('pump/damaged') ? $damaged_rate : $normal_rate, $k * ns('fuel/remaining'))" }
+    outputs:
+      - namespace: pump/flow_rate
+        expr: "min(ns('pump/damaged') ? $damaged_rate : $normal_rate, $k * ns('fuel/remaining'))"

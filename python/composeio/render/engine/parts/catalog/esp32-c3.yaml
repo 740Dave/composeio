@@ -1,0 +1,64 @@
+# Part catalog entry — Espressif ESP32-C3 (ESP32-C3-MINI-1 module).
+#
+# Maker-project-flow design lock §4: multi-target part definition, one def
+# with N consumers.  A `part:` reference in a scene's `hookup.parts` resolves
+# to this entry; wires in `hookup.wires` speak the canonical `pins` below.
+#
+# Consumers:
+#   pins        -> the netlist (S2 validator) + hookup SVG generator (S3)
+#   fritzing    -> hookup SVG generator (S3) — component art / footprint
+#   kicad       -> future KiCad netlist interpreter (documented, not built)
+#   adc_pins    -> MCU config-emitter (S4) — which pins can read an analog slot
+#
+# Each catalog file is a mapping of {part-id: definition}; the resolver merges
+# every *.yaml in this directory, so many parts may share one file.
+
+esp32-c3:
+  description: Espressif ESP32-C3 RISC-V SoC on the ESP32-C3-MINI-1 module.
+
+  # Canonical pin map — the netlist (hookup.wires) speaks EXACTLY these names.
+  # A wire endpoint naming a pin not in this list is a hard parse error (S2).
+  pins:
+    - 5V
+    - 3V3
+    - GND
+    - EN
+    - GPIO0
+    - GPIO1
+    - GPIO2
+    - GPIO3
+    - GPIO4
+    - GPIO5
+    - GPIO6
+    - GPIO7
+    - GPIO8
+    - GPIO9
+    - GPIO10
+    - GPIO18
+    - GPIO19
+    - GPIO20   # U0RXD
+    - GPIO21   # U0TXD
+
+  # MCU capability hint for the config-emitter (S4): the pins that back an
+  # ADC channel and can therefore read an analog `publishes:` slot.
+  # ESP32-C3: ADC1 = CH0..CH4 on GPIO0..GPIO4.
+  adc_pins:
+    - GPIO0
+    - GPIO1
+    - GPIO2
+    - GPIO3
+    - GPIO4
+
+  # Hookup-SVG art (S3).  `fritzing` is the SVG asset ref S3 will resolve;
+  # `fritzing_part` is the canonical Fritzing core-bin part name to fetch it by.
+  fritzing: esp32-c3.svg
+  fritzing_part: "ESP32-C3"
+  fritzing_note: >-
+    S3 fetches the breadboard SVG footprint from the Fritzing core parts bin
+    (search "ESP32-C3" / "ESP32-C3-DevKitM-1") and caches it under
+    render/examples/assets/fritzing/esp32-c3.svg.  Not fetched at S2.
+
+  # Future KiCad interpreter target (documented; not built at S2/S3/S4).
+  kicad:
+    symbol: "RF_Module:ESP32-C3-MINI-1"
+    footprint: "RF_Module:ESP32-C3-MINI-1"

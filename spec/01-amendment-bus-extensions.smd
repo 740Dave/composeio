@@ -1,0 +1,464 @@
+---
+scope: "Amendment to 01-composeio-bus-protocol.smd — json state engine, log message mode, namespace access policy, HTTP relay transport binding. Driven by Nexus integration requirements."
+audience: "Bus protocol implementers, Nexus service developers, ComposeApp framework users"
+boundary: "Protocol extensions only; Nexus-specific governance semantics remain in Nexus specs"
+depends-on: [01-composeio-bus-protocol.smd, 00-composeio-design-principles.smd]
+amends: 01-composeio-bus-protocol.smd
+motivation: "Nexus Terminus analysis revealed three ComposeIO protocol gaps: no structured state type, no append-only namespace mode, no publisher access control. These gaps affect any complex application, not just Nexus."
+status: "Draft — for review"
+created: 2026-03-28
+---
+
+# Amendment: Bus Protocol Extensions [AMEND:BP-EXT]
+
+> Three protocol extensions driven by Nexus integration analysis. Each addresses
+> a gap that manifests in any complex application using the ComposeIO bus —
+> Nexus exposed them first because governance, discussions, and multi-agent
+> coordination are inherently complex.
+
+---
+
+## 1. New State Engine: `json` [BP-EXT-JSON]
+
+**Amends**: Section 1 of 01-composeio-bus-protocol and state engine registry.
+
+### 1.1 Problem
+
+The state engine taxonomy (binary, tri_level, stop_light, continuous_0_255, enum)
+covers hardware I/O well but has no type for structured data. Complex applications
+need namespaces that carry JSON objects — session lists, thread metadata,
+configuration snapshots, diagnostic reports. The current workaround (abusing
+`binary` engine with JSON strings as values) bypasses validation and misleads
+both tools and developers about the namespace's value domain.
+
+### 1.2 Specification
+
+New state engine type: `json`
+
+```yaml
+state_engine:
+  type: json
+  schema: optional    # JSON Schema reference for validation (future)
+```
+
+**Behavior:**
+- Accepts any value that is valid JSON (object, array, string, number, boolean, null)
+- Retains the full object as the current state value (same as `binary` or `enum` — last write wins)
+- State changes are published when the new value differs from the current value (deep equality)
+- On CAN transport: `json` state values MUST be referenced by URL, not inlined (DP-CIO-18). The CAN frame carries a `bus://` reference; the subscriber fetches the JSON from bus storage. This is the same pattern as config_push.
+- On MQTT/in-process: JSON value is the message payload directly (within the 256-byte guideline; large objects use bus:// reference)
+
+**JSON wire encoding:**
+
+```json
+{"ns": "session_list", "type": "state", "val": [{"id": "s1", "status": "active"}, {"id": "s2", "status": "idle"}], "src": "session-mgr", "ts": 12345, "scope": "auto", "seq": 50}
+```
+
+**CAN encoding** (when value exceeds 5 bytes):
+
+```
+CAN data byte 2: value_encoding = 7 (raw)
+CAN data bytes 3-7: first 5 bytes of bus:// URL hash (content-addressable reference)
+```
+
+The subscriber uses the hash to fetch from bus storage: `GET /api/v1/state/{ns_hash}/{content_hash}`
+
+**Config schema entry:**
+
+```yaml
+namespaces:
+  - name: session_list
+    state_engine:
+      type: json
+    label: "Active Sessions"
+```
+
+**Implementation in Python:**
+
+```python
+class JsonEngine(StateEngine):
+    engine_type = "json"
+    values = []  # No fixed value list
+    default = None
+
+    def is_valid(self, value) -> bool:
+        # Any JSON-serializable value is valid
+        import json
+        try:
+            json.dumps(value)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    def advance(self) -> Any:
+        return self._current  # No meaningful "next" for JSON
+```
+
+### 1.3 Impact
+
+- **State engine registry**: Add `"json": JsonEngine` to `_BUILTIN_ENGINES`
+- **Bus storage**: Add `GET /api/v1/state/{namespace}/{hash}` endpoint for CAN-referenced JSON
+- **CAN bridge**: When bridging a `json` state to CAN, store in bus storage and transmit reference
+- **Config validation**: `json` engine accepts any `default` value that is valid JSON
+- **Binary compilation**: Engine type ID `0x05` for `json`
+
+---
+
+## 2. New Message Mode: `log` [BP-EXT-LOG]
+
+**Amends**: Section 2 of 01-composeio-bus-protocol (message types).
+
+### 2.1 Problem
+
+ComposeIO has two namespace modes:
+- `state`: Last value retained. New subscribers get current value. On-change publishing.
+- `event`: Fire-and-forget. Not retained. Late subscribers miss past events.
+
+Neither handles **append-only data streams**: discussion threads, audit trails,
+telemetry logs, command history. Abusing `state` overwrites history. Abusing
+`event` loses it. Nexus's namespaces are fundamentally append-only logs with
+queryable history — this pattern is general.
+
+### 2.2 Specification
+
+New namespace mode: `log`
+
+A `log` namespace accumulates entries over time. Each published message is
+appended (not overwritten). Subscribers receive new entries as they arrive.
+Late subscribers can query history via bus storage.
+
+**Namespace declaration:**
+
+```yaml
+namespaces:
+  - name: audit_trail
+    mode: log                    # NEW field. Default: "state" (backward compatible)
+    state_engine: json           # Each entry is a JSON object
+    retention: 1000              # Max entries retained. Default: 100. 0 = unlimited.
+    label: "Audit Trail"
+```
+
+**Publishing to a log namespace:**
+
+```json
+{
+  "ns": "audit_trail",
+  "type": "log_entry",
+  "val": {"action": "widget_added", "widget_id": "btn_001", "agent": "claude-a1b2"},
+  "src": "design_dispatcher",
+  "ts": 12345,
+  "scope": "auto",
+  "seq": 50
+}
+```
+
+New message type: `log_entry` (type code 9, from reserved range 8-15). **Code allocation APPLIED
+2026-08-10** to 01-composeio-bus-protocol §1.4 and [BP-TYPE-CODES] — it had reached the Python
+`MessageType` enum only, so a `log_entry` frame decoded as `state` on every binary transport.
+
+**Subscriber behavior:**
+- Real-time subscribers receive each `log_entry` as it's published (same as events)
+- Unlike events, entries are also stored in bus storage under the namespace
+- Bus storage retains up to `retention` entries (FIFO eviction when full)
+
+**Querying history:**
+
+```
+GET /api/v1/log/{namespace}?since={timestamp}&limit={count}
+```
+
+Response:
+
+```json
+{
+  "namespace": "audit_trail",
+  "entries": [
+    {"val": {...}, "src": "design_dispatcher", "ts": 12345, "seq": 50},
+    {"val": {...}, "src": "canvas", "ts": 12346, "seq": 51}
+  ],
+  "total": 142,
+  "has_more": true
+}
+```
+
+**MQTT behavior:**
+- Log entries are published with QoS 1 (at-least-once), NOT retained
+- History is in bus storage, not MQTT retained messages
+- Topic: `composeio/{scope}/{namespace}` (same as state/event)
+
+**CAN behavior:**
+- Log entries follow the same encoding as state messages
+- Bus storage on the CAN-MQTT bridge node stores entries for CAN-only segments
+
+**In-process behavior:**
+- Entries stored in a bounded deque on the namespace object
+- `namespace.history(since=, limit=)` returns past entries
+
+### 2.3 Impact
+
+- **MessageType enum**: Add `LOG_ENTRY = "log_entry"` (code 9)
+- **Namespace class**: Add `mode` field ("state", "event_only", "log"), add `_log_entries` deque, add `history()` method
+- **Bus storage API**: Add `GET /api/v1/log/{namespace}` endpoint
+- **Config schema**: Add `mode` and `retention` fields to namespace declaration
+- **Binary compilation**: Add mode byte to namespace record (0=state, 1=event_only, 2=log)
+
+---
+
+## 3. Namespace Access Policy [BP-EXT-ACCESS]
+
+**Amends**: Section 3 and 5 of 01-composeio-bus-protocol.
+
+### 3.1 Problem
+
+ComposeIO has no access control on namespaces. Any bus client publishes to any
+namespace. The `_app/` boundary (spec 08) provides process-level visibility
+but not agent-level access control. For multi-agent scenarios (multiple
+Intelligences, Nexus Domain Agents subscribing to bus events), namespaces
+need publisher whitelists and subscriber policies.
+
+Nexus enforces CRUD policies per namespace. ComposeIO needs a lighter-weight
+version focused on pub/sub rather than CRUD.
+
+### 3.2 Specification
+
+**Namespace access policy fields:**
+
+```yaml
+namespaces:
+  - name: ftl_arm
+    state_engine: binary
+    access:
+      publish: [panel-1, hub-main]        # Only these sources can publish. Empty = any.
+      subscribe: any                       # "any" (default) or list of allowed subscribers
+```
+
+**Enforcement:**
+
+- **Publish validation**: When a message is received by the bus runtime, check the `src` field against the namespace's `publish` whitelist. If the source is not in the list, drop the message and log WARN.
+- **Subscribe validation**: When a client subscribes to a namespace, check against the `subscribe` policy. If not allowed, the subscription silently receives nothing (no error — the namespace appears empty to unauthorized subscribers).
+- **Empty publish list**: Any source can publish (backward compatible default).
+- **`subscribe: any`**: Any client can subscribe (backward compatible default).
+
+**Infrastructure namespaces** (`_bus/*`) always have `publish: [hub-main]` — only the bus master publishes to infrastructure. This is currently a convention; the access policy makes it enforceable.
+
+**Intelligence integration**: When an Intelligence joins (spec 06), it declares capabilities. The access policy can reference capability classes:
+
+```yaml
+namespaces:
+  - name: composer/canvas/widget_added
+    access:
+      publish: [canvas, "@capability:layout"]    # canvas module OR any agent with layout capability
+```
+
+The `@capability:` prefix matches against the Intelligence's declared capabilities from its join message. This enables Nexus Domain Agents to subscribe selectively — a Domain Agent with `review` capability can observe but not publish to design namespaces.
+
+### 3.3 Nexus Domain Agent Subscription
+
+When Nexus is a first-class ComposeIO service, Domain Agents (architect, builder, etc.) are bus clients. Their access is governed by both:
+- ComposeIO namespace access policy (can they subscribe/publish?)
+- Nexus's constitutional identity class (Named Persona, Domain Agent, Ephemeral)
+
+The bridge between these systems:
+
+```yaml
+# Nexus service config on ComposeIO bus
+namespaces:
+  - name: nexus/governance/vote_opened
+    mode: log
+    state_engine: json
+    access:
+      publish: [nexus-service]               # Only Nexus service publishes governance events
+      subscribe: any                          # Any bus client can observe votes
+
+  - name: nexus/discussion/new_post
+    mode: log
+    state_engine: json
+    access:
+      publish: [nexus-service]
+      subscribe: ["@capability:governance", "@capability:review"]  # Only governance-capable agents
+```
+
+Domain Agents subscribe to ComposeIO bus events by declaring namespace interest in their Nexus instance config:
+
+```yaml
+# In Domain Agent config (Nexus side)
+bus_subscriptions:
+  - namespace: composer/canvas/widget_added
+    mode: observe                            # Read-only — the agent watches design activity
+  - namespace: _bus/fault
+    mode: observe                            # Watch for bus faults
+  - namespace: presence_status
+    mode: observe                            # Watch human presence
+```
+
+The Nexus-ComposeIO bridge service translates these subscriptions into bus subscribe calls. The access policy on the ComposeIO side validates that the Domain Agent (via its capability set) is allowed to subscribe.
+
+### 3.4 Impact
+
+- **Namespace class**: Add `access_policy` field with `publish` and `subscribe` lists
+- **Bus runtime**: Add publish validation check in `_send_message()`
+- **Bus runtime**: Add subscribe validation check in `subscribe()`
+- **Config schema**: Add `access` field to namespace declaration
+- **Config validation**: Validate that publish/subscribe lists reference known module IDs or `@capability:` patterns
+- **Discovery**: Include access policy in namespace registry for introspection
+
+---
+
+## 4. HTTP Relay Transport Binding [BP-EXT-HTTP-RELAY]
+
+**Amends**: Section 6 of 01-composeio-bus-protocol (transport bindings).
+
+### 4.1 Problem
+
+Nexus's RelayBridge forwards UI events via HTTP POST to a coordination relay.
+This is a legitimate transport pattern for telemetry, monitoring, and
+Intelligence observation. ComposeIO specs MQTT, CAN, UART, I2C as transports
+but not HTTP. The bus storage REST API (section 7) is query-based, not
+event-streaming. There's no spec for one-way event forwarding via HTTP.
+
+### 4.2 Specification
+
+New transport binding: HTTP Relay
+
+An HTTP relay transport forwards bus messages as HTTP POST requests to a
+configurable endpoint. It is **unidirectional** (bus → HTTP) by default,
+with optional bidirectional mode (HTTP → bus via a polling or SSE return channel).
+
+**Transport configuration:**
+
+```yaml
+app:
+  transports:
+    - type: http_relay
+      endpoint: http://mqtt-broker.local:8422/messages
+      channel: nexus-terminal               # Routing key at the relay
+      direction: outbound                   # "outbound" (default) or "bidirectional"
+      filter:                               # Optional — which namespaces to forward
+        - "presence_status"
+        - "_bus/fault"
+        - "composer/intelligence/*"         # Wildcard support
+      batch_interval_ms: 100               # Batch messages for efficiency. 0 = immediate.
+```
+
+**Outbound (bus → HTTP):**
+
+Each bus message (or batch) is POST'd as JSON:
+
+```json
+{
+  "from": "nexus-terminal",
+  "channel": "nexus-terminal",
+  "messages": [
+    {"ns": "presence_status", "type": "state", "val": "active", "src": "presence", "ts": 12345}
+  ]
+}
+```
+
+- **Fire-and-forget**: 5-second timeout, failures logged at DEBUG (don't block the bus)
+- **Daemon threads**: Each POST runs on a daemon thread (same pattern as Nexus's RelayBridge)
+- **Filtering**: Only namespaces matching the `filter` list are forwarded. No filter = all messages.
+- **Batching**: Messages are collected for `batch_interval_ms` then sent as one POST. Reduces HTTP overhead for high-frequency buses.
+
+**Bidirectional (HTTP → bus):**
+
+When `direction: bidirectional`, the transport also polls the relay for inbound messages:
+
+```
+GET {endpoint}?channel={channel}&since={last_timestamp}
+```
+
+Inbound messages are published to the internal bus as if received from any transport. This enables Nexus Domain Agents to publish bus commands via the relay.
+
+### 4.3 Nexus-Specific Usage
+
+Nexus's coordination relay at `mqtt-broker.local:8422` already accepts this format. The HTTP relay transport makes Nexus Terminus's `RelayBridge` a standard ComposeIO transport binding instead of a custom one-off.
+
+For Domain Agent subscriptions: the Nexus-ComposeIO bridge service uses the bidirectional HTTP relay to forward bus events to Domain Agents and receive agent commands back. The bridge runs as a ComposeIO service on mqtt-broker.local alongside the MQTT broker.
+
+### 4.4 Impact
+
+- **Transport registry**: Add `http_relay` type
+- **Python library**: Implement `HttpRelayTransport(Transport)` in `transport_http_relay.py`
+- **Config schema**: Add `http_relay` to transport type enum with endpoint/channel/direction/filter/batch fields
+- **Binary compilation**: Transport type byte `0x04` for http_relay
+
+---
+
+## 5. Nexus as First-Class ComposeIO Service [BP-EXT-NEXUS]
+
+### 5.1 Integration Architecture
+
+```
+ComposeIO Bus (MQTT on mqtt-broker.local)
+  │
+  ├── composeio/global/presence_status          ← Nexus Terminus publishes
+  ├── composeio/global/sessions_active          ← Nexus Terminus publishes
+  ├── composeio/global/nexus/governance/*       ← Nexus service publishes
+  ├── composeio/global/nexus/discussion/*       ← Nexus service publishes
+  ├── composeio/global/composer/intelligence/*  ← MCP server publishes
+  │
+  └── Nexus-ComposeIO Bridge Service
+        ├── Subscribes to bus events per Domain Agent configs
+        ├── Forwards matching events to Nexus namespace entries
+        ├── Receives Domain Agent commands, publishes to bus
+        └── Enforces access policy at the bridge boundary
+```
+
+### 5.2 Nexus Namespace Reservations on ComposeIO Bus
+
+| Prefix | Owner | Purpose |
+|--------|-------|---------|
+| `nexus/governance/*` | Nexus service | Vote opened/closed/tallied events |
+| `nexus/discussion/*` | Nexus service | New discussion/post/resolution events |
+| `nexus/agent/*` | Nexus bridge | Domain Agent presence and commands |
+| `nexus/memory/*` | Nexus service | Memory promotion/endorsement events |
+
+These are `log` mode namespaces with `json` state engine — each event is an append-only entry observable by any bus subscriber with appropriate access.
+
+### 5.3 Domain Agent Bus Participation
+
+A Nexus Domain Agent (e.g., `nexus-architect`) participates on the ComposeIO bus through the bridge:
+
+1. Agent declares bus subscriptions in its Nexus instance config
+2. Bridge subscribes to matching ComposeIO namespaces
+3. Bus events are forwarded to the agent as Nexus namespace entries
+4. Agent can publish commands back to the bus via the bridge (if access policy allows)
+
+This enables:
+- **Architect agent observes design activity**: subscribes to `composer/canvas/*`, watches widget placement
+- **Builder agent monitors hardware**: subscribes to `_bus/fault`, watches for bus faults
+- **Custodial Human dashboard**: subscribes to `nexus/governance/vote_opened`, gets notified of pending votes
+
+### 5.4 Access Control at the Bridge
+
+The bridge enforces ComposeIO access policy AND Nexus constitutional identity:
+
+| ComposeIO Policy | Nexus Identity | Result |
+|-----------------|----------------|--------|
+| `subscribe: any` | Named Persona | Allowed |
+| `subscribe: any` | Domain Agent | Allowed |
+| `subscribe: ["@capability:governance"]` | Domain Agent with governance | Allowed |
+| `subscribe: ["@capability:governance"]` | Domain Agent without governance | Denied |
+| `publish: [nexus-service]` | Domain Agent via bridge | Denied (bridge source is `nexus-service`, agent commands go through bridge) |
+
+---
+
+## 6. Design Principle Addition [BP-EXT-PRINCIPLE]
+
+**Proposed new principle for 00-composeio-design-principles.smd:**
+
+### [DP-CIO-25] Services Are Bus Participants, Not Bus Extensions
+
+> An external service (Nexus, Home Assistant, Prometheus, a biometric testing suite) joins the ComposeIO bus as a participant — it publishes to namespaces, subscribes to namespaces, and follows the bus protocol. It does NOT extend the bus protocol with service-specific semantics. Service-specific complexity (governance votes, memory tiers, ML inference pipelines) stays inside the service. The bus carries events and state — the meaning is the service's concern.
+
+- implication: Nexus's constitutional voting is an internal Nexus concern. The bus sees `nexus/governance/vote_opened` as a `log` namespace with `json` entries. It doesn't know or care about quorum thresholds, veto rules, or cryptographic ballots.
+- implication: A biometric testing suite's ML pipeline is internal. The bus sees `test_progress` as a `continuous_0_255` namespace. It doesn't know about face encodings, match algorithms, or confidence thresholds.
+- implication: Services compose via bus namespaces. A Nexus vote result can trigger a ComposeIO binding that changes hardware state — not because the bus understands governance, but because a `nexus/governance/vote_result` state change fires a namespace binding to `relay_arm`.
+- test: If adding a new service requires changes to the bus protocol or transport implementations, the integration boundary is wrong. The service should publish/subscribe using existing message types and namespace patterns.
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-28
+**Status**: Draft — amendment pending review
+**Motivation**: Nexus Terminus analysis + Domain Agent bus participation requirement

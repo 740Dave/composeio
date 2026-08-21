@@ -1,0 +1,152 @@
+---
+scope: "The declarative binding + behavior layer for .compose.yaml — bindable widget attributes/transforms, inline variables, and engine-owned state-driven temporal behaviors (blink/pulse/ramp/rotate/animate). The reactive-widget layer."
+audience: "Render-engine developers, widget authors, the Composer binding-editor builder"
+boundary: "IN: the declarative config schema + engine execution for bindings, variables, and named behaviors. OUT: the sandboxed expression DSL (deferred, use-case-gated — [CXC-RM-BEHAVIORS]); arbitrary inline code (rejected — see [CXC-BIND-BOUNDARY]); the Composer UI that authors these (next slug, [CXC-RM-M4] follow-on)."
+not-this: "Not a scripting language; not a general reactive framework. A finite, declarative, engine-owned behavior vocabulary triggered by bus state."
+depends-on: [12-composeux-render-engine.lts, 00-composer-overview.lts]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+# ComposeUX Declarative Bindings & Behaviors [SPEC:CXC-BIND]
+
+> How a `.compose.yaml` widget reacts to the bus without any code: attributes and transforms bind to namespaces, inline variables parameterize them, and a finite library of engine-owned temporal behaviors (blink, pulse, ramp, rotate, animate) fire on bus-state conditions. Extends [SPEC:CXC-RENDER] §4–5. This is the "reactive-widget" layer; the Composer binding editor is the tool that authors it.
+
+---
+
+## 1. Principle
+
+### [CXC-BIND-PRINCIPLE] State on the Bus, Behavior in the Widget
+
+- definition: The bus carries semantic STATE (`red_alert = on`, published once); the widget owns the temporal PRESENTATION (blink at 2s). Animation frames are never streamed over the bus.
+- key-insight: This is the ComposeBus state-engine philosophy (meaning on the bus, interpretation at the edge) extended from value to *presentation*. A widget's reaction is engine-owned, so it is consistent and pixel-verified across every backend, and an Intelligence drives it at intent altitude — it flips one bit; it does not micromanage frames.
+- implication: The reactive vocabulary is finite and declarative. Computation that a declarative binding cannot express belongs in a bus workload ([CXC-BIND-BOUNDARY]), not in the config.
+- status: operational (2026-07-06) — verified end-to-end over real MQTT: an Intelligence peer publishing `ship/red_alert = on` (one bit) drives the engine-owned blink identically to any publisher (`tests/render/smoke_bind_intelligence_mqtt.py`, 4/4 vs mqtt-broker.local).
+- part-of: [SPEC:CXC-BIND]
+
+---
+
+## 2. Bindable Attributes & Transforms
+
+### [CXC-BIND-ATTR] Any Attribute Binds to a Namespace
+
+- definition: A widget attribute may take a literal, a namespace reference, or a binding object. The core bindable set: `visible`, `opacity`, `rotation` (degrees), `scale`, `color`, plus each widget's value attributes. `visible` shipped in M4; this generalizes the same mechanism to the transforms and the rest.
+- forms:
+  - literal — `visible: true`, `rotation: 30`
+  - namespace (direct/truthy) — `visible: red_alert`, `rotation: heading_deg`
+  - object — `visible: {namespace: red_alert, when: on, invert: false}` ; `opacity: {namespace: dim, default: 1.0}`
+- value-map: an optional declarative map (NOT an expression) may translate a state to a value — `color: {namespace: alert_level, map: {ok: green, warn: amber, crit: red}}`. Maps are literal lookups only; anything arithmetic is DSL territory ([CXC-BIND-BOUNDARY]).
+- transform-note: `rotation`/`scale` require the engine transform ops — trivial on the Skia tier (`canvas.rotate`/`scale`); on the CYD a raster rotate is costly, so transform bindings degrade/precompute there (CYD is POC). `visible`/`opacity`/`color` are cheap on every tier.
+- test: a namespace value change updates the bound attribute within one frame ([CXC-R-C4]).
+- implemented: `render/engine/bindings.py` (extraction/coercion) + `render/engine/parser.py` (extraction runs BEFORE widget construction, so constructors only see literals) + `render/engine/runtime.py` (subscription wiring, one-frame apply via schedule_update). Transforms are Widget base attributes (`opacity`/`rotation`/`scale`), applied by the container draw pass (`engine/layout.draw_child`: rotate/scale about the rect center, opacity as a composing paint multiplier) — the zero-transform path costs nothing. Coercion is type-directed by the target attribute's current value (bool → match, tuple/color attrs → color spec parse, numeric → float, str → str). Bare-string namespace form applies to visible/opacity/rotation/scale; all attrs bind via the object form. Hit-testing of ROTATED widgets still uses the axis-aligned arranged rect (known limitation; acceptable for indicator-tier transforms).
+- status: operational (2026-07-06) — tests/render/test_bind_behaviors.py C1/C8 + golden `bind_transform_literals`.
+- part-of: [SPEC:CXC-BIND]
+
+---
+
+## 3. Inline Variables
+
+### [CXC-BIND-VARS] Declare Once, Reuse
+
+- definition: A document- or widget-scoped `variables:` block declares named values reusable in attributes/bindings/behavior params via `$name`. Substitution is at parse time; there is no runtime evaluation.
+- forms: a variable is a literal (`alert_period: 2000`) or itself a namespace binding (`heading: {namespace: nav/heading_deg}`). `$name` resolves to the literal, or to the binding (propagating reactivity).
+- reference: Home Assistant's inline `variables:`.
+- test: `$alert_period` used in a behavior's `period_ms` resolves to its declared value at load; a variable bound to a namespace stays reactive.
+- implemented: `bindings.substitute_variables` — runs in `parse_widget_tree` AFTER spec-14 component stamping (component bodies may use document variables). Exact-token form (`period_ms: $alert_period`) replaces with the variable's value of ANY type (a binding dict propagates reactivity); embedded form (`text: "$sensor temp"`) stringifies scalars in place; unknown `$name` is left as a literal (a `"$100 budget"` label survives). Widget-scoped `variables:` blocks merge over the document scope; variable definitions may reference outer variables.
+- status: operational (2026-07-06) — test_bind_behaviors.py C4 (4 tests).
+- part-of: [SPEC:CXC-BIND]
+
+---
+
+## 4. State-Driven Behaviors
+
+### [CXC-BIND-BEHAVIOR] Trigger → Engine-Owned Behavior → Target Attribute
+
+- definition: A widget's `behaviors:` list maps a bus-state trigger to a named, engine-owned temporal behavior applied to a target attribute, parameterized. Behaviors run on the engine animation loop ([CXC-R-ENGINE-ANIM]).
+- schema:
+  ```yaml
+  behaviors:
+    - when: { namespace: red_alert, is: on }
+      do:   { behavior: blink, target: visible, period_ms: 2000 }
+    - when: { namespace: scanning, is: on }
+      do:   { behavior: rotate, target: rotation, deg_per_s: 90 }
+  ```
+- trigger (`when`) — a declarative state condition on a namespace, leveraging the state engines: `is: <value>` / `truthy` / `in: [lo, hi]` (range) / `always` (unconditional). No expressions.
+- behavior library (engine-owned, finite):
+  - `blink` — toggle the target (visible/opacity) at `period_ms` (`duty` optional).
+  - `pulse` — ease the target (opacity/scale) between `from`/`to` at `period_ms` with `easing`.
+  - `ramp` / `ramp_color` — interpolate a numeric/color target toward a value over `duration_ms`.
+  - `rotate` — advance `rotation` continuously at `deg_per_s` (the dradis sweep).
+  - `animate` / `transition` — one-shot interpolate an attribute `from`→`to` over `duration_ms` with `easing`, on trigger edge.
+- lifecycle: a behavior is active while its trigger holds; on release, the target reverts to its base value (literal or bound). `blink`/`pulse`/`rotate` are continuous; `ramp`/`animate` are one-shot on the trigger edge.
+- composition: multiple behaviors on one widget are allowed; conflicts on the same target resolve last-declared-wins (documented, deterministic).
+- seed: `Button.led_behaviors` (blink_500ms/while_pressed) + `engine/animation.py` prove the pattern; this generalizes it to any widget/attribute.
+- implemented: `render/engine/behaviors.py` (BehaviorEngine) — every behavior value is a PURE function of elapsed time since activation; activation defers its start timestamp to the first tick, so `RenderApp.render_frame_at(t)` (the new deterministic fixed-timestep sampling mode) reproduces frames byte-identically. The wall-clock `run()` loop ticks the engine beside the Animator; easing/interpolation are REUSED from `engine/animation.py`. Binding/behavior interplay: when an attribute binding writes a target a behavior currently holds, the engine's `notify_base_change` updates the revert-to base, so release lands on the live bound value, not a stale snapshot.
+- status: operational (2026-07-06) — full library (blink/pulse/ramp/ramp_color/rotate/animate/transition), all trigger kinds, lifecycle + last-declared-wins tested; goldens `bind_red_alert_{on,off}`, `bind_dradis_{idle,mid_sweep}`.
+- change: "Trigger `is:` and binding `when:` comparison is CANONICAL, not raw-string: YAML-1.1 booleans, the binary state engine's `1`/`0`, and string publishes collapse to on/off tokens before comparing (`bindings.canon`)."
+- context_for_change:
+  - prior_state: "The spec example `when: { namespace: red_alert, is: on }` and the M4 visible `when:` used exact string comparison."
+  - reasoning: "Measured while building the demo .compose.yaml files: YAML 1.1 loads unquoted `is: on` as boolean True, so str-comparison against a peer's published string 'on' NEVER matches — the exact config shape this spec documents would silently do nothing. Canonicalizing ('on'/'true'/'yes'/'1'/True → on; 'off'/'false'/'no'/'0'/False → off) makes the documented config work however the bit was published, aligning the trigger with the binary state-engine vocabulary."
+  - rejected_alternative: "Require authors to quote ('is: \"on\"') — rejected: a silent-failure footgun baked into the spec's own canonical example; the Composer binding editor cannot fix what humans hand-author."
+  - invalidating_assumption: "That no application needs to distinguish the literal string 'on' from boolean true, or '1' from 1, in a trigger. If one does, an explicit `is_exact:` form can be added without breaking `is:`."
+  - implication: "Non-binary values compare case-insensitively, whitespace-trimmed. `when:` visible bindings inherit the same rule."
+- is_exact (2026-07-07, [SPEC:CXC-BINDEDIT] pass): the pre-sanctioned escape hatch now EXISTS — `when: {namespace: n, is_exact: 'ON'}` compares the raw string with NO canonicalization (`Trigger` kind `is_exact`; `is:` unchanged). The Composer trigger editor offers it as a first-class chip beside `is`, with the canonicalization surfaced in the UI.
+- introspection (2026-07-07, [CXC-BE-INTROSPECT]): the behavior model is machine-readable — `BEHAVIOR_PARAM_SCHEMA` (params + types/defaults/enum values per behavior), `BEHAVIOR_DEFAULT_TARGET`, `TRIGGER_KINDS` in `engine/behaviors.py`; `UNIVERSAL_BINDABLE_ATTRS` + `BINDABLE_ATTRS_BY_TYPE` + `bindable_attrs_for()` in `engine/bindings.py`. The binding editor renders from these tables; a new behavior + schema row appears in the editor with no editor change.
+- part-of: [SPEC:CXC-BIND]
+
+---
+
+## 5. Boundaries
+
+### [CXC-BIND-BOUNDARY] What Is NOT In the Config
+
+- decision: **No arbitrary inline code** (e.g. inline Python) in `.compose.yaml`.
+- rationale: it breaks define-once (Python can't run on the CYD/C++ or a TS-browser backend) and is an RCE surface on a fetch-from-bus display fleet. ESPHome's inline-C++ works only because it compiles to ONE runtime; ComposeUX is define-once-render-many.
+- escape-hatch: real computation lives in a **bus workload** — a process that computes and publishes a namespace, which a widget then binds. Compute where it belongs; the config stays declarative and portable.
+- deferred: a **sandboxed, restricted expression DSL** (HA-Jinja-flavored: arithmetic, `ns()` lookups, conditionals; interpretable identically on Python AND CYD/JS) is the sanctioned middle ground for the last ~10%, but it is a separate, **use-case-gated** deliverable ([CXC-RM-BEHAVIORS]) — collect ~5 real high-need cases first. This spec is the declarative 90%.
+- test (negative): a config carrying an inline-code field is rejected or ignored, never executed.
+- implemented: `bindings.strip_code_fields` removes code-shaped keys (code/script/python/eval/exec/expr/template/lambda/js/…) from every widget spec and behavior entry at parse time, with a logged [CXC-BIND-BOUNDARY] warning; `bindings.validate_map` refuses maps that are non-dicts or carry template/expression-shaped strings (`{{…}}`, `${…}`, leading `=`) — the whole binding is dropped, the attribute keeps its literal. Verified with an import-side-effect canary: the payload file is never created (test_c7).
+- status: operational (2026-07-06).
+- part-of: [SPEC:CXC-BIND]
+
+---
+
+## 6. Composer Exposure
+
+### [CXC-BIND-COMPOSER] The Binding Editor Authors This Model
+
+- role: The Composer binding editor (next Composer slug, DP-CXC-3) exposes this model visually — pick a namespace, pick a behavior, set params — never typing raw YAML. This spec defines the model that UI configures; building the model first lets the editor expose bindings + transforms + behaviors in one pass.
+- status: operational (2026-07-07) — [SPEC:CXC-BINDEDIT] built: the WC Bindings tab authors every form in this spec (bare-string/object bindings, literal maps, all trigger kinds incl. is_exact, the full behavior library with schema-driven params) and the WW previews them live on the design bus; C1–C8 PASS, Intelligence-over-MQTT 8/8. NOTE (ops): the Composer's MQTT client_id is now unique per process (`composeux-m4-<pid>`) — two Composers sharing an id kicked each other off the broker (rc=7 ping-pong), silently dropping command events while retained states survived.
+- see-also: [CXC-BIND-ATTR], [CXC-BIND-BEHAVIOR], [SPEC:CXC-BINDEDIT]
+- part-of: [SPEC:CXC-BIND]
+
+---
+
+## 7. Compliance
+
+| ID | Requirement | Testable Criterion | Status (2026-07-06) |
+|----|-------------|-------------------|---------------------|
+| CXC-BIND-C1 | Attribute binding | A namespace change updates the bound attribute within one frame | PASS — opacity/rotation/scale/color/value/text; bare-namespace + object forms; wire-time current value applies |
+| CXC-BIND-C2 | Red Alert | An Image with `visible` bound + a `blink` behavior toggles at the declared period; golden-pinned at both phases | PASS — goldens `bind_red_alert_on`/`_off`; live loop measured 500ms half-periods for period_ms 1000; demo `render/examples/red_alert.compose.yaml` |
+| CXC-BIND-C3 | Dradis sweep | A widget with a `rotate` behavior on `rotation`, triggered by a `scanning` state, sweeps at the declared deg/s | PASS — 90 deg/s: 45° @0.5s, 90° @1s, wraps mod 360; goldens `bind_dradis_idle`/`_mid_sweep`; demo `render/examples/dradis.compose.yaml` |
+| CXC-BIND-C4 | Variable substitution | `$var` resolves at parse time; a namespace-bound variable stays reactive | PASS — incl. widget-scoped blocks, embedded strings, unknown-`$` literals |
+| CXC-BIND-C5 | Revert on release | When a trigger goes false, the target reverts to its base value | PASS — continuous + one-shot; revert lands on the LIVE bound base (notify_base_change) |
+| CXC-BIND-C6 | Cross-platform identity | Behavior output is pixel-identical macOS↔RPi at sampled frames (deterministic clock) | PASS — 6 sampled frames (both demos, incl. rotated AA) SHA-256-identical macOS arm64 ↔ RPi5 aarch64; render_frame_at is the sampling mode; suite green both platforms |
+| CXC-BIND-C7 | No code path | A config with an inline-code field is rejected/ignored, not executed | PASS — canary payload never executes; fields stripped + warned; code-only `do:` dropped |
+| CXC-BIND-C8 | Value map | A literal `map:` translates a state to a value; arithmetic maps are refused (DSL boundary) | PASS — color map by state; templated map refused with warning, binding dropped |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-BIND] DEPENDS_ON [SPEC:CXC-RENDER]
+[CXC-BIND-BEHAVIOR] DEPENDS_ON [CXC-R-ENGINE-ANIM]
+[CXC-BIND-ATTR] RELATED_TO [CXC-R-WIDGET-BUS]
+[CXC-BIND-COMPOSER] IMPLEMENTS [DP-CXC-3]
+
+---
+
+**Version**: 1.0
+**Created**: 2026-07-06
+**Status**: Operational (2026-07-06) — declarative layer built and verified: 29 compliance tests + 5 goldens (`tests/render/test_bind_behaviors.py`), suite 232 green on macOS + RPi5, sampled behavior frames SHA-256-identical across platforms, Intelligence-over-MQTT smoke 4/4. Expression DSL remains deferred/use-case-gated ([CXC-RM-BEHAVIORS]); Composer binding editor is the next slug ([CXC-BIND-COMPOSER]).

@@ -1,0 +1,359 @@
+# ComposeUX Widget Primitive — numpad ([SPEC:CXC-PRIM] [CXC-PRIM-CATALOG])
+#
+# A forkable COMPONENT: a 3-wide grid of rect+label "key" pairs (a
+# lightweight cell, NOT the code ButtonWidget — ButtonWidget reserves a
+# 28px LED gutter + a 100px minimum body, which cannot make a compact
+# 44x36 numeric key; see SUMMARY for the full reasoning).  Each key
+# publishes its literal char to target_ns via the existing
+# publish_namespace/publish_value mechanism — zero new interaction code.
+#
+# SCOPING DECISION (flagged for ratification): a key publish is
+# last-key-wins (REPLACES target_ns), not append/accumulate. The DSL has
+# no string-concatenation operator ([SPEC:CXC-DSL] is numeric/logic
+# only) and there is no read-modify-write publish site outside headless
+# ``outputs:`` ticks, so true character accumulation cannot be expressed
+# as a pure declarative composite in the current engine. Per
+# [CXC-BIND-BOUNDARY] ("compute in a bus workload instead"), a companion
+# bus workload/Intelligence is the intended accumulator: subscribe to
+# target_ns's per-key publishes and maintain the real string namespace a
+# text_input then renders. This composite is the UI/publish surface, not
+# the accumulator.
+#
+# Run:
+#   cd python/composeio/render/examples/components
+#   python3 -m composeio.render.engine.runtime numpad.compose.yaml
+
+app:
+  id: demo-numpad
+
+design:
+  title: "numpad"
+  width: 420
+  height: 260
+  theme: dark
+
+namespaces:
+  - name: demo/keypress
+    state_engine: json
+
+components:
+  numpad:
+    params: [target_ns, allow_decimal, on_enter]
+    defaults:
+      allow_decimal: false
+      on_enter: null          # optional-and-prunable (COMP-5): omitted ->
+                               # the ENTER key's publish_namespace: key is
+                               # pruned entirely, so it safely no-ops
+    widget:
+      type: pixel_stack
+      id: numpad_root
+      width: 144
+      height: 204
+      children:
+        - type: rect
+          id: key_1_bg
+          x: 0
+          y: 0
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "1"
+        - type: label
+          id: key_1_lbl
+          x: 0
+          y: 0
+          w: 44
+          h: 36
+          text: "1"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_2_bg
+          x: 50
+          y: 0
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "2"
+        - type: label
+          id: key_2_lbl
+          x: 50
+          y: 0
+          w: 44
+          h: 36
+          text: "2"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_3_bg
+          x: 100
+          y: 0
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "3"
+        - type: label
+          id: key_3_lbl
+          x: 100
+          y: 0
+          w: 44
+          h: 36
+          text: "3"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_4_bg
+          x: 0
+          y: 42
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "4"
+        - type: label
+          id: key_4_lbl
+          x: 0
+          y: 42
+          w: 44
+          h: 36
+          text: "4"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_5_bg
+          x: 50
+          y: 42
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "5"
+        - type: label
+          id: key_5_lbl
+          x: 50
+          y: 42
+          w: 44
+          h: 36
+          text: "5"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_6_bg
+          x: 100
+          y: 42
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "6"
+        - type: label
+          id: key_6_lbl
+          x: 100
+          y: 42
+          w: 44
+          h: 36
+          text: "6"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_7_bg
+          x: 0
+          y: 84
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "7"
+        - type: label
+          id: key_7_lbl
+          x: 0
+          y: 84
+          w: 44
+          h: 36
+          text: "7"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_8_bg
+          x: 50
+          y: 84
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "8"
+        - type: label
+          id: key_8_lbl
+          x: 50
+          y: 84
+          w: 44
+          h: 36
+          text: "8"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_9_bg
+          x: 100
+          y: 84
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "9"
+        - type: label
+          id: key_9_lbl
+          x: 100
+          y: 84
+          w: 44
+          h: 36
+          text: "9"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_clr_bg
+          x: 0
+          y: 126
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: ""
+        - type: label
+          id: key_clr_lbl
+          x: 0
+          y: 126
+          w: 44
+          h: 36
+          text: "CLR"
+          align: center
+          font_family: monospace
+          font_size: 15
+          color: "#7fe0e8"
+        - type: rect
+          id: key_0_bg
+          x: 50
+          y: 126
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "0"
+        - type: label
+          id: key_0_lbl
+          x: 50
+          y: 126
+          w: 44
+          h: 36
+          text: "0"
+          align: center
+          font_family: monospace
+          font_size: 15
+        - type: rect
+          id: key_dot_bg
+          x: 100
+          y: 126
+          w: 44
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "."
+          visible: "{{allow_decimal}}"
+        - type: label
+          id: key_dot_lbl
+          x: 100
+          y: 126
+          w: 44
+          h: 36
+          text: "."
+          align: center
+          font_family: monospace
+          font_size: 15
+          visible: "{{allow_decimal}}"
+        - type: rect
+          id: key_enter_bg
+          x: 0
+          y: 168
+          w: 144
+          h: 36
+          corner_radius: 4
+          fill_color: "#1e2732"
+          stroke_color: "#34c3d0"
+          stroke_width: 1
+          publish_namespace: "{{on_enter}}"
+          publish_value: "commit"
+        - type: label
+          id: key_enter_lbl
+          x: 0
+          y: 168
+          w: 144
+          h: 36
+          text: "ENTER"
+          align: center
+          font_family: monospace
+          font_size: 13
+          color: "#7fe0e8"
+
+widgets:
+  - type: stack
+    id: demo_column
+    direction: column
+    gap: 12
+    children:
+      - type: label
+        text: "target_ns (demo/keypress) mirrors the last key pressed:"
+        font_size: 12
+        color: "#808c9b"
+      - type: text_input
+        id: readout
+        namespace: demo/keypress
+        placeholder: "tap a key"
+      - { use: numpad, target_ns: demo/keypress, allow_decimal: true, on_enter: demo/keypress_enter }
+

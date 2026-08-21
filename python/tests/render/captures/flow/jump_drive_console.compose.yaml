@@ -1,0 +1,35 @@
+app:
+  id: jump-drive-console
+  transports: []
+design: {title: Jump Drive Console, target: desktop, width: 824, height: 624, theme: dark}
+namespaces:
+- {name: ship/scanning, state_engine: binary}
+- {name: jumpdrive/readiness, state_engine: json, external: true}
+- {name: jumpdrive/spool_temp, state_engine: json, external: true}
+widgets:
+- type: pixel_stack
+  id: composite
+  width: 800
+  height: 600
+  background: '#0B0D12'
+  border: '#3A3A50'
+  corner_radius: 4
+  clip: true
+  children:
+  - {type: gauge, id: jump_readiness, label: READINESS, min_val: 0, max_val: 1, x: 60,
+    y: 60, w: 180, h: 150, namespace: jumpdrive/readiness}
+  - {type: image, id: klaxon, src: '', fit: contain, visible: jumpdrive/spool_temp,
+    x: 300, y: 60, w: 160, h: 120}
+  - type: rect
+    id: dradis
+    fill_color: '#10202C'
+    corner_radius: 8
+    behaviors:
+    - when: {namespace: ship/scanning, is: 'on'}
+      do: {behavior: rotate, target: rotation, deg_per_s: 90}
+    x: 300
+    y: 220
+    w: 160
+    h: 120
+  - {type: bus_monitor, id: jd_mon, label: Jumpdrive family, x: 60, y: 260, w: 220,
+    h: 120, namespace: jumpdrive/*}

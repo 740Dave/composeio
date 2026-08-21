@@ -1,0 +1,131 @@
+<script type="text/javascript">
+    RED.nodes.registerType('composeio-state-engine', {
+        category: 'ComposeIO',
+        color: '#80CBC4',
+        defaults: {
+            name: { value: '' },
+            config: { value: '', type: 'composeio-config', required: true },
+            namespace: { value: '' },
+            engineOverride: { value: null }
+        },
+        inputs: 1,
+        outputs: 2,
+        icon: 'status.svg',
+        label: function () {
+            return this.name || this.namespace || 'state engine';
+        },
+        paletteLabel: 'state engine',
+        labelStyle: function () {
+            return this.name ? 'node_label_italic' : '';
+        },
+        outputLabels: ['valid', 'invalid'],
+        oneditprepare: function () {
+            var override = this.engineOverride;
+            if (override && typeof override === 'object') {
+                $('#node-input-override-type').val(override.type || '');
+                $('#node-input-override-values').val(
+                    override.values ? override.values.join(', ') : ''
+                );
+                $('#node-input-override-default').val(override.default || '');
+            }
+            $('#node-input-override-type').on('change', function () {
+                var t = $(this).val();
+                if (t === 'enum') {
+                    $('.override-enum-row').show();
+                } else {
+                    $('.override-enum-row').hide();
+                }
+            }).trigger('change');
+        },
+        oneditsave: function () {
+            var t = $('#node-input-override-type').val();
+            if (t) {
+                this.engineOverride = { type: t };
+                if (t === 'enum') {
+                    var vals = $('#node-input-override-values').val();
+                    this.engineOverride.values = vals.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+                    this.engineOverride.default = $('#node-input-override-default').val().trim();
+                }
+            } else {
+                this.engineOverride = null;
+            }
+        }
+    });
+</script>
+
+<script type="text/html" data-template-name="composeio-state-engine">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-config"><i class="fa fa-cogs"></i> Config</label>
+        <input type="text" id="node-input-config">
+    </div>
+    <div class="form-row">
+        <label for="node-input-namespace"><i class="fa fa-bookmark"></i> Namespace</label>
+        <input type="text" id="node-input-namespace" placeholder="(or from msg.composeio.namespace)">
+    </div>
+    <div class="form-row">
+        <label><i class="fa fa-wrench"></i> Engine Override</label>
+    </div>
+    <div class="form-row" style="margin-left: 20px;">
+        <label for="node-input-override-type" style="width: 60px;">Type</label>
+        <select id="node-input-override-type" style="width: 200px;">
+            <option value="">(from registry)</option>
+            <option value="binary">binary</option>
+            <option value="tri_level">tri_level</option>
+            <option value="stop_light">stop_light</option>
+            <option value="continuous_0_255">continuous_0_255</option>
+            <option value="enum">enum</option>
+            <option value="json">json</option>
+        </select>
+    </div>
+    <div class="form-row override-enum-row" style="margin-left: 20px; display: none;">
+        <label for="node-input-override-values" style="width: 60px;">Values</label>
+        <input type="text" id="node-input-override-values" placeholder="value1, value2, value3" style="width: 200px;">
+    </div>
+    <div class="form-row override-enum-row" style="margin-left: 20px; display: none;">
+        <label for="node-input-override-default" style="width: 60px;">Default</label>
+        <input type="text" id="node-input-override-default" placeholder="default value" style="width: 200px;">
+    </div>
+</script>
+
+<script type="text/html" data-help-name="composeio-state-engine">
+    <p>Validates <code>msg.payload</code> against a ComposeIO state engine. Routes
+    valid values to output 1 and invalid values to output 2.</p>
+
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">string | number | object</span></dt>
+        <dd>The value to validate. Use the special string <code>__advance</code> to
+        compute the next value in the state engine's cycle.</dd>
+    </dl>
+
+    <h3>Outputs</h3>
+    <ol class="node-ports">
+        <li>Valid
+            <dl class="message-properties">
+                <dt>payload <span class="property-type">any</span></dt>
+                <dd>Pass-through (or advanced value if <code>__advance</code> was used).</dd>
+                <dt>composeio.stateEngine <span class="property-type">object</span></dt>
+                <dd>State engine definition enrichment.</dd>
+            </dl>
+        </li>
+        <li>Invalid
+            <dl class="message-properties">
+                <dt>error <span class="property-type">object</span></dt>
+                <dd>Error details with message and validValues.</dd>
+            </dl>
+        </li>
+    </ol>
+
+    <h3>Details</h3>
+    <p>The <code>__advance</code> function reads the current value from the namespace
+    registry and advances to the next value in the engine's cycle, wrapping at the end.
+    This mirrors firmware toggle behavior in a flow-native way.</p>
+    <p><b>Engine Override</b>: Optionally specify the state engine type directly instead
+    of looking it up from the namespace registry. Useful when the namespace is not yet
+    in the registry.</p>
+    <p>Supports all engine types: binary, tri_level, stop_light, continuous_0_255, enum, json.</p>
+</script>

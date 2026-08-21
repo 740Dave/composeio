@@ -1,0 +1,439 @@
+---
+scope: "Intelligence-as-bus-client API for the ComposeIO Composer — command taxonomy, message sequencing, co-editing protocol, discovery, and headless design capability"
+audience: "Intelligence/agent developers, Composer module developers, prompt engineers building design agents"
+boundary: "Intelligence interaction with the Composer's internal bus; does not define Intelligence internals, LLM prompting strategies, or agent orchestration (see 07-composer-agent-build-plan.lts for build-time agents)"
+not-this: "Not the internal bus spec itself (see 02-composer-internal-bus.lts); not the Nexus bridge (see ../spec/04-nexus-bridge.smd); not a general AI agent framework"
+depends-on: ["00-composer-design-principles.lts", "01-composer-architecture.lts", "02-composer-internal-bus.lts", "03-composer-modules.lts"]
+confidentiality: internal-only
+artifact-readiness: code-generation
+domain: PLT.CUX
+---
+# ComposeIO Composer Intelligence API [SPEC:CXC-INTEL-API]
+
+> The Composer's internal bus namespace registry IS the Intelligence command taxonomy. An Intelligence that can publish ComposeIO bus messages can design UX — placing widgets, wiring bindings, configuring properties — indistinguishable from human interaction. This spec formalizes the protocol for Intelligence participation.
+
+---
+
+## 1. Governing Principle [CXC-INTEL-PRINCIPLE]
+
+> An Intelligence is a bus client. The Composer's visual canvas is a bus client. They are peers. Neither is privileged. The bus is the design engine; everything else is a view.
+
+- implication: Every action achievable by clicking the canvas is achievable by publishing a bus message. There is no "visual-only" capability. The Intelligence API is not an adapter or wrapper — it is the same namespace registry that modules use.
+- implication: An Intelligence can design a complete UX headlessly (no Composer window). The `.compose.yaml` is generated from bus state, not from canvas state. The canvas renders bus state — it does not own it.
+- implication: Human and Intelligence can co-edit simultaneously. Both publish to the same namespaces. The History module records all commands regardless of source. Undo works uniformly.
+- see-also: [DP-CXC-10] Intelligence-Friendly by Default.
+
+---
+
+## 2. Intelligence Lifecycle [CXC-INTEL-LIFECYCLE]
+
+### [CXC-INTEL-JOIN] Joining the Bus
+
+An Intelligence joins the Composer's internal bus by connecting as a transport client and announcing itself:
+
+```
+PUBLISH composer/intelligence/joined
+{
+  "agent_id": "claude-designer-1",
+  "capabilities": ["layout", "binding", "property", "review"],
+  "mode": "collaborative",
+  "source": "claude-designer-1"
+}
+```
+
+- `agent_id`: Unique identifier for this Intelligence session.
+- `capabilities`: Declared capability set (what this agent can do).
+- `mode`: `collaborative` (works alongside human), `autonomous` (drives design independently), `review` (read-only observation and suggestions).
+
+### [CXC-INTEL-LEAVE] Leaving the Bus
+
+```
+PUBLISH composer/intelligence/left
+{
+  "agent_id": "claude-designer-1",
+  "source": "claude-designer-1"
+}
+```
+
+### [CXC-INTEL-HEARTBEAT] Presence
+
+While connected, the Intelligence publishes heartbeat every 10 seconds:
+
+```
+PUBLISH composer/intelligence/heartbeat
+{
+  "agent_id": "claude-designer-1",
+  "active_task": "placing gauge widgets",
+  "source": "claude-designer-1"
+}
+```
+
+- The Toolbar module shows Intelligence presence (agent icon + active task description).
+- If heartbeat is missed for 30 seconds, the Composer marks the Intelligence as disconnected.
+
+---
+
+## 3. Command Taxonomy [CXC-INTEL-COMMANDS]
+
+The Intelligence uses the SAME namespaces defined in [SPEC:CXC-INTERNAL-BUS]. No separate API. The following is the complete command vocabulary organized by design workflow phase.
+
+### 3.1 Structure Commands (Create/Delete)
+
+| Action | Namespace | Event Data |
+|---|---|---|
+| Add module | `composer/canvas/module_added` | `{module_id, role, layout: {grid_row, grid_column, weight_x, weight_y, padding}, config: {columns, ...}}` |
+| Remove module | `composer/canvas/module_removed` | `{module_id}` |
+| Add widget | `composer/canvas/widget_added` | `{widget_id, widget_type, module_id, namespace, properties: {...}, layout: {row, column, rowspan, columnspan}}` |
+| Remove widget | `composer/canvas/widget_removed` | `{widget_id}` |
+| Add namespace | `composer/config/namespace_changed` | `{action: "created", name, label, state_engine, scope, authority}` |
+| Remove namespace | `composer/config/namespace_changed` | `{action: "removed", name}` |
+
+### 3.2 Layout Commands (Move/Resize)
+
+| Action | Namespace | Event Data |
+|---|---|---|
+| Move widget | `composer/canvas/widget_moved` | `{widget_id, old_layout: {row, column}, new_layout: {row, column}}` |
+| Resize widget | `composer/canvas/widget_resized` | `{widget_id, old_layout: {rowspan, columnspan}, new_layout: {rowspan, columnspan}}` |
+| Change module layout | `composer/canvas/layout_changed` | `{module_id, layout: {grid_row, grid_column, weight_x, weight_y}}` |
+| Rearrange design grid | `composer/canvas/layout_changed` | `{design_grid: {columns, rows, weights: [...]}}` |
+
+### 3.3 Configuration Commands (Properties)
+
+| Action | Namespace | Event Data |
+|---|---|---|
+| Change widget property | `composer/config/widget_changed` | `{widget_id, property, old_value, new_value}` |
+| Change module property | `composer/config/module_changed` | `{module_id, property, old_value, new_value}` |
+| Change namespace config | `composer/config/namespace_changed` | `{action: "modified", name, property, old_value, new_value}` |
+
+### 3.4 Binding Commands
+
+| Action | Namespace | Event Data |
+|---|---|---|
+| Create simple binding | `composer/binding/created` | `{binding_id, type: "simple", config: {input, output, transform: [...]}}` |
+| Create compound binding | `composer/binding/created` | `{binding_id, type: "compound", config: {output, requires, default, conditions: [...]}}` |
+| Create event binding | `composer/binding/created` | `{binding_id, type: "event_triggered", config: {trigger, output, set, side_effects: [...]}}` |
+| Modify binding | `composer/binding/modified` | `{binding_id, config: {...}}` |
+| Remove binding | `composer/binding/removed` | `{binding_id}` |
+
+### 3.5 File Commands
+
+| Action | Namespace | Event Data |
+|---|---|---|
+| Save design | `composer/file/saved` | `{path}` |
+| Load design | `composer/file/loaded` | `{path}` (or `{yaml_content}` for inline) |
+| Export to ComposeIO YAML | `composer/file/exported` | `{output_dir}` |
+
+### 3.6 Selection Commands (for context awareness)
+
+| Action | Namespace | Event Data |
+|---|---|---|
+| Select widget | `composer/selection/widget_id` | `widget_id` string value |
+| Select module | `composer/selection/module_id` | `module_id` string value |
+| Clear selection | `composer/selection/type` | `none` |
+
+---
+
+## 4. Message Sequencing [CXC-INTEL-SEQUENCING]
+
+### [CXC-INTEL-SEQ-RULES] Ordering Constraints
+
+Bus messages are asynchronous, but design operations have logical dependencies:
+
+| Operation | Prerequisite |
+|---|---|
+| Add widget to module | Module must exist |
+| Assign namespace to widget | Namespace must be registered |
+| Create binding referencing namespace | Namespace must exist |
+| Move widget within module | Widget must exist |
+| Change widget property | Widget must exist |
+
+The Intelligence MUST ensure prerequisites are met before publishing dependent commands. The Composer validates and rejects out-of-order commands with an error event:
+
+```
+PUBLISH composer/intelligence/error
+{
+  "agent_id": "claude-designer-1",
+  "command": "composer/canvas/widget_added",
+  "error": "module 'ftl_panel' does not exist",
+  "suggestion": "publish composer/canvas/module_added first"
+}
+```
+
+### [CXC-INTEL-SEQ-BATCH] Batch Operations
+
+For atomic multi-step operations, the Intelligence uses batch IDs (same as [CXC-IBUS-CONV-4]):
+
+```json
+{"batch_id": "intel_batch_001", "batch_index": 0, "batch_total": 6, ...}
+{"batch_id": "intel_batch_001", "batch_index": 1, "batch_total": 6, ...}
+```
+
+- The History module treats the batch as a single undoable unit.
+- The Preview module waits for the complete batch before rebuilding (avoids intermediate states).
+- Batch ordering is sequential by `batch_index`.
+
+### [CXC-INTEL-SEQ-RECIPE] Common Recipes
+
+#### Recipe: Create a complete module with widgets and bindings
+
+```
+1. PUBLISH composer/config/namespace_changed  {action: "created", name: "ftl_arm", ...}
+2. PUBLISH composer/config/namespace_changed  {action: "created", name: "ftl_cap_charge", ...}
+3. PUBLISH composer/canvas/module_added       {id: "ftl_panel", role: "button-matrix", ...}
+4. PUBLISH composer/canvas/widget_added       {id: "btn_arm", module: "ftl_panel", namespace: "ftl_arm", ...}
+5. PUBLISH composer/canvas/widget_added       {id: "btn_sub", module: "ftl_panel", namespace: "sublight_engines", ...}
+6. PUBLISH composer/binding/created           {type: "compound", output: "ftl_jump_led", ...}
+```
+
+All 6 messages carry the same `batch_id`. Human sees the entire module appear atomically.
+
+#### Recipe: Refactor layout (move widgets between modules)
+
+```
+1. PUBLISH composer/canvas/widget_removed     {widget_id: "gauge_cap"}         — remove from old module
+2. PUBLISH composer/canvas/widget_added       {widget_id: "gauge_cap", module_id: "new_panel", ...}  — add to new
+```
+
+Batch of 2. Undo restores the widget to its original module.
+
+---
+
+## 5. Co-Editing Protocol [CXC-INTEL-COEDIT]
+
+### [CXC-INTEL-COEDIT-PRINCIPLE] Conflict-Free Co-Editing
+
+Human and Intelligence publish to the same bus. Conflicts arise when both modify the same object simultaneously.
+
+### [CXC-INTEL-COEDIT-RULES] Conflict Resolution Rules
+
+| Rule | Description |
+|---|---|
+| Last-write-wins for properties | If human and Intelligence both change the same widget property, the later message wins. History records both. |
+| Human always wins on selection | If the human selects a widget, the Intelligence should not programmatically change selection. |
+| Intelligence yields on drag | If a widget is being dragged (human interaction in progress), the Intelligence defers layout changes to that widget until drag completes. |
+| Batch atomicity | An Intelligence batch in progress is completed before human actions on affected objects are processed. |
+
+### [CXC-INTEL-COEDIT-AWARENESS] Mutual Awareness
+
+The Intelligence subscribes to all `composer/` namespaces to observe human actions:
+
+```
+SUBSCRIBE composer/selection/*         — Know what the human is looking at
+SUBSCRIBE composer/canvas/*            — Know what the human is building
+SUBSCRIBE composer/config/*            — Know what the human is configuring
+SUBSCRIBE composer/tool/mode           — Know the human's current interaction mode
+SUBSCRIBE composer/connection/*        — Know the bus connection state
+```
+
+The human sees Intelligence activity via:
+- Toolbar: Agent icon + active task from heartbeat
+- Canvas: Widgets added by Intelligence have a subtle agent badge (removable)
+- History: Commands show source (`source: "claude-designer-1"` vs `source: "canvas"`)
+
+### [CXC-INTEL-COEDIT-INTENT] Intent Declaration
+
+Before performing a large operation, the Intelligence SHOULD declare intent:
+
+```
+PUBLISH composer/intelligence/intent
+{
+  "agent_id": "claude-designer-1",
+  "action": "Creating FTL jump control panel with 5 buttons, 2 gauges, and compound bindings",
+  "affected_modules": ["ftl_panel", "gauge_panel"],
+  "estimated_commands": 15,
+  "source": "claude-designer-1"
+}
+```
+
+The Composer MAY display this to the human as a toast notification. The human can preemptively cancel by publishing:
+
+```
+PUBLISH composer/intelligence/cancel
+{
+  "agent_id": "claude-designer-1",
+  "reason": "I want to do this differently"
+}
+```
+
+The Intelligence subscribes to `composer/intelligence/cancel` and aborts.
+
+---
+
+## 6. Observation API [CXC-INTEL-OBSERVE]
+
+### [CXC-INTEL-OBSERVE-STATE] Reading Current Design State
+
+The Intelligence can request a full design state snapshot:
+
+```
+PUBLISH composer/intelligence/request_state
+{
+  "agent_id": "claude-designer-1"
+}
+```
+
+The Composer responds:
+
+```
+PUBLISH composer/intelligence/state_snapshot
+{
+  "design": { ... full DesignDocument as JSON ... },
+  "namespaces": [ ... current namespace values from design bus ... ],
+  "connection_status": "connected",
+  "selection": { "type": "widget", "widget_id": "btn_arm" }
+}
+```
+
+### [CXC-INTEL-OBSERVE-DESIGNBUS] Observing the Design Bus
+
+The Intelligence can subscribe to the design bus to observe hardware state, namespace values, and message flow. This enables reactive design:
+
+| Observation | Response |
+|---|---|
+| New module discovered on design bus | Intelligence auto-generates widget panel matching module's role and namespaces |
+| Namespace value out of expected range | Intelligence suggests binding or transform adjustment |
+| Binding not firing as expected | Intelligence diagnoses condition mismatch, suggests fix |
+
+### [CXC-INTEL-OBSERVE-LAYOUT] Spatial Understanding
+
+The Intelligence can request layout information via `zb_widgets` reporting:
+
+```
+PUBLISH composer/intelligence/request_layout
+{
+  "agent_id": "claude-designer-1",
+  "target": "preview"          — or "canvas"
+}
+```
+
+Response includes `report_layout_flat()` output: widget bounds, overlap detection, reading order — giving the Intelligence pixel-accurate spatial understanding of the current design.
+
+---
+
+## 7. Headless Mode [CXC-INTEL-HEADLESS]
+
+### [CXC-INTEL-HEADLESS-PRINCIPLE] No Window Required
+
+The Composer can run without a visual window. In headless mode:
+- The internal bus exists and processes all messages.
+- The `DesignDocument` state model is maintained.
+- The Canvas, Preview, and other visual modules are not instantiated.
+- File save/load and export work normally.
+- The Intelligence drives design entirely via bus messages.
+
+```python
+from composer.app import ComposerApp
+
+app = ComposerApp(headless=True)
+bus = app.internal_bus
+
+# Intelligence publishes commands...
+bus.publish_event("composer/canvas/module_added", "create", data={...})
+bus.publish_event("composer/canvas/widget_added", "create", data={...})
+
+# Save result
+bus.publish_event("composer/file/saved", "save", data={"path": "my_design.compose.yaml"})
+```
+
+- use-case: CI/CD pipelines generating UX configs from specifications.
+- use-case: Intelligence generating designs in batch without GUI overhead.
+- use-case: Testing — validate that a sequence of bus commands produces the expected `.compose.yaml`.
+
+### [CXC-INTEL-HEADLESS-VALIDATION] Headless Validation
+
+In headless mode, the Intelligence can request validation:
+
+```
+PUBLISH composer/intelligence/validate
+{
+  "agent_id": "claude-designer-1"
+}
+```
+
+Response:
+
+```
+PUBLISH composer/intelligence/validation_result
+{
+  "valid": false,
+  "errors": [
+    {"type": "namespace_no_publisher", "namespace": "ftl_cap_charge"},
+    {"type": "binding_missing_namespace", "binding": "bind_003", "namespace": "ftl_coord_status"}
+  ],
+  "warnings": [
+    {"type": "namespace_no_subscriber", "namespace": "gauge_power"}
+  ]
+}
+```
+
+---
+
+## 8. Intelligence Namespace Domain [CXC-INTEL-NAMESPACES]
+
+All Intelligence-specific namespaces live under the `composer/intelligence/` prefix:
+
+| Namespace | Type | Publisher | Subscriber | Description |
+|---|---|---|---|---|
+| `composer/intelligence/joined` | event | Intelligence | Toolbar, Canvas | Agent connected |
+| `composer/intelligence/left` | event | Intelligence | Toolbar, Canvas | Agent disconnected |
+| `composer/intelligence/heartbeat` | state | Intelligence | Toolbar | Presence + active task |
+| `composer/intelligence/intent` | event | Intelligence | Toolbar (toast) | Declares upcoming operation |
+| `composer/intelligence/cancel` | event | Human (Toolbar) | Intelligence | Cancel current operation |
+| `composer/intelligence/error` | event | Composer | Intelligence | Command rejected with reason |
+| `composer/intelligence/request_state` | event | Intelligence | DesignDocument | Request full state snapshot |
+| `composer/intelligence/state_snapshot` | event | DesignDocument | Intelligence | Full state response |
+| `composer/intelligence/request_layout` | event | Intelligence | Preview/Canvas | Request spatial layout |
+| `composer/intelligence/layout_snapshot` | event | Preview/Canvas | Intelligence | Layout response |
+| `composer/intelligence/validate` | event | Intelligence | Serialization | Request design validation |
+| `composer/intelligence/validation_result` | event | Serialization | Intelligence | Validation result |
+| `composer/intelligence/suggestion` | event | Intelligence | Toolbar (notification) | Non-imperative suggestion to human |
+
+---
+
+## 9. Design Bus Intelligence Integration [CXC-INTEL-DESIGNBUS]
+
+The Intelligence participates in the design bus as well as the internal bus. This enables:
+
+### [CXC-INTEL-DESIGNBUS-DISCOVERY] Auto-Discovery Response
+
+When a hardware module publishes `discovery` on the design bus, the Intelligence can automatically generate a matching Composer module:
+
+```
+1. OBSERVE: design_bus discovery message from "ftl-panel" with role "button-matrix",
+   namespaces ["ftl_arm", "sublight_engines", "rcs_thrusters"]
+2. PUBLISH: composer/intelligence/intent {action: "Auto-generating panel for discovered ftl-panel"}
+3. PUBLISH: composer/config/namespace_changed × 3 (register discovered namespaces)
+4. PUBLISH: composer/canvas/module_added (create module matching role)
+5. PUBLISH: composer/canvas/widget_added × 3 (one per namespace)
+```
+
+### [CXC-INTEL-DESIGNBUS-ASSET] Asset-Driven Design
+
+The Intelligence can query the document store and bus storage to incorporate assets:
+
+```
+1. GET /api/v1/assets/ → list available images
+2. GET /api/v1/collections/ui_themes → query theme definitions
+3. PUBLISH composer/config/widget_changed {widget_id: "btn_arm", property: "image", new_value: "assets/scifi/arm_button.png"}
+4. PUBLISH composer/config/widget_changed {widget_id: "btn_arm", property: "led_color_on", new_value: "#00FF88"}
+```
+
+The Intelligence assembles visual identity from stored assets — the sci-fi button example.
+
+---
+
+## 10. Security Boundaries [CXC-INTEL-SECURITY]
+
+| Rule | Rationale |
+|---|---|
+| Intelligence cannot modify the Composer's own module layout | Internal tool layout is not the design; it's the tool. |
+| Intelligence MUST use `source: "<agent_id>"` on all messages | Auditability. History tracks who did what. |
+| Intelligence cannot suppress undo recording | Every command is recorded. The human can always revert. |
+| Intelligence cannot publish to design bus `_bus/` namespaces | Infrastructure namespaces are reserved for bus master. |
+| Intelligence operating in `review` mode can only publish to `composer/intelligence/suggestion` | Read-only agents observe but do not modify. |
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-28
+**Status**: Draft

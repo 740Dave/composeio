@@ -1,0 +1,102 @@
+# Decisions Tab — standalone example scene ([SPEC:CXC-DECISIONS-TAB]).
+#
+# ⚠ SUPERSEDED (2026-08-05/06). This scene and the `decisions_tab` widget were
+# GENERALIZED into the Graph Viewer ([SPEC:CXC-GRAPH-VIEWER],
+# examples/graph_viewer.compose.yaml) — decisions became ONE corpus among many.
+# The launcher spawns graph_viewer, not this. Kept as a render EXAMPLE / test
+# fixture; it is not a live surface. Two things this header used to claim that
+# are no longer true:
+#   * "a live `decisions_publisher` override on `self/decisions` replaces it on
+#     the bus" — there is NO such feed. [CXC-GV-EMITTER-RETIRED] removed the
+#     emitter's whole daemon half; the Graph Viewer queries lts-engine DIRECTLY
+#     in-process ([CXC-GV-DATA-PATH]). So the static nodes:/edges: below are now
+#     the ONLY data this scene ever draws.
+#   * the Phase-6 console-tab integration below — REVERSED by
+#     [DEC-DECISIONS-VIEWER-STANDALONE-LAUNCHER] (David 2026-07-24): the viewer
+#     stays a STANDALONE app reached from the console, never hosted as a tab.
+#
+# Proves the query-driven decision-graph explorer runs in a real RenderApp
+# (deterministic render_frame_at; SHA-identical graph pane macOS↔RPi5).  The
+# static nodes:/edges: below are the RENDER DEFAULT (a real intelligence-console
+# neighborhood subset) so the tab draws standalone.
+#
+# INTEGRATION (Phase 6 — SUPERSEDED, retained only to explain what was reversed;
+# do NOT drop this into console.compose.yaml's console_tabs):
+#
+#     - label: Decisions
+#       content:
+#         - type: decisions_tab
+#           id: console_decisions
+#           namespace: self/decisions
+#           corpus: intelligence-console
+#           anchor: DEC-95-HANDOFF-LINE
+#           # (drop the static nodes:/edges: — the live publisher feeds it)
+#
+# Run:  python -m composeio.render.engine.runtime \
+#           composeio/render/examples/decisions_tab.compose.yaml
+
+design:
+  theme: dark
+  # [CXC-DVL-WINDOW] the standalone Decisions viewer opens in its OWN resizable
+  # window; 1440x1080 default (David 2026-07-29: open at least 1280x1080 — the
+  # earlier 1440x900 still opened too short for the DAG; kept 1440 wide, raised
+  # to 1080 tall), floored at 720x480, and its geometry PERSISTS across relaunch
+  # ([CXC-DVL-GEOMETRY]).
+  width: 1440
+  height: 1080
+  resizable: true
+  min_width: 720
+  min_height: 480
+  persist_geometry: true
+  window_key: decisions-viewer
+  reduced_motion: true
+
+widgets:
+  - type: decisions_tab
+    id: decisions
+    namespace: self/decisions
+    anchor: DEC-95-HANDOFF-LINE
+    corpus: intelligence-console
+    layout_mode: dag
+    nodes:
+      - {id: DEC-95-HANDOFF-LINE, title: "95% is the pencils-down handoff line",
+         lifecycle: committed, importance: high, is_anchor: true,
+         session: "2026-07-20", source: "architect.lts:113",
+         rationale: "Extend the productive-work runway. 90 is now a plain FYI; 95 is the pencils-down line."}
+      - {id: DEC-90-COMPACT-PREP, title: "90% was the original prepare-to-compact threshold",
+         lifecycle: superseded, importance: low, session: "2026-07-01",
+         source: "architect.lts:893",
+         rationale: "Demoted to a heads-up once handover cost was measured (~1%)."}
+      - {id: DEC-HANDOVER-MEASURED, title: "The /compact handover cost is ~1% (measured)",
+         lifecycle: committed, importance: medium, session: "2026-07-20",
+         source: "architect.lts:—",
+         rationale: "The number that let 90 be demoted and 95 become the pencils-down line."}
+      - {id: DEC-CARRY-THE-LEAST-POINTER, title: "Default /compact to a bare POINTER",
+         lifecycle: committed, importance: high, session: "2026-07-19",
+         source: "architect.lts:209",
+         rationale: "The cold read reconstructs from the transcript; re-derive-via bootstrap/dusk-gifts/continuity."}
+      - {id: INSIGHT-STALE-CODE-IS-A-FRESHNESS-CLASS,
+         type: INSIGHT, title: "A long-running MCP serves from a start-time CODE snapshot",
+         lifecycle: noticed, importance: high, session: "2026-07-24",
+         source: "insights_and_warts.lts:90",
+         rationale: "Never accept 'just bounce it' as a root cause — a bounce proves the source is already correct."}
+      - {id: DEC-REMIND-TUNE-MEMORY-ENTRIES,
+         title: "Reminder — tune memory entries into graph-pointers (INTENTIONALLY DANGLING)",
+         lifecycle: raised, importance: high, session: "2026-07-24",
+         source: "architect.lts:1179",
+         dsd: "docs/intelligence-console/DECISIONS-2026-07-24-open-calls.md",
+         rationale: "David asked for an intentionally-dangling self-nagging TODO — the dangle IS the reminder."}
+      - {id: DEC-MEMORY-IS-A-RELEVANCE-TRIGGERED-GRAPH-INDEX,
+         title: "Local memory is a relevance-triggered graph INDEX, not a store",
+         lifecycle: decided, importance: high, session: "2026-07-24"}
+      - {id: FIXTURE-registration-protocol-P6,
+         type: FIXTURE, title: "FIXTURE · registration-protocol-P6 (light from outside the self)",
+         lifecycle: fixture,
+         rationale: "machine-green != glass-green; many decisions re-derive-via this."}
+    edges:
+      - {type: SUPERSEDES, source: DEC-95-HANDOFF-LINE, target: DEC-90-COMPACT-PREP}
+      - {type: RELATES_TO, source: DEC-90-COMPACT-PREP, target: DEC-HANDOVER-MEASURED}
+      - {type: DEPENDS_ON, source: DEC-95-HANDOFF-LINE, target: DEC-HANDOVER-MEASURED}
+      - {type: RE_DERIVE_VIA, source: DEC-CARRY-THE-LEAST-POINTER, target: FIXTURE-registration-protocol-P6}
+      - {type: RELATES_TO, source: DEC-REMIND-TUNE-MEMORY-ENTRIES, target: DEC-MEMORY-IS-A-RELEVANCE-TRIGGERED-GRAPH-INDEX}
+      - {type: DEPENDS_ON, source: DEC-REMIND-TUNE-MEMORY-ENTRIES, target: TODO-MEMORY-ENTRIES-TUNED}

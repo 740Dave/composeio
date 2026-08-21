@@ -1,0 +1,82 @@
+# ComposeUX CYD — modal dialog demo ([CXC-R-DIALOG])
+#
+# Proof consumer of the modal-overlay substrate (overlay.cpp): a scrim +
+# centered panel + word-wrapped body + confirm/abort affordances that
+# CAPTURE all touch while shown.  The dialog is the LAST widget so it is
+# z-top in both draw order and (flat reverse-z registry) hit-test order —
+# compose_scene also forces its rect to the full viewport.
+#
+# OPEN / CLOSE on the bus:
+#   - publish truthy -> ui/confirm_dialog          opens the modal;
+#   - CONFIRM affordance  publishes "arm" -> fleet/command, then closes;
+#   - CANCEL / scrim tap  closes (publishes "off" -> ui/confirm_dialog).
+#
+# NOTE (flat-tier reduction): the Skia dialog.py hosts CHILD widgets in its
+# panel; this tier renders BUILT-IN confirm/abort affordances (the analog,
+# like master_detail's flat detail body).  The SHARED modal chrome (scrim +
+# centered panel + title) renders identically; the affordance CONTENT is the
+# documented reduction, so a byte-identical pixel golden is not the goal.
+
+app:
+  id: cyd-dialog
+
+design:
+  title: "Modal Dialog Demo"
+  width: 240
+  height: 320
+  background: "#101318"
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 240
+    height: 320
+    children:
+      - type: rect
+        id: header
+        x: 0
+        y: 0
+        w: 240
+        h: 44
+        fill_color: [0x1F, 0x53, 0x8D]
+      - type: label
+        id: header_text
+        text: "COMMAND CONSOLE"
+        x: 0
+        y: 6
+        w: 240
+        h: 32
+        font_size: 16
+        font_weight: bold
+        align: center
+        color: [0xDC, 0xE4, 0xEE]
+      - type: label
+        id: hint
+        text: "Publish ui/confirm_dialog to arm"
+        x: 8
+        y: 60
+        w: 224
+        h: 20
+        font_size: 11
+        align: center
+        color: [0x8B, 0x98, 0xAA]
+      # A button that (in production) opens the modal by publishing to the
+      # gate namespace; here it doubles as the base-scene content beneath
+      # the scrim so the z-capture is visible.
+      - {type: button, id: arm_btn, label: "ARM DRIVE", publish_namespace: "ui/confirm_dialog",
+         x: 40, y: 130, w: 160, h: 40}
+
+  # -- MODAL (z-top; full-viewport scrim + centered panel) ---------------
+  - type: dialog
+    id: confirm
+    namespace: "ui/confirm_dialog"      # open/close gate (drives visible)
+    visible: true                       # shown for this demo/golden render
+    title: "Confirm Arm"
+    body: "Arming the FTL drive is irreversible for 90 seconds. Confirm to proceed."
+    dismissible: true
+    panel_width: 220
+    confirm_label: "ARM"
+    confirm_value: "arm"
+    abort_label: "CANCEL"
+    decision_namespace: "fleet/command"
+    scrim_color: "#000000A0"

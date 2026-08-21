@@ -1,0 +1,202 @@
+---
+scope: "CYD ESP32 visual polish — three targeted firmware changes that bring the constrained tier to visual parity with the desktop Skia renderer: coverage-based anti-aliasing on the geometric primitives, gauge text offset normalisation onto the desktop values, and font atlas size coverage for gauge subtitle text."
+audience: "Builder agents implementing changes to the CYD Phase 1b firmware."
+boundary: "IN: the drawing primitives in canvas_esp32.cpp, text positioning in gauge.cpp, and font atlas size generation. OUT: new widgets, WiFi/MQTT, and touch input."
+not-this: "Not new widgets. Not WiFi or MQTT. Not touch input. Not an architectural change to band rendering — every AA change operates inside the existing in_band()/put_pixel() pipeline."
+depends-on: []
+elements: [CXC-CYD-AA-*]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+created: 2026-03-30
+converted-from: cyd/spec/cyd-visual-polish-aa.smd
+---
+# CYD Visual Polish — Anti-Aliasing and Gauge Normalisation [SPEC:CXC-CYD-AA]
+
+> The CYD firmware already blends 8-bit alpha in `put_pixel()`, and the font atlas already supplies
+> antialiased glyphs, so text on the CYD is already smooth. The remaining visible gap against the
+> desktop Skia render is EXCLUSIVELY in geometric edges, which are rasterised with integer coverage and
+> stairstep. This spec closes three gaps at once: coverage-based AA on the geometric primitives, a gauge
+> text offset that silently drifted from the desktop during Phase 1b, and an atlas size gap that forces
+> gauge subtitles through a nearest-neighbour rescale.
+
+---
+
+## 1. Geometric anti-aliasing
+
+### [CXC-CYD-AA-GEOM-CURRENT] The blending path already exists — only the edge coverage is missing
+
+- definition: `canvas_esp32.cpp` uses integer rasterisation for every geometric primitive, so shape
+  edges land fully on or fully off.
+- fact-blending: `canvas_esp32.cpp:put_pixel` ALREADY implements full 8-bit alpha blending.
+- fact-text: the font atlas already provides 8-bit antialiased glyphs, and text rendering already blends
+  glyph alpha against fill alpha.
+- consequence: the gap is exclusively in geometric edge rendering, and the fix therefore needs no new
+  blending machinery — only a coverage value to feed the blender that already exists.
+- part-of: [SPEC:CXC-CYD-AA]
+
+### [CXC-CYD-AA-GEOM-APPROACH] Coverage is computed as a signed distance field and multiplies alpha
+
+- definition: each edge pixel computes a coverage value in the range 0.0 to 1.0 representing the
+  fraction of the pixel's area the shape covers; that coverage multiplies the fill or stroke alpha and
+  passes through the existing `put_pixel()` blend path.
+- method: signed distance field. For each edge pixel compute the signed distance from the pixel centre
+  to the geometric boundary, where negative is inside the shape and positive is outside, then map
+  `coverage = clamp(0.5 - distance, 0.0, 1.0)`.
+- units: `distance` is in pixel units, which is what makes the mapping produce a one-pixel-wide
+  antialiased edge independent of shape size.
+- part-of: [SPEC:CXC-CYD-AA]
+
+### [CXC-CYD-AA-GEOM-PRIMITIVES] The six primitives requiring AA, and each one's distance function
+
+- definition: every geometric primitive that draws an edge, with the SDF expression that yields its
+  coverage.
+
+| Primitive | Function | SDF calculation |
+|-----------|----------|-----------------|
+| Filled circle | `fill_circle()` | `distance = sqrt((px-cx)^2 + (py-cy)^2) - radius` |
+| Stroked circle | `stroke_circle()` | `distance = abs(sqrt((px-cx)^2 + (py-cy)^2) - radius) - half_thickness` |
+| Filled rect | `fill_rect()` | Edge coverage at the four borders (1D distance) |
+| Stroked rect | `stroke_rect()` | Edge coverage at the inner and outer boundaries |
+| Stroke disc stamp | `stamp_stroke_disc()` | Same as filled circle — the round-cap stroking primitive used by `stroke_arc()` |
+| Lines | `draw_line()` | Perpendicular distance from pixel centre to line segment |
+
+- part-of: [SPEC:CXC-CYD-AA]
+
+### [CXC-CYD-AA-GEOM-IMPL] Implementation constraints on a resource-constrained target
+
+- constraint-integer: use an integer-approximated SDF where possible. The `sqrt()` in the circle SDF can
+  reuse the existing integer distance comparison (`dx*dx + dy*dy` against `r*r`) with a one-pixel band
+  around the boundary, so ONLY edge pixels pay the `sqrt()` cost.
+- change-fill-circle: `fill_circle()` currently uses the midpoint circle algorithm. Replace it with a
+  scanline rasteriser that computes the exact floating-point x-intercepts of the circle edge per row and
+  applies coverage to the first and last pixel of each scanline.
+- perf-stamp-disc: `stamp_stroke_disc()` is called many times per arc stroke and is the hot path.
+  Precompute the disc coverage as a small lookup once per radius, then stamp from the lookup.
+- constraint-band: all AA changes operate inside the existing `in_band()` / `put_pixel()` pipeline. No
+  architectural change to band rendering.
+- constraint-color: the framebuffer is RGB565. Alpha blending happens at 8-bit precision inside
+  `put_pixel()` and quantises to 565 on write, which is already correct for AA — the blended result is
+  simply quantised.
+- part-of: [SPEC:CXC-CYD-AA]
+
+---
+
+## 2. Gauge text offset normalisation
+
+### [CXC-CYD-AA-GAUGE-CURRENT] The C++ and Python gauge text offsets silently diverged
+
+- definition: the two tiers place gauge value and label text at different fractions of the outer radius.
+
+| Offset | C++ (gauge.cpp) | Python (gauge.py) |
+|--------|-----------------|-------------------|
+| Value text Y | `cy + outer_r * 0.58` | `cy + outer_r * 0.32` |
+| Label text Y | `cy + outer_r * 0.78` | `cy + outer_r * 0.50` |
+
+- cause: the C++ values were adjusted during Phase 1b to avoid needle-hub overlap on the small 115x115
+  gauges. The Python values are the original design.
+- part-of: [SPEC:CXC-CYD-AA]
+
+### [CXC-CYD-AA-GAUGE-FIX] The desktop values are canonical and the firmware adopts them
+
+- decision: adopt the Python (desktop) values as canonical — `0.32` for value text, `0.50` for label
+  text.
+- rationale: these place text in the 90-degree gap at the bottom of the 270-degree arc, which is correct
+  for ALL gauge sizes. The C++ adjustment pushed text too low — into the arc gap rather than centred
+  within it — so it fixed the 115x115 case by breaking the general one.
+- change-value: in `gauge.cpp:draw`, change the value text Y from `cy + outer_r * 0.58f` to
+  `cy + outer_r * 0.32f`.
+- change-label: in `gauge.cpp:draw`, change the label text Y from `cy + outer_r * 0.78f` to
+  `cy + outer_r * 0.50f`.
+- invalidating-assumption: that the needle hub radius stays a fixed fraction of `outer_r`. If the hub
+  grows, `0.32` may re-collide on the smallest gauges and the correct repair is the hub geometry, not a
+  second per-tier offset.
+- part-of: [SPEC:CXC-CYD-AA]
+
+---
+
+## 3. Font atlas coverage for gauge labels
+
+### [CXC-CYD-AA-FONT-CURRENT] The atlas holds four sizes and the gauge may not ask for one of them
+
+- definition: the font atlas contains sizes 10, 12, 14 and 16px. Gauge labels ("Coolant Temp", "Oil
+  Pressure") render at whatever size the gauge widget derives for its title label.
+- generator: `cyd/fonts/generate_atlas.py`, using FreeType with 8-bit grayscale antialiasing.
+- part-of: [SPEC:CXC-CYD-AA]
+
+### [CXC-CYD-AA-FONT-REQ] Every visible string must hit the atlas at its exact size
+
+- requirement: verify the gauge subtitle text renders at a size the atlas actually holds.
+- failure-mode: if the gauge derives a size not in the atlas (8px or 9px, say), `font_atlas_find()`
+  returns the nearest match at 10px and the glyph is nearest-neighbour scaled, producing visible
+  artefacts.
+- repair: add the missing size to the generation list, re-run `python3 fonts/generate_atlas.py` with the
+  updated sizes, and regenerate `src/font_atlas.h`.
+- successor-note: [SPEC:CXC-CYD-BOLD-ATLAS] generalises this repair by adding 6px and 7px to the default
+  size list, which is the durable form of this requirement.
+- part-of: [SPEC:CXC-CYD-AA]
+
+---
+
+## 4. Build and acceptance
+
+### [CXC-CYD-AA-BUILD] The files this spec changes, and how the build is validated
+
+- definition: four files change; only two of them are hand-edited.
+
+| File | Changes |
+|------|---------|
+| `src/canvas_esp32.cpp` | AA in `fill_circle()`, `stamp_stroke_disc()`, `fill_rect()`, `stroke_rect()`, `draw_line()` |
+| `src/gauge.cpp` | Text offset normalisation (two lines) |
+| `fonts/generate_atlas.py` | Add any missing font sizes |
+| `src/font_atlas.h` | Regenerated if sizes were added |
+
+- verify-machine: `pio run` from `cyd/` succeeds with zero errors. The dashboard demo in `main.cpp` is
+  unchanged, so a build failure is unambiguously attributable to this spec's edits.
+- verify-human: the human compares the CYD display output against the desktop crosscheck PNG. Geometric
+  AA has no machine gate on this tier — stairstepping is judged on the glass, which is why the
+  compliance criteria below are phrased as visual observations.
+- part-of: [SPEC:CXC-CYD-AA]
+
+### [CXC-CYD-AA-COMPLIANCE] The compliance contract
+
+- definition: eight acceptance criteria spanning the three changes — five for geometric AA, two for
+  gauge normalisation, one for atlas coverage.
+
+| ID | Requirement | Area |
+|----|-------------|------|
+| CYD-AA-C1 | Filled circles render with antialiased edges, no stairstepping visible at 240x320 | Geometric AA |
+| CYD-AA-C2 | Stroked arcs render with antialiased edges via `stamp_stroke_disc()` AA | Geometric AA |
+| CYD-AA-C3 | Filled and stroked rectangles render with antialiased edges | Geometric AA |
+| CYD-AA-C4 | No increase in band buffer size — still 16 scanlines, 7,680 bytes | Geometric AA |
+| CYD-AA-C5 | Dashboard demo remains visually functional — no regression in layout or colour | Geometric AA |
+| CYD-AA-C6 | Gauge value text Y offset matches the desktop renderer (0.32 * outer_r) | Gauge normalisation |
+| CYD-AA-C7 | Gauge label text Y offset matches the desktop renderer (0.50 * outer_r) | Gauge normalisation |
+| CYD-AA-C8 | All text in the dashboard demo renders from a pre-generated atlas at its exact target size, with no nearest-neighbour scaling between sizes | Atlas coverage |
+
+- part-of: [SPEC:CXC-CYD-AA]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-CYD-AA] PRECONDITION_FOR [SPEC:CXC-CYD-FONT-UNIFY]
+- [CXC-CYD-AA-GEOM-CURRENT] CAUSES [CXC-CYD-AA-GEOM-APPROACH]
+- [CXC-CYD-AA-GEOM-APPROACH] PRECONDITION_FOR [CXC-CYD-AA-GEOM-PRIMITIVES]
+- [CXC-CYD-AA-GEOM-PRIMITIVES] PRECONDITION_FOR [CXC-CYD-AA-GEOM-IMPL]
+- [CXC-CYD-AA-GAUGE-CURRENT] CAUSES [CXC-CYD-AA-GAUGE-FIX]
+- [CXC-CYD-AA-FONT-CURRENT] CAUSES [CXC-CYD-AA-FONT-REQ]
+- [CXC-CYD-AA-GEOM-IMPL] BEFORE [CXC-CYD-AA-BUILD]
+- [CXC-CYD-AA-GAUGE-FIX] BEFORE [CXC-CYD-AA-BUILD]
+- [CXC-CYD-AA-FONT-REQ] BEFORE [CXC-CYD-AA-BUILD]
+- [CXC-CYD-AA-BUILD] PRECONDITION_FOR [CXC-CYD-AA-COMPLIANCE]
+
+- [SPEC:CXC-CYD-AA] CONTAINS [CXC-CYD-AA-GEOM-CURRENT]
+- [SPEC:CXC-CYD-AA] CONTAINS [CXC-CYD-AA-GAUGE-CURRENT]
+- [SPEC:CXC-CYD-AA] CONTAINS [CXC-CYD-AA-FONT-CURRENT]
+---
+
+**Version**: 1.1 — converted to FactLattice from `cyd/spec/cyd-visual-polish-aa.smd` (v1.0, 2026-03-30).
+**Status**: Draft

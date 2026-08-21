@@ -1,0 +1,61 @@
+# Synthetic Fiat 500e decoder map — [SPEC:CXC-CAN] / [CXC-CAN-DECODER-SCHEMA]
+#
+# PLACEHOLDER FRAME IDS. Every frame_id / start_bit / scale / offset below is a
+# stand-in. The REAL Fiat 500e ids and signal layouts are blocked on the OQ-1
+# live-vehicle candump ([CXC-CAN-OQ-CANDUMP]) — David + the car. This map ships
+# so the readers, the bus contract, the carousel Fiat tile, and the decoder are
+# testable end-to-end NOW; the candump POPULATES it with real ids/layouts. No
+# consumer depends on these placeholder ids being real.
+#
+# Layer-2 signal namespaces ([CXC-CAN-SIGNAL]) the carousel Fiat tile already
+# subscribes: fiat/soc, fiat/speed, fiat/range, fiat/gear.
+
+placeholder: true          # <- struck when the OQ-1 candump lands
+bus: fiat
+
+signals:
+  # State of charge, % — single byte, scaled. json engine (safe default for a
+  # continuous quantity, [CXC-CAN-JSON-RULE]).
+  - frame_id: 0x3d5        # PLACEHOLDER
+    publish: fiat/soc
+    start_bit: 0
+    length: 8
+    byte_order: big
+    scale: 0.4             # 0..255 raw -> 0..102 %
+    offset: 0.0
+    engine: json
+
+  # Vehicle speed, kph — 16-bit big-endian (Motorola), scaled float.
+  - frame_id: 0x3e9        # PLACEHOLDER
+    publish: fiat/speed
+    start_bit: 0
+    length: 16
+    byte_order: big
+    scale: 0.01
+    offset: 0.0
+    engine: json
+
+  # Remaining range, km — 16-bit big-endian integer (scale 1.0).
+  - frame_id: 0x42a        # PLACEHOLDER
+    publish: fiat/range
+    start_bit: 0
+    length: 16
+    byte_order: big
+    scale: 1.0
+    offset: 0.0
+    engine: json
+
+  # Gear selector — 4-bit enum with a TOTAL map over its raw range, so a strict
+  # enum engine is safe ([CXC-CAN-JSON-RULE]). An unmapped nibble drops with a
+  # warning and fiat/gear retains its last value — never a SIGABRT.
+  - frame_id: 0x11a        # PLACEHOLDER
+    publish: fiat/gear
+    start_bit: 0
+    length: 4
+    byte_order: big
+    engine: enum
+    map:
+      0: P
+      1: R
+      2: N
+      3: D

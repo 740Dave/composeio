@@ -1,0 +1,195 @@
+# ComposePlatform Carousel LAUNCHER ([SPEC:CXC-PRIM-CAROUSEL])
+#
+# The bus-native replacement for the CTk Maker launcher (~/Dropbox/Maker/launcher)
+# that runs FULLSCREEN on pi.example.local.  A touch-driven cover-flow carousel of app
+# tiles: drag/flick to scroll, the centered tile lifts to full size, a center-tap
+# fires that tile's launch intent (_app/<target>/open) onto the bus.
+#
+# Portrait 1080x1920 (the Pi's HDMI touchscreen, rotated) — see README.md.
+#
+# Tiles (settled DSD):
+#   * fiat   — a LIVE fiat_widget tile: a native ComposePlatform EV dash that
+#              SUBSCRIBES the fiat/* CANbus bus-state by reference (minimal
+#              live-reading version; full gauge set + the CAN->bus bridge are
+#              deferred — see README "Fiat").
+#   * bsg    — a PLACEHOLDER tile that fires _app/bsg/open.  The real content is
+#              TWO stacked Colonial Console instances (20px vpad) — a SEPARATE
+#              follow-up after the CIC fix pass lands.  DO NOT build here.
+#   * power  — a system action tile (the rpi5 kiosk shutdown affordance).  A
+#              center-tap fires _app/power/open; the host binds that intent to
+#              the poweroff path (README "Power / deploy").
+#
+# Bus surface ([CXC-PRIM-CAROUSEL-BIND]):
+#   publishes centered index -> launcher/index   (+ launcher/index/target)
+#   consumes  a target index <- launcher/goto    (control-is-a-peer snap)
+#   center-tap fires          -> _app/<target>/open
+#
+#   Run headless:  python -m composeio.render.run_compose \
+#                    compose_projects/carousel/launcher.compose.yaml --headless out.png
+#   Run live:      COMPOSEUX_MQTT_BROKER=mqtt-broker.local \
+#                    python -m composeio.render.run_compose \
+#                    compose_projects/carousel/launcher.compose.yaml --fullscreen --transports
+
+app:
+  id: maker-launcher
+  # External bus transport ([DP-CIO-5]).  Connected ONLY with the --transports
+  # flag (a headless PNG render ignores it); the kiosk invocation passes it so
+  # the center-tap `_app/<target>/open` intents ride MQTT to the host router
+  # (kiosk.py) and the live fiat/* CANbus state binds by reference.  Broker =
+  # mqtt-broker.local (== mqtt-broker.local), the ComposePlatform bus master.
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+design:
+  width: 1080
+  height: 1920
+  title: Maker Launcher
+  background: [16, 18, 26]
+  background_wash: {color: [52, 195, 208, 30], cx: 0.5, cy: 0.30, r: 0.75}
+
+# The fiat/* CANbus namespaces the live Fiat tile subscribes BY REFERENCE.
+# These are the bus contract; a future CAN->bus bridge on the Pi (decoding the
+# MCP2515 frames, fiat OQ-1) publishes the retained state here.  json engine on
+# free-form is deliberate; the numeric channels are continuous.
+namespaces:
+  - {name: fiat/speed, state_engine: continuous_0_255}
+  - {name: fiat/soc,   state_engine: continuous_0_255}
+  - {name: fiat/range, state_engine: json}
+  - {name: fiat/gear,  state_engine: json}
+
+widgets:
+  - type: carousel
+    id: launcher
+    x: 0
+    y: 0
+    width: 1080
+    height: 1920
+    spacing: 600
+    tile_width: 520
+    tile_height: 520
+    center_scale: 1.0
+    side_scale: 0.5
+    initial_index: 0
+    index_ns: launcher/index
+    goto_ns: launcher/goto
+    tiles:
+
+      # ── FIAT ─ LIVE fiat_widget tile ───────────────────────────────────────
+      # A native ComposePlatform EV dash composed from primitives (SDR: config,
+      # not a CTk port).  The gauges SUBSCRIBE fiat/* and re-render on change
+      # while the tile rides the carousel ([CXC-PRIM-CAROUSEL-SCALE]).  Minimal
+      # live-reading set (speed + SOC); range/gear readouts + a full skeuo dash
+      # are deferred (README "Fiat").
+      - target: fiat
+        label: Fiat 500e
+        widget:
+          type: pixel_stack
+          width: 520
+          height: 520
+          corner_radius: 30
+          background: [22, 24, 34]
+          children:
+            # FIAT roundel — the tile's launcher FACE (a BUS ASSET resolved by
+            # reference from the store, bus://assets/icons/carousel/fiat_logo.png;
+            # authoring source resources/fiat-logo-2.png, published not shipped —
+            # carousel_assets.yaml).  A compact top badge so
+            # the live SPEED dial + SOC bar below stay unobstructed; replaces
+            # the old "FIAT 500e" text placeholder.
+            - {type: image, id: fiat_logo,
+               src: "bus://assets/icons/carousel/fiat_logo.png",
+               fit: contain, x: 220, y: 8, w: 80, h: 80}
+            # Big central SPEED dial — live on fiat/speed.
+            - type: gauge
+              id: fiat_speed
+              style: dial
+              namespace: fiat/speed
+              min_val: 0
+              max_val: 90
+              unit: "mph"
+              label: SPEED
+              x: 110
+              y: 90
+              width: 300
+              height: 300
+            # State-of-charge LED bar — live on fiat/soc.
+            - type: gauge
+              id: fiat_soc
+              style: led_bar
+              orientation: horizontal
+              namespace: fiat/soc
+              min_val: 0
+              max_val: 100
+              unit: "%"
+              label: SOC
+              segments: 10
+              x: 60
+              y: 410
+              width: 400
+              height: 70
+
+      # ── BSG ─ launch cover (fires _app/bsg/open -> the 2-up scene) ─────────
+      # The BSG app is the settled 2-up ([CXC-CIC-TWO-UP]): TWO stacked Colonial
+      # Console instances, 20px vertical padding, filling portrait 1080x1920 —
+      # BUILT as its own scene at `bsg_app.compose.yaml` (NOT inlined here).  It
+      # is NOT a tile body: the carousel OWNS all pointer input (hit_test_tree
+      # never descends to a tile) and a 4:3 console cannot fit or stay
+      # interactive in a 520px tile — so the 2-up is LAUNCHED, not embedded.
+      #
+      # Handoff seam ([CXC-PRIM-CAROUSEL-BIND] launch intent): a center-tap on
+      # this tile publishes `_app/bsg/open` = "open"; the deploy-time host router
+      # (the launcher runtime on rpi5) binds that intent to open
+      # `compose_projects/carousel/bsg_app.compose.yaml` fullscreen — the same
+      # widget-owns-intent / launcher-owns-runtime split as the fiat/power tiles
+      # (README "Bus surface" + "rpi5 deploy mechanism").  This tile stays the
+      # launch COVER; the app content lives in bsg_app.compose.yaml.
+      - target: bsg
+        label: Battlestar
+        widget:
+          type: pixel_stack
+          width: 520
+          height: 520
+          corner_radius: 30
+          background: [26, 24, 30]
+          children:
+            # BSG shield — the tile's launcher FACE (a BUS ASSET resolved by
+            # reference, bus://assets/icons/carousel/bsg_shield.png; authoring
+            # source resources/bsg_shield_scaled.png, published not shipped).
+            # The badge is
+            # self-labeling (BATTLESTAR GALACTICA / BSG 75), so the old ring +
+            # "BSG" + full-name text placeholders are retired; a launch hint
+            # remains below.
+            - {type: image, id: bsg_icon,
+               src: "bus://assets/icons/carousel/bsg_shield.png",
+               fit: contain, x: 60, y: 30, w: 400, h: 400}
+            - {type: label, text: "tap to launch", x: 0, y: 448, width: 520,
+               align: center, font_size: 20, color: [120, 120, 132]}
+
+      # ── POWER ─ system action tile (rpi5 kiosk shutdown) ───────────────────
+      # Center-tap fires _app/power/open; the host (launcher runtime / rpi5
+      # deploy) binds that intent to `sudo poweroff` — the same power-off path
+      # the CTk launcher's power element used.  HA tile DROPPED per the DSD.
+      - target: power
+        label: Power
+        widget:
+          type: pixel_stack
+          width: 520
+          height: 520
+          corner_radius: 30
+          background: [30, 22, 24]
+          children:
+            # POWER glyph — the tile's launcher FACE (a BUS ASSET resolved by
+            # reference, bus://assets/icons/carousel/power_off.png; authoring
+            # source resources/power_off.png — David confirmed the .png, not the
+            # .svg — published not shipped).  Replaces the drawn ring + bar
+            # placeholder; the POWER +
+            # "shut down" labels stay (a destructive action reads clearer named).
+            - {type: image, id: pwr_icon,
+               src: "bus://assets/icons/carousel/power_off.png",
+               fit: contain, x: 135, y: 20, w: 250, h: 250}
+            - {type: label, text: "POWER", x: 0, y: 350, width: 520,
+               align: center, font_size: 44, font_weight: bold,
+               color: [239, 83, 80]}
+            - {type: label, text: "shut down", x: 0, y: 430, width: 520,
+               align: center, font_size: 22, color: [120, 120, 132]}

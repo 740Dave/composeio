@@ -1,0 +1,83 @@
+# ComposeUX CYD — config B: fleet status board ([CXC-R-C12] config 2)
+#
+# A deliberately DIFFERENT composition for the same binary: swap this
+# in at bus://assets/displays/<device_id>.compose.yaml and the device
+# becomes a fleet status board ([CXC-R-BOOT-FUNGIBLE]).  Also exercises
+# the M5 image pipeline (BMP badge via bus://assets) and $variables.
+
+app:
+  id: cyd-status
+
+design:
+  title: "Fleet Status Board"
+  width: 240
+  height: 320
+  background: "#101318"
+
+variables:
+  row_bg: "#1A2028"
+  ok_green: [0x2E, 0xCC, 0x71]
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 240
+    height: 320
+    children:
+      - type: rect
+        id: header
+        x: 0
+        y: 0
+        w: 240
+        h: 44
+        fill_color: [0x1F, 0x53, 0x8D]
+      - type: label
+        id: header_text
+        text: "FLEET STATUS"
+        x: 0
+        y: 6
+        w: 240
+        h: 32
+        font_size: 16
+        font_weight: bold
+        align: center
+        color: [0xDC, 0xE4, 0xEE]
+      - type: image
+        id: badge
+        src: "bus://assets/displays/assets/alert_badge.bmp"
+        x: 90
+        y: 52
+        w: 60
+        h: 30
+
+      # -- unit rows -------------------------------------------------
+      - {type: rect,  id: row1,      x: 8,  y: 92,  w: 224, h: 52, fill_color: $row_bg, corner_radius: 6}
+      - {type: led,   id: row1_led,  x: 14, y: 96,  w: 44,  h: 44, state: "on"}
+      - {type: label, id: row1_name, x: 66, y: 96,  w: 120, h: 22, text: professor, font_size: 12, color: [0xD6, 0xD6, 0xD6]}
+      - {type: label, id: row1_stat, x: 66, y: 118, w: 140, h: 18, text: online 192.0.2.50, font_size: 10, color: $ok_green}
+
+      - {type: rect,  id: row2,      x: 8,  y: 150, w: 224, h: 52, fill_color: $row_bg, corner_radius: 6}
+      - {type: led,   id: row2_led,  x: 14, y: 154, w: 44,  h: 44, state: "warning"}
+      - {type: label, id: row2_name, x: 66, y: 154, w: 120, h: 22, text: gilligan, font_size: 12, color: [0xD6, 0xD6, 0xD6]}
+      - {type: label, id: row2_stat, x: 66, y: 176, w: 140, h: 18, text: degraded .41, font_size: 10, color: [0xF1, 0xC4, 0x0F]}
+
+      - {type: rect,  id: row3,      x: 8,  y: 208, w: 224, h: 52, fill_color: $row_bg, corner_radius: 6}
+      - {type: led,   id: row3_led,  x: 14, y: 212, w: 44,  h: 44, state: "danger"}
+      - {type: label, id: row3_name, x: 66, y: 212, w: 120, h: 22, text: skipper, font_size: 12, color: [0xD6, 0xD6, 0xD6]}
+      - {type: label, id: row3_stat, x: 66, y: 234, w: 140, h: 18, text: unreachable, font_size: 10, color: [0xE7, 0x4C, 0x3C]}
+
+      # -- actions ---------------------------------------------------
+      - {type: button, id: refresh_btn, label: REFRESH, publish_namespace: fleet/refresh,
+         x: 8, y: 270, w: 110, h: 36}
+      - {type: button, id: silence_btn, label: SILENCE, publish_namespace: fleet/silence,
+         x: 124, y: 270, w: 108, h: 36}
+      - type: label
+        id: footer
+        text: "same firmware - different config"
+        x: 0
+        y: 306
+        w: 240
+        h: 14
+        font_size: 8
+        align: center
+        color: [0x66, 0x66, 0x78]

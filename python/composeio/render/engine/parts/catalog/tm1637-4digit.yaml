@@ -1,0 +1,152 @@
+# Part catalog entry — TM1637 4-digit 7-segment LED display MODULE.
+#
+# A PERIPHERAL and an OUTPUT ACTUATOR (like dy-sv5f), not an MCU.  It is the
+# fleet's cheapest physical realization of a semantic value — two wires, four
+# digits, no pixels — and the first NON-RASTER backend ([SPEC:CXC-TM1637]).
+#
+# ⛔ THIS IS THE COMPLETE MODULE, NOT A BARE TM1637 CHIP.  David 2026-08-15:
+# "I'm using a complete module for the 7 segment display that contains all the
+# necessary HW for it to be driven via DIO and CLK, not a bare TM1637 with
+# resistors and bare 7 segment display."  So the pin map is the four-pin HEADER
+# (VCC/GND/CLK/DIO), not the die's twenty pins.  The TM1637 chip, the tube and
+# the whole datasheet reference network (p.8: a 10 kOhm pull-up on EACH of CLK
+# and DIO plus a 100 pF cap per line) are ALREADY ON THE BOARD.
+#
+# ⛔ DO NOT ADD EXTERNAL PULL-UPS ON CLK OR DIO.  They are fitted.  A second
+# pull-up in parallel lowers the effective resistance, raises the low-side sink
+# current, and buys nothing.  A hookup diagram showing pull-up resistors on
+# these lines is WRONG.
+#
+# ⛔ VDD IS 5 V, AND FOR A PHYSICAL REASON THAT IS NOT NEGOTIABLE.  A white or
+# blue tube has an LED forward voltage of roughly 3.0-3.4 V, so at VDD 3.3 V the
+# segment drivers have NO headroom and the tube does not light at all — that is
+# what TM1637 V2.4 p.8 note 3 ("blue-ray nixie tube break over step-down voltage
+# is 3V, TM1637 power supply should be 5V") is about.  Red/green/yellow modules
+# DO run at 3.3 V; David's are WHITE and will not.  Recorded here because
+# "just run it at 3.3 V" is the first simplification everyone reaches for, and
+# on these boards it produces a dark display and a long hunt.
+
+tm1637-4digit:
+  description: >-
+    TM1637 4-digit 7-segment LED display module (complete breakout: driver IC,
+    tube, and the p.8 reference network already fitted) — two-wire CLK/DIO,
+    NOT I2C, no slave address, VDD 5 V.
+
+  # ---- the peripheral descriptor this pin map is CHECKED against -----------
+  descriptor: tm1637.descriptor.yaml
+
+  # Canonical pin map — the netlist (hookup.wires) speaks EXACTLY these names.
+  # A wire endpoint naming a pin not in this list is a hard parse error (S2).
+  #
+  # EIGHT pins for FOUR nets.  The module carries TWO 4-pin headers (David
+  # noticed the pass-throughs) wired PIN-FOR-PIN IN PARALLEL along the board.
+  # The `-B` suffix names the second header's pads so a diagram can show a
+  # deliberate module-to-module link on a SPECIFIC net; they are the same
+  # electrical nodes as their unsuffixed twins.
+  pins:
+    - CLK              # header A — serial clock, host -> module, always
+    - DIO              # header A — serial data, BIDIRECTIONAL (see ack_note)
+    - VCC              # header A — 5 V (see the VDD note above)
+    - GND              # header A
+    - CLK-B            # header B — SAME NET as CLK
+    - DIO-B            # header B — SAME NET as DIO
+    - VCC-B            # header B — SAME NET as VCC
+    - GND-B            # header B — SAME NET as GND
+
+  # ⛔ THE SAME-NET DECLARATION IS LOAD-BEARING, NOT DOCUMENTATION.  The four
+  # sentences above say "-B is the same net" in prose, which no checker can
+  # read.  This block says it to the netlist checker, so a `must_not:`
+  # constraint of the form `distinct_nets: [tm1.DIO, tm2.DIO, ...]` catches a
+  # link made on the B pads — the EXACT way the pass-through commons DIO and
+  # produces four identical displays.  Without it a B-header joint reads as
+  # two unrelated nodes and sails past the check that exists to stop it.
+  same_net:
+    - [CLK, CLK-B]
+    - [DIO, DIO-B]
+    - [VCC, VCC-B]
+    - [GND, GND-B]
+
+  # No adc_pins: an OUTPUT actuator, not an MCU.  The host drives IT.
+
+  # ---- the facts a wiring decision actually turns on -----------------------
+  vdd_volts: 5.0
+  vih_min_volts: 3.5          # 0.7 * VDD (V2.4 p.10) — a 3.3 V push-pull HIGH MISSES THIS
+  vil_max_volts: 1.5          # 0.3 * VDD (V2.4 p.10)
+  onboard_pullup_ohms: 10000  # p.8 R1/R2, one per line, TO VDD (= 5 V), ALREADY FITTED.
+  # ✅ CONFIRMED on David's four modules 2026-08-15: the only SMD resistors on the
+  # board are marked `103` = 10 x 10^3 = 10 kOhm.  Evidence class MARKING-READ,
+  # not meter-measured.  This is the FAVOURABLE end — 4.7 kOhm modules exist and
+  # would have doubled the clamp current and put the 470R CLK containment
+  # resistor 2% under its V_IL ceiling.
+  onboard_line_cap_pf: 100    # p.8 note 2, one per line, per the DATASHEET reference network.
+  # ⚠ NOT CONFIRMED on David's modules, and NOT READABLE: SMD ceramics are
+  # UNMARKED.  Check by COUNTING passives beside CLK/DIO, not by reading a value.
+  # Many clones omit them.  Decides 100 kHz vs 50 kHz and nothing else; the
+  # scene runs 50 kHz, which is correct either way.
+  die_input_cap_pf: 15        # CI, p.10
+  current_ma_by_brightness: "20 (step 0, 1/16 duty) .. 80 (step 7, 14/16 duty), per module at 5 V"
+
+  ack_note: >-
+    ⛔ DIO IS BIDIRECTIONAL IN EVERY TRANSACTION, and NOT because of the
+    key-scan matrix (which this module does not populate).  The TM1637 pulls
+    DIO LOW ITSELF on the falling edge of the 8th clock to ACK, releasing it at
+    the end of the 9th (V2.4 p.3).  Two consequences that decide the wiring:
+    (1) the host MUST drive DIO open-drain — a push-pull HIGH during the ACK
+    window shorts two output stages together; (2) any level translator on DIO
+    must be BIDIRECTIONAL AND OPEN-DRAIN, because the driver READS that ACK and
+    it is the only per-module presence signal a multi-display panel has.  A
+    push-pull direction-pin translator (74LVC1T45/2T45) silently destroys it and
+    the driver then reports success against a disconnected module forever.
+
+  passthrough_note: >-
+    ⛔ THE TWO HEADERS ARE NOT A CHAIN, AND THEY LOOK EXACTLY LIKE ONE.  The
+    TM1637 has NO serial-out pin and NO slave address, so it cannot be
+    daisy-chained or independently addressed ([CXC-TM1637-NO-CHAIN],
+    [CXC-TM1637-NO-ADDRESS]).  The pass-throughs bus all FOUR nets — VCC, GND,
+    CLK **and DIO** — so modules butt together mechanically.  Butting four
+    modules onto them commons DIO, which produces FOUR IDENTICAL DISPLAYS (the
+    mirrored topology), not four independent ones.  For independent content,
+    link VCC/GND/CLK pin-to-pin if you like, but run every DIO SEPARATELY.
+
+  colon_note: >-
+    On the 4-digit CLOCK variant the colon is ONE bit — conventionally the dp
+    bit of digit index 1 — and no digit has its own decimal point.  On the
+    non-clock variant every digit has a dp and there is no colon.  Which one
+    this module is, is [CXC-TM1637-PRE-MODULE-VARIANT] and is UNANSWERED.
+
+  # ---- Hookup-SVG art (S3) -------------------------------------------------
+  fritzing: tm1637-4digit.svg
+  fritzing_part: "TM1637 4-digit 7-segment display module (42 x 24 mm, dual 4-pin header)"
+  fritzing_source: >-
+    HAND-AUTHORED 2026-08-15 in the Fritzing breadboard convention (physical
+    width in inches + connectorNpin circles), NOT sourced from a community
+    .fzpz.  Geometry is the common 42.0 x 24.0 mm module with 2.54 mm headers
+    inset 2.54 mm from each short edge.
+  fritzing_connectors:
+    "CLK": connector0
+    "DIO": connector1
+    "VCC": connector2
+    "GND": connector3
+    "CLK-B": connector4
+    "DIO-B": connector5
+    "VCC-B": connector6
+    "GND-B": connector7
+  fritzing_note: >-
+    ⚠ BOARD-CONFIRM BEFORE SOLDERING — TWO items, both of which produce
+    well-formed wrong results rather than obvious failures.
+    (1) HEADER PIN ORDER.  The art draws CLK, DIO, VCC, GND top-to-bottom,
+    which is the common silkscreen; SEVERAL CLONES SHIP THE REVERSE (GND, VCC,
+    DIO, CLK).  Read the silkscreen on the actual board and match it — swapping
+    VCC and GND on a TM1637 module is a destructive error, not a functional one.
+    (2) BOARD OUTLINE.  42 x 24 mm is the common size; 42 x 19 mm also ships.
+    The outline affects only how the guide LOOKS, not the netlist.
+    ⛔ The segments are drawn UNLIT on purpose: lighting a glyph would assert a
+    segment map that [CXC-TM1637-SEGMENT-MAP-UNVERIFIED] records as unchecked,
+    and a wrong map produces confident, well-formed, incorrect digits.
+
+  # Future KiCad interpreter target (documented; not built).  No stock symbol
+  # for the MODULE; the die has one in some libs.  A generic 1x4 header pair
+  # plus a hand symbol applies.
+  kicad:
+    symbol: "Connector_Generic:Conn_01x04"
+    footprint: "Module:TM1637_4Digit_42x24mm"

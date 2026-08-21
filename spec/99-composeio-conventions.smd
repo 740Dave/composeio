@@ -1,0 +1,204 @@
+---
+scope: "ComposeIO-specific SMD corpus conventions — domain-scoped prefixes, document type tags, cross-document reference syntax, and frontmatter conventions that extend the base SMD v2 specification"
+audience: "ComposeIO Architect (authoring reference), smd-linter (suppress false positives on ComposeIO corpus), smd-corpus-analyzer (corpus health baseline)"
+boundary: "ComposeIO corpus conventions only; base SMD v2 spec at ~/.claude/zerocontext/00-semantic-markdown-specification-v2.smd; broader SMD family taxonomy is out of scope"
+not-this: "Not a replacement for SMD v2; not applicable to other SMD corpora (Nexus, ExampleCorp, medical); not a proposal to modify the base spec"
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# ComposeIO SMD Corpus Conventions [SYSTEM:CIO-SMD-CONVENTIONS]
+
+> Formal registration of ComposeIO-specific extensions to SMD v2 — domain-scoped ID prefixes, document type tags, cross-document reference syntax, and formatting conventions used consistently across the ComposeIO spec corpus.
+
+---
+
+## 1. Domain-Scoped ID Prefixes
+
+### [CONV-PREFIX] ComposeIO Prefix Registry
+
+ComposeIO specs use document-scoped prefixes rather than the semantic type prefixes in SMD v2 Section 5.2. This is a deliberate corpus convention — domain prefixes provide intra-corpus uniqueness and immediate document-of-origin identification.
+
+| Prefix | Document | Node Type |
+|--------|----------|-----------|
+| `DP-CIO-` | 00-composeio-design-principles | Design principles |
+| `BP-` | 01-composeio-bus-protocol | Bus protocol nodes |
+| `BP-EXT-` | 01-amendment-bus-extensions | Bus extension nodes |
+| `BP-ACK-` | 01-amendment-critical-ack | Acknowledgment nodes |
+| `BP-MSG-` | 01-composeio-bus-protocol | Message format nodes |
+| `BP-SCOPE-` | 01-composeio-bus-protocol | Scope/dedup nodes |
+| `BP-TYPE-` | 01-composeio-bus-protocol | Message type nodes |
+| `CR-` | 01-amendment-capture-replay | Capture-replay nodes |
+| `CS-` | 02-composeio-config-schema | Config schema nodes |
+| `CS-APP-` | 02-amendment-app-config | App config amendment nodes |
+| `CS-LED-` | 02-composeio-config-schema | LED behavior nodes |
+| `CS-STATE-` | 02-composeio-config-schema | State engine nodes |
+| `MR-` | 03-composeio-module-roles | Module role nodes |
+| `HB-` | 04-nexus-bridge | Nexus bridge nodes |
+| `SCHED-` | 05-nexus-scheduler | Scheduler nodes |
+| `NEWS-` | 06-news-service | News service nodes |
+| `DP-NEWS-` | 06-news-service | News design principles |
+| `NOTIFY-` | 07-notification-bridge | Notification nodes |
+| `APP-` | 08-composeio-app-framework | App framework nodes |
+| `APP-ARCH-` | 08-composeio-app-framework | App architecture nodes |
+| `MCP-` | 09-composeio-intelligence-mcp-server | MCP server nodes |
+| `MCP-ARCH-` | 09-composeio-intelligence-mcp-server | MCP architecture nodes |
+| `NR-` | 10-composeio-node-red-integration, external/node-red-platform | Node-RED integration and platform nodes |
+| `DASH-` | ux_composer/specs/10-composer-runtime-dashboard | Runtime dashboard nodes |
+| `REN-` | ux_composer/specs/11-composer-widget-renderers | Widget renderer nodes |
+| `CXC-` | ux_composer/specs/00 through 09 | ComposeUX Composer nodes (also used corpus-wide past spec 09 as a sub-family root, e.g. CXC-HALD-, CXC-HAB-, CXC-NFC, CXC-HAL) |
+| `CXC-HALD-` | ux_composer/specs/32-composeux-hal-declaration | Declarative HAL nodes (peripheral declaration, kinds, drivers, bridge) |
+| `CXC-HAB-` | ux_composer/specs/33-composeux-ha-bridge | Home Assistant bridge nodes |
+| `CXC-IC-` | ux_composer/specs/34-composeux-intelligence-console | Intelligence Console nodes (Intelligence-as-peer, channels transport, self-instrumentation, self-directed lifecycle) |
+| `CXC-ICD-` | ux_composer/specs/35-intelligence-console-decisions | Intelligence Console decision-provenance ledger nodes (load-bearing forks + rationale + recoverability tags) |
+| `SD-` | 11-smd-mkdocs | SMD MkDocs documentation site nodes |
+| `HT-` | 12-nexus-terminus-composeapp | Nexus Terminus ComposeApp refactor nodes |
+| `SH-` | 13-service-hub-v2 | Service hub v2 nodes |
+| `BM-` | 14-board-manager | Board Manager ComposeApp nodes |
+
+- rationale: A ComposeIO node ID immediately identifies its source document and semantic category. `CR-REPLAY-TRANSPORT` is unambiguously a capture-replay transport node from `01-amendment-capture-replay.smd`.
+- linter-guidance: Suppress S007/S008 (unregistered prefix) for IDs matching this registry. Flag new prefixes not in this table.
+- extensibility: New ComposeIO specs add their prefix(es) to this table.
+
+---
+
+## 2. Document Type Tags
+
+### [CONV-DOCTYPE] ComposeIO Document Type Tag Registry
+
+ComposeIO extends the base SMD v2 type tag registry (Section 3.1) with these corpus-specific type tags:
+
+| Type Tag | Purpose | Used By |
+|----------|---------|---------|
+| `SPEC` | Technical specification | All core and ComposeUX specs |
+| `AMEND` | Amendment to an existing spec | 01-amendment-*.smd, 02-amendment-*.smd |
+| `SYSTEM` | System architecture or conventions | This file (99-composeio-conventions.smd) |
+
+- linter-guidance: `AMEND` is a valid document type tag for ComposeIO amendment specs. Suppress S001 errors when `AMEND` appears in the document header `[AMEND:ID]` pattern.
+- convention: Amendment specs use `amends:` frontmatter key to reference the parent spec being amended.
+
+---
+
+## 3. Cross-Document Reference Syntax
+
+### [CONV-XREF] Bracketed Document References
+
+ComposeIO specs use bracketed document-level references in Relationships sections and prose:
+
+```
+[SPEC:CIO-BUS-PROTOCOL]    — reference to a spec document
+[AMEND:BP-CAPTURE-REPLAY]  — reference to an amendment document
+[SPEC:CXC-ARCH]            — reference to a ComposeUX spec
+```
+
+- linter-guidance: Treat `[SPEC:ID]` and `[AMEND:ID]` as valid cross-document references. Do not flag as R001 (unresolvable reference).
+- convention: In Relationships sections, these references are followed by parenthetical context: `- depends-on: [SPEC:CIO-APP] (transport interface, crossover)`.
+
+### [CONV-XREF-NODE] Cross-Document Node References
+
+ComposeIO specs reference nodes defined in other documents using bare bracketed IDs with recognized prefixes:
+
+```
+[BP-MSG-FIELDS]       — node in bus protocol spec
+[CS-APP-TRANSPORTS]   — node in app config amendment
+[CXC-BUS-CONNECT]     — node in ComposeUX architecture
+[DASH-LIFECYCLE-THREADS] — node in dashboard spec
+```
+
+- linter-guidance: When a bare bracketed ID uses a prefix from the [CONV-PREFIX] registry, treat it as a valid cross-document node reference. Report as **warning** (not error) if unresolvable within the current file.
+
+### [CONV-RELVERB] Relationship Verb Vocabulary
+
+ComposeIO specs express node/spec relationships in a `## Relationships` block as inline `[A] VERB [B]` triples (one per line). This corpus idiom is distinct from base SMD v2 §7.1's causal-graph syntax. The observed verb set, now registered:
+
+| Verb | Meaning |
+|------|---------|
+| `DEPENDS_ON` | A structurally/mechanically requires B (mirrors the frontmatter `depends-on:` key). |
+| `RELATED_TO` | Generic association — A and B bear on each other without a stronger typed relation. |
+| `USES` | A consumes/applies B (a node, mechanism, or schema that B defines). |
+| `EXEMPLIFIES` | A is a concrete instance of the principle/pattern B. |
+| `REALIZES` | A implements / makes-real the design B specifies. |
+| `UPHOLDS` | A preserves/enforces the invariant or principle B. |
+| `DOCUMENTS` | A is a decision-provenance / rationale record that explains B's design — distinct from `DEPENDS_ON` (build dependency) and `RELATED_TO` (generic association). |
+
+**Both bullet forms are authored, and BOTH MUST parse.** A triple may carry a leading list bullet (`- [A] VERB [B]`) or stand alone (`[A] VERB [B]`). The corpus uses the unbulleted form for the majority of its triples. The two forms are interchangeable and carry identical meaning; a tool that recognises only one of them is defective, not the corpus.
+
+- invariant [CONV-RELVERB-NO-SILENT-DROP]: **an authored relationship triple is NEVER silently discarded.** Every line in a `## Relationships` block of the shape `[A] VERB [B]` — bulleted or not, core verb or domain verb or an unregistered verb — MUST either become an edge in the parsed graph or raise a diagnostic naming the file and line. Registering a verb under the profile's `relationship_verbs.domain` is what MAKES that verb parse: a profile that registers verbs the parser does not consume is a broken contract, not a harmless no-op. This invariant is load-bearing precisely because its violation is invisible — a parser that drops these lines yields a graph that is quietly incomplete while the linter reports zero errors, so every `lts_traverse` / `lts_flow` / relationship-shaped answer over the corpus is wrong with no signal that it is wrong ([INSIGHT-TRUST-IS-A-CONSTRUCTED-PROPERTY] landing on the knowledge substrate itself). Enforced by `tests/test_lts_authored_edges_survive_parse.py`.
+
+- linter-guidance: Treat these seven as the valid `## Relationships` verb set. A verb outside the set is a **warning** (undocumented extension), not an error; extend this table when a new verb earns a distinct, non-overlapping meaning. Per [CONV-RELVERB-NO-SILENT-DROP] that warning accompanies a PRESERVED, flagged edge — warn-and-keep, never warn-and-drop, and never drop in silence.
+
+### [CONV-DECISION-MARKER] Decision Marker Grammar
+
+A shared inline convention both David and the Intelligence use to tag load-bearing decisions **as they are made**, so `python/composeio/decision_extractor/` can build a DRAFT LTS decision ledger (spec-35 shaped) deterministically at end-of-session — refine a draft instead of authoring cold. Trigger (case-insensitive, may follow a `- `/`* ` bullet or `**`): a line `load-bearing decision: <decision>`, optionally enriched by following lines — `chose:` / `over:`, `because:`, `flips-if:` (aliases: `flips if` | `invalidated if` | `would flip if`), `tag:` (`DERIVABLE|CONTESTED|PREFERENCE` — becomes the ledger's `recoverability`), `status:`. Compact form: `load-bearing decision(CONTESTED): <title> — chose X over Y because Z; flips if W`. Unsupplied fields become a literal `TODO` in the draft; the extractor never invents rationale. It ALSO auto-captures every `AskUserQuestion` fork (question = the fork, options = alternatives, answer = chosen) with no marker needed. See `python/composeio/decision_extractor/README.md`.
+
+- linter-guidance: documents a conversational capture protocol, not a spec-node convention — no lint action.
+
+---
+
+## 4. Frontmatter Conventions
+
+### [CONV-FRONTMATTER] Extended Frontmatter Keys
+
+ComposeIO specs use these additional frontmatter keys beyond the base SMD v2 schema:
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `amends` | string | Path to the spec being amended (amendment specs only) |
+| `status` | string | Document status (e.g., "Draft — for review", "Draft — ready for design review") |
+| `created` | string | ISO date of document creation |
+| `sources` | list | External source URLs (reference specs only) |
+
+- linter-guidance: Do not flag `amends`, `status`, `created`, or `sources` as unknown frontmatter keys.
+
+---
+
+## 5. Depends-On Convention
+
+### [CONV-DEPENDS] Frontmatter depends-on Format
+
+ComposeIO specs use two formats for `depends-on` in frontmatter:
+
+**File path format** (used in some specs):
+```yaml
+depends-on: [01-composeio-bus-protocol.smd, 08-composeio-app-framework.smd]
+```
+
+**Bracketed ID format** (preferred):
+```yaml
+depends-on: [SPEC:CIO-BUS-PROTOCOL, SPEC:CIO-APP]
+```
+
+- linter-guidance: Accept both formats. File path format is valid but bracketed ID format is preferred for new specs. Do not flag file path format as an error.
+- convention: Relationships sections at the end of documents SHOULD use the bracketed ID format with `- depends-on: [DOCTYPE:ID]` syntax.
+
+---
+
+## 6. Footer Convention
+
+### [CONV-FOOTER] Document Footer Format
+
+ComposeIO specs use this footer format:
+
+```
+**Version**: N.N
+**Created**: YYYY-MM-DD
+**Status**: Draft | Operational | Deprecated
+```
+
+Optional additional footer fields:
+- `**Intelligence**:` — Claude model and session info
+- `**Deployment Target**:` — target environment
+- `**Depends-On**:` — legacy format, acceptable but redundant with Relationships section
+
+- linter-guidance: Report missing `**Version**` and `**Status**` as warnings (not errors). Do not flag additional footer fields as errors. When a Relationships section contains `depends-on` entries, a redundant `**Depends-On**` in the footer is a warning (D003).
+
+---
+
+## Scope Note
+
+This conventions file governs the ComposeIO SMD corpus only (`~/Dropbox/Maker/composeio/spec/` and `~/Dropbox/Maker/composeio/ux_composer/specs/`). Other SMD corpora (Nexus, ExampleCorp, Maker specs) maintain their own conventions files.
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-29
+**Status**: Draft

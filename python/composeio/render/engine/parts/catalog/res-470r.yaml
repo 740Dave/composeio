@@ -1,0 +1,50 @@
+# Part catalog entry — 470 ohm 1/4 W axial resistor.
+#
+# ⛔ ITS JOB HERE IS FAULT CONTAINMENT, NOT LEVEL SHIFTING.  Read that twice,
+# because the series resistor in a 3.3 V-to-5 V TM1637 hookup is USUALLY
+# justified as "it limits the ESD-clamp current", and on this part that
+# justification is WRONG: the clamp current is already held to 110-440 uA by the
+# module's own fitted 10 kOhm pull-up.  470 ohm moves the shared-CLK figure from
+# 440 uA to 420 uA.  That is not why it is here.
+#
+# IT IS HERE BECAUSE CLK IS SHARED AND DIO IS NOT.  A module whose VCC connection
+# goes intermittent is unpowered, but its CLK pin still has an ESD clamp to its
+# own DEAD rail — so the other three modules' pull-ups feed 5 V into a dead chip
+# and it can hold the SHARED CLK low.  All four displays fail at once, and the
+# ACK reports NAK on all four, pointing the reader at the host instead of at one
+# connector.  One 470 ohm resistor AT EACH MODULE'S CLK PIN (not one at the host)
+# turns that panel-wide failure into a single-module failure.
+#
+# DIO NEEDS NO SUCH RESISTOR: it is point-to-point, so a dead module can only
+# pull down its OWN line, which is already the correct behaviour.
+#
+# The arithmetic, with four modules star-wired through 470 ohm each:
+#   driven low : common node 47 mV, module CLK pin 270 mV   (V_IL limit 1500 mV)
+#   released   : module CLK pin 3.949 V                     (V_IH needs 3500 mV)
+#   clamp      : 420 uA total, vs 440 uA with no resistor
+# Both margins get slightly BETTER, not worse.  The resistor is free.
+
+res-470r:
+  description: 470 ohm 1/4 W axial resistor — per-module CLK fault containment on a shared-clock TM1637 panel.
+  value: 470R
+
+  # Deliberately no `fritzing:` art — renders with the clean GENERATED footprint.
+  # A resistor's art carries no information a label does not; the netlist is the
+  # whole content.
+  pins:
+    - A
+    - B
+
+  tolerance_note: >-
+    5% is fine.  The V_IL budget on the shared CLK line tolerates R_s up to
+    1046 ohm before it fails, so 470 ohm +/-5% sits at less than half the
+    ceiling.  Do NOT substitute 1 kOhm: that lands at 1.454 V against a 1.5 V
+    limit, a 3% budget on a +/-5% part.
+  do_not_substitute: >-
+    ⛔ NOT 1 kOhm (fails V_IL on the shared clock at N=4).  220-560 ohm is the
+    usable band.  If the panel ever grows past 8 modules, recompute: the DC
+    limit is (R_s + 25)/(10000/N + R_s + 25) <= 0.30, which is N <= 8 at 470 ohm.
+
+  kicad:
+    symbol: "Device:R"
+    footprint: "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"

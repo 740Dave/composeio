@@ -1,0 +1,129 @@
+---
+scope: "Pass 3 — authoring headless widgets as logic nodes in Composer's Flow mode: the logic-node model, the two engine prerequisites (headless-widget static introspection + first-class output wires), the authoring interactions (create/wire/expr/schedule), the roster deploy surface, and the Confirmation observability tier (live ports + runtime heartbeat). Diagnosis-tier observability is Pass 4 ([CXC-HW-INTROSPECT])."
+audience: "Composer developers, ComposeUX/ComposeIO architects"
+boundary: "IN: logic-node authoring in Flow, headless-widget introspection, output-wire generalization, expr/schedule editing, roster deploy, the Confirmation tier + reserved Diagnosis seam. OUT: the Diagnosis viewer/producer (Pass 4, [CXC-HW-INTROSPECT]); the DSL itself ([SPEC:CXC-DSL], reused); the headless runtime/loader ([SPEC:CXC-HEADLESS], reused); Flow's existing view/discovery ([SPEC:CXC-FLOW], reused)."
+not-this: "Not a new graph authority (Flow stays a projection of the .compose.yaml, DP-CXC-2/7); not a new overlay/drag mechanic (reuses existing drag-to-wire); not the debug monitor (that is Pass 4)."
+depends-on: [ux/02-composer-flow-mode.lts, 20-composeux-headless-widgets.lts, 22-composeux-expression-dsl.lts, ux/01-composer-binding-editor.lts]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# Composer Flow Mode — Headless Widget Authoring [SPEC:CXC-FLAUTH]
+
+> Headless Pass 3. A headless widget becomes a first-class *logic node* you author in Flow: wire its ports, write each output's `expr` in the DSL, pick its schedule, add it to a runtime roster, push, and confirm it's alive. Almost nothing new in the graph model — the `kind="logic"` hook was placed ahead of need ([CXC-FL-HEADLESS]). Pre-vis (ratified): `ux/flow-headless-authoring-previs.v1.html`.
+
+---
+
+## 1. Intent
+
+### [CXC-FLAUTH-INTENT] Author Logic Where You Author Displays
+
+- definition: extend Flow mode ([SPEC:CXC-FLOW]) so a declarative headless widget ([SPEC:CXC-HEADLESS]) is created, wired, expression-authored, scheduled, and deployed as a **logic node** in the same node-graph as visual widgets and namespace hubs. The graph remains a *synced projection* of the `.compose.yaml` — edit in Flow / Bindings / Source, all stay in lockstep; Flow is not a new authority.
+- closes: [CXC-HW-AUTHORING] (Flow mode is the headless editor) using the [CXC-FL-HEADLESS] forward hook.
+- part-of: [SPEC:CXC-FLAUTH]
+
+---
+
+## 2. The Logic Node
+
+### [CXC-FLAUTH-NODE] A Headless Widget Rendered as a Node
+
+- model: a `FlowNode.kind="logic"` (hook already structural) drawn with a **λ** badge: **input ports** (left) = subscribed namespaces, **output ports** (right) = published namespaces, a **schedule badge** (∞ continuous / ⏱ periodic / ⚡ bus-triggered), and an expr/purpose summary. Title = widget id.
+- prerequisite A — **static introspection** ([CXC-FLAUTH-INTROSPECT]): `build_graph` needs the headless widget's declared in/out ports + schedule, derived from its config (the analog of `bindable_attrs_for()` for visual widgets). No live runtime needed — this is design-time structure.
+- prerequisite B — **first-class output wires** ([CXC-FLAUTH-OUTWIRE]): today publish wires exist in the model but only Button-class widgets author them. A logic node's outputs must wire to namespace hubs as first-class publish wires.
+- part-of: [SPEC:CXC-FLAUTH]
+
+### [CXC-FLAUTH-INTROSPECT] Headless Widget Static Introspection
+
+- definition: a machine-readable table of a headless widget's ports + schedule, from its `.compose.yaml` (subscribed namespaces = inputs; `outputs:`/publish namespaces = outputs; the `headless.schedule` block = mode + interval/trigger). Mirrors the [CXC-BE-INTROSPECT] pattern (behavior/attr introspection) so `build_graph` and the inspector render from tables, not hardcoding.
+- part-of: [SPEC:CXC-FLAUTH]
+
+### [CXC-FLAUTH-OUTWIRE] Output Wires Become First-Class
+
+- definition: generalize publish-wire authoring beyond Button-class — a drag from a logic node's output port to a namespace hub writes the widget's publish/`outputs:` entry into the `.compose.yaml`; the hub gains a publisher. Round-trips byte-identically; Bindings/Source reflect it.
+- part-of: [SPEC:CXC-FLAUTH]
+
+---
+
+## 3. Authoring
+
+### [CXC-FLAUTH-CREATE] Create & Wire
+
+- create: a **＋ Logic node** affordance adds a new headless widget (named, empty ports, a default `continuous` schedule) to the design.
+- wire inputs: drag a namespace hub (or a discovered rail signal) → a logic input port = subscribe (reuses existing drag-to-wire, [CXC-FL-MODEL] — no new mechanic).
+- wire outputs: drag a logic output port → a namespace hub = publish ([CXC-FLAUTH-OUTWIRE]).
+- multi-input rule (as-built 2026-07-10): the FIRST hub drop authors the `namespace:` subscribe; on a **bus-triggered** node further drops join the trigger list; on **continuous/periodic** nodes additional inputs are authored where they are consumed — as `ns()` reads inside the output exprs (the drop declares + selects the namespace). One node, many inputs, no special node-splitting.
+- part-of: [SPEC:CXC-FLAUTH]
+
+### [CXC-FLAUTH-EXPR] Expression Authoring (in the Inspector)
+
+- surface: selecting a logic node switches the WC to the **Flow inspector** (already lens-following, [CXC-FL-SCALE]); it shows each output's `expr` in an inline editor, **live-validated by the DSL parser** ([SPEC:CXC-DSL] `dsl.try_parse`) — a green valid / red error state as you type. The **Source tab** remains the always-available raw escape hatch (the expr is just YAML).
+- decision: expr is authored inline in the inspector per output, NOT a separate editor — the inspector is where the selected node is authored. Reuses the [SPEC:CXC-BINDEDIT] editor idioms.
+- boundary: only the sanctioned `expr:` sites ([CXC-DSL-SITES]); arbitrary code stays refused ([CXC-BIND-BOUNDARY]).
+- part-of: [SPEC:CXC-FLAUTH]
+
+### [CXC-FLAUTH-SCHEDULE] Schedule Picker
+
+- surface: a three-mode picker in the inspector — **continuous** (10 Hz daemon) / **periodic** (interval, editable) / **bus-triggered** (trigger namespace/pattern). Writes the widget's `headless.schedule` block ([CXC-HW-SCHEDULE]); the **schedule travels in the widget** ([CXC-HW-DEPLOY]), the roster stays pure membership.
+- part-of: [SPEC:CXC-FLAUTH]
+
+---
+
+## 4. Deploy
+
+### [CXC-FLAUTH-DEPLOY] Roster Assembly & Push
+
+- surface: a **deploy card** — assign logic node(s) to a `runtime_id`; the card shows the roster path `bus://assets/headless/<runtime_id>.roster.yaml` and members; a **Push** action writes the roster + each widget config to bus_storage via the **Pass-1 loader** ([CXC-HW-DEPLOY], `BusStorageLoader` — no new deploy plumbing).
+- part-of: [SPEC:CXC-FLAUTH]
+
+---
+
+## 5. Confirmation Tier (observability — in Pass-3 scope)
+
+### [CXC-FLAUTH-CONFIRM] See It Run (the confirmation half of [CXC-HW-INTROSPECT])
+
+- decision: the **Confirmation** half of observability lands here because its data is already reachable and it couples to surfaces built anyway; **Diagnosis** (tick trace / internal state) is Pass 4 ([CXC-HW-INTROSPECT]).
+- **live port values**: a logic node's ports show current bus values when the widget is running — reuse the discovery liveness the hubs already have ([CXC-FL-DISCOVERY]). Zero new producer code; the node becomes a live readout.
+- **runtime heartbeat**: the deploy card shows a runtime/roster health line (`hub-headless-01 · ✓ running · N widgets · last tick <age>`). Producer = a small periodic health publish from the headless runtime (a `_bus/headless/<runtime_id>/health` heartbeat) — the ONE modest runtime addition in Pass 3; it completes author→deploy→confirm.
+- reserved for Pass 4: declare the `_bus/headless/<id>/*` namespace convention; the inspector carries a stubbed **"Inspect ▸"** affordance (no-op until the Pass-4 producer + Headless Monitor land). Design the node/inspector with a live-lane so Diagnosis layers on without special-casing.
+- part-of: [SPEC:CXC-FLAUTH]
+
+---
+
+## 6. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-FLAUTH-C1 | Logic node | A headless widget renders as a `kind="logic"` node with its declared in/out ports + schedule badge, from static introspection |
+| CXC-FLAUTH-C2 | Static introspection | A ports/schedule table is derived from the `.compose.yaml`; `build_graph` + inspector render from it, no hardcoding |
+| CXC-FLAUTH-C3 | Output wires first-class | Dragging a logic output port → hub writes the publish/`outputs:` entry; round-trips byte-identically; Bindings/Source reflect it |
+| CXC-FLAUTH-C4 | Create & wire | ＋ Logic node adds a headless widget; input/output wiring uses existing drag-to-wire, no new mechanic |
+| CXC-FLAUTH-C5 | Expr authoring | Inline per-output `expr` editor live-validates via the DSL parser (valid/error); Source tab shows the same YAML; arbitrary code refused |
+| CXC-FLAUTH-C6 | Schedule | The picker writes `headless.schedule` (continuous/periodic/bus-triggered + interval/trigger); schedule travels in the widget |
+| CXC-FLAUTH-C7 | Deploy | Push writes roster + widget configs to bus_storage via the Pass-1 loader; a headless runtime fetches + runs the roster |
+| CXC-FLAUTH-C8 | Projection | Every Flow edit writes the `.compose.yaml`; Layout/Bindings/Source stay in lockstep; an Intelligence-authored widget yields the identical graph |
+| CXC-FLAUTH-C9 | Live ports | A running widget's node shows live port values (discovery liveness) |
+| CXC-FLAUTH-C10 | Heartbeat | The deploy card shows the runtime heartbeat (running / widget count / last-tick age) from `_bus/headless/<runtime_id>/health` |
+| CXC-FLAUTH-C11 | Reserved seam | The `_bus/headless/<id>/*` convention is declared and the "Inspect ▸" stub exists (Pass-4 handoff) |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-FLAUTH] REALIZES [CXC-HW-AUTHORING]
+[SPEC:CXC-FLAUTH] EXTENDS [SPEC:CXC-FLOW]
+[SPEC:CXC-FLAUTH] USES [SPEC:CXC-DSL]
+[SPEC:CXC-FLAUTH] USES [SPEC:CXC-HEADLESS]
+[CXC-FLAUTH-CONFIRM] RESERVES [CXC-HW-INTROSPECT]
+[CXC-FLAUTH-NODE] DEPENDS_ON [CXC-FL-HEADLESS]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-07-10
+**Status**: OPERATIONAL (2026-07-10). CXC-FLAUTH-C1…C11 all PASS. Delivered by Fable: `LogicWidget` (`render/widgets/logic.py`, 0×0, no draw — the ＋Logic carrier); static introspection `engine/headless.py` `introspect_ports()`/`is_logic_spec()`/`expr_namespaces()`; first-class output wires (`author_output_wire`) + node-drop inputs (`author_logic_input`) round-tripping byte-identically; the FlowInspectorPanel logic card (schedule picker, inline live ports, per-output expr editor live-validated by `dsl.try_parse`, deploy card); deploy write-side on the SAME Pass-1 loader contract (`save_roster`/`save_widget` + `resolve.put_bytes`/`put_text` bus_storage PUT) via a `composer/deploy/push` bus command. Confirmation tier live: port values ride discovery (zero new producer); runtime heartbeat to `_bus/headless/<rid>/health` is **opt-in** (`HeadlessRuntime(heartbeat_s=)`, default OFF so goldens/deterministic drives are untouched; CLI daemon defaults 1s), intercepted into a separate registry so it never pollutes the Bus·Live rail. Pass-4 seam reserved: `HEADLESS_BUS_PREFIX="_bus/headless"` declared + the "Inspect ▸ · P4" affordance a verified no-op. Evidence: **662 tests green macOS** (633→+29, `test_flow_headless_authoring.py`); author→deploy→run proven in-suite AND via `smoke_flauth_mqtt.py` 9/9 against real bus_storage:8420 + MQTT:1883 (Composer authors → pushes roster → a runtime fetches+runs → Composer's node reads live values + heartbeat); projection invariant held (Intelligence-vs-UI byte-identical YAML).
+
+Ratified (David 2026-07-10, from Fable's SUMMARY): logic-node marker = the widget-level `headless:` block (NOT `outputs:` — a visual widget with an output wire stays a widget node); deploy assignment persists as a top-level `deploy: {runtime_id, widgets}` raw-spec passthrough key (name accepted); the multi-input authoring rule ([CXC-FLAUTH-CREATE]). New engine seams worth their own spec nodes (loader `save_*` write-side + `resolve.put_bytes` deploy-write contract; the `composer/deploy/push`→`pushed` bus command; the `logic` widget type) — folded here, promote if reused. Minor follow-ups: smoke artifacts left at `bus://assets/headless/flauth-smoke-*` on the production store (no delete API in `resolve` — infra TODO); previs glyphs (λ/∞/⏱/⚡) are outside the baked font atlas so `fx` + ASCII schedule text were used (atlas addition is a later polish).
+
+Diagnosis tier remains Pass 4 ([CXC-HW-INTROSPECT]).

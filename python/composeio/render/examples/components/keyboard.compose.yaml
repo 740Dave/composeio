@@ -1,0 +1,708 @@
+# ComposeUX Widget Primitive — keyboard ([SPEC:CXC-PRIM] [CXC-PRIM-CATALOG])
+#
+# A forkable COMPONENT: a QWERTY grid of rect+label "key" pairs (same
+# lightweight-key construction as numpad.compose.yaml — the code
+# ButtonWidget's LED gutter + 100px minimum body cannot make a compact
+# 34x36 key).  Each letter publishes its literal lowercase char to
+# target_ns; keycaps DISPLAY uppercase (the same convention a physical
+# keyboard uses — the typed char stays lowercase).
+#
+# SAME SCOPING DECISION as numpad.compose.yaml (read it first): a key
+# publish REPLACES target_ns (last-key-wins), not append/accumulate —
+# the DSL has no string concatenation and there is no RMW publish site
+# outside headless ``outputs:`` ticks. shift_mode publishes a companion
+# `{target_ns}_shift` binary toggle for a consumer/workload to honor
+# (KNOWN LIMITATION: letter keys do not themselves case-shift, since
+# publish_value is a static per-key literal, not a runtime expression).
+# backspace publishes a literal sentinel char (KNOWN LIMITATION: not a
+# real delete-last — see numpad's note on accumulation).
+#
+# Run:
+#   cd python/composeio/render/examples/components
+#   python3 -m composeio.render.engine.runtime keyboard.compose.yaml
+
+app:
+  id: demo-keyboard
+
+design:
+  title: "keyboard"
+  width: 460
+  height: 280
+  theme: dark
+
+namespaces:
+  - name: demo/message
+    state_engine: json
+
+components:
+  keyboard:
+    params: [layout, target_ns, shift_mode, keycaps]
+    defaults:
+      layout: qwerty          # only qwerty ships in v1 (COMP-5: no loops/
+                               # conditionals -> a second layout is a fork,
+                               # not a param-driven variant)
+      shift_mode: true
+      keycaps: uppercase
+    widget:
+      type: pixel_stack
+      id: keyboard_root
+      width: 376
+      height: 156
+      children:
+        - type: rect
+          id: key_r0_q_bg
+          x: 0
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "q"
+        - type: label
+          id: key_r0_q_lbl
+          x: 0
+          y: 0
+          w: 34
+          h: 36
+          text: "Q"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r0_w_bg
+          x: 38
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "w"
+        - type: label
+          id: key_r0_w_lbl
+          x: 38
+          y: 0
+          w: 34
+          h: 36
+          text: "W"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r0_e_bg
+          x: 76
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "e"
+        - type: label
+          id: key_r0_e_lbl
+          x: 76
+          y: 0
+          w: 34
+          h: 36
+          text: "E"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r0_r_bg
+          x: 114
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "r"
+        - type: label
+          id: key_r0_r_lbl
+          x: 114
+          y: 0
+          w: 34
+          h: 36
+          text: "R"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r0_t_bg
+          x: 152
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "t"
+        - type: label
+          id: key_r0_t_lbl
+          x: 152
+          y: 0
+          w: 34
+          h: 36
+          text: "T"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r0_y_bg
+          x: 190
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "y"
+        - type: label
+          id: key_r0_y_lbl
+          x: 190
+          y: 0
+          w: 34
+          h: 36
+          text: "Y"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r0_u_bg
+          x: 228
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "u"
+        - type: label
+          id: key_r0_u_lbl
+          x: 228
+          y: 0
+          w: 34
+          h: 36
+          text: "U"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r0_i_bg
+          x: 266
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "i"
+        - type: label
+          id: key_r0_i_lbl
+          x: 266
+          y: 0
+          w: 34
+          h: 36
+          text: "I"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r0_o_bg
+          x: 304
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "o"
+        - type: label
+          id: key_r0_o_lbl
+          x: 304
+          y: 0
+          w: 34
+          h: 36
+          text: "O"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r0_p_bg
+          x: 342
+          y: 0
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "p"
+        - type: label
+          id: key_r0_p_lbl
+          x: 342
+          y: 0
+          w: 34
+          h: 36
+          text: "P"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r1_a_bg
+          x: 0
+          y: 40
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "a"
+        - type: label
+          id: key_r1_a_lbl
+          x: 0
+          y: 40
+          w: 34
+          h: 36
+          text: "A"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r1_s_bg
+          x: 38
+          y: 40
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "s"
+        - type: label
+          id: key_r1_s_lbl
+          x: 38
+          y: 40
+          w: 34
+          h: 36
+          text: "S"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r1_d_bg
+          x: 76
+          y: 40
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "d"
+        - type: label
+          id: key_r1_d_lbl
+          x: 76
+          y: 40
+          w: 34
+          h: 36
+          text: "D"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r1_f_bg
+          x: 114
+          y: 40
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "f"
+        - type: label
+          id: key_r1_f_lbl
+          x: 114
+          y: 40
+          w: 34
+          h: 36
+          text: "F"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r1_g_bg
+          x: 152
+          y: 40
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "g"
+        - type: label
+          id: key_r1_g_lbl
+          x: 152
+          y: 40
+          w: 34
+          h: 36
+          text: "G"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r1_h_bg
+          x: 190
+          y: 40
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "h"
+        - type: label
+          id: key_r1_h_lbl
+          x: 190
+          y: 40
+          w: 34
+          h: 36
+          text: "H"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r1_j_bg
+          x: 228
+          y: 40
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "j"
+        - type: label
+          id: key_r1_j_lbl
+          x: 228
+          y: 40
+          w: 34
+          h: 36
+          text: "J"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r1_k_bg
+          x: 266
+          y: 40
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "k"
+        - type: label
+          id: key_r1_k_lbl
+          x: 266
+          y: 40
+          w: 34
+          h: 36
+          text: "K"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r1_l_bg
+          x: 304
+          y: 40
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "l"
+        - type: label
+          id: key_r1_l_lbl
+          x: 304
+          y: 40
+          w: 34
+          h: 36
+          text: "L"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_shift_bg
+          x: 0
+          y: 80
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}_shift"
+          publish_value: "toggle"
+        - type: label
+          id: key_shift_lbl
+          x: 0
+          y: 80
+          w: 34
+          h: 36
+          text: "^"
+          align: center
+          font_family: monospace
+          font_size: 14
+          color: "#7fe0e8"
+        - type: rect
+          id: key_r2_z_bg
+          x: 38
+          y: 80
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "z"
+        - type: label
+          id: key_r2_z_lbl
+          x: 38
+          y: 80
+          w: 34
+          h: 36
+          text: "Z"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r2_x_bg
+          x: 76
+          y: 80
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "x"
+        - type: label
+          id: key_r2_x_lbl
+          x: 76
+          y: 80
+          w: 34
+          h: 36
+          text: "X"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r2_c_bg
+          x: 114
+          y: 80
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "c"
+        - type: label
+          id: key_r2_c_lbl
+          x: 114
+          y: 80
+          w: 34
+          h: 36
+          text: "C"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r2_v_bg
+          x: 152
+          y: 80
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "v"
+        - type: label
+          id: key_r2_v_lbl
+          x: 152
+          y: 80
+          w: 34
+          h: 36
+          text: "V"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r2_b_bg
+          x: 190
+          y: 80
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "b"
+        - type: label
+          id: key_r2_b_lbl
+          x: 190
+          y: 80
+          w: 34
+          h: 36
+          text: "B"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r2_n_bg
+          x: 228
+          y: 80
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "n"
+        - type: label
+          id: key_r2_n_lbl
+          x: 228
+          y: 80
+          w: 34
+          h: 36
+          text: "N"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_r2_m_bg
+          x: 266
+          y: 80
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "m"
+        - type: label
+          id: key_r2_m_lbl
+          x: 266
+          y: 80
+          w: 34
+          h: 36
+          text: "M"
+          align: center
+          font_family: monospace
+          font_size: 14
+        - type: rect
+          id: key_back_bg
+          x: 304
+          y: 80
+          w: 34
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: "⌫"
+        - type: label
+          id: key_back_lbl
+          x: 304
+          y: 80
+          w: 34
+          h: 36
+          text: "<-"
+          align: center
+          font_family: monospace
+          font_size: 14
+          color: "#7fe0e8"
+        - type: rect
+          id: key_space_bg
+          x: 0
+          y: 120
+          w: 376
+          h: 36
+          corner_radius: 4
+          fill_color: "#161c24"
+          stroke_color: "#283340"
+          stroke_width: 1
+          publish_namespace: "{{target_ns}}"
+          publish_value: " "
+        - type: label
+          id: key_space_lbl
+          x: 0
+          y: 120
+          w: 376
+          h: 36
+          text: "SPACE"
+          align: center
+          font_family: monospace
+          font_size: 14
+
+widgets:
+  - type: stack
+    id: demo_column
+    direction: column
+    gap: 12
+    children:
+      - type: label
+        text: "target_ns (demo/message) mirrors the last key pressed:"
+        font_size: 12
+        color: "#808c9b"
+      - type: text_input
+        id: readout
+        namespace: demo/message
+        placeholder: "type on the keyboard"
+      - { use: keyboard, target_ns: demo/message }
+

@@ -1,0 +1,42 @@
+# office_hepa — headless relay-fan controller (config-fetched device model).
+# [SPEC:CXC-EMBED-REACTIVE] [CXC-ER-DEVICE] + [SPEC:CXC-HAL] [CXC-HAL-ACTUATE]
+# (Output Tier 1 — break-before-make relay bank).
+#
+# IDENTICAL board + firmware to office_fan (ESP32-WROOM-32E integrated 4-relay,
+# env:office_hepa) — only the device id + namespace differ.  A generic
+# reactive_core firmware GETs THIS file from the bus asset store at boot by
+# device id and self-configures its relay HAL.  Reflash-free reconfigure: edit,
+# PUT, then publish truthy to `_device/office_hepa/restart` for a live re-fetch
+# (no power-cycle).
+#
+# HEADLESS: subscribes `office_hepa/speed` and actuates the relay bank.  A
+# 3-speed AC HEPA unit wired RY2/RY3/RY4 = low/med/high (RY1 = spare).  off =
+# all relays open.
+
+app:
+  id: office_hepa
+
+namespaces:
+  - name: office_hepa/speed
+    state_engine: enum
+    values: ["off", low, medium, high]
+
+# --- OUTPUT actuator: the break-before-make relay bank --------------------
+# GPIO->relay map (VERIFIED, active-HIGH):  RY1=GPIO32 (spare)  RY2=GPIO33
+# RY3=GPIO25  RY4=GPIO26.  Speed tap: low=RY2 medium=RY3 high=RY4; off = open.
+# BREAK-BEFORE-MAKE: open ALL relays, wait dead_time_ms, then close the target.
+relay_actuator:
+  subscribes: office_hepa/speed
+  active_high: true
+  dead_time_ms: 80
+  default: "off"                   # quote "off": unquoted off/on are YAML booleans
+  pins: [mcu.GPIO32, mcu.GPIO33, mcu.GPIO25, mcu.GPIO26]
+  states:
+    - {value: "off",  pin: none}        # RY1..RY4 all open
+    - {value: low,    pin: mcu.GPIO33}  # RY2
+    - {value: medium, pin: mcu.GPIO25}  # RY3
+    - {value: high,   pin: mcu.GPIO26}  # RY4
+
+# SEAM (deferred): reactive SENSOR RULES — e.g. HEPA speed derived from a
+# particulate namespace via a local ReactiveCore binding publishing
+# office_hepa/speed.  Rides the existing binding/DSL engine; not wired now.

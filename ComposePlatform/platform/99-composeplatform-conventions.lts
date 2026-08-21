@@ -1,0 +1,128 @@
+---
+scope: "ComposePlatform LTS corpus conventions — the READABLE companion to the machine-readable taxonomy registry at profile/composeplatform-profile.yaml. Domain-scoped prefixes, document-type tags, cross-corpus reference syntax, relationship-verb vocabulary, and frontmatter/footer conventions used consistently across the multi-corpus ComposePlatform lattice."
+audience: "The ComposePlatform Architect (authoring reference); the FactLattice linter (suppress false positives on this corpus); David (review). Converted from the legacy 99-composeio-conventions.smd at the LTS reorg (2026-07-22)."
+boundary: "ComposePlatform corpus conventions only. The base FactLattice model is normative in ~/factlattice/SPEC.md; the platform domain profile is ~/factlattice/domain-profiles/platform-composeio.lts; the machine-readable partition/prefix registry is profile/composeplatform-profile.yaml. This document is the human-readable narration of that registry, not a second source of truth."
+not-this: "Not a replacement for the FactLattice SPEC; not the machine registry (that is the profile yaml — this POINTS AT it, Nexus D8 pattern); not applicable to other corpora (Nexus, ExampleCorp)."
+domain: PLT.CONV
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-07-22
+---
+# ComposePlatform Corpus Conventions [SYSTEM:PLT-CONVENTIONS]
+
+> The readable narration of how the ComposePlatform LTS corpus is organized. The machine-readable
+> source of truth is `profile/composeplatform-profile.yaml` (the taxonomy + partition registry) and,
+> for the base grammar, the FactLattice domain profile `platform-composeio.lts`. This document exists
+> so a human (David) can read the conventions without parsing YAML, and so a successor Architect can
+> orient before authoring — but it DEFERS to the profile yaml for every mechanical value (Nexus D8:
+> conventions as a normal readable spec, the registry as the queryable artifact). Converted from the
+> legacy SMD `99-composeio-conventions.smd`; the SMD-era prefix table is superseded by the profile.
+
+---
+
+## 1. The Registry Lives in the Profile, Not Here
+
+### [PLT-CONV-REGISTRY] The Machine-Readable Registry Is profile/composeplatform-profile.yaml
+
+- definition: The authoritative taxonomy — the domains (`plt`, `io`, `ux`, `app.console`, `app.composer`, `app.monitor`, `svc`, `wid`), their corpus roots, the layer/family axes, and the per-corpus sub-directory layout (`specs`/`decisions`/`artifacts`) — is registered ONCE in `profile/composeplatform-profile.yaml`. This document narrates it; it never re-declares a value.
+- rule: when a value here and in the yaml disagree, the YAML wins. Add new domains/prefixes/verbs to the yaml; update this prose to match.
+- rationale: structure survives the boundary; prose leaks. A queryable registry is the carrier a summarizer cannot flatten ([DX-STRUCTURE-SURVIVES]). The readable spec is a courtesy for the human reviewer, not a parser input.
+- points-at: `profile/composeplatform-profile.yaml`
+- source-of-truth: [DEC-COMPOSEPLATFORM-REFRAME]
+- status: operational
+- part-of: [SYSTEM:PLT-CONVENTIONS]
+
+---
+
+## 2. Multi-Corpus Partition — IDs Are Unique WITHIN a Corpus
+
+### [PLT-CONV-PARTITION] Each Domain Is Its Own Corpus; IDs Do Not Globally Collide
+
+- definition: ComposePlatform is a MULTI-corpus lattice, not one flat pool. The domain suffix in the profile (`io`, `ux`, `app.console`, ...) selects a corpus root; each corpus has independent prefix registries. A node ID is unique WITHIN its corpus, never globally — a merged single graph would clobber.
+- rule: intra-corpus references MUST resolve (a forward dangle within a corpus is a defect). Cross-corpus references are EXPECTED and become the thin routing layer — they are not dangles to fix, they are the edges between corpora (MAGMA multi-corpus partition model, Nexus D5).
+- linter-guidance: run the linter per-corpus (a single bare directory is linted recursively as ONE corpus). Cross-corpus forward refs are warnings/expected, not errors.
+- see-also: [PLT-CONV-XREF]
+- status: operational
+- part-of: [SYSTEM:PLT-CONVENTIONS]
+
+### [PLT-CONV-NUMBERING] The Numbered-Layering Convention Within a Corpus
+
+- definition: within a corpus, `00` = foundation/overview, `0x` = architecture/substrate, ascending by dependency depth, `99` = conventions, plus a glossary node (`10-glossary` at the platform root). A number collision at copy-in is resolved Nexus-D6-style (e.g. the two `00-composer-*` specs → `00-composer-overview` keeps `00`, `00-composer-design-principles` becomes `00a-`).
+- rule: renumber the FILENAME only; node IDs and content stay byte-stable across a copy/renumber.
+- status: operational
+- part-of: [SYSTEM:PLT-CONVENTIONS]
+
+---
+
+## 3. Document-Type Tags & Node Prefixes
+
+### [PLT-CONV-DOCTYPE] Valid Document-Type Tags
+
+- definition: a document header carries a bracketed `[DOCTYPE:ID]` tag. Valid doctypes = FactLattice core plus the corpus set: `SPEC` (technical specification), `AMEND` (amendment to an existing spec, uses the `amends:` frontmatter key), `SYSTEM` (system architecture or conventions — this file, foundation, glossary).
+- linter-guidance: registered in the profile `document_tags`. A tag outside the set is an S001 error.
+- status: operational
+- part-of: [SYSTEM:PLT-CONVENTIONS]
+
+### [PLT-CONV-PREFIX] Node-ID Prefixes Are Corpus-Scoped
+
+- definition: a node ID's prefix identifies its document-of-origin and semantic family (`CXC-` = ComposeUX Composer, `DASH-` = runtime dashboard, `REN-` = widget renderers, `PLT-` = platform-wide, `DX-` = design-excellence edges, `INSIGHT-` = the insights ledger, `DEC-` = a decision node). The full prefix registry is in the profile yaml; the SMD-era table in the legacy conventions is superseded by it.
+- linter-guidance: an unregistered prefix is S007/S008 — a WARNING, not an error. New corpora add their prefix(es) to the profile yaml.
+- status: operational
+- part-of: [SYSTEM:PLT-CONVENTIONS]
+
+---
+
+## 4. Cross-Reference & Relationship Syntax
+
+### [PLT-CONV-XREF] Bracketed Document & Node References
+
+- definition: qualified `[DOCTYPE:ID]` references name a document (`[SPEC:CXC-ARCH]`, `[SYSTEM:PLT-FOUNDATION]`); bare `[NODE-ID]` references name a node in this or another corpus (`[DX-NARROW-WAIST]`, `[DEC-COMPOSEPLATFORM-REFRAME]`).
+- linter-guidance: a qualified reference to a registered doctype is valid even when unresolvable in-corpus (it is a cross-corpus routing edge). A bare cross-corpus node ref with a registered prefix is a WARNING if unresolvable in-corpus, never an error.
+- convention: references in prose and edges MAY carry a parenthetical context: `- depends-on: [SPEC:CIO-APP] (transport interface)`.
+- status: operational
+- part-of: [SYSTEM:PLT-CONVENTIONS]
+
+### [PLT-CONV-RELVERB] Relationship-Verb Vocabulary
+
+- definition: an optional `## Relationships` block carries inline `[A] VERB [B]` triples. Core verbs: `DEPENDS_ON` (A mechanically requires B), `RELATED_TO` (generic association). Domain verbs: `USES`, `EXEMPLIFIES`, `REALIZES`, `UPHOLDS`, `DOCUMENTS`. Typed EDGE properties on a node (`see-also:`, `part-of:`, `relates-to:`, `depends-on:`, `re-derive-via:`, `spawns:`, `governs:`, `points-at:`) are the more common carrier.
+- linter-guidance: the verb set is registered in the profile `relationship_verbs`; an unregistered verb is a WARNING (RV01).
+- status: operational
+- part-of: [SYSTEM:PLT-CONVENTIONS]
+
+---
+
+## 5. Frontmatter & Footer
+
+### [PLT-CONV-FRONTMATTER] Frontmatter Keys
+
+- definition: every spec opens with a `---` frontmatter block. Common keys: `scope`, `audience`, `boundary`, `not-this`, `domain` (a `PLT.<SUB>` / `IO.<SUB>` / `UX.<SUB>` etc. suffix that MUST match the corpus), `confidentiality` (`public` | `nda-shareable` | `internal-only`), `artifact-readiness` (`educational` | `system-design` | `code-generation` | `design-review` | `concept-capture`), `depends-on`, `created`, and (amendments only) `amends`.
+- linter-guidance: the readiness/confidentiality enums are registered in the profile; both file-path and bracketed-ID `depends-on:` formats are accepted.
+- status: operational
+- part-of: [SYSTEM:PLT-CONVENTIONS]
+
+### [PLT-CONV-FOOTER] Document Footer
+
+- definition: specs MAY close with `**Version**` / `**Created**` / `**Status**` and optional `**Intelligence**` / `**Deployment Target**` fields.
+- linter-guidance: missing `**Version**`/`**Status**` are WARNINGS, not errors (profile `linter_guidance.footer`).
+- status: operational
+- part-of: [SYSTEM:PLT-CONVENTIONS]
+
+---
+
+## Relationships
+
+[SYSTEM:PLT-CONVENTIONS] DOCUMENTS [DEC-COMPOSEPLATFORM-REFRAME]
+[SYSTEM:PLT-CONVENTIONS] RELATED_TO [SYSTEM:PLT-FOUNDATION]
+[PLT-CONV-REGISTRY] UPHOLDS [DX-STRUCTURE-SURVIVES]
+
+---
+
+## Maintenance
+
+The Architect keeps this narration true to `profile/composeplatform-profile.yaml`. When a domain,
+prefix, verb, or enum changes, edit the YAML first (the registry) and update this prose to match.
+Humans do not hand-edit the corpus mechanics here — read this, change the profile.
+
+**Version**: 1.0 (converted from 99-composeio-conventions.smd)
+**Created**: 2026-07-22
+**Status**: Draft

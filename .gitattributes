@@ -1,0 +1,33 @@
+# ===========================================================================
+# MERGE SEMANTICS — the guard-rails that keep an append-only stream append-only
+# ===========================================================================
+# `corpora/platform-specs/events/quality.jsonl` is an APPEND-ONLY EVENT STREAM.
+# Every agent brief in this repo has called it "UNION append-only" for weeks —
+# but until 2026-08-15 that rule existed ONLY as discipline: there was no
+# `.gitattributes` anywhere in this repo and no merge driver configured, so git
+# was 3-way merging an event log as ordinary text.
+#
+# It had ALREADY diverged three ways when this file was written — `main` 25
+# lines, `perf/hosyond-dirty-rows` 7, that checkout's working tree 15 — and a
+# trial merge of the reconcile that is coming produced, verbatim:
+#
+#     CONFLICT (content): Merge conflict in corpora/platform-specs/events/quality.jsonl
+#
+# i.e. HAND RESOLUTION of an append-only log, which is precisely how events get
+# silently dropped. A rule with no mechanism is a rule that is already broken;
+# this file is the mechanism.
+#
+# `union` is a BUILT-IN git merge driver — it takes the lines from BOTH sides
+# instead of leaving conflict markers. It needs NO `merge.union.driver` entry in
+# git config: defining one would SHADOW the built-in with a custom command and
+# is the wrong move. Verified empirically before committing this.
+#
+# ⛔ SCOPE IS DELIBERATELY NARROW. `union` is correct ONLY where every line is an
+# INDEPENDENT append-only record and duplicated or reordered lines are harmless.
+# It is SILENT when it is wrong — there is no conflict to notice. The repo's
+# other `.jsonl` files (`logs/engineering/*`, `python/logs/*`,
+# `intelligence/retrospective/tests/**`, `site/**`) are NOT listed here because
+# they have not been assessed against that rule. Widen this only per-file, and
+# only after checking that a both-sides merge of that file is meaningful.
+# ===========================================================================
+corpora/platform-specs/events/quality.jsonl merge=union

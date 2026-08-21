@@ -1,0 +1,128 @@
+# ComposeUX widget primitive — slider ([SPEC:CXC-PRIM] [CXC-PRIM-DRAGVAL])
+#
+# A FORKABLE composite, not a code widget ([CXC-PRIM-WHY]).  The VISUAL is a
+# pure pixel-stack: track + fill + thumb, where fill.w and thumb.x are
+# ordinary bound EXPRESSIONS on the published value.  The only new engine
+# machinery is the INPUT — the `drag_value:` block on the track surface
+# (engine/drag_value.py) maps a pointer drag to a normalized value and
+# PUBLISHES it.  Because the thumb is bound to that published value, an
+# Intelligence that publishes `demo/volume = 0.7` moves the thumb byte-
+# identically to a finger drag that ends on 0.7 ([CXC-PRIM-C6]).
+#
+# Clone this file and restyle the tokens (accent/track/dims); keep the
+# shared tokens ([CXC-PRIM-TOKENS]) for a consistent family.
+#
+#   cd python/composeio/render/examples/components
+#   python3 -m composeio.render.engine.runtime slider.compose.yaml
+#   # then from any bus peer: publish demo/volume = 0.0 .. 1.0
+
+app:
+  id: demo-slider
+
+design:
+  title: "slider"
+  width: 300
+  height: 120
+  theme: dark
+
+namespaces:
+  - name: demo/volume
+    state_engine: json
+    initial: 0.42
+
+components:
+
+  slider:
+    params: [value_ns]
+    defaults:
+      min: 0
+      max: 1
+      step: 0
+      orient: horizontal
+      live_or_on_release: live
+      W: 220              # track pixel width
+      H: 26
+      track_color: "#2a3542"     # inset track ([CXC-PRIM-TOKENS])
+      fill_color: "#34c3d0"      # accent = interactive/active only
+      thumb_fill: "#0d1117"      # card over inset
+      accent: "#34c3d0"
+    widget:
+      type: pixel_stack
+      width: "{{W}}"
+      height: "{{H}}"
+      # [CXC-PRIM-DRAGVAL] the whole track is the drag surface; inset=9 = half
+      # the thumb width, so pointer <-> thumb-centre registration is exact.
+      drag_value:
+        namespace: "{{value_ns}}"
+        min: "{{min}}"
+        max: "{{max}}"
+        step: "{{step}}"
+        orient: "{{orient}}"
+        mode: "{{live_or_on_release}}"
+        inset: 9
+      children:
+        - type: rect
+          id: track
+          x: 0
+          y: 10
+          w: "{{W}}"
+          h: 6
+          fill_color: "{{track_color}}"
+          corner_radius: 3
+        - type: rect
+          id: fill
+          x: 0
+          y: 10
+          h: 6
+          fill_color: "{{fill_color}}"
+          corner_radius: 3
+          # fill extends from the left edge to the thumb centre
+          w:
+            expr: "9 + clamp((ns('{{value_ns}}') - {{min}}) / ({{max}} - {{min}}), 0, 1) * ({{W}} - 18)"
+        - type: circle
+          id: thumb
+          y: 4
+          w: 18
+          h: 18
+          fill_color: "{{thumb_fill}}"
+          stroke_color: "{{accent}}"
+          stroke_width: 2
+          # thumb top-left x; centre = 9 + norm*(W-18), matching drag inset
+          x:
+            expr: "clamp((ns('{{value_ns}}') - {{min}}) / ({{max}} - {{min}}), 0, 1) * ({{W}} - 18)"
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 300
+    height: 120
+    background: "#161c24"        # card
+    children:
+      - type: label
+        id: caption
+        x: 24
+        y: 20
+        text: "Volume"
+        font_size: 13
+        color: "#808c9b"
+      - type: label
+        id: readout
+        x: 232
+        y: 20
+        align: right
+        font_size: 13
+        color: "#e6ecf3"
+        text:
+          namespace: demo/volume
+          default: "0.42"
+      # the forkable primitive, used:
+      - use: slider
+        value_ns: demo/volume
+        min: 0
+        max: 1
+        step: 0.01
+        live_or_on_release: live
+        x: 24
+        y: 54
+        w: 220
+        h: 26

@@ -1,0 +1,405 @@
+---
+scope: "The ComposeBus PEER/RELAY primitive — a first-class, pull-initiated segment-crossing + transport-bridge that lets two ComposeBus instances (or a physical device bus) exchange bus state across a network, transport, or trust seam WITHOUT weakening isolation. One shape; the network-segment relay, the MQTT<->CANbus bridge, and the browser MQTT-over-WS edge are all instances of it."
+audience: "ComposeBus / transport implementers building the peer/sync channel and the CAN bridge; the ComposePlatform Architect; the network-architect who writes the fw1/Tailscale ACLs; QA authors wiring the two-broker + mock-CAN harnesses."
+boundary: "IN: the logical peer/relay primitive, its load-bearing invariants (pull-initiated, critical-ack-across-hop, subscription-scoped mirror, tolerate-link-down), the unified Transport-emitter contract (one interface, three knobs, thin-to-fat spectrum), and the two build slices (A: core relay + network-segment edge over Tailscale; B: MQTT<->CANbus bridge edge). OUT: the fw1/OPNsense rule text and Tailscale ACL policy (network-architect owns; this spec names the port/tag contract only); the wire format of BusMessage ([SPEC:CIO-BUS-PROTOCOL]); the capture/replay file format ([AMEND:BP-CAPTURE-REPLAY]); the critical-ack wire protocol ([AMEND:BP-ACK]) — this spec REUSES those, it does not restate them."
+not-this: "Not a new replication/consensus engine — it reuses capture-replay-across-a-link semantics, not Raft/CRDT. Not MQTT-specific — MQTT<->MQTT is one binding of three. Not a push-into-the-isolated-zone design: the isolated/edge peer is ALWAYS the initiator. Not a bespoke Nexus bridge — 04-nexus-bridge becomes a CONSUMER of this primitive, not a fork of it. Not two forked emitters and not one monolith — ONE Transport contract with declared knobs spans egress and bridge."
+depends-on: [SPEC:CIO-BUS-PROTOCOL, SPEC:CIO-APP, AMEND:BP-CAPTURE-REPLAY, AMEND:BP-ACK, SPEC:CXC-PATSUB]
+domain: PLT.CIO
+confidentiality: internal-only
+artifact-readiness: system-design
+forward-authored: true
+origin: "Design handoff docs/bus-peer-relay-across-segments.md (provisionIO / network-architect, 2026-07-20). Home-network segmentation (fw1/OPNsense on the VeloCloud 540); Nexus lands on VLAN35 (default-deny inbound, Tailscale-only) while the bus moves to VLAN30 (Servers). §8 amendment added 2026-07-25 per [DEC-BUS-PEER-UNIFIED-TRANSPORT-CONTRACT] (design DISCUSSION)."
+slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration; self-contained. On migration this lands as ComposePlatform/layers/composeio/specs/NN-composebus-peer-relay.lts (sibling to 01-composeio-bus-protocol and 21-composebus-pattern-subscription). Slot-in actions: (1) register prefix `BPR-` and doc-id root `CIO-BUS-PEER` in ux_composer/specs/99-composeio-profile.yaml; (2) refactor 04-nexus-bridge ([SPEC:NEXUS-BRIDGE]) to CONSUME this primitive (subscribe to a local peer) rather than subscribe to mqtt-broker:1884 directly. Until (1), S007 unregistered-prefix warnings on BPR-* nodes are EXPECTED and are the tracked cost of forward-authoring."
+---
+# ComposeBus Peer/Relay Primitive [SPEC:CIO-BUS-PEER]
+
+> A peer/relay is any point where ComposeBus meets a different transport or trust domain and must carry bus state across it. The isolated/edge side ALWAYS opens the connection (pull), so a firewall needs exactly one outbound allow and zero inbound holes; a message marked `critical` propagates end-to-end OR degrades explicitly, never silent-loss; and the peer mirrors only what it subscribes, fetching bodies lazily on resolve. Three instances share this one shape — a network-segment relay, an MQTT<->CANbus bridge, and a browser MQTT-over-WS edge — so the primitive is specified ONCE and each seam binds it. This document phases the work: **Slice A** (build now) is the core pull-initiated multiplexed peer/sync channel plus the network-segment edge over Tailscale, testable with two brokers and a relay process and no hardware; **Slice B** (spec now, build next) is the MQTT<->CANbus bridge edge, tested against a mock/virtual CAN interface.
+
+---
+
+## 1. Intent & Shape
+
+### [BPR-INTENT] The peer/relay is a CORE ComposeBus primitive, not a one-off
+
+- definition: a ComposeBus PEER is a process that participates in a local bus AND syncs a scoped slice of bus state with a remote bus (or a physical device bus) across a seam — a network segment, a transport boundary, or a trust boundary — carrying reads and writes both ways over a single edge-initiated session.
+- key-insight: the segment-crossing case (Nexus on an isolated VLAN reaching the bus) is ONE instance of a general pattern. Specifying it as a bespoke Nexus feature would fork the same shape three times. It is specified once here; each seam is a binding.
+- rationale: this is the decomposed bus-peer model the stack exists to enable ([DX-COLLAPSE-TRANSPORT] in `design-excellence-composeplatform` — collapse the TRANSPORT, never the SEAM). The segment boundary becomes a clean sync seam, not an obstacle.
+- status: draft (net-new; zero peer/replication/incremental-sync surface exists in `python/composeio/` today — `transport_http_relay.py` is a fire-and-forget outbound POST relay to `:8422`, not a bus peer).
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [BPR-SHAPE] Three seams, one shape
+
+- definition: every peer/relay is `{ local bus } <-- edge-initiated session --> { remote bus | device bus }` with a scoped mirror and preserved-or-degraded semantics. The instances differ only in the transport on the far side and which bus semantics that transport lacks.
+
+| Instance | Far side | Semantics preserved 1:1? | Slice |
+|----------|----------|--------------------------|-------|
+| Network-segment relay | MQTT (remote ComposeBus over Tailscale) | Yes — MQTT<->MQTT, full fidelity | A (build now) |
+| Transport bridge | ComposeBus-on-CANbus | No — CAN has 8-byte frames, arbitration-ID addressing, no QoS/retained/LWT; must map or synthesize-or-degrade | B (spec now) |
+| Client-edge transport | Browser via MQTT-over-WebSockets | Yes — same QoS/retained/critical-ack, WS-framed; reachability over Tailscale | Out of scope here (noted; same primitive) |
+
+- key-insight: "WebSockets vs Tailscale" is a false choice — WS is an alternative to raw-TCP FRAMING (browsers can't open raw TCP); Tailscale is an alternative to a PUBLIC endpoint (reachability). They compose. The browser edge is the same primitive and is deferred, not different.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+---
+
+## 2. Load-bearing invariants (the MUSTs that carry across every seam)
+
+### [BPR-PULL] Pull-initiated — the edge is ALWAYS the initiator
+
+- requirement: the isolated/edge peer MUST open every cross-seam connection (outbound). No component in the isolated zone MAY listen for a connection originating from the master/remote side. Read AND write both ride the single edge-initiated session; the master NEVER reaches into the isolated zone.
+- rationale: firewalls gate on WHO initiates, not which way data flows. One outbound allow lets the edge both read and write with zero inbound holes; a push design needs an inbound listener inside the wall — the one thing default-deny-inbound forbids.
+- default: transport is Tailscale wherever a network boundary is crossed (WireGuard-encrypted, ACL-scoped, no LAN pinhole). The LAN-pinhole-with-one-outbound-rule is the fallback when the overlay is deliberately kept out of the data path.
+- test (machine): in the two-segment harness ([BPR-A-SEGMENT]), assert the relay process in the edge namespace opens NO listening socket for the peer/sync channel (`ss -ltn` in the edge netns shows zero listener on the sync port); the master-side cannot initiate — a connection attempt master->edge is refused/dropped.
+- verify-glass: the network-architect confirms the fw1 ruleset for the edge zone contains exactly one stateful outbound allow (or nothing on the LAN when over Tailscale) and zero inbound rule — a human reads the rendered per-VLAN matrix and signs off.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-PULL-NO-INBOUND] Edge peer accepts no inbound connection
+- when: the relay process is running in the isolated edge zone and the master side attempts to open a TCP/WS connection into that zone on any peer/sync port
+- then: the connection is refused or dropped at the edge (no listener exists), and the edge peer's outbound session to the master remains the sole cross-seam channel carrying both reads and writes
+
+### [BPR-CRITICAL-ACK] Critical-ack across the peer hop — propagate-or-explicit-degrade (THE correctness bar)
+
+- requirement: a message with `pri: critical` ([AMEND:BP-ACK]) MUST propagate end-to-end across the peer hop and resolve at the ORIGIN's ack-pending table, OR the peer MUST surface an explicit `_bus/fault` degrade event ([BP-BUS-FAULT]). There MUST be NO path in which a critical message's ack-pending entry clears without either a true end-to-end ack or a fault. Silent-loss is a conformance failure.
+- key-mechanism: the peer is a TRANSPARENT forwarder for critical traffic — it forwards the critical frame (carrying its `cid`) and forwards the returning `ack` frame unchanged. The peer MUST NOT locally synthesize an `ok` ack on the master's behalf (that would assert a delivery it cannot know occurred). The origin's ack-pending table ([BP-ACK-PROTOCOL], retry schedule 50/200/1000ms) remains the single source of delivery truth across the hop.
+- default: the origin's existing BP-ACK retry/timeout budget (1250ms to fault) governs end-to-end; the peer adds NO new ack authority and NO new timeout. When the far side lacks native ack (CAN — Slice B), the bridge MUST synthesize the ack from ACTUAL far-side delivery evidence ([BP-ACK-CAN] type-8 frame) or emit a fault — never fabricate `ok` from forwarding alone.
+- test (machine): inject a `pri: critical` message at the origin; sever the peer hop mid-flight (drop the sync channel after the critical frame leaves the origin but before any ack returns). Assert EITHER the origin's `cid` resolves via a genuine far-side ack after reconnect, OR a `_bus/fault` `ack_timeout`/degrade event is emitted naming the unacked peer — and assert the ack-pending entry is NEVER cleared silently (a test hook counts clears-without-evidence; expected count = 0).
+- verify-glass: on a physically severed VLAN30<->VLAN35 link, a reviewer observes that the origin dashboard shows either a confirmed delivery or a raised fault — never a "sent, assumed delivered" with no confirmation.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-CRIT-DROP] Critical message survives a dropped hop as ack-or-fault
+- when: an origin publishes a `pri: critical` message to a namespace whose designated acker sits behind the peer, and the peer hop drops after the critical frame is forwarded but before an ack returns
+- then: the origin either receives a genuine end-to-end ack for that `cid` (on link recovery, via BP-ACK retry) or emits a `_bus/fault` `ack_timeout` naming the unacked module; in no case is the ack-pending entry cleared without one of those two outcomes
+
+### [BPR-MIRROR] Subscription-scoped mirror + lazy fetch-on-resolve
+
+- requirement: a peer MUST mirror ONLY the namespaces/objects its local subscribers subscribe to ([SPEC:CXC-PATSUB] prefix-subscription set), and MUST fetch `bus://` asset and `doc://` document BODIES lazily on `composeio.resolve`, not eagerly. A resolve that cannot be satisfied (namespace absent upstream, link down and not cached) MUST return an explicit `unresolved`/`stale` marker, never a fabricated empty value.
+- default: the mirror INDEX for the subscribed set (namespace list + last-known state values) syncs eagerly and incrementally; BODIES are fetched-on-resolve and cached with NO eviction by default (last-known-good survives a link-down), overridable with a per-URI TTL. Mirror scope defaults to the union of local subscription patterns; it does NOT default to a full replica.
+- rationale: full replication across a constrained/isolated edge is wasteful and couples the edge to the master's entire object set. Scope-to-subscription + lazy bodies keeps the cross-seam surface small (the same discipline as filter-at-the-bus, [CXC-PS-INTENT]).
+- test (machine): with the edge subscribing to `jumpdrive/*` only, assert the mirror contains `jumpdrive/*` state and NOT unrelated namespaces; assert a `doc://` body is fetched on the FIRST resolve (one upstream fetch observed) and served from cache on the second (zero upstream fetches); assert a resolve of an unsubscribed/absent namespace returns `unresolved`, not empty-string.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-MIRROR-LAZY] Body fetched on resolve, then cached
+- when: an edge subscriber resolves a `doc://runbook/x` URI for the first time, then resolves it again
+- then: the first resolve triggers exactly one upstream fetch and caches the body; the second resolve is served from cache with zero upstream fetches; if the link is down on a later resolve, the cached body is returned and a resolve of an uncached URI returns an explicit `stale`/`unresolved` marker
+
+### [BPR-LINK-DOWN] Tolerate the boundary being down — capture-replay across the link
+
+- requirement: when the cross-seam link is down, edge-side apps MUST remain functional on local last-known-good state; the peer MUST reconnect with backoff and, on reconnect, converge with NO lost critical-acked messages. Buffering and convergence MUST REUSE the capture-replay-across-a-link semantics of [AMEND:BP-CAPTURE-REPLAY] — this is capture-replay applied to a link, not a reinvented replication model.
+- default: reconnect backoff is exponential — 1s initial, x2 each attempt, capped at 30s, with +/-20% jitter — overridable per deployment. On reconnect the peer replays buffered outbound writes in capture order (dt-preserving where ordering matters) and re-syncs the mirror index; critical messages retain their `cid` so end-to-end ack survives the outage ([BPR-CRITICAL-ACK]).
+- boundary/error: a non-critical write buffered during an outage is delivered best-effort on reconnect (idempotent state overwrites tolerate loss); a critical write buffered during an outage MUST still resolve as ack-or-fault after reconnect, never silently dropped.
+- test (machine): sever the link; assert edge apps continue serving cached state; buffer N writes including one critical; restore; assert all state converges and the critical `cid` resolves as ack-or-fault.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-LINKDOWN-CONVERGE] Sever and restore converges without lost critical-acks
+- when: the VLAN30<->VLAN35 path is severed for a period during which the edge buffers several writes including one `pri: critical`, then the path is restored
+- then: edge apps stay functional on local state throughout; on restore the buffered writes converge upstream and the critical message resolves as a genuine ack or a raised fault, with zero critical-acked messages lost
+
+### [BPR-AUTH] Authenticate independent of network trust; Tailscale where a boundary is crossed
+
+- requirement: the two sides are different trust zones; the peer MUST authenticate and encrypt at a layer that does NOT rely on network trust. Where a network boundary is crossed, the sync MUST run over Tailscale (WireGuard-encrypted, scoped by a Tailscale ACL, e.g. `tag:nexus -> tag:bus`) so no LAN pinhole exists. A LAN pinhole is a fallback that requires an explicit app-layer auth handshake.
+- default: transport = Tailscale; ACL scope = a dedicated tag pair (edge tag -> bus tag) enumerating exactly the one sync endpoint. No public endpoint by default (Funnel/reverse-proxy exposure is out of scope and, if ever needed for an off-tailnet browser edge, is a separately-hardened case).
+- boundary/error: a peer whose identity is not in the ACL tag scope MUST be rejected at connect with NO partial sync and NO mirror creation.
+- open-decision: the exact peer-handshake/auth mechanism over Tailscale is NOT resolved here — see [DD-BPR-AUTH].
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [BPR-ONE-CHANNEL] Collapse the multi-port surface into ONE multiplexed peer/sync channel
+
+- requirement: the peer MUST multiplex read, write, mirror-sync, asset/doc fetch, and coordination messaging over a SINGLE edge-initiated channel. Today's cross-boundary surface is four ports (MQTT `:1884`, `bus_storage` `:8420`, `document_store` `:8421`, `coordination_relay` `:8422`); the peer MUST collapse these to one multiplexed sync channel so the firewall rule / Tailscale ACL stays narrow (one endpoint, not four).
+- default: one channel; when over Tailscale there is no LAN port at all (the tailnet address + one ACL scope). When the LAN-pinhole fallback is used, a single configurable sync port — the concrete port number is a network-side deployment value the network-architect fixes in the fw1 rule (this spec fixes the ONE-port contract, not the number).
+- boundary/error: multiplexed substreams MUST be independently backpressured so a large `doc://` body fetch cannot starve critical-message forwarding on the shared channel.
+- open-decision: whether this channel REPLACES `coordination_relay` outright or WRAPS it is NOT resolved here — see [DD-BPR-RELAY-WRAP].
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [BPR-PROVENANCE] Relayed/mirrored traffic carries provenance and cannot silently drive actuation
+
+- requirement: state carried across a peer is, from the far bus's view, indistinguishable from live local traffic — the same hazard [AMEND:BP-CAPTURE-REPLAY] closes for replay. A peer MUST stamp relayed/mirrored messages with an authoritative provenance marker, and actuation-capable consumers on the receiving bus MUST NOT be driven by peer-relayed control input by default; accepting relayed actuation requires explicit opt-in ([CR-SAFETY-2]).
+- rationale: a mirrored `shields=on` or `disk_pressure=red` crossing a peer must not silently actuate a real device on the far side any more than a replayed one may. Provenance-gating is defense-in-depth for a shared bus; a dedicated non-actuating test bus is preferred for QA ([CR-SAFETY-3]).
+- default: relayed messages carry a reserved `src` peer-prefix / `relayed: true` marker; actuation consumers refuse relayed provenance unless opted in.
+- test (machine): relay a control-carrying message across the peer onto a bus with a mock actuator; assert the actuator does NOT fire without opt-in and DOES fire (or explicitly refuses) only under explicit opt-in.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+---
+
+## 3. Reuse-by-reference surface (extend these contracts; never fork them)
+
+### [BPR-REUSE] What this primitive extends by reference
+
+- principle: reuse by reference, never fork ([DX-NARROW-WAIST]). Every semantic below already exists; the peer BINDS them across a seam.
+
+| Reused contract | Source | How the peer uses it |
+|-----------------|--------|----------------------|
+| `.bustrace` capture + `ReplayTransport` (dt-preserving, `speed`/`loop`, actuation-quarantine) | [AMEND:BP-CAPTURE-REPLAY] (`capture.py`, `transport_replay.py`) | link-down buffering + reconnect convergence ([BPR-LINK-DOWN]); provenance-quarantine ([BPR-PROVENANCE]) |
+| Critical-ack: `cid`, ack-pending table, retry 50/200/1000ms, `_bus/fault`, ok/reject/error, CAN type-8 ack frame | [AMEND:BP-ACK] | end-to-end propagate-or-degrade across the hop ([BPR-CRITICAL-ACK]); CAN-side synthesized ack (Slice B) |
+| Trailing-glob prefix subscription + native-tier filtering (memory/broker/CAN mask) | [SPEC:CXC-PATSUB] | subscription-scoped mirror ([BPR-MIRROR]); CAN acceptance-mask filtering (Slice B) |
+| `BusMessage` fields (`ns`/`type`/`val`/`src`/`scope`/`seq`/`pri`/`cid`) | [SPEC:CIO-BUS-PROTOCOL] | the unit forwarded across the hop; unchanged on the MQTT<->MQTT seam |
+| Transport interface (`start`/`stop`/`subscribe`/`subscribe_all`), `connect_transport`, `_wire_transport_incoming` | [SPEC:CIO-APP] | the peer/sync channel plugs in as a transport, dispatched identically to live traffic; the unified emitter contract ([BPR-TRANSPORT-CONTRACT]) declares WHERE on the spectrum each transport sits |
+| `HttpRelayTransport` / `coordination_relay` (`:8422`) | `transport_http_relay.py` | the EGRESS pole exemplar of [BPR-TRANSPORT-CONTRACT]; folded into the one multiplexed channel ([BPR-ONE-CHANNEL]); replace-vs-wrap is [DD-BPR-RELAY-WRAP] |
+
+- part-of: [SPEC:CIO-BUS-PEER]
+
+---
+
+## 4. SLICE A — Core relay + network-segment edge (BUILD NOW; pure-software, no hardware)
+
+### [BPR-A-CHANNEL] The multiplexed, pull-initiated peer/sync channel
+
+- requirement: implement a peer process that opens ONE outbound session ([BPR-PULL]) to a remote ComposeBus and multiplexes read/write/mirror-sync/fetch over it ([BPR-ONE-CHANNEL]), plugging into the local bus via the standard transport interface ([SPEC:CIO-APP]) so dispatched messages are indistinguishable from live local traffic.
+- default: the channel is a single stream (framed substreams) over Tailscale; substreams independently backpressured; provenance-stamped ([BPR-PROVENANCE]).
+- test (machine): stand up two ComposeBus brokers (master + edge) and one relay process; publish on the master, assert delivery to an edge subscriber and vice-versa, all over the single edge-initiated session; assert no master-initiated connection into the edge.
+- verify-glass: a reviewer watches the edge bus monitor mirror master traffic live while `ss`/tailnet inspection confirms one outbound session only.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-A-BIDIR] Read and write both ride the one outbound session
+- when: two brokers and a relay are running, the edge subscriber subscribes to a master namespace and the edge also publishes to a master namespace
+- then: both the inbound (master->edge) reads and the outbound (edge->master) writes traverse the single edge-initiated session, and no separate master->edge connection is ever opened
+
+### [BPR-A-CRITICAL] Critical-ack propagation across the segment hop
+
+- requirement: realize [BPR-CRITICAL-ACK] on the MQTT<->MQTT segment seam — forward critical frames and their acks transparently end-to-end; on a dropped hop, produce ack-or-fault, never silent-loss.
+- test (machine): the dropped-hop test of [SCEN-BPR-CRIT-DROP], run against the two-broker + relay harness with a fault-injection hook that severs the sync channel; expected silent-clear count = 0.
+- verify-glass: on a physically severed link, a reviewer confirms the origin surfaces ack-or-fault (integration gate).
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [BPR-A-MIRROR] Subscription-scoped mirror + lazy fetch on the segment seam
+
+- requirement: realize [BPR-MIRROR] — the edge peer mirrors only its subscription set and fetches `bus://`/`doc://` bodies on resolve, serving last-known-good when the link is down.
+- test (machine): the mirror-scope + lazy-fetch + stale-marker assertions of [SCEN-BPR-MIRROR-LAZY], run against the two-broker harness with a `bus_storage`/`document_store` upstream.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [BPR-A-SEGMENT] Network-segment edge — two ComposeBus segments over Tailscale
+
+- requirement: bind the core relay to the driving case — an edge ComposeBus on an isolated segment (Nexus/VLAN35) syncing with a master ComposeBus on the Servers segment (VLAN30) over Tailscale, with the edge as sole initiator ([BPR-PULL]) and auth independent of network trust ([BPR-AUTH]).
+- default: transport Tailscale, ACL `tag:nexus -> tag:bus`; no LAN pinhole. Reconnect/backoff per [BPR-LINK-DOWN].
+- test (machine): a CI harness of two brokers in two network namespaces with a simulated boundary (only the edge->master path permitted); assert full read/write, zero inbound-to-edge, and sever/restore convergence — all without hardware.
+- verify-glass: the network-architect signs off that the rendered fw1/Tailscale matrix for VLAN35 shows zero inbound LAN rule and one scoped outbound/tailnet path (human gate on the isolation posture).
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-A-SEGMENT-ISOLATED] Edge reads and writes while accepting no inbound LAN connection
+- when: the edge ComposeBus (isolated zone) syncs with the master ComposeBus over Tailscale and the isolated zone is under default-deny-inbound
+- then: the edge both reads from and writes to the master bus, while the isolated zone accepts no inbound LAN connection (fw1 shows only an outbound allow, or nothing on the LAN when over Tailscale)
+
+### [BPR-A-TEST] Slice A test substrate — two brokers + a relay process, no hardware
+
+- acceptance-thresholds:
+  - two-broker + relay harness runs in CI with no physical device and no privileged network config beyond netns/loopback;
+  - pull-initiated posture asserted mechanically ([SCEN-BPR-PULL-NO-INBOUND]);
+  - critical propagate-or-degrade asserted with a dropped-hop fault-injection hook, silent-clear count = 0 ([SCEN-BPR-CRIT-DROP]);
+  - subscription-scoped mirror + lazy fetch + stale-marker asserted ([SCEN-BPR-MIRROR-LAZY]);
+  - sever/restore convergence with zero lost critical-acks asserted ([SCEN-BPR-LINKDOWN-CONVERGE]).
+- negative-test-cases: master-initiated connection into the edge is refused; a resolve of an unsubscribed namespace returns `unresolved` (not empty); a critical message during an outage is never silently cleared; relayed control input does not actuate a mock actuator without opt-in ([BPR-PROVENANCE]).
+- part-of: [SPEC:CIO-BUS-PEER]
+
+---
+
+## 5. SLICE B — MQTT<->CANbus bridge edge (SPEC NOW, BUILD NEXT; tested on mock/virtual CAN)
+
+> Slice B is a CONSUMER of the Slice A core: the CAN bridge is a peer whose far side speaks CAN. `04-nexus-bridge` ([SPEC:NEXUS-BRIDGE]) likewise becomes a consumer of the core, not a bespoke bridge. Physical CAN hardware comes later; the acceptance target here is a mock/virtual CAN interface — see [DD-BPR-MOCK-CAN] for the unresolved choice of which.
+
+### [BPR-B-CANMAP] CAN-ID <-> namespace mapping
+
+- requirement: the bridge MUST map ComposeBus namespaces to/from CAN arbitration IDs such that a trailing-glob prefix subscription ([SPEC:CXC-PATSUB]) becomes a contiguous ID range expressible as a single CAN acceptance mask. Encoding MUST use 29-bit extended IDs with the namespace hierarchy in the arbitration-ID bit-fields (precedent: J1939 PGNs, CANopen), backed by a namespace<->ID allocation registry.
+- default: 29-bit extended IDs; hierarchical bit-field layout; a registry maps namespace prefixes to ID ranges. Unmapped namespace on egress -> explicit mapping-miss fault (never a fabricated ID).
+- test (machine): given a hierarchical allocation, assert `subscribe_pattern("jumpdrive/*")` lowers to one acceptance mask that admits every `jumpdrive/...` ID and rejects others; assert a round-trip namespace->CAN-ID->namespace is identity for mapped namespaces and raises a mapping-miss for unmapped ones — all on a mock CAN interface.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-B-MASK] Prefix subscription becomes one CAN acceptance mask
+- when: an edge subscribes with a trailing-glob prefix and the namespaces are hierarchically allocated to 29-bit IDs
+- then: the subscription lowers to a single CAN acceptance filter+mask that admits exactly the matching ID range, and non-matching frames are rejected before reaching the CPU (on the mock interface, the residue is dropped by the software mask emulation)
+
+### [BPR-B-FRAG] Fragmentation / reassembly for large payloads over CAN frames
+
+- requirement: payloads exceeding a CAN frame (8 bytes classic; 64 CAN-FD) MUST be fragmented on egress and reassembled on ingress using a bounded, standard segmentation scheme (ISO-TP / J1939-TP), with a reassembly timeout and bounded rate/MTU. A reassembly that times out or loses a fragment MUST be dropped AND surfaced as an explicit fault — never delivered partial.
+- default: ISO-TP-style segmentation; reassembly timeout default 1000ms; on timeout, drop + `_bus/fault` reassembly-timeout event; rate/MTU bounded per the CAN bitrate.
+- test (machine): send a payload larger than one frame across the mock CAN interface; assert byte-identical reassembly on the far side; drop a fragment and assert the partial is discarded and a reassembly-timeout fault is emitted (no partial delivery).
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-B-REASSEMBLE] Large payload reassembles or faults, never partial
+- when: a payload spanning multiple CAN frames is bridged and one fragment is lost in transit
+- then: the bridge discards the incomplete payload and emits a reassembly-timeout fault; a complete transfer reassembles byte-identically to the source payload
+
+### [BPR-B-SYNTH] Synthesize-or-degrade QoS / retained / critical-ack on the CAN side
+
+- requirement: CAN has no QoS, no retained, no LWT. The bridge MUST synthesize these CAN-side where feasible or degrade EXPLICITLY: (a) retained state -> the bridge re-broadcasts last-known state to a late CAN joiner (synthesized retain) or degrades explicitly; (b) critical-ack -> the bridge confirms CAN-side delivery via the [BP-ACK-CAN] type-8 ack frame and only then forwards an ack upstream, else emits a fault ([BPR-CRITICAL-ACK]) — it MUST NOT fabricate `ok` from a bare CAN hardware ack (which means "seen electrically", not "processed").
+- default: synthesized retain via periodic re-broadcast at the namespace's state cadence; critical-ack via type-8 CAN frame evidence; any semantic the bridge cannot synthesize is surfaced as an explicit degrade event, never silently assumed.
+- verify-glass: on a real (or mock-actuating) CAN node, a reviewer observes that a critical command either drives the device AND returns a confirmed ack, or raises a visible fault — the load-bearing human gate for "a device actuated as commanded, or we were told it did not."
+- test (machine): on the mock CAN interface, assert a critical command yields an upstream ack ONLY when a type-8 ack frame is observed CAN-side, and yields a fault when the mock node withholds it; assert a bare hardware-ack-only scenario produces a fault, not a fabricated `ok`.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-B-DEGRADE] CAN-side critical yields confirmed-ack or explicit fault
+- when: a `pri: critical` command is bridged to a CAN node that acknowledges the frame electrically but whose firmware does not emit a type-8 application ack
+- then: the bridge does NOT report `ok` upstream; it retries per BP-ACK and, on exhaustion, emits an explicit `_bus/fault` — the origin learns the command was not confirmed rather than assuming delivery
+
+### [BPR-B-TEST] Slice B test substrate — mock/virtual CAN interface
+
+- acceptance-thresholds:
+  - all Slice B scenarios run against a mock/virtual CAN interface with NO physical hardware ([DD-BPR-MOCK-CAN] fixes which mock);
+  - CAN-ID<->namespace mapping is identity for mapped namespaces and mapping-miss-faults for unmapped ([SCEN-BPR-B-MASK]);
+  - fragmentation reassembles byte-identically and faults (never partial) on fragment loss ([SCEN-BPR-B-REASSEMBLE]);
+  - synthesized-or-degraded semantics hold — critical-ack is confirmed-or-fault, never fabricated ([SCEN-BPR-B-DEGRADE]).
+- negative-test-cases: unmapped namespace on egress faults (no fabricated CAN-ID); lost fragment yields no partial delivery; bare CAN hardware-ack does not become an upstream `ok`.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+---
+
+## 6. Compliance
+
+### [BPR-COMPLIANCE] Compliance criteria — machine signal + glass gate per requirement
+
+| ID | Requirement | Machine criterion | Glass / integration gate |
+|----|-------------|-------------------|--------------------------|
+| BPR-C1 | Pull-initiated only | edge netns opens no peer/sync listener; master->edge connect refused | network-architect signs zero-inbound fw1 matrix |
+| BPR-C2 | Critical propagate-or-degrade | dropped-hop test: ack-or-fault; silent-clear count = 0 | severed-link reviewer sees ack-or-fault on origin |
+| BPR-C3 | Subscription-scoped mirror + lazy fetch | only subscribed namespaces mirrored; body fetched once then cached; absent -> `unresolved` | — |
+| BPR-C4 | Tolerate link-down + converge | sever/restore: apps functional on cache; zero lost critical-acks | reviewer observes edge stays live during outage |
+| BPR-C5 | Auth independent of network trust | non-ACL peer rejected at connect, no partial mirror | network-architect confirms Tailscale ACL tag scope |
+| BPR-C6 | One multiplexed channel | one outbound endpoint carries read/write/sync/fetch; substream backpressure isolates critical from bulk | — |
+| BPR-C7 | Relay provenance / actuation quarantine | relayed control does not actuate mock actuator without opt-in | reviewer confirms no unintended actuation across the peer |
+| BPR-C8 | CAN-ID<->namespace mapping (Slice B) | prefix sub -> one acceptance mask; round-trip identity; unmapped -> fault | — |
+| BPR-C9 | Fragmentation/reassembly (Slice B) | byte-identical reassembly; lost fragment -> fault, no partial | — |
+| BPR-C10 | Synthesize-or-degrade CAN semantics (Slice B) | critical-ack confirmed via type-8 frame or fault; no fabricated `ok` | reviewer sees device actuate-with-ack or a raised fault |
+| BPR-C11 | Unified Transport contract ([BPR-TRANSPORT-CONTRACT]) | both poles satisfy the one `Transport` waist + declare a `TransportProfile`; egress = fire-and-forget (never touches ack machinery); bridge = critical-ack (silent-clear = 0) | — |
+
+- part-of: [SPEC:CIO-BUS-PEER]
+
+---
+
+## 7. Open decisions — FLAGGED for the Architect's ratify, NOT resolved here
+
+### [DD-BPR-MOCK-CAN] Which mock/virtual CAN interface backs Slice B testing
+- decision: OPEN — not selected.
+- status: open
+- rationale: Slice B must be testable before physical CAN hardware exists; the mock choice determines the harness shape, fidelity of acceptance-mask emulation, and CI portability. Deferred to the Architect because it trades CI simplicity against hardware-path fidelity.
+- alternatives: (a) Linux `vcan` (SocketCAN virtual interface) — high fidelity, Linux-only, needs kernel module in CI; (b) a pure-Python in-memory CAN mock modeling arbitration IDs + acceptance masks — portable, lower fidelity; (c) `python-can` with its virtual bus backend — middle ground, adds a dependency.
+- invalidating_assumption: that CI runs on Linux with SocketCAN available. If CI must stay OS-agnostic or run in restricted containers, (a) is off the table and (b)/(c) win.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [DD-BPR-RELAY-WRAP] Does the multiplexed channel REPLACE coordination_relay outright or WRAP it
+- decision: OPEN — not selected.
+- status: open
+- rationale: `coordination_relay` (`:8422`, `transport_http_relay.py`) is one of the four ports [BPR-ONE-CHANNEL] collapses. Whether to retire it and route Architect/Builder coordination through the peer channel, or keep it and wrap it as a multiplexed substream, affects migration risk and existing Nexus-coordination consumers.
+- status-note: this spec mandates the ONE-channel contract; it does not mandate the disposition of the existing relay. [BPR-TRANSPORT-CONTRACT] narrows the framing: `coordination_relay`'s coordination role is a bridge-configured peer and its telemetry role is an egress-configured thin adaptor — so the disposition is per-ROLE, not per-process, which is new context for this decision.
+- alternatives: (a) REPLACE — coordination rides the peer channel as a substream; retire `:8422`; cleanest end-state, higher migration risk. (b) WRAP — keep `HttpRelayTransport` behind the peer as an internal substream; lower risk, carries the old surface longer.
+- invalidating_assumption: that no external consumer depends on `:8422`'s HTTP shape directly. If a non-ComposeBus consumer POSTs to `:8422`, REPLACE breaks it and WRAP is forced.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [DD-BPR-AUTH] The exact peer-handshake / auth mechanism over Tailscale
+- decision: OPEN — not selected.
+- status: open
+- rationale: [BPR-AUTH] fixes the invariant (auth independent of network trust, over Tailscale, ACL-scoped) but not the concrete handshake. Options differ in whether app-layer identity is derived from the tailnet or established independently.
+- alternatives: (a) lean on Tailscale identity alone (ACL tag scope + WireGuard) with no app-layer handshake; (b) a mutual app-layer token/cert handshake ON TOP of Tailscale (defense-in-depth, survives a LAN-pinhole fallback where there is no tailnet identity); (c) a capability token scoped to the subscribed mirror set (auth + authorization of scope in one).
+- invalidating_assumption: that the sync always rides Tailscale. If the LAN-pinhole fallback is ever used, (a) has no network identity to lean on and (b)/(c) become mandatory.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+---
+
+## 8. AMENDMENT — the ONE unified Transport-emitter contract ([DEC-BUS-PEER-UNIFIED-TRANSPORT-CONTRACT])
+
+> Amendment authored 2026-07-25. This section REFINES and UNIFIES the peer shape of §1–§2; it introduces NO invariant that contradicts §2. It names ONE `Transport` interface with THREE declared knobs and a thin-to-fat implementation spectrum, and lands the two existing emitters on it. Resolved by design DISCUSSION, not an A/B.
+
+### [BPR-TRANSPORT-CONTRACT] One Transport interface, three knobs, a thin-to-fat spectrum
+
+- definition: every ComposeBus emitter — from a fire-and-forget telemetry POST to a full segment-crossing peer — is ONE `Transport` contract (`[SPEC:CIO-APP]` waist: `send`/`subscribe_all`/`start`/`stop`/`is_connected`) plus a declared `TransportProfile` of THREE orthogonal knobs. It is NOT two forked emitters and NOT one monolith: it is ONE interface whose IMPLEMENTATIONS span a spectrum — a FAT peer at the reliable/bridge end, a THIN adaptor at the cheap egress end — both lowering to the same waist.
+- key-insight: the real axis is EGRESS (ComposeBus -> a NON-bus sink; one-way, best-effort; telemetry is the exemplar) vs BRIDGE (ComposeBus <-> another bus substrate — CAN, a network segment, browser-over-WS; bidirectional, reliable; the CAN bridge is the exemplar). The unification is the INTERFACE; the implementations stay honestly thin-vs-fat. Narrow-waist ([DX-NARROW-WAIST]) + cheapest-node-that-fully-owns-the-behavior applied to transport: unify the interface, but do NOT force trivial telemetry (a fire-and-forget POST) through the peer's handshake/mirror/ack machinery.
+- requirement: an emitter MUST expose a `TransportProfile` declaring its three knobs, and its runtime behavior MUST match its declaration. An emitter declaring `QoS.CRITICAL_ACK` MUST honor [BPR-CRITICAL-ACK] end-to-end (propagate-or-explicit-degrade; silent-clear = 0). An emitter declaring `QoS.FIRE_AND_FORGET` MUST NOT be routed through — and MUST NOT invoke — the handshake/mirror/critical-ack machinery; a `pri: critical` message through it is POSTed best-effort like any other, opening NO ack-pending entry.
+- boundary/error: the knob combination is self-validating — `QoS.CRITICAL_ACK` with `Directionality.EGRESS` or with `FarSide.DUMB_SINK` is a CONSTRUCTION error (a one-way emitter to a dumb sink has no return path to carry an ack, so it cannot honor the correctness bar). This makes a mis-declared profile a build-time fault, not a latent runtime silent-loss.
+- reuse: this amendment RESTATES nothing from [AMEND:BP-ACK] or [SPEC:CIO-BUS-PROTOCOL]; the critical-ack protocol, cid/retry/`_bus/fault`, and the `BusMessage` waist are REUSED. The contract only declares WHERE on the spectrum an emitter sits.
+- test (machine): assert both poles satisfy the interface (`isinstance(emitter, TransportContract)` for the thin `HttpRelayTransport` and the fat `PeerLink`/`PeerHub`/`CanBridge`); assert the BRIDGE pole holds silent-clear = 0 under a dropped hop; assert the EGRESS pole never constructs a `CriticalAckOrigin`/`CriticalAcker` and exposes none of the ack/handshake surface. (Realized: `tests/peer/test_transport_contract.py`.)
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [BPR-TC-KNOBS] The three knobs, enumerated
+
+- definition: the `TransportProfile` is exactly three orthogonal dimensions:
+  1. **QoS / reliability** — `CRITICAL_ACK` (propagate-or-explicit-degrade, [BPR-CRITICAL-ACK]) at the reliable pole vs `FIRE_AND_FORGET` (best-effort, no ack machinery) at the cheap pole.
+  2. **directionality** — `BIDIRECTIONAL` (a bridge: ComposeBus <-> another bus substrate; reads+writes both ride the seam, [SCEN-BPR-A-BIDIR]) vs `EGRESS` (one-way: ComposeBus -> a non-bus sink).
+  3. **far-side type** — `FULL_PEER` (another ComposeBus, full fidelity) / `MAPPED_DEVICE_BUS` (CAN — semantics mapped or synthesized-or-degraded, [BPR-B-CANMAP]/[BPR-B-SYNTH]) / `DUMB_SINK` (a POST endpoint / telemetry collector — no bus semantics on the far side, nothing to ack).
+- rationale: the knobs are the minimum needed to place any emitter on the spectrum and to make the honest thin-vs-fat distinction machine-readable rather than implicit in a class name. They are orthogonal by construction save for the one coupling the correctness bar forces (critical-ack demands a bidirectional far side that can acknowledge).
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [BPR-TC-SPECTRUM] The thin-to-fat implementation spectrum + emitter placement
+
+- definition: the two poles and the emitters that realize them today:
+
+| Pole | Knobs (QoS / directionality / far-side) | Realizing emitter(s) | Machinery |
+|------|------------------------------------------|----------------------|-----------|
+| EGRESS (thin) | FIRE_AND_FORGET / EGRESS / DUMB_SINK | `HttpRelayTransport` (`transport_http_relay.py`) | outbound POST only; NO handshake/mirror/ack |
+| BRIDGE (fat), full peer | CRITICAL_ACK / BIDIRECTIONAL / FULL_PEER | `PeerLink` + `PeerHub` (`peer/link.py`, `peer/hub.py`) | handshake + subscription-scoped mirror + capture/replay + transparent critical-ack forwarding |
+| BRIDGE (fat), device bus | CRITICAL_ACK / BIDIRECTIONAL / MAPPED_DEVICE_BUS | `CanBridge` (`peer/canbridge.py`) | CAN-ID mapping + ISO-TP frag + synthesize-or-degrade critical-ack from type-8 evidence |
+
+- key-insight: the CAN bridge (Slice B, already built) is the FIRST real test of the BRIDGE pole against a non-peer far side; telemetry (the fire-and-forget POST) is the exemplar of the EGRESS pole. Both are the SAME contract read at opposite ends of the spectrum.
+- boundary/error: a future `bidirectional` HTTP relay is STILL fire-and-forget on its outbound leg — it never carries critical-ack — so it stays `QoS.FIRE_AND_FORGET` regardless of directionality; it does not migrate toward the bridge pole merely by gaining an inbound path.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+### [BPR-TC-RELAY-DOUBLE-DUTY] coordination_relay's double duty dissolves onto the two poles
+
+- definition: `coordination_relay` (`:8422`, `transport_http_relay.py`) historically served TWO roles over one HTTP shape — Architect/Builder coordination AND telemetry/monitoring. Under [BPR-TRANSPORT-CONTRACT] those roles map onto DIFFERENT poles: the coordination role is a BRIDGE-configured peer (bidirectional, reliable — it needs delivery truth), and the telemetry role is an EGRESS-configured thin adaptor (fire-and-forget onto a dumb sink).
+- key-insight: the double duty was never one thing wearing two hats — it was two points on the spectrum collapsed into one process because there was only one emitter class. Naming the knobs dissolves the conflation: each role is configured, not forked.
+- rationale: this is the PAYOFF of the unification and it re-frames [DD-BPR-RELAY-WRAP] — the replace-vs-wrap disposition is now per-ROLE (coordination vs telemetry), not per-process. The telemetry role trivially lowers to the existing thin `HttpRelayTransport`; only the coordination role is a candidate to ride the peer channel as a substream.
+- open-decision: the concrete disposition (retire vs wrap `:8422`, and whether coordination rides the peer channel) remains [DD-BPR-RELAY-WRAP] — this amendment supplies the framing, not the resolution.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+#### [SCEN-BPR-TC-EGRESS-CRITICAL] A critical message through the egress pole is best-effort, not acked
+- when: a `pri: critical` `BusMessage` (carrying `_priority: critical` + a `cid`) is sent through an `HttpRelayTransport` (the EGRESS pole)
+- then: it is POSTed fire-and-forget exactly like any other message — the adaptor opens NO ack-pending entry, constructs NO `CriticalAckOrigin`/`CriticalAcker`, awaits NO return frame, and exposes no ack/handshake surface; the `send` call returns without blocking on delivery
+
+#### [SCEN-BPR-TC-BRIDGE-SATISFIES] Both poles are the one contract
+- when: the platform inspects the thin egress adaptor and the fat bridge peer through the unified contract
+- then: both satisfy `TransportContract` (the same method waist + a declared `TransportProfile`); the egress profile reads `FIRE_AND_FORGET / EGRESS / DUMB_SINK` and the bridge profile reads `CRITICAL_ACK / BIDIRECTIONAL / {FULL_PEER | MAPPED_DEVICE_BUS}` — identical shape, opposite knob settings
+
+### [BPR-TC-CHANGE] Decision record — the unified Transport contract
+
+- change: introduced ONE `Transport`-emitter contract (`transport_contract.py`: `TransportProfile` + the three enums `QoS`/`Directionality`/`FarSide` + a runtime-checkable `TransportContract` Protocol) and landed the two existing emitters on it — `HttpRelayTransport` declares the EGRESS pole, `PeerLink`/`PeerHub`/`CanBridge` declare the BRIDGE pole. Observable behavior unchanged: the bridge pole still preserves critical-ack (silent-clear = 0), the egress pole stays fire-and-forget and is not forced through handshake/mirror/ack machinery. (Incidental fix: `HttpRelayTransport` previously failed the `Transport` ABC — it never implemented the abstract `subscribe_all` and so could not be instantiated; the adaptation completes the waist.)
+- context_for_change: `coordination_relay` carried a DOUBLE DUTY (coordination + telemetry) because only one emitter class existed; and the peer/relay work (Slices A/B) risked being read as a SECOND, forked emitter. The narrow-waist credo demands ONE interface; the cheapest-node credo forbids forcing trivial telemetry through the peer's heavy machinery. Declaring three knobs satisfies both: one interface, honestly thin-vs-fat implementations.
+- invalidating_assumption: that the two knobs QoS and directionality can vary fully independently. They cannot at one corner — `CRITICAL_ACK` requires a bidirectional far side that can acknowledge (a peer or a device bus with type-8 evidence), so `CRITICAL_ACK + EGRESS` and `CRITICAL_ACK + DUMB_SINK` are construction errors. If a future far side offers a one-way yet acknowledged channel (e.g. a store-and-forward broker that later confirms), this coupling would need revisiting.
+- status: accepted (design DISCUSSION [DEC-BUS-PEER-UNIFIED-TRANSPORT-CONTRACT]); implementation landed on branch `build/w1-unified-transport`, pending Architect glass.
+- part-of: [SPEC:CIO-BUS-PEER]
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CIO-BUS-PEER] DEPENDS_ON [SPEC:CIO-BUS-PROTOCOL]
+[SPEC:CIO-BUS-PEER] DEPENDS_ON [SPEC:CIO-APP]
+[SPEC:CIO-BUS-PEER] USES [AMEND:BP-CAPTURE-REPLAY]
+[SPEC:CIO-BUS-PEER] UPHOLDS [AMEND:BP-ACK]
+[SPEC:CIO-BUS-PEER] USES [SPEC:CXC-PATSUB]
+[SPEC:NEXUS-BRIDGE] DEPENDS_ON [SPEC:CIO-BUS-PEER]
+[BPR-A-SEGMENT] REALIZES [BPR-SHAPE]
+[BPR-B-CANMAP] REALIZES [BPR-SHAPE]
+[BPR-CRITICAL-ACK] UPHOLDS [AMEND:BP-ACK]
+[BPR-LINK-DOWN] USES [AMEND:BP-CAPTURE-REPLAY]
+[BPR-MIRROR] USES [SPEC:CXC-PATSUB]
+[BPR-PROVENANCE] USES [AMEND:BP-CAPTURE-REPLAY]
+[BPR-A-CHANNEL] DEPENDS_ON [BPR-PULL]
+[BPR-A-CHANNEL] DEPENDS_ON [BPR-ONE-CHANNEL]
+[BPR-A-CRITICAL] DEPENDS_ON [BPR-CRITICAL-ACK]
+[BPR-A-MIRROR] DEPENDS_ON [BPR-MIRROR]
+[BPR-A-SEGMENT] DEPENDS_ON [BPR-AUTH]
+[BPR-A-SEGMENT] DEPENDS_ON [BPR-LINK-DOWN]
+[BPR-A-TEST] DEPENDS_ON [BPR-A-SEGMENT]
+[BPR-B-CANMAP] DEPENDS_ON [BPR-A-CHANNEL]
+[BPR-B-FRAG] DEPENDS_ON [BPR-B-CANMAP]
+[BPR-B-SYNTH] UPHOLDS [BPR-CRITICAL-ACK]
+[BPR-B-SYNTH] USES [SPEC:CXC-PATSUB]
+[BPR-B-TEST] DEPENDS_ON [BPR-B-SYNTH]
+[BPR-TRANSPORT-CONTRACT] REFINES [BPR-SHAPE]
+[BPR-TRANSPORT-CONTRACT] UPHOLDS [BPR-CRITICAL-ACK]
+[BPR-TRANSPORT-CONTRACT] DEPENDS_ON [SPEC:CIO-APP]
+[BPR-TRANSPORT-CONTRACT] REUSES [AMEND:BP-ACK]
+[BPR-TC-KNOBS] PART_OF [BPR-TRANSPORT-CONTRACT]
+[BPR-TC-SPECTRUM] PART_OF [BPR-TRANSPORT-CONTRACT]
+[BPR-TC-RELAY-DOUBLE-DUTY] PART_OF [BPR-TRANSPORT-CONTRACT]
+[BPR-TC-SPECTRUM] REALIZES [BPR-SHAPE]
+[BPR-TC-RELAY-DOUBLE-DUTY] RELATED_TO [DD-BPR-RELAY-WRAP]
+[BPR-TC-RELAY-DOUBLE-DUTY] RELATED_TO [BPR-ONE-CHANNEL]
+[BPR-TC-CHANGE] PART_OF [BPR-TRANSPORT-CONTRACT]
+[DD-BPR-RELAY-WRAP] RELATED_TO [BPR-ONE-CHANNEL]
+[DD-BPR-AUTH] RELATED_TO [BPR-AUTH]
+[DD-BPR-MOCK-CAN] RELATED_TO [BPR-B-TEST]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-07-24
+**Amended**: 2026-07-25 — §8 unified Transport-emitter contract ([BPR-TRANSPORT-CONTRACT]) per [DEC-BUS-PEER-UNIFIED-TRANSPORT-CONTRACT].
+**Status**: Draft — forward-authored in LTS (decoupled from the SMD->LTS migration); self-contained. Slice A buildable-now; Slice B spec-now/build-next. §8 amendment (unified Transport contract) implemented on `build/w1-unified-transport`, pending Architect glass. Three open decisions flagged for the Architect's ratify ([DD-BPR-MOCK-CAN], [DD-BPR-RELAY-WRAP], [DD-BPR-AUTH]); slot-in requires registering prefix `BPR-` + doc-id `CIO-BUS-PEER` in 99-composeio-profile.yaml.

@@ -1,0 +1,67 @@
+# R503 fingerprint-game — runtime auth-event MONITOR ("cylon detector" / GM
+# view).
+#
+# FUNCTIONAL PLACEHOLDER. Distinct from fingerprint_casting.compose.yaml (the
+# BINDING/setup UI — do not confuse the two): this scene subscribes to LIVE
+# auth_events and shows the full three-valued truth (granted / denied /
+# unrecognized) the physical device's own ring deliberately hides
+# ([CXC-FPID-RING-HIDES-DENIAL]). Composes the reused `info_list` panel (the
+# device summary) + the ONE new `auth_event_feed` panel (the color-coded
+# live feed) — nothing else is forked.
+#
+# Run headless:  python -m composeio.render.examples.fingerprint.drive_monitor
+
+app:
+  id: fp-auth-monitor
+  transports: []                 # in-process bus; the monitor controller rides it
+
+# [CXC-PROJECT-WIDGETS] import the modules that self-register `info_list` and
+# `auth_event_feed` BEFORE any type: is resolved — zero engine edits.
+widget_modules:
+  - composeio.render.widgets.fingerprint_panel
+  - composeio.render.widgets.auth_event_feed
+
+design:
+  target: desktop
+  title: "R503 — Auth Event Monitor (cylon detector, placeholder)"
+  theme: dark
+  width: 900
+  height: 640
+
+namespaces:
+  - {name: "fp/monitor/feed",    state_engine: json}
+  - {name: "fp/monitor/summary", state_engine: json}
+
+widgets:
+  - type: label
+    id: title
+    text: "AUTH EVENT MONITOR — the privileged three-outcome view"
+    font_size: 18
+    font_weight: bold
+    color: [0x8A, 0xD4, 0xFF]
+    align: left
+    height: 28
+
+  - type: label
+    id: subtitle
+    text: "the device ring shows denied & unrecognized as the SAME red — this does not"
+    font_size: 12
+    color: [0xFF, 0xC1, 0x66]
+    align: left
+    height: 18
+
+  - type: stack
+    id: body
+    direction: column
+    gap: 14
+    align: start
+    padding: 4
+
+    children:
+      - {type: auth_event_feed, id: v_feed, title: "LIVE FEED  (most recent first)",
+         namespace: "fp/monitor/feed", max_rows: 14,
+         width: 860, height: 340}
+
+      - {type: info_list, id: v_summary, title: "PER-DEVICE SUMMARY  (last outcome)",
+         namespace: "fp/monitor/summary", empty_text: "no auth events yet",
+         width: 860, height: 130}

@@ -1,0 +1,233 @@
+---
+scope: "CYD ESP32 screen capture — band-render the current display to a 24-bit BMP on the SD card, push it to document_store over WiFi, then delete it from SD. Zero additional heap allocation: the capture is a SECOND render pass through the existing 16-scanline band buffer. Enables automated visual QA without human photography."
+audience: "Builder agents implementing capture in the CYD Phase 1b firmware."
+boundary: "IN: a new capture module, SD card mount over VSPI, the BMP writer and its colour conversion, WiFi push to document_store, and the startup trigger. OUT: touch input, MQTT, and bus_storage integration."
+not-this: "Not touch input. Not MQTT. Not bus_storage — captures are documents and go to document_store. Not a real-time capture path; a full write takes about 12 seconds and is a diagnostic, not a frame sink."
+depends-on: []
+elements: [CXC-CYD-CAPTURE-*]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+created: 2026-03-30
+converted-from: cyd/spec/cyd-screen-capture.smd
+---
+# CYD Screen Capture [SPEC:CXC-CYD-CAPTURE]
+
+> Visual QA on the CYD depended on a human photographing the panel, which is slow, unrepeatable, and
+> impossible to diff. This spec makes the device capture itself: a second render pass writes the frame
+> to the SD card as a 24-bit BMP, WiFi pushes it to document_store, and the SD copy is deleted. The
+> design constraint that shapes everything is memory — the ESP32-D0WD has no PSRAM and no room for a
+> framebuffer, so the capture REUSES the existing 16-scanline band buffer and allocates nothing beyond a
+> 720-byte stack conversion buffer. The BMP is written top-down specifically so bands can be streamed in
+> render order with no buffering or reordering.
+
+---
+
+## 1. The capture pipeline
+
+### [CXC-CYD-CAPTURE-OVERVIEW] Capture is a SECOND render pass, not a framebuffer read
+
+- definition: the capture reuses the same `render_frame(DrawCallback, void*)` mechanism as the display
+  path. Where the display callback calls `ili9341_transfer_band()`, the capture callback writes the
+  scanlines to a BMP file on the SD card instead.
+- sequence: render the frame to the display normally; trigger capture; render the frame AGAIN to SD as
+  BMP reusing the band buffer; enable WiFi; HTTP PUT the BMP to document_store; delete the BMP from SD;
+  optionally disable WiFi to free heap for the next render cycle.
+- consequence: because it is a re-render rather than a readback, the capture needs NO framebuffer and no
+  additional heap — which is the only reason capture is possible on this part at all.
+- caveat: a re-render captures the scene as the draw callback describes it at capture time, not the
+  exact pixels currently on the glass. For a static diagnostic frame these are the same; for an
+  animating scene they are not.
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+### [CXC-CYD-CAPTURE-BMP] A top-down 24-bit BMP so bands stream in render order
+
+- definition: 24-bit RGB BMP with top-down scanline order, expressed as a NEGATIVE height in the header.
+
+| Field | Value |
+|---|---|
+| Signature | `BM` |
+| File size | 54 + (240 * 320 * 3) = 230,454 bytes |
+| Pixel offset | 54 |
+| DIB header size | 40 (BITMAPINFOHEADER) |
+| Width | 240 |
+| Height | -320 (negative = top-down, no need to reverse band order) |
+| Planes | 1 |
+| Bits per pixel | 24 |
+| Compression | 0 (BI_RGB) |
+| Image size | 230,400 |
+
+- rationale: the negative height is the load-bearing choice. Top-down order means band 0 (rows 0-15) is
+  written first and band 19 (rows 304-319) last — exactly the order the renderer produces them — so no
+  buffering or reordering is needed to satisfy the format.
+- padding: each scanline pads to a 4-byte boundary. 240 pixels times 3 bytes is 720 bytes, which is
+  divisible by 4, so NO padding is required at this resolution.
+- invalidating-assumption: that the display stays 240 pixels wide. At a width whose byte count is not a
+  multiple of 4, the padding rule stops being a no-op and the writer must emit pad bytes.
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+### [CXC-CYD-CAPTURE-COLOR] RGB565 to RGB888 uses bit replication, and BMP wants BGR
+
+- definition: the band buffer holds RGB565 pixels byte-swapped for DMA, and the BMP needs 24-bit
+  channels, so each pixel is unswapped, split, and widened.
+- step-unswap: `uint16_t pixel = (band_buf[i] >> 8) | (band_buf[i] << 8);`
+- step-extract: `r = (pixel >> 11) & 0x1F; g = (pixel >> 5) & 0x3F; b = pixel & 0x1F;`
+- step-widen: replicate the high bits into the low bits — `r = (r << 3) | (r >> 2)`,
+  `g = (g << 2) | (g >> 4)`, `b = (b << 3) | (b >> 2)`.
+- rationale-widen: bit replication rather than a left shift is what makes full-scale white map to 255
+  instead of 248; a plain shift darkens every channel and shows up as a systematic bias in any pixel
+  comparison.
+- byte-order: BMP pixel order is BGR, not RGB — write `b, g, r` per pixel.
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+---
+
+## 2. SD card access
+
+### [CXC-CYD-CAPTURE-SD-SPI] SD sits on VSPI, a different bus from the display
+
+- definition: the CYD's SD card slot uses the VSPI bus — GPIO 18 CLK, 19 MISO, 23 MOSI, 5 CS.
+- consequence: VSPI is SEPARATE from the display's HSPI bus, so there is no bus contention during
+  capture and no sequencing requirement of the kind touch needs.
+- mount: `esp_vfs_fat_sdspi_mount()` at mount point `/sdcard`, SPI host `VSPI_HOST`, CS GPIO 5, maximum
+  frequency 20 MHz.
+- rationale-frequency: 20 MHz is deliberately conservative for reliability on the CYD's card slot; the
+  capture is not latency-sensitive, so throughput is traded for a lower error rate.
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+### [CXC-CYD-CAPTURE-SD-FILE] The file is ephemeral and written a scanline at a time
+
+- path: `/sdcard/capture.bmp`, overwriting any previous capture.
+- lifecycle: the file is EPHEMERAL — it exists only until it is pushed to document_store and deleted.
+- step-convert: convert 16 scanlines per band from RGB565 to BGR888 into a small conversion buffer of
+  720 bytes per scanline, reused across the scanlines within a band.
+- step-write: `fwrite()` each converted scanline to the open file.
+- memory: NO heap allocation beyond the 720-byte conversion buffer, which is stack-allocated.
+- timing: the total write is 230,454 bytes, roughly 12 seconds at 20 MHz SPI with overhead. Acceptable
+  for a diagnostic capture; not usable for real-time.
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+---
+
+## 3. WiFi push
+
+### [CXC-CYD-CAPTURE-WIFI-INIT] WiFi comes up AFTER the BMP is written, never alongside it
+
+- file: cyd/src/wifi.cpp
+- requirement: reuse the existing WiFi module with the band-rendering memory savings; credentials come
+  from `cyd/include/wifi_config.h`.
+- rule: initialise WiFi AFTER the BMP is on the SD card, not concurrently. The SD write does not need
+  WiFi, and sequential initialisation keeps PEAK memory lower — which is the binding constraint on a
+  part with no PSRAM.
+- secret-handling: the SSID and credentials live in `wifi_config.h` and are referenced, never restated
+  in this spec.
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+### [CXC-CYD-CAPTURE-WIFI-PUT] The BMP is streamed to document_store in 4KB chunks
+
+- endpoint: `PUT http://mqtt-broker.local:8421/api/v1/collections/captures/cyd/{timestamp}.bmp`
+- headers: `Content-Type: image/bmp` and `Content-Length: 230454`.
+- client: `esp_http_client`, reading the file from SD in chunks rather than buffering it.
+- step-open: open `/sdcard/capture.bmp` for reading.
+- step-client: create the HTTP client with the PUT method and set `Content-Type: image/bmp`.
+- step-stream: read the file in 4KB chunks and write each to the HTTP client.
+- step-close: close on HTTP 200 or 201.
+- timestamp: `{timestamp}` is `esp_timer_get_time() / 1000` — milliseconds since boot — or a monotonic
+  counter. It is NOT a wall-clock time, because the device has no RTC at this phase.
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+### [CXC-CYD-CAPTURE-WIFI-CLEANUP] Cleanup deletes on success and DELIBERATELY does not retry
+
+- on-success: on HTTP 200 or 201, delete `/sdcard/capture.bmp` and log success to serial.
+- on-failure: log the error to serial and LEAVE the file on the SD card, so it can be recovered by
+  removing the card.
+- rule-no-retry: do NOT retry. The next capture cycle overwrites the file, so a retry loop would add a
+  failure mode (a wedged capture blocking the render loop) to buy a recovery the next cycle provides
+  anyway.
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+### [CXC-CYD-CAPTURE-WIFI-PORT] The document_store port is corrected to 8421
+
+- file: cyd/include/wifi_config.h
+- change: "set `DOCUMENT_STORE_URL` to `http://mqtt-broker.local:8421`, replacing the previous 8890."
+- context_for_change:
+  - prior_state: "`wifi_config.h` pointed `DOCUMENT_STORE_URL` at port 8890, where no service listens. Every capture push would have failed at connect, and the no-retry rule in [CXC-CYD-CAPTURE-WIFI-CLEANUP] means it would have failed silently apart from one serial line."
+  - reasoning: "8421 is the document_store port on the ComposeIO bus master; 8420 is bus_storage. A screen capture is a DOCUMENT, so both the port and the service choice follow from what the artifact is."
+  - rejected_alternative: "Push captures to bus_storage on 8420 as `bus://` assets — rejected: captures are queryable records with metadata (device, timestamp, scene), which is document_store's contract, not the blob store's."
+  - invalidating_assumption: "That the bus master stays at mqtt-broker.local with document_store on 8421. The move to a dedicated host is planned, and when it happens this constant and the endpoint in [CXC-CYD-CAPTURE-WIFI-PUT] both change together."
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+---
+
+## 4. Trigger, files and acceptance
+
+### [CXC-CYD-CAPTURE-TRIGGER-INIT] Phase 1 triggers once at startup, after the scene settles
+
+- requirement: for Phase 1 visual-QA iteration, trigger the capture ONCE at startup, after the dashboard
+  has rendered a complete frame.
+- implementation: in `app_main()`, after the initial render loop stabilises, `vTaskDelay` about 2000ms
+  to let animation settle, then call `capture_to_sd()` followed by `wifi_push_capture()`.
+- rationale-delay: the settle delay exists because the capture re-renders the scene; capturing before
+  animation reaches a steady state produces a frame that is correct but not the one being reviewed.
+- future: later phases add programmatic triggers — a bus command, a timer interval, or a touch button.
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+### [CXC-CYD-CAPTURE-FILES] The files this spec creates and modifies
+
+- definition: four new files and three modifications.
+
+| File | Action | Purpose |
+|---|---|---|
+| `src/capture.cpp` | Create | capture_to_sd(), BMP write, RGB565 to BGR888 conversion |
+| `include/capture.h` | Create | Public API: `void capture_to_sd()` |
+| `src/sd_card.cpp` | Create | SD card init and mount over VSPI |
+| `include/sd_card.h` | Create | Public API: `bool sd_init()`, `void sd_deinit()` |
+| `src/wifi.cpp` | Modify | Ensure init/deinit works within the band-rendering memory budget |
+| `include/wifi_config.h` | Modify | Fix DOCUMENT_STORE_URL to port 8421 |
+| `src/main.cpp` | Modify | Add the capture trigger after the initial render |
+
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+### [CXC-CYD-CAPTURE-COMPLIANCE] The compliance contract
+
+- definition: seven acceptance criteria covering the file format, the memory constraint, the transport
+  and the colour conversion.
+
+| ID | Requirement | Verification |
+|----|-------------|-------------|
+| CYD-CAP-C1 | Capture produces a valid 24-bit BMP readable by standard image viewers | Open the pushed file in an image viewer |
+| CYD-CAP-C2 | The band buffer is reused — no additional framebuffer allocation during capture | Heap report before and after capture shows no framebuffer-sized allocation |
+| CYD-CAP-C3 | The BMP is written to the SD card, not held in memory | Serial log shows per-band writes; heap is flat across the capture |
+| CYD-CAP-C4 | The WiFi PUT sends the BMP to document_store and receives 200 or 201 | Serial log shows the HTTP status; the document appears in document_store |
+| CYD-CAP-C5 | The BMP is deleted from SD after a successful push | The file is absent from the card after a successful capture |
+| CYD-CAP-C6 | Capture does not crash or corrupt the display render loop | Display renders cleanly after the capture completes |
+| CYD-CAP-C7 | RGB565 to RGB888 conversion preserves colour accuracy | Bit replication verified: full-scale channels map to 255, not 248 |
+
+- part-of: [SPEC:CXC-CYD-CAPTURE]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-CYD-CAPTURE] RELATED_TO [SPEC:CXC-CYD-FONT-UNIFY]
+- [CXC-CYD-CAPTURE-OVERVIEW] PRECONDITION_FOR [CXC-CYD-CAPTURE-BMP]
+- [CXC-CYD-CAPTURE-BMP] PRECONDITION_FOR [CXC-CYD-CAPTURE-COLOR]
+- [CXC-CYD-CAPTURE-SD-SPI] PRECONDITION_FOR [CXC-CYD-CAPTURE-SD-FILE]
+- [CXC-CYD-CAPTURE-COLOR] PRECONDITION_FOR [CXC-CYD-CAPTURE-SD-FILE]
+- [CXC-CYD-CAPTURE-SD-FILE] BEFORE [CXC-CYD-CAPTURE-WIFI-INIT]
+- [CXC-CYD-CAPTURE-WIFI-INIT] PRECONDITION_FOR [CXC-CYD-CAPTURE-WIFI-PUT]
+- [CXC-CYD-CAPTURE-WIFI-PORT] PRECONDITION_FOR [CXC-CYD-CAPTURE-WIFI-PUT]
+- [CXC-CYD-CAPTURE-WIFI-PUT] PRECONDITION_FOR [CXC-CYD-CAPTURE-WIFI-CLEANUP]
+- [CXC-CYD-CAPTURE-TRIGGER-INIT] CAUSES [CXC-CYD-CAPTURE-OVERVIEW]
+- [CXC-CYD-CAPTURE-FILES] RELATED_TO [CXC-CYD-CAPTURE-TRIGGER-INIT]
+- [CXC-CYD-CAPTURE-WIFI-CLEANUP] PRECONDITION_FOR [CXC-CYD-CAPTURE-COMPLIANCE]
+
+- [SPEC:CXC-CYD-CAPTURE] CONTAINS [CXC-CYD-CAPTURE-SD-SPI]
+- [SPEC:CXC-CYD-CAPTURE] CONTAINS [CXC-CYD-CAPTURE-WIFI-PORT]
+- [SPEC:CXC-CYD-CAPTURE] CONTAINS [CXC-CYD-CAPTURE-FILES]
+---
+
+**Version**: 1.1 — converted to FactLattice from `cyd/spec/cyd-screen-capture.smd` (v1.0, 2026-03-30).
+**Status**: Draft

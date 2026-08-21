@@ -1,0 +1,42 @@
+# Graph Viewer — the standalone corpus-agnostic FactLattice explorer
+# ([SPEC:CXC-GRAPH-VIEWER]).  The Decisions viewer GENERALIZED: decisions are ONE
+# corpus among many (defects, insights-and-warts, the platform specs, any loaded
+# corpus).  DATA is a DIRECT in-process lts-engine QUERY ([CXC-GV-DATA-PATH]) —
+# there is NO `self/decisions` feed, no `nodes:`/`edges:` render-default, no
+# `decisions_publisher` daemon.  The launcher spawns this scene on the
+# `_app/graph/open` intent ([CXC-GV-INTENTS]).
+#
+# Run:  python -m composeio.render.engine.runtime \
+#           composeio/render/examples/graph_viewer.compose.yaml
+
+design:
+  # [CXC-GV-RENAME] the standalone window TITLE reads exactly "Graph Viewer"
+  # (NORMATIVE — [CXC-GV-VERIFY-DATA-PATH] verify criterion (f)); the runtime sets
+  # the SDL2 window-manager title bar from this field.
+  title: "Graph Viewer"
+  theme: dark
+  # [CXC-DVL-WINDOW] resizable window, 1440x1080 default, floored at 720x480, its
+  # geometry PERSISTS across relaunch ([CXC-DVL-GEOMETRY]).  The geometry key
+  # MIGRATES from `decisions-viewer` to `graph-viewer` ([CXC-GV-RENAME]); a stale
+  # record under the old key is simply ignored (fail-safe: first launch opens at
+  # the default and re-persists).
+  width: 1440
+  height: 1080
+  resizable: true
+  min_width: 720
+  min_height: 480
+  persist_geometry: true
+  window_key: graph-viewer
+  reduced_motion: true
+
+widgets:
+  - type: graph_viewer
+    id: graph
+    # the DECISION corpus is the DEFAULT selection ([CXC-GV-CORPUS-SELECTOR]); the
+    # dropdown lists every served + repo-local corpus, discovered at open.
+    default_corpus: intelligence-console
+    layout_mode: dag
+    # the per-corpus style/projection profiles are a DECLARATIVE DATA FILE beside
+    # this scene ([CXC-GV-STYLE-PROFILE] / [DD-GV-GENERALIZE-VS-SUPERSEDE]).  Absent
+    # -> the widget loads the default beside-the-scene path.
+    style_profiles: ""

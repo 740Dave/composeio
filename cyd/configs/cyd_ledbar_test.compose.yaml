@@ -1,0 +1,139 @@
+# ComposeUX CYD — led_bar tier-parity test scene ([CXC-PRIM-LEDBAR],
+# [CXC-PRIM-TIER-PARITY], CXC-PRIM-C13/C14/C15)
+#
+# Exercises the full led_bar param set on the embedded tier against the
+# SAME config the desktop engine renders (cyd_config_crosscheck.py):
+#   bar_fuel   defaults (vertical, rectangular/across, gap 4, pad 8) +
+#              a live value binding (demo/level) — the byte-parity bar
+#   bar_cell   square segments, reversed fill, 4-color custom palette
+#              (repeat-last extension to 10 segments)
+#   bar_round  round segments, 8 segments
+#   bar_dense  min_segment_size overflow recovery: 24 declared segments
+#              on a 146px strip that cannot fit them at the 8px floor ->
+#              gap-shrink is infeasible (<1px), count-rescale renders 16
+#              at gap 1 (slot 8.06px >= floor; deciles+palette resampled)
+#   bar_level  horizontal row, label, defaults
+#   bar_along  horizontal, rectangular with the long axis ALONG the fill
+#
+# Values chosen so lit/unlit boundaries land mid-palette (zone reads).
+#
+# Deploy:  PUT bus://assets/displays/<device_id>.compose.yaml
+# Verify:  python scripts/cyd_config_crosscheck.py \
+#              ../cyd/configs/cyd_ledbar_test.compose.yaml <capture.bmp>
+
+app:
+  id: cyd-ledbar-test
+
+design:
+  title: "led_bar tier parity"
+  width: 240
+  height: 320
+  background: "#1E1E2E"
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 240
+    height: 320
+    children:
+      - type: label
+        id: title
+        text: "LED BAR [CXC-PRIM-C15]"
+        x: 0
+        y: 4
+        w: 240
+        h: 16
+        font_size: 13
+        font_weight: bold
+        align: center
+        color: [0xDD, 0xDD, 0xEE]
+
+      # -- defaults + live binding (the byte-parity reference bar) ----
+      - type: gauge
+        id: bar_fuel
+        style: led_bar
+        x: 2
+        y: 22
+        w: 60
+        h: 190
+        min_val: 0
+        max_val: 100
+        value: 62
+        label: FUEL
+        namespace: demo/level
+
+      # -- square shape, reversed, custom palette (repeat-last) -------
+      - type: gauge
+        id: bar_cell
+        style: led_bar
+        x: 62
+        y: 22
+        w: 60
+        h: 190
+        min_val: 0
+        max_val: 100
+        value: 45
+        label: CELL
+        segment_shape: square
+        reverse: true
+        segment_colors: ["#00E5FF", "#00E5FF", "#FFEB01", "#FE0002"]
+
+      # -- round shape, 8 segments ------------------------------------
+      - type: gauge
+        id: bar_round
+        style: led_bar
+        x: 122
+        y: 22
+        w: 56
+        h: 190
+        min_val: 0
+        max_val: 100
+        value: 80
+        label: PWR
+        segment_shape: round
+        segments: 8
+
+      # -- min_segment_size overflow recovery (24 -> 16 @ 8px floor) --
+      - type: gauge
+        id: bar_dense
+        style: led_bar
+        x: 178
+        y: 22
+        w: 60
+        h: 190
+        min_val: 0
+        max_val: 100
+        value: 70
+        label: DENS
+        segments: 24
+        min_segment_size: 8
+
+      # -- horizontal row, defaults ------------------------------------
+      - type: gauge
+        id: bar_level
+        style: led_bar
+        x: 2
+        y: 214
+        w: 236
+        h: 54
+        min_val: 0
+        max_val: 100
+        value: 55
+        label: LEVEL
+        orientation: horizontal
+
+      # -- horizontal, long axis ALONG the fill ------------------------
+      - type: gauge
+        id: bar_along
+        style: led_bar
+        x: 2
+        y: 270
+        w: 236
+        h: 48
+        min_val: 0
+        max_val: 100
+        value: 90
+        orientation: horizontal
+        segment_long_axis: along
+        segments: 6
+        segment_gap: 6

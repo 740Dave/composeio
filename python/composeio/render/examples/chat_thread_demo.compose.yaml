@@ -1,0 +1,73 @@
+# ComposeUX demo — ChatThread ([SPEC:CXC-IC] [CXC-IC-CHAT])
+#
+# The Intelligence Console conversation surface: FOUR voices, each arriving on
+# a DIFFERENT bus namespace, resolved to a per-voice color + alignment.
+#
+#   thread/narration            -> architect·narrate  (dim,    left)
+#   intelligence/architect/out  -> architect          (accent, left)
+#   intelligence/architect/in   -> harness (amber, center) | david (neutral, left)
+#
+# State on the bus, behavior in the widget: the seeds below are published via
+# `initial:` at start, so the headless render shows a live thread with no peer:
+#
+#   python -m composeio.render.engine.runtime \
+#       composeio/render/examples/chat_thread_demo.compose.yaml \
+#       --headless /tmp/chat_thread_test.png
+#
+# Then, from any bus peer, append a turn and watch it scroll in:
+#   publish intelligence/architect/in = {"from":"david","text":"go","ts":0}
+
+app:
+  id: demo-chat-thread
+
+design:
+  title: "Intelligence Console — chat thread"
+  width: 480
+  height: 420
+  background: "#0A0E16"
+
+namespaces:
+  - name: thread/narration
+    state_engine: json
+    initial:
+      from: architect
+      text: "Scanning the roster — three units idle, one draining. Holding the FTL arm until charge clears sixty."
+      turn: 1
+      ts: 0
+  - name: intelligence/architect/out
+    state_engine: json
+    initial:
+      from: architect
+      text: "Recommend we power-cycle gilligan before the soak; its telemetry has been stale for two polls."
+      ts: 1
+  - name: intelligence/architect/in
+    state_engine: json
+    initial:
+      from: harness
+      text: "power_status(gilligan) = offline"
+      kind: tool_result
+      ts: 2
+
+widgets:
+  - type: stack
+    id: scene
+    direction: column
+    gap: 8
+    padding: [12, 12, 12, 12]
+    children:
+      - type: label
+        id: heading
+        text: "conversation · live from the bus"
+        font_size: 12
+        color: "#8FA0B4"
+        height: 18
+      - type: chat_thread
+        id: console
+        label: "Intelligence Console"
+        width: 456
+        height: 356
+        max_messages: 200
+        namespaces:
+          - thread/narration
+          - intelligence/architect/out
+          - intelligence/architect/in

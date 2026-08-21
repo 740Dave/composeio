@@ -1,0 +1,188 @@
+---
+scope: "CYD ESP32 screen capture — band-render to BMP on SD card, WiFi push to document_store, delete from SD"
+audience: "Builder subagent implementing capture in CYD firmware"
+boundary: "New capture module + WiFi integration in existing CYD Phase 1b firmware"
+not-this: "Not touch input, not MQTT, not bus_storage integration"
+depends-on: [SPEC:COMPOSEUX-EMBEDDED-DISPLAY, IMPL:DS-BINARY]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# CYD Screen Capture [IMPL:CYD-CAPTURE]
+
+> Band-render the current display to BMP on the SD card, push to document_store over WiFi, delete from SD. Zero additional heap allocation — reuses the existing 16-scanline band buffer. Enables automated visual QA without human photography.
+
+---
+
+## 1. Capture Pipeline [CYD-CAPTURE-PIPELINE]
+
+### 1.1 Overview [CYD-CAPTURE-OVERVIEW]
+
+```
+Render frame to display (normal)
+  → Trigger capture
+  → Render frame again to SD card as BMP (reuse band buffer)
+  → Enable WiFi
+  → HTTP PUT BMP to document_store
+  → Delete BMP from SD
+  → Disable WiFi (optional — free heap for next render cycle)
+```
+
+The capture is a second render pass using the same `render_frame(DrawCallback, void*)` mechanism. Instead of calling `ili9341_transfer_band()`, the callback writes scanlines to a BMP file on the SD card.
+
+### 1.2 BMP File Format [CYD-CAPTURE-BMP]
+
+24-bit RGB BMP with top-down scanline order (negative height in header):
+
+| Field | Value |
+|---|---|
+| Signature | `BM` |
+| File size | 54 + (240 * 320 * 3) = 230,454 bytes |
+| Pixel offset | 54 |
+| DIB header size | 40 (BITMAPINFOHEADER) |
+| Width | 240 |
+| Height | -320 (negative = top-down, no need to reverse band order) |
+| Planes | 1 |
+| Bits per pixel | 24 |
+| Compression | 0 (BI_RGB) |
+| Image size | 230,400 |
+
+Top-down format means bands can be written sequentially: band 0 (rows 0-15) first, band 19 (rows 304-319) last. No buffering or reordering.
+
+### 1.3 RGB565 to RGB888 Conversion [CYD-CAPTURE-COLOR]
+
+The band buffer contains RGB565 pixels (big-endian byte-swapped for DMA). Convert to 24-bit RGB for BMP:
+
+```c
+// Undo byte swap, then extract channels
+uint16_t pixel = (band_buf[i] >> 8) | (band_buf[i] << 8);
+uint8_t r = (pixel >> 11) & 0x1F;
+uint8_t g = (pixel >> 5) & 0x3F;
+uint8_t b = pixel & 0x1F;
+// Scale to 8-bit (replicate high bits into low bits for accuracy)
+r = (r << 3) | (r >> 2);
+g = (g << 2) | (g >> 4);
+b = (b << 3) | (b >> 2);
+```
+
+BMP pixel order is BGR, not RGB: write `b, g, r` per pixel.
+
+Each scanline is padded to a 4-byte boundary. 240 pixels * 3 bytes = 720 bytes, which is divisible by 4 — no padding needed.
+
+---
+
+## 2. SD Card Access [CYD-CAPTURE-SD]
+
+### 2.1 SPI Bus [CYD-CAPTURE-SD-SPI]
+
+The CYD SD card slot uses the VSPI bus (GPIO 18 CLK, 19 MISO, 23 MOSI, 5 CS). This is separate from the display HSPI bus — no bus contention during capture.
+
+Initialize SD card via `esp_vfs_fat_sdspi_mount()` with:
+- Mount point: `/sdcard`
+- SPI host: VSPI_HOST
+- CS GPIO: 5
+- Max frequency: 20 MHz (conservative for reliability)
+
+### 2.2 File Operations [CYD-CAPTURE-SD-FILE]
+
+Write the BMP file to `/sdcard/capture.bmp` (overwrite previous). The capture is ephemeral — it's pushed to document_store and deleted.
+
+File write sequence per band:
+1. Convert 16 scanlines from RGB565 to BGR888 into a small conversion buffer (720 bytes per scanline, reuse across scanlines within band)
+2. `fwrite()` each converted scanline to the open file
+3. No heap allocation beyond the conversion buffer (720 bytes, stack-allocated)
+
+Total write: 230,454 bytes = ~12 seconds at 20 MHz SPI with overhead. Acceptable for a diagnostic capture, not for real-time.
+
+---
+
+## 3. WiFi Push [CYD-CAPTURE-WIFI]
+
+### 3.1 WiFi Initialization [CYD-CAPTURE-WIFI-INIT]
+
+Reuse existing `wifi.cpp` with band-rendering memory savings. WiFi credentials from `include/wifi_config.h` (SSID: <redacted>).
+
+Initialize WiFi AFTER the BMP is written to SD (not concurrently — the SD write doesn't need WiFi, and sequential init keeps peak memory lower).
+
+### 3.2 HTTP PUT to Document Store [CYD-CAPTURE-WIFI-PUT]
+
+```
+PUT http://mqtt-broker.local:8421/api/v1/collections/captures/cyd/{timestamp}.bmp
+Content-Type: image/bmp
+Content-Length: 230454
+
+<stream BMP file from SD card>
+```
+
+Use `esp_http_client` with chunked reading from SD:
+1. Open `/sdcard/capture.bmp` for reading
+2. Create HTTP client with PUT method
+3. Set `Content-Type: image/bmp`
+4. Read file in 4KB chunks, write to HTTP client
+5. Close on HTTP 200/201
+
+`{timestamp}` is `esp_timer_get_time() / 1000` (milliseconds since boot) or a monotonic counter.
+
+### 3.3 Cleanup [CYD-CAPTURE-WIFI-CLEANUP]
+
+On successful PUT (HTTP 200 or 201):
+- Delete `/sdcard/capture.bmp` from SD
+- Log success to serial
+
+On failure:
+- Log error to serial
+- Leave file on SD (manual recovery possible by removing card)
+- Do not retry — the next capture cycle will overwrite
+
+### 3.4 Port Configuration [CYD-CAPTURE-WIFI-PORT]
+
+Update `include/wifi_config.h`: set `DOCUMENT_STORE_URL` to `http://mqtt-broker.local:8421`. Previous value (8890) was incorrect.
+
+---
+
+## 4. Capture Trigger [CYD-CAPTURE-TRIGGER]
+
+### 4.1 Initial Implementation [CYD-CAPTURE-TRIGGER-INIT]
+
+For Phase 1 (visual QA iteration), trigger capture once at startup after the dashboard has rendered a complete frame:
+
+```c
+// In app_main(), after initial render loop stabilizes:
+vTaskDelay(pdMS_TO_TICKS(2000));  // let animation settle
+capture_to_sd();
+wifi_push_capture();
+```
+
+Future phases will add programmatic triggers (bus command, timer interval, touch button).
+
+---
+
+## 5. Files to Create/Modify [CYD-CAPTURE-FILES]
+
+| File | Action | Purpose |
+|---|---|---|
+| `src/capture.cpp` | Create | capture_to_sd(), BMP write, RGB565→BGR888 conversion |
+| `include/capture.h` | Create | Public API: `void capture_to_sd()` |
+| `src/wifi.cpp` | Modify | Ensure init/deinit works with band rendering memory budget |
+| `include/wifi_config.h` | Modify | Fix DOCUMENT_STORE_URL to port 8421 |
+| `src/sd_card.cpp` | Create | SD card init/mount via VSPI |
+| `include/sd_card.h` | Create | Public API: `bool sd_init()`, `void sd_deinit()` |
+| `src/main.cpp` | Modify | Add capture trigger after initial render |
+
+---
+
+## 6. Compliance [CYD-CAPTURE-COMPLIANCE]
+
+### [CYD-CAP-C1] Capture produces a valid 24-bit BMP file readable by standard image viewers
+### [CYD-CAP-C2] Band buffer is reused — no additional framebuffer allocation during capture
+### [CYD-CAP-C3] BMP is written to SD card, not held in memory
+### [CYD-CAP-C4] WiFi PUT sends the BMP to document_store and receives 200/201
+### [CYD-CAP-C5] BMP is deleted from SD after successful push
+### [CYD-CAP-C6] Capture does not crash or corrupt the display render loop
+### [CYD-CAP-C7] RGB565 to RGB888 conversion preserves color accuracy (5-6-5 bit replication)
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-30
+**Status**: Draft

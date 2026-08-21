@@ -1,0 +1,180 @@
+# Dual-Throttle · Calibration — the bench view for the two throttle pots.
+#
+# v3: a PURE LISTENER.  One readout per engine (L/R):
+#
+#   ENGINE     (led_bar)    — the emitted semantic band, deciles, as a
+#                             simulated LM3914 LED bar (blue/green/yellow/red)
+#
+# The v2 RAW and CORRECTED fader bars are GONE.  RAW was bound to
+# throttle/*/raw, which NOBODY PUBLISHES — it awaited an emitter/diagnostic
+# firmware that does not exist, so it rendered a value that never arrived.
+# CORRECTED duplicated the ENGINE binding on a second bar.
+#
+# ⛔ THE DEVICE CONDITIONS; THIS SCENE ONLY RENDERS.  The headless C3
+# publishes ONE already-conditioned stream per pot (invert + EMA + deadband +
+# the in_min/in_max safety bands are ALL applied on the leaf, per
+# dual-throttle.compose.yaml).  This scene MUST NOT scale, invert, clamp or
+# smooth what arrives: min_val/max_val are pinned to the continuous_0_100
+# engine domain (identity, not a rescale) so the glass reads exactly what the
+# wire carried.  A widget that re-scales a value the firmware already scaled
+# cannot be self-verified — a firmware conditioning fix and a widget
+# conditioning bug would be indistinguishable on screen.
+#
+# ⛔ 2026-08-15 — THE WIRE IS NOW A PERCENTAGE (0..100), not 0..255.  If this
+# scene shows every reading pinned near the bottom fifth of the bar, the
+# FIRMWARE has not been reflashed yet and is still publishing 0..255 into a
+# 0..100 engine, which the bus REFUSES — you will see stale values, not
+# scaled ones.  If instead the bars read plausibly but only ever reach ~40%,
+# this scene is running from a checkout where the namespaces still say
+# continuous_0_255.  Neither is a hardware fault.
+#
+# ⛔ NOTE FOR A LIVE SESSION: this file is read at PROCESS START.  A running
+# viewer keeps the domain it launched with; editing this file does not move
+# the glass until the scene is restarted.
+#
+# The AUDIO button fires the two-frame dradis/contacts sequence (unknown ->
+# hostile) that trips the DY-SV5F cover's condition_one edge -> plays 00008.mp3.
+# Works with the CURRENT firmware (no flash) and exercises the real
+# contact-identify path — the audio HW debug affordance.
+#
+# Run (live, on the ecosystem bus):
+#   python3 -m composeio.render.engine.runtime \
+#       composeio/render/examples/calib_throttle.compose.yaml --transports
+
+app:
+  id: calib-throttle
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+design:
+  title: "Dual-Throttle · Calibration"
+  width: 900
+  height: 560
+  theme: dark
+
+namespaces:
+  # The conditioned stream the C3 publishes: invert + EMA + deadband, and
+  # since 2026-08-15 a CALIBRATED SPAN (in_min/in_max safety bands) whose
+  # output is a PERCENTAGE, not an 8-bit code.
+  - name: throttle/left
+    state_engine: continuous_0_100
+    scope: global
+    label: "Left engine — thrust % (banded)"
+  - name: throttle/right
+    state_engine: continuous_0_100
+    scope: global
+    label: "Right engine — thrust % (banded)"
+  # throttle/left/raw + throttle/right/raw removed with the RAW bars: nothing
+  # on the bus publishes them, and no surviving widget binds them.
+  # The contact list the audio button publishes to trip the DY-SV5F cover.
+  - name: dradis/contacts
+    state_engine: json
+    scope: global
+    label: "DRADIS contacts (audio-cover trigger)"
+
+widgets:
+  - type: stack
+    id: calib
+    direction: column
+    align: stretch
+    gap: 12
+    padding: [16, 16, 16, 16]
+    children:
+      - type: label
+        id: title
+        text: "DUAL-THROTTLE CALIBRATION — engine band (listen-only)"
+        font_family: monospace
+        font_weight: bold
+        font_size: 15
+        align: center
+
+      # The two engines, side by side; each is one labelled vertical LED bar.
+      # The *_bars row stacks are kept (now single-child) so the layout tree
+      # and widget ids are unchanged for anything that walks them.
+      - type: stack
+        id: engines
+        direction: row
+        align: stretch
+        justify: center
+        gap: 40
+        grow: 1
+        children:
+          # -- LEFT ENGINE --------------------------------------------------
+          - type: stack
+            id: engL
+            direction: column
+            align: stretch
+            gap: 6
+            grow: 1
+            children:
+              - type: label
+                id: engL_title
+                text: "L ENGINE"
+                font_family: monospace
+                font_weight: bold
+                font_size: 13
+                align: center
+              - type: stack
+                id: engL_bars
+                direction: row
+                align: stretch
+                justify: center
+                gap: 16
+                grow: 1
+                children:
+                  - type: gauge
+                    id: L_engine
+                    grow: 1
+                    style: led_bar
+                    orientation: vertical
+                    label: "ENGINE"
+                    min_val: 0
+                    max_val: 100
+                    segments: 10
+                    namespace: throttle/left
+          # -- RIGHT ENGINE -------------------------------------------------
+          - type: stack
+            id: engR
+            direction: column
+            align: stretch
+            gap: 6
+            grow: 1
+            children:
+              - type: label
+                id: engR_title
+                text: "R ENGINE"
+                font_family: monospace
+                font_weight: bold
+                font_size: 13
+                align: center
+              - type: stack
+                id: engR_bars
+                direction: row
+                align: stretch
+                justify: center
+                gap: 16
+                grow: 1
+                children:
+                  - type: gauge
+                    id: R_engine
+                    grow: 1
+                    style: led_bar
+                    orientation: vertical
+                    label: "ENGINE"
+                    min_val: 0
+                    max_val: 100
+                    segments: 10
+                    namespace: throttle/right
+
+      # The audio HW test: publishes unknown -> hostile so the cover's
+      # baseline-guarded condition_one edge fires -> DY-SV5F plays 00008.mp3.
+      - type: emit_button
+        id: audio_test
+        label: "TEST DRADIS CONTACT SOUND"
+        emits:
+          - namespace: "dradis/contacts"
+            value: [{"id": "cal", "allegiance": "unknown"}]
+          - namespace: "dradis/contacts"
+            value: [{"id": "cal", "allegiance": "hostile"}]

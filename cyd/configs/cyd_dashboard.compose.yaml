@@ -1,0 +1,75 @@
+# ComposeUX CYD — config A: engine-gauge dashboard ([CXC-R-C12] config 1)
+#
+# The composition the CYD used to hard-code in main.cpp, now fetched
+# from bus_storage and rendered by the GENERIC firmware ([CXC-R-BOOT]).
+# Same layout as the verified Phase-1b scene + an interactive Button.
+#
+# Deploy:  PUT bus://assets/displays/<device_id>.compose.yaml
+
+app:
+  id: cyd-dashboard
+
+design:
+  title: "CYD Dashboard (config-driven)"
+  width: 240
+  height: 320
+  background: "#1E1E2E"
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 240
+    height: 320
+    children:
+      - type: rect
+        id: panel
+        x: 5
+        y: 5
+        w: 230
+        h: 310
+        fill_color: [0x22, 0x22, 0x33, 220]
+        stroke_color: [0x44, 0x44, 0x55]
+        corner_radius: 8
+      - type: label
+        id: title
+        text: "ComposeUX Dashboard M5"
+        x: 0
+        y: 8
+        w: 240
+        h: 20
+        font_size: 14
+        font_weight: bold
+        align: center
+        color: [0xDD, 0xDD, 0xEE]
+      - {type: gauge, id: gauge_temp, x: 5, y: 30, w: 115, h: 115,
+         min_val: 40, max_val: 120, value: 82, unit: C,
+         label: Coolant Temp, warning_threshold: 95, danger_threshold: 110}
+      - {type: gauge, id: gauge_oil, x: 120, y: 30, w: 115, h: 115,
+         min_val: 0, max_val: 150, value: 97, unit: psi,
+         label: Oil Pressure, warning_threshold: 120, danger_threshold: 140}
+      # led states QUOTED: unquoted on/off are YAML-1.1 booleans on the
+      # desktop engine (the [CXC-BIND-BEHAVIOR] gotcha) — authoring rule
+      # for cross-tier configs.
+      # labels quoted too — unquoted ON/OFF are ALSO YAML-1.1 booleans
+      - {type: led, id: led_on,     x: 5,   y: 155, w: 50, h: 66, state: "on",      label: "ON"}
+      - {type: led, id: led_warn,   x: 63,  y: 155, w: 50, h: 66, state: "warning", label: "WARN"}
+      - {type: led, id: led_danger, x: 121, y: 155, w: 50, h: 66, state: "danger",  label: "DANGER"}
+      - {type: led, id: led_off,    x: 179, y: 155, w: 50, h: 66, state: "off",     label: "OFF"}
+      - type: button
+        id: ack_btn
+        label: "ACK ALARMS"
+        publish_namespace: cyd/ack
+        x: 40
+        y: 240
+        w: 160
+        h: 36
+      - type: label
+        id: subtitle
+        text: "M5 - config-driven boot"
+        x: 0
+        y: 296
+        w: 240
+        h: 18
+        font_size: 10
+        align: center
+        color: [0x88, 0x88, 0x99]

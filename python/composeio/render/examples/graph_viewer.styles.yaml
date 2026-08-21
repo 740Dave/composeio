@@ -1,0 +1,115 @@
+# Graph Viewer — per-corpus style/projection profiles ([SPEC:CXC-GRAPH-VIEWER]
+# [CXC-GV-STYLE-PROFILE] / [DD-GV-GENERALIZE-VS-SUPERSEDE]).
+#
+# THIS IS DATA, NOT CODE ([CXC-GV-STYLE-PROFILE]: "adding a corpus's styling is a
+# NEW MAP ENTRY, never a new `if corpus == ...` in the widget").  The shared graph
+# renderer reads these fields; it is never per-corpus-forked.  Each entry keys a
+# corpus id to a profile with EXACTLY these fields:
+#
+#   node_kinds    : id-prefixes ADMITTED into the full-graph projection
+#                   (EMPTY = admit every non-hub node — the neutral default).
+#   badge_field   : the node PROPERTY whose value drives the node badge ink.
+#   badge_map     : value -> theme role (ok | warn | accent | dim | faint | ink).
+#   edge_alphabet : the semantic edge types admitted (the five canonical kinds are
+#                   ALWAYS admitted; CONTAINS/PART_OF are ALWAYS excluded).
+#   default_mode  : full  (full-graph is the default; neighborhood is the re-anchor zoom)
+#   default_depth : neighborhood traverse depth on re-anchor (default 2)
+
+profiles:
+
+  # --- DECISIONS (the reference instance) --------------------------------------
+  # [CXC-GV-STYLE-PROFILE] "the decision profile is the REFERENCE instance and MUST
+  # reproduce the current decisions styling exactly (the five edge inks + the
+  # superseded dim/strike)".  The node accent tab stays the decisions type-accent
+  # (amber) and superseded stays dim/struck (both handled in the renderer's
+  # pre-existing path); the badge map here maps every lifecycle to that SAME accent
+  # so the decision graph is BYTE-IDENTICAL to the pre-rename viewer, while
+  # superseded is surfaced through the existing superseded path.
+  intelligence-console:
+    node_kinds: ["DEC-", "IC-", "FIX-"]
+    badge_field: lifecycle-position
+    badge_map:
+      raised: warn
+      decided: warn
+      spec-authored: warn
+      committed: warn
+      built: warn
+      settled: warn
+      superseded: dim
+    edge_alphabet:
+      SUPERSEDES: warn
+      DEPENDS_ON: accent
+      RELATES_TO: dim
+      RE_DERIVE_VIA: ok
+      FOLLOWS: faint
+    default_mode: full
+    default_depth: 2
+
+  # --- DEFECTS -----------------------------------------------------------------
+  # defects render under their OWN field: a defect node's `status` (recurred vs
+  # held vs live) drives the badge; recurrence edges (SUPERSEDES) chain the kin.
+  defect-graph:
+    node_kinds: ["DEFECT-"]
+    badge_field: status
+    badge_map:
+      recurred: warn
+      reopened: warn
+      open: warn
+      live: ok
+      held: ok
+      resolved: dim
+      closed: dim
+    edge_alphabet:
+      SUPERSEDES: warn
+      REOPENS: warn
+      RELATES_TO: dim
+      INVESTIGATES: accent
+    default_mode: full
+    default_depth: 2
+
+  # --- INSIGHTS & WARTS --------------------------------------------------------
+  # insights render under `kind`: a wart warns, an elegance reads ok, a pattern is
+  # an accent — the corpus's own semantic field.
+  insights-and-warts:
+    node_kinds: ["INSIGHT-"]
+    badge_field: kind
+    badge_map:
+      wart: warn
+      elegance: ok
+      pattern: accent
+      insight: accent
+    edge_alphabet:
+      RELATES_TO: dim
+      RE_DERIVE_VIA: ok
+    default_mode: full
+    default_depth: 2
+
+  # --- PLATFORM SPECS ----------------------------------------------------------
+  # specs render by maturity / lifecycle-position (draft -> settled).
+  platform-specs:
+    node_kinds: []
+    badge_field: lifecycle-position
+    badge_map:
+      draft: warn
+      proposed: warn
+      operational: ok
+      settled: ok
+      superseded: dim
+    edge_alphabet:
+      DEPENDS_ON: accent
+      RELATES_TO: dim
+      SUPERSEDES: warn
+    default_mode: full
+    default_depth: 2
+
+# --- DEFAULT PROFILE ([CXC-GV-STYLE-PROFILE] DEFAULT PROFILE) ------------------
+# A corpus with no entry renders with this neutral profile: admit all non-hub
+# nodes, badge from lifecycle-position if present else none, semantic edges minus
+# CONTAINS.  So an unprofiled corpus is legible-but-plain, never unrenderable.
+default:
+  node_kinds: []
+  badge_field: lifecycle-position
+  badge_map: {}
+  edge_alphabet: {}
+  default_mode: full
+  default_depth: 2

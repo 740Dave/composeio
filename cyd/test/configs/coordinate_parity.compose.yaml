@@ -1,0 +1,45 @@
+# Coordinate-entry test scene (backlog #10) — exercises the `coordinate`
+# widget ported to the embedded tier (port of coordinate.py) plus its
+# on-screen NUMERIC KEYPAD, the first consumer of the keyboard.cpp
+# substrate.
+#
+# PARITY SCOPE (honest): the DISPLAY BAND — label + underscore-padded
+# monospace digit readout + status LED — mirrors coordinate.py and CAN be
+# crosschecked against the Skia reference for that band.  The numeric
+# KEYPAD below it has NO desktop oracle (there is no on-screen keyboard on
+# the Skia tier — the desktop captures digits through a hardware keyboard),
+# so it is a CYD-tier addition.  What IS gated is the substrate's digit
+# EDIT MODEL (digit-only append, max_digits cap, Backspace pops) — verified
+# bit-for-bit off hardware by env:native_keyboard_test.
+#
+# Interaction (on the board): tap digits to enter, C to clear, <- to
+# backspace, ENTER to commit.  With no bound arm namespace the keypad
+# defaults ARMED ([CXC-RM-M5]: on-device bus bindings deferred).
+#
+#   Board:  flash env:cyd, then tap the keypad and watch the status LED
+#           (blue = entering, green = ready/committed) and the ENTER log
+#           line (PUBLISH deferred, no transport on this tier).
+
+design:
+  title: Coordinate Entry
+  width: 240
+  height: 320
+  background: "#1E1E2E"
+
+namespaces:
+  - name: nav/coordinates
+    state_engine: json
+  - name: nav/coord_status
+    state_engine: json
+
+widgets:
+  - type: coordinate
+    id: coord_entry
+    x: 4
+    y: 8
+    w: 232
+    h: 300
+    label: Jump Coordinates
+    max_digits: 6
+    namespace_coordinates: nav/coordinates
+    namespace_status: nav/coord_status

@@ -1,0 +1,143 @@
+# ComposeUX CYD — config C: DRADIS sweep ([CXC-R-C18] flagship)
+#
+# The dradis Lottie (the SAME authored asset the Skia tier plays live
+# via the evaluator) pre-baked to a CI16 frame sequence by
+# scripts/bake_lottie_sprite.py and played on-device via draw_image.
+# Sprite frames are baked over this scene's background (#101318) —
+# CI16 carries no alpha on this tier.
+
+app:
+  id: cyd-dradis
+
+# ------------------------------------------------------------------
+# THE FRESHNESS CONTRACT, DECLARED  [SPEC:CXC-FRESHNESS]
+#
+# The same `namespaces: - name: ... freshness: {...}` schema
+# python/composeio/config.py reads, so a namespace's contract is authored
+# ONCE and means the same thing on the Python tier and on this board.
+#
+# ⛔ AN INTERVAL IS DECLARED, NEVER INFERRED.  Nothing learns a cadence from
+# traffic: the fleet's most-watched namespace is silent at rest BY DESIGN, so
+# inference would learn the wrong number from exactly the signal it matters
+# most on.
+#
+# `node:` is the ATTRIBUTION.  It is what makes this board subscribe
+# `_device/<node>/heartbeat`, and it is the ONLY thing that can condemn a
+# quiet-by-construction namespace — NO ATTRIBUTED PUBLISHER MEANS NO VERDICT.
+#
+# The receiver publishes two INTERNAL siblings per declared namespace, as
+# ordinary state:
+#   <ns>/_fresh     1.0 / 0.0 — believable / not believable
+#   <ns>/_verdict   fresh | stale | wire_unknown | never_received |
+#                   node_silent | undeclared
+# They are NEVER uplinked: two receivers may legitimately disagree, and a
+# verdict on the wire is a received value with its own age.
+# ------------------------------------------------------------------
+namespaces:
+  - name: dradis/contacts
+    freshness: {refresh_interval: 1.0, node: world-app}
+  - name: dradis/threats
+    freshness: {refresh_interval: 1.0, node: world-app}
+
+# ------------------------------------------------------------------
+# A FRESHNESS CLASS — the CONJUNCTION the leaf cannot otherwise express.
+# [CXC-FRESH-CLASS]
+#
+# ⛔ WHY THIS IS NOT SUGAR HERE.  On the Python tier `unknown` PROPAGATES
+# through arithmetic, so a value derived from three namespaces is
+# automatically unbelievable if any one of them is.  THE LEAF HAS NO SUCH
+# PROPAGATION: its DslValue is Number | Bool | String with no unknown member,
+# so `expr: ns('dradis/contacts') + ns('dradis/threats')` is silently
+# UNGUARDED and the author must remember to write a guard term per input.
+# Nothing checks that omission — which makes it zero-REVIEWABLE-code, not
+# zero code, and it surfaces as a confidently-wrong display.
+#
+# The class collapses N guard terms into ONE: `ns('dradis_solution/_fresh')`.
+# A missing conjunct is invisible in review; a missing whole term is not.
+#
+# It publishes `<class>/_fresh`, `<class>/_verdict` and `<class>/_culprit` —
+# the last naming WHICH member broke it, because an operator needs to know
+# which feed died, not merely that the picture is bad.
+#
+# Age is the MAX of the members' ages and the class is unbelievable if ANY
+# member is: a picture is as old as its OLDEST input, and taking anything
+# else would let the freshest member launder the staleness of the rest.
+# ------------------------------------------------------------------
+freshness_classes:
+  - name: dradis_solution
+    members: [dradis/contacts, dradis/threats]
+
+design:
+  title: "DRADIS (baked Lottie)"
+  width: 240
+  height: 320
+  background: "#101318"
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 240
+    height: 320
+    children:
+      - type: label
+        id: title
+        text: "DRADIS CONTACT"
+        x: 0
+        y: 14
+        w: 240
+        h: 22
+        font_size: 16
+        font_weight: bold
+        align: center
+        # ⛔ THIS IS THE WHOLE CONSUMER SIDE OF THE FRESHNESS FEATURE.
+        # Not one line of C++ outside the receiver "handles staleness":
+        # `<ns>/_fresh` arrives as ORDINARY STATE through the SAME entry point
+        # a real value uses, and this existing `expr:` binding reacts to it
+        # exactly as it would react to anything else.  David: "we shouldn't
+        # have to program for that, it should just happen because a new state
+        # has been emitted."
+        #
+        # ⛔ AND IT FAILS SAFE BY CONSTRUCTION.  The DSL reads an UNSET
+        # namespace as 0.0, which is falsy — so on a board where the receiver
+        # never ran, never declared this namespace, or died before its first
+        # tick, this reads GREY (do not believe it) rather than green.  A
+        # `_stale` flag would have the opposite polarity and would silently
+        # certify everything.
+        #
+        # ⚠ ONE GUARD TERM, NOT TWO.  It reads the CLASS, so adding a third
+        # dradis feed changes `freshness_classes:` above and nothing here —
+        # whereas a hand-written `ns(a/_fresh) and ns(b/_fresh)` would have to
+        # grow a conjunct that nobody would notice was missing.
+        #
+        # ⚠ AND THE `default:` HERE IS THE SAFE CLASS ON PURPOSE.  A default is
+        # applied AT SCENE BUILD, before any frame arrives (compose_scene.cpp
+        # add_scene_binding) — so a default on a VALUE attr renders a
+        # FABRICATED number indistinguishable from a received one, which is
+        # this whole defect reachable from the YAML side.  A default on a
+        # COLOUR is layout, not data, and this one is the DISBELIEVED colour,
+        # so the pre-first-frame render is grey rather than a confident green.
+        color:
+          expr: "ns('dradis_solution/_fresh') ? '#4ADE80' : '#555560'"
+          default: "#555560"
+      - type: sprite
+        id: dradis
+        src: "bus://assets/animations/dradis-cyd/frame_{i}.ci16"
+        frames: 8
+        fps: 8
+        x: 30
+        y: 50
+        w: 180
+        h: 180
+      - {type: led, id: contact_1, x: 30,  y: 244, w: 40, h: 40, state: "on"}
+      - {type: led, id: contact_2, x: 100, y: 244, w: 40, h: 40, state: "warning"}
+      - {type: led, id: contact_3, x: 170, y: 244, w: 40, h: 40, state: "danger"}
+      - type: label
+        id: footer
+        text: "baked Lottie - same asset as the Skia tier"
+        x: 0
+        y: 296
+        w: 240
+        h: 14
+        font_size: 8
+        align: center
+        color: [0x66, 0x66, 0x78]

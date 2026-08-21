@@ -1,0 +1,506 @@
+# TM1637 QUAD PANEL — four 4-digit tubes on one ESP32-C3, shared CLK.
+#
+# ONE artifact, BOTH halves (maker-project-flow design lock §2):
+#   PHYSICAL half (`hookup:`) — 4x tm1637-4digit modules DIRECT-CONNECTED to an
+#     ESP32-C3 SuperMini (no level shifters; DD-TM1637-LEVEL was REVERSED to
+#     direct connect), each module's CLK through its own 470 R containment
+#     resistor, plus an external 5 V feed.  Shared CLK, INDIVIDUAL DIO per
+#     module ([CXC-TM1637-SHARED-CLK]).
+#   LOGICAL half (`namespaces` + `widgets`) — the four semantic values, plus a
+#     CONSOLE mirror built from the RASTER `seven_segment` widget.
+#
+# The console mirror is not decoration.  It is the checkable content of
+# [CXC-VISION-SEMANTIC-REALIZATION]: the SAME namespace drives a raster widget
+# on a 480x320 panel and a tube on a 42x24 mm module, and if the two ever
+# disagree the claim "one semantic value, many physical realizations" is false.
+# The device itself is a PURE SUBSCRIBER — it publishes nothing.
+#
+#   python3 -m composeio.render.engine.runtime tm1637_quad_panel.compose.yaml
+#
+# ===========================================================================
+# ⛔ NOTHING IN THIS FILE HAS BEEN OBSERVED ON HARDWARE (2026-08-15).
+# No TM1637 has been connected to anything in this project.  Nine evidence
+# slots stand EMPTY at [CXC-TM1637-EV-INDEX], and the SEGMENT MAP in
+# particular is unverified — a wrong map produces confident, well-formed,
+# incorrect glyphs that no machine signal here can distinguish from correct
+# ones.  Run EV-01..EV-09 before trusting a digit.
+# ===========================================================================
+
+app:
+  id: tm1637-quad-panel
+
+design:
+  title: "TM1637 Quad Panel · Console Mirror"
+  width: 560
+  height: 260
+  theme: dark
+
+# --- the four semantic values ----------------------------------------------
+# ⚠ PROPOSED NAMES, NOT RATIFIED.  The fleet's existing vocabulary was searched
+# first (per the design-from-intent discipline): it carries `dradis/contacts`,
+# `dradis/scanning`, `ship/red_alert`, `throttle/left|right` — and NO 4-digit
+# numeric scalars.  So three of these four are new.  `dradis/contacts/count` is
+# deliberately a DERIVED higher-order namespace over the existing
+# `dradis/contacts` list rather than a re-read of the raw one, which keeps the
+# counting policy in one place and off the leaf.
+# ⛔ The namespace choice does not change ONE WIRE in the hookup below.  Renaming
+# these is a text edit; it is not a design decision the panel depends on.
+namespaces:
+  - name: ship/jump/countdown     # "MM:SS" to FTL — the one value that uses the colon
+  - name: ship/fuel               # tylium remaining
+  - name: dradis/contacts/count   # DERIVED count over the existing dradis/contacts
+  - name: ship/population         # survivor count
+
+# ===========================================================================
+# PHYSICAL half — the hookup netlist (design lock §3)
+# ===========================================================================
+#
+# TOPOLOGY: shared CLK + individual DIO ([CXC-TM1637-SHARED-CLK]).
+#   4 modules = 5 host pins (N+1).
+#
+# ⛔ THIS RESTS ON A STRONG INFERENCE, NOT A DATASHEET GUARANTEE.  V2.4 has no
+# state diagram.  The argument is that data input STARTS on a DIO high->low edge
+# while CLK is high (p.3), so a module whose DIO never moves is never armed.
+# Two facts upgrade it from "probably" to "safe under a stated failure model":
+# refresh runs off the internal RC oscillator (fosc 450 kHz, p.10) not off CLK,
+# so there is no clock-starvation state; and a STOP "initializes serial
+# communication" (p.4), so damage from a phantom bit is bounded to ONE
+# transaction.  [CXC-TM1637-EV-08] is the only test that can falsify it.
+#
+# WHY THIS AND NOT THE FALLBACK ([CXC-TM1637-FALLBACK-TOPOLOGY] — shared DIO,
+# one CLK per module, non-selected CLK parked LOW), which is MECHANICALLY
+# STRONGER because latching is defined on the CLK rising edge and a CLK that
+# never rises cannot latch at all:
+#   1. The fallback COMMONS THE ACK LINE across all four modules.  The TM1637
+#      pulls DIO low itself to ACK (p.3) and the driver reads it; on a shared
+#      DIO that ACK is the OR of four modules, so per-module presence detection
+#      is destroyed and one wedged module holds DIO low for the whole panel.
+#      With individual DIO, each module's ACK is its own presence signal.
+#   2. The fallback needs four shifter channels sitting driven-LOW continuously
+#      rather than one released-HIGH.
+#   3. The recommendation's risk is CHEAPLY FALSIFIABLE first — see the
+#      two-module checkpoint in the guide.  The fallback costs the same 5 pins,
+#      so switching later is a rewire, not a redesign.
+#
+# ⛔ DRIVER OBLIGATION THAT MAKES THIS TRUE ([CXC-TM1637-DIO-PARK-HIGH]):
+# a non-selected DIO must be PARKED HIGH and NEVER TOUCHED.  Pulling an idle
+# module's DIO low while CLK is high IS a start condition — it arms that module
+# and it then latches the next eight bits meant for its neighbour, displaying
+# its sibling's value, well-formed and wrong.  Selection is "drive exactly one
+# DIO, leave the other three released".
+#
+# ⛔ PASS-THROUGH HEADERS: USE THEM PIN-BY-PIN, NEVER AS A BUTT-JOINT.  The two
+# 4-pin headers on each module are wired IN PARALLEL — all four nets, INCLUDING
+# DIO.  Butting modules together commons DIO and gives four IDENTICAL displays.
+# Below, VCC / GND / CLK are daisy-chained through the `-B` header on purpose;
+# every DIO-B is left DELIBERATELY UNCONNECTED, and that asymmetry is the whole
+# topology made visible.
+#
+# LEVEL SHIFTING — [DD-TM1637-LEVEL], SETTLED 2026-08-15: DIRECT CONNECTION.
+# 3.3 V GPIOs tie straight to CLK and DIO, open-drain, no level shifter.  This
+# is also the near-universal field practice for this module, which is evidence,
+# not merely convention.
+#
+# The reasoning, at the corner that ACTUALLY applies (rack panel, ~25 C, USB
+# VBUS 5.0 V, always on):
+#   * a released line does NOT reach 5 V — the C3's ESD clamp pins it at
+#     ~3.3 + V_f = 3.9 V.  V_IH is 0.7 x 5.0 = 3.5 V, so the margin is +400 mV
+#     (+280 mV in a warm rack).  And 3.5 V is a GUARANTEED-MAX threshold: a real
+#     Schmitt input switches near VDD/2 with 0.35 V of specified hysteresis
+#     (p.10), so the typical margin is far larger again.
+#   * clamp current is small AND SELF-LIMITED BY THE MODULE'S OWN 10k:
+#       CLK  — one pin carrying FOUR pull-ups in parallel (2.5k) -> 440 uA
+#       DIO  — each pin sees ONE pull-up (10k)                   -> 110 uA each
+#     ⚠ Espressif publishes NO input-clamp/injection rating for the ESP32-C3, so
+#     there is no vendor number to hold this against.  Stated as a gap, not
+#     dressed up with another vendor's +/-5 mA convention.
+#
+# ⛔ THE ONE CONSTRAINT THIS BUYS: EVERYTHING RUNS FROM ONE SUPPLY.  The 880 uA
+# total cannot be sunk by an LDO, so if the 5 V rail is ever up while the C3's
+# 3.3 V rail is down, that current BACK-DRIVES the 3.3 V rail.  Powering the
+# panel from mcu.5V (USB VBUS) makes both rails rise and fall together and the
+# case cannot occur.  Two supplies would reintroduce it — and THAT is when a
+# level shifter comes back, not before.
+#
+# ⛔ AND IT FORECLOSES LIGHT/DEEP SLEEP.  880 uA >> light sleep (~130 uA) and
+# deep sleep (~5 uA), so an asleep C3 would have its rail back-driven.  An
+# always-on rack panel never sleeps, so this costs nothing HERE — but it is a
+# real capability given up, and it is the only one of the three objections that
+# survives on its own terms.  If this board ever needs to sleep, fit the
+# shifter (the `bss138-4ch-levelshift` catalog part is kept for exactly that).
+#
+# Full comparison and arithmetic: docs/board-bringup/tm1637-quad-panel.md §1.
+hookup:
+  board: perfboard
+
+  # =========================================================================
+  # THE NEGATIVE SPACE — connections that must NOT exist.
+  # =========================================================================
+  # A netlist can only express connections that DO exist, and a diagram cannot
+  # draw an absence.  Every entry below was previously a paragraph of prose in
+  # this file or in the guide; four of them are now CHECKED, and the parser
+  # REFUSES this netlist if one is violated.  The rest are marked as stated,
+  # because no machine can see a mechanical butt-joint.
+  must_not:
+    - id: no-boot-straps
+      why: >-
+        ESP32-C3 STRAPPING PINS.  A peripheral holding one of these at reset
+        changes the boot mode — the failure looks like a dead board, not like a
+        wiring fault.  Also declared fleet-wide in the board descriptor's
+        `pin_contract.reserved`; carried here too because THIS scene must
+        refuse on its own, off-repo, where descriptors are not present.
+      unwired: [mcu.GPIO2, mcu.GPIO8, mcu.GPIO9]
+
+    - id: console-uart-stays-free
+      why: >-
+        GPIO20/21 are U0RXD/U0TXD.  The ROM bootloader banner on UART0 is the
+        substrate proof that costs nothing and excludes wiring faults BEFORE
+        any firmware runs.  Spending these two pins on displays buys one more
+        module and forfeits the cheapest diagnostic on the board.
+      unwired: [mcu.GPIO20, mcu.GPIO21]
+
+    - id: b-header-dio-unconnected
+      why: >-
+        The `-B` pads are the SAME FOUR NETS as the A header, INCLUDING DIO.
+        VCC/GND/CLK may legitimately be linked on either header; a DIO-B link
+        commons DIO between modules and produces identical displays.  The whole
+        asymmetry of this topology is that every DIO-B stays open.
+      unwired: ["*.DIO-B"]
+
+    - id: dio-never-common
+      why: >-
+        Individual DIO per module IS the topology ([CXC-TM1637-SHARED-CLK]).
+        Two modules on one DIO net show IDENTICAL CONTENT — a well-formed,
+        confident, wrong panel with no error anywhere.  Checked against the
+        computed nets, so a link made on the pass-through pads is caught too.
+      distinct_nets: [tm1.DIO, tm2.DIO, tm3.DIO, tm4.DIO]
+
+    - id: do-not-butt-the-modules
+      why: >-
+        The two 4-pin headers are wired IN PARALLEL along the board, so butting
+        modules together commons all four nets including DIO.  They LOOK like a
+        daisy-chain and are not one ([CXC-TM1637-NO-CHAIN]).
+      stated: >-
+        Do not butt the modules together on the pass-through headers.  Use them
+        PIN-BY-PIN for VCC/GND/CLK only.  ⛔ Nothing here can check this: a
+        mechanical joint is not a wire, and this netlist looks identical either
+        way.
+
+    - id: no-added-pullups
+      why: >-
+        Each module already carries the datasheet reference network — a 10 kOhm
+        pull-up and a 100 pF cap on EACH of CLK and DIO (V2.4 p.8).  A second
+        pull-up in parallel lowers the effective resistance, raises low-side
+        sink current and buys nothing; the BSS138 breakout adds its own 10 kOhm
+        per side on top of that already.
+      stated: >-
+        Do not fit pull-up resistors on CLK or DIO.  A hookup diagram showing
+        them is WRONG.  (Stated rather than checked: no resistor part exists in
+        the catalog to forbid, so an `absent_parts:` clause here could never
+        fire — and a constraint that cannot fire reads as protection.)
+
+    - id: never-touch-an-idle-dio
+      why: >-
+        Pulling an idle module's DIO low while CLK is high IS a start condition
+        (V2.4 p.3).  That module arms and latches the next eight bits meant for
+        its neighbour, displaying its sibling's value — well-formed and wrong.
+      stated: >-
+        A non-selected DIO must be PARKED HIGH and never driven
+        ([CXC-TM1637-DIO-PARK-HIGH]).  Selection is "drive exactly one DIO,
+        leave the other three released".  ⛔ This is a DRIVER obligation: it is
+        firmware behaviour, invisible to any netlist check.
+
+  # =========================================================================
+  # PROVENANCE — which numbers are fact, which are arithmetic, which are guesses
+  # =========================================================================
+  # [DX-SPEC-CARRIES-ITS-EVIDENCE].  Every row carries an evidence slot that is
+  # explicitly EMPTY until a bench fills it, because an ABSENT key is
+  # indistinguishable from one nobody thought to write.  The rendered guide's
+  # "Warnings and Disclaimers" section is generated from these rows.
+  facts:
+    - id: module-pullups
+      what: onboard pull-up per line, per module (CLK and DIO)
+      value: 10 kOhm to 5 V
+      provenance: assumed
+      source: >-
+        TM1637 V2.4 p.8 shows R1/R2 = 10 kOhm in the reference application, and
+        the common breakout follows it — but the RESISTORS ARE THE VENDOR'S
+        CHOICE, not the chip's, and clones ship 4.7 kOhm silently.
+      measure_before_build: true
+      if_different: >-
+        ⛔ EVERY NUMBER IN §1 MOVES.  At 4.7 kOhm the shared CLK sees 4 in
+        parallel = 1.175 kOhm (not 2.5 kOhm) and the clamp-injected current
+        roughly DOUBLES to ~1.9 mA; DIO settling — the binding constraint, at
+        1.2x — improves rather than degrades.  ⚠ NOTE WHICH WAY: the decision
+        does NOT invert, it gets STRONGER (a bigger back-drive current makes
+        the direct connection worse, not better), so nobody should read a
+        4.7 kOhm reading as permission to delete the level shifters.  Measure
+        ONE module pad-to-pad with the power OFF; if it reads 4.7 kOhm,
+        recompute §1 and re-derive the 50 kHz choice before building.
+      measured: EMPTY
+
+    - id: tube-colour
+      what: LED colour of the tubes in hand, which fixes VDD
+      value: white (Vf ~3.0-3.4 V, so VDD must be 5 V)
+      provenance: measured
+      source: "V2.4 p.8 note 3 — 'blue-ray nixie tube ... power supply should be 5V'"
+      measure_before_build: false
+      if_different: >-
+        Red/green/yellow tubes (Vf ~1.8-2.1 V) run happily at 3.3 V, which
+        deletes the level shifters and most of §1 with them.
+      measured: "WHITE — the physical modules in hand, David, 2026-08-15"
+
+    - id: vih-min
+      what: TM1637 input HIGH threshold
+      value: 3.5 V (0.7 x VDD at VDD = 5.00 V)
+      provenance: datasheet
+      source: "TM1637 V2.4 p.10, electrical characteristics"
+      measure_before_build: false
+      measured: EMPTY
+
+    - id: clamp-voltage
+      what: voltage a released 5 V line settles at on an ESP32-C3 pin
+      value: ~3.9 V (V_3V3 + one diode drop)
+      provenance: assumed
+      source: >-
+        ARITHMETIC over an ESD structure Espressif does not specify — 3.3 + 0.6.
+        The abs-max V_IO on this part is 3.6 V, so this number is the whole
+        reason the direct connection is refused.
+      measure_before_build: true
+      if_different: >-
+        Below ~3.68 V the direct connection fails V_IH outright at the USB
+        +5 % corner; above ~4.0 V the abs-max violation and the sleep
+        back-drive are both worse.  Either way the BSS138 decision stands —
+        this row exists so the number is never quoted as if it were measured.
+      measured: EMPTY
+
+    - id: panel-current
+      what: total panel draw, four modules at full brightness
+      value: ~320 mA at 5 V
+      provenance: computed
+      source: >-
+        4 x ~80 mA (V2.4: 20 mA at step 0 to 80 mA at step 7, per module).
+        The first daisy-chain link carries ALL of it, not one module's share.
+      measure_before_build: false
+      measured: EMPTY
+
+    - id: dio-settling
+      what: DIO rise time, the BINDING timing constraint (not CLK)
+      value: 4.15 us (5 tau at 5 kOhm x 165 pF) against a 10 us half-period
+      provenance: computed
+      source: >-
+        DERIVED, and it is the number nobody computed first: the naive check
+        looks at CLK rise (1.42 us) and reports 3.5x margin.  DIO must be VALID
+        BEFORE the CLK rising edge, which is why 50 kHz was chosen over the
+        driver's default 100 kHz — at 100 kHz this margin is 1.2x.
+      measure_before_build: false
+      measured: EMPTY
+
+    - id: segment-map
+      what: which bit of a data byte lights which segment
+      value: "conventional a..g,dp = bit0..bit7 — UNVERIFIED"
+      provenance: assumed
+      source: >-
+        [CXC-TM1637-SEGMENT-MAP-UNVERIFIED].  The V2.4 datasheet does not give
+        the tube's segment-to-SEG wiring for THIS breakout; the map is the
+        community convention.
+      measure_before_build: true
+      if_different: >-
+        ⛔ A WRONG MAP PRODUCES CONFIDENT, WELL-FORMED, INCORRECT GLYPHS that no
+        machine signal in this project can distinguish from correct ones.
+        Display 1 then 7 and look: '1' must light the two RIGHT-HAND verticals
+        only.  Run [CXC-TM1637-EV-01..09] before trusting a digit.
+      measured: EMPTY
+
+  parts:
+    - {id: mcu,  part: esp32-c3-supermini, at: [10, 1]}
+    # ⛔ 470R AT EACH MODULE'S CLK PIN — FAULT CONTAINMENT, NOT LEVEL SHIFTING.
+    # See res-470r.yaml.  CLK is SHARED, so one module with an intermittent VCC
+    # can hold it low and blank ALL FOUR displays while the ACK blames the host.
+    # These four resistors turn that into a single-module failure.  They cost
+    # nothing electrically: driven-low reaches 270 mV (limit 1500) and released
+    # reaches 3.949 V (needs 3500) — BOTH margins improve slightly.
+    - {id: r1,   part: res-470r,           at: [1, 7]}
+    - {id: r2,   part: res-470r,           at: [8, 7]}
+    - {id: r3,   part: res-470r,           at: [15, 7]}
+    - {id: r4,   part: res-470r,           at: [22, 7]}
+    - {id: tm1,  part: tm1637-4digit,      at: [0, 12]}
+    - {id: tm2,  part: tm1637-4digit,      at: [7, 12]}
+    - {id: tm3,  part: tm1637-4digit,      at: [14, 12]}
+    - {id: tm4,  part: tm1637-4digit,      at: [21, 12]}
+
+  wires:
+    # ---- POWER: ONE SUPPLY, STAR-WIRED ------------------------------------
+    # ⛔ FROM mcu.5V, WHICH IS USB VBUS DIRECT — the C3's 3.3 V LDO is NOT in
+    # this path (it only feeds the ESP32 core).  One supply is the whole reason
+    # the direct connection is safe; do NOT add a second 5 V source.
+    # ⛔ STAR, NOT DAISY-CHAIN.  Chaining puts the whole panel behind module 1's
+    # VCC contact, which is the exact cascade the CLK resistors exist to break.
+    # Same wire count either way, so the chain buys nothing and risks a cascade.
+    - {from: mcu.5V,  to: tm1.VCC}
+    - {from: mcu.5V,  to: tm2.VCC}
+    - {from: mcu.5V,  to: tm3.VCC}
+    - {from: mcu.5V,  to: tm4.VCC}
+    - {from: mcu.GND, to: tm1.GND}
+    - {from: mcu.GND, to: tm2.GND}
+    - {from: mcu.GND, to: tm3.GND}
+    - {from: mcu.GND, to: tm4.GND}
+
+    # ---- HOST SIDE (3.3 V) ------------------------------------------------
+    # Pin selection.  These five are EXACTLY the non-strap, non-console,
+    # non-ADC-reserved pins that this fleet has actually PROBED on this board:
+    # the CAN bring-up scanned "every accessible pin (0,1,2,3,4,5,6,7,20,21)"
+    # (docs/board-bringup/esp32c3-supermini-can.descriptor.yaml), which is
+    # measured evidence rather than a pinout image.
+    #   GPIO2 / GPIO8 / GPIO9 — ESP32-C3 STRAPPING pins.  Excluded outright.
+    #   GPIO20 / GPIO21       — console UART (U0RXD/U0TXD).  Kept free: the ROM
+    #                           bootloader banner on UART0 is the substrate
+    #                           proof that costs nothing and excludes wiring
+    #                           faults before any firmware runs.
+    #   GPIO0 / GPIO1         — ADC1 CH0/CH1, reserved for the dual-throttle
+    #                           pots so one C3 can carry both projects.
+    #   GPIO18 / GPIO19       — not on the header (USB D-/D+).
+    # ⚠ GPIO10 IS DELIBERATELY NOT USED even though the catalog lists it on the
+    #   header and it is not a strap: it was NOT in that probed set, so its
+    #   accessibility on this board is unconfirmed.  If a continuity check
+    #   confirms GPIO10, it is the free pin that buys GPIO6 back for audio.
+    # ⚠ COLLIDES with dual_throttle.compose.yaml's audio cover on BOTH of its
+    #   pins — GPIO5 (UART TX to the DY-SV5F) and GPIO6 (BUSY).  One C3 cannot
+    #   carry this panel AND the audio module without freeing GPIO10 first.
+    #   Stated, not silently absorbed.
+    # SHARED CLK: one GPIO, star-wired out through four containment resistors.
+    # ⛔ NOT daisy-chained module-to-module any more — each module gets its own
+    # 470R branch, which is what makes a dead module a LOCAL failure.
+    # ⚠ CLK carries NO namespace — it is a clock, not a value.  It rode in
+    #   `subscribes:` as a caption while the field was ignored by the parser;
+    #   now `subscribes:` is real and validated, so the label lives in `note:`
+    #   where it belongs.  A seam field is not a caption slot.
+    - {from: mcu.GPIO6, to: r1.A, note: "shared CLK (host -> panel only)"}
+    - {from: mcu.GPIO6, to: r2.A}
+    - {from: mcu.GPIO6, to: r3.A}
+    - {from: mcu.GPIO6, to: r4.A}
+    - {from: r1.B, to: tm1.CLK}
+    - {from: r2.B, to: tm2.CLK}
+    - {from: r3.B, to: tm3.CLK}
+    - {from: r4.B, to: tm4.CLK}
+
+    # INDIVIDUAL DIO: straight to the module, NO series resistor and no shifter.
+    # DIO is point-to-point, so a dead module can only pull down its OWN line —
+    # it is already self-isolating and needs no containment.  Its clamp current
+    # is 110 uA (one 10k pull-up), a quarter of the shared CLK pin's.
+    - {from: mcu.GPIO3, to: tm1.DIO, subscribes: ship/jump/countdown}
+    - {from: mcu.GPIO4, to: tm2.DIO, subscribes: ship/fuel}
+    - {from: mcu.GPIO5, to: tm3.DIO, subscribes: dradis/contacts/count}
+    - {from: mcu.GPIO7, to: tm4.DIO, subscribes: ship/population}
+
+    # ---- THE ENTIRE `-B` HEADER IS DELIBERATELY UNCONNECTED -----------------
+    # Not an omission, and not spare capacity to be "tidied up" with a 4-way
+    # ribbon.  The B header carries the SAME FOUR NETS as A — including DIO — so
+    # butt-joining two modules on it commons their DIO and they display
+    # IDENTICAL content ([CXC-TM1637-NO-ADDRESS]).  Individual pads on B are
+    # fine to use for any net EXCEPT DIO.
+
+# ===========================================================================
+# LOGICAL half — the console mirror (the DEVICE is a pure subscriber)
+# ===========================================================================
+# ⚠ `digits: 4` is a RASTER-SHAPED FIELD ([CXC-TM1637-DIGITS-NOT-PORTABLE]).
+# On the raster widget `.` and `:` each consume their OWN narrow cell; on a tube
+# a `.` folds into the preceding digit's dp bit and `:` into whichever single
+# bit the module wires the colon to.  So "12.34" is FIVE cells here and FOUR
+# digits on the panel — both correct renderings of one semantic value.  The
+# count is carried here because the raster widget needs it, NOT because it is
+# portable.
+widgets:
+  - type: stack
+    id: mirror
+    direction: row
+    children:
+      - type: seven_segment
+        id: countdown
+        value_namespace: ship/jump/countdown
+        digits: 4
+        height: 90
+      - type: seven_segment
+        id: fuel
+        value_namespace: ship/fuel
+        digits: 4
+        height: 90
+      - type: seven_segment
+        id: contacts
+        value_namespace: dradis/contacts/count
+        digits: 4
+        height: 90
+      - type: seven_segment
+        id: population
+        value_namespace: ship/population
+        digits: 4
+        height: 90
+
+# ===========================================================================
+# DEVICE half — the TM1637 panel cover (C3 firmware config)
+# ===========================================================================
+# ⛔ SCHEMA GAP, REPORTED NOT WORKED AROUND SILENTLY.  The `hookup:` schema has
+# a `publishes:` seam (pin -> slot) and NO `subscribes:` seam, so it can express
+# a SENSOR but not an ACTUATOR.  The DY-SV5F hit this first and worked around it
+# with exactly this shape — a parallel top-level block plus a "must match the
+# hookup wire" comment — which means the single-source property the design lock
+# exists for is ALREADY BROKEN for actuators.  This panel is the SECOND
+# instance, which is the point at which the pattern is real rather than an
+# anecdote.  `subscribes:` is written on the wires above so the intent is at
+# least recorded at the wire; the parser ignores it today (it rides along like
+# `deadband:`/`invert:` do).  `publishes:` was NOT abused to get nicer wire
+# labels in the rendered guide — encoding the wrong dataflow direction into the
+# single-source artifact to improve a picture is how a wrong diagram gets
+# soldered.
+tm1637_panel:
+  bus:
+    clk_pin: GPIO6           # shared CLK — must match the hookup wire above
+    # ⛔ 50 kHz, NOT the driver default of 100 kHz — and the reason is a rise-time
+    # error worth stating, because it is a REAL COST OF THE DIRECT CONNECTION.
+    # A released line rises toward the CLAMPED 3.9 V, not 5 V, and must reach
+    # V_IH 3.5 V.  That is 89.7% of the asymptote, which costs 2.28*tau — where a
+    # level-shifted line (5 V asymptote, 70%) costs only 1.20*tau.  NEARLY DOUBLE.
+    # The clamp eats TIMING margin as well as voltage margin.
+    # Pull-ups are CONFIRMED 10k (David read the SMD marking `103`, 2026-08-15).
+    # The line CAPS are still unconfirmed, so both cases were computed — and DIO,
+    # not CLK, is the binding line in both (CLK gets four pull-ups in parallel and
+    # is therefore the STIFFER net):
+    #   caps FITTED (100 pF/line): DIO rise 3.30 us -> 1.23x at 100 kHz (MARGINAL)
+    #                                               -> 2.45x at  50 kHz (OK)
+    #   caps ABSENT (die only):    DIO rise 1.02 us -> 2.78x at 100 kHz (OK)
+    # ⛔ 50 kHz is the setting that is CORRECT UNDER BOTH ANSWERS, which is why it
+    # is chosen while the question is open.  A full 4-module refresh is 5.6 ms; at
+    # 1 Hz that is 0.6% duty, so immunity to an unresolved question costs nothing.
+    half_period_us: 10       # 50 kHz.  Datasheet floor is CLK high >= 1 us (p.10).
+    open_drain: true         # ⛔ MANDATORY, and for TWO independent reasons:
+                             #   (1) V_IH = 0.7*VDD > a 3.3 V push-pull high;
+                             #   (2) the chip drives DIO low itself to ACK (p.3), so a
+                             #       master driving high in that window shorts two
+                             #       output stages together.
+    # ⛔ REWRITE ALL FOUR MODULES UNCONDITIONALLY, ONCE A SECOND, whether or not
+    # the value changed.  These are stateful displays with NO readback: a module
+    # corrupted by a glitch, a false START or a double-clock stays wrong FOREVER.
+    # A periodic rewrite makes the panel SELF-HEALING within one second, and it
+    # upgrades the per-module ACK from a boot-time probe into a continuous
+    # presence monitor.  Cost: 5.6 ms/s = 0.6% duty.
+    refresh_hz: 1
+    refresh_unconditional: true
+  # Per-module: its own DIO pin and its own semantic channel set.  Three
+  # independently addressable actuators on ONE widget (value / brightness /
+  # power) is the compound-peripheral shape [DD-TM1637-CHANNELS] records as
+  # NOT DECIDED — this file uses the atomic form (option (a)) because that is
+  # what the driver's Tm1637Binding already implements.  It does not rule I2.
+  displays:
+    - {id: tm1, dio_pin: GPIO3, digits: 4, value_ns: ship/jump/countdown}
+    - {id: tm2, dio_pin: GPIO4, digits: 4, value_ns: ship/fuel}
+    - {id: tm3, dio_pin: GPIO5, digits: 4, value_ns: dradis/contacts/count}
+    - {id: tm4, dio_pin: GPIO7, digits: 4, value_ns: ship/population}
+  # ⛔ BRIGHTNESS IS A STEP INDEX, NEVER A DUTY CYCLE.  V2.4 p.5 gives EIGHT
+  # non-linear steps: 1/16, 2/16, 4/16, 10/16, 11/16, 12/16, 13/16, 14/16.
+  # There is no 3/16 and no 5..9/16.
+  # ⚠ AND DIMMING IS NOT A FIX FOR A PEAK-CURRENT PROBLEM.  Brightness is PWM
+  # duty, so it scales AVERAGE current roughly linearly — but the INSTANTANEOUS
+  # segment current is set by the driver and does not fall by one milliamp.  The
+  # answer to a supply peak is BULK CAPACITANCE (470-1000 uF at the panel), not
+  # a lower step.  Step 3 here is an aesthetic default, NOT a power mitigation.
+  brightness_step: 3

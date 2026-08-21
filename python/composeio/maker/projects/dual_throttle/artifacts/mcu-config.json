@@ -1,0 +1,77 @@
+{
+  "device": "dual-throttle",
+  "board": "esp32-c3-supermini",
+  "sensors": [
+    {
+      "publish": "throttle/left",
+      "pin": "GPIO0",
+      "mode": "analog",
+      "engine": "continuous_0_100",
+      "sensor": "pot-10k",
+      "normalize": {
+        "in_min": 96,
+        "in_max": 3999,
+        "out_min": 0,
+        "out_max": 100
+      },
+      "sample_hz": 20,
+      "conditioning": {
+        "deadband": 1
+      }
+    },
+    {
+      "publish": "throttle/right",
+      "pin": "GPIO1",
+      "mode": "analog",
+      "engine": "continuous_0_100",
+      "sensor": "pot-10k",
+      "normalize": {
+        "in_min": 96,
+        "in_max": 3999,
+        "out_min": 0,
+        "out_max": 100
+      },
+      "sample_hz": 20,
+      "conditioning": {
+        "invert": true,
+        "deadband": 1
+      }
+    }
+  ],
+  "actuators": [
+    {
+      "kind": "audio",
+      "module": "dy-sv5f",
+      "driver": "dy-sv5f-uart",
+      "subscribes": [
+        "dradis/contacts",
+        "game/jump"
+      ],
+      "publishes": [],
+      "uart": {
+        "tx_pin": "GPIO5",
+        "baud": 9600,
+        "protocol": "dy-sv5f",
+        "busy_pin": "GPIO6"
+      },
+      "cues": [
+        {
+          "cue": "condition_one",
+          "source": "dradis/contacts",
+          "edge": "contact_identified",
+          "track": 1,
+          "file": "00008.mp3",
+          "uart_frame": "AA 07 02 00 01 B4"
+        },
+        {
+          "cue": "jump",
+          "source": "game/jump",
+          "edge": "value == jumping",
+          "track": 2,
+          "file": "00009.mp3",
+          "uart_frame": "AA 07 02 00 02 B5"
+        }
+      ]
+    }
+  ]
+}

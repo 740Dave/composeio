@@ -1,0 +1,73 @@
+# Part catalog entry — DY-SV5F voice / MP3 playback module (DY-series).
+#
+# A PERIPHERAL (like pot-10k), not an MCU: a UART/one-line-triggerable audio player
+# an MCU drives to play a track from onboard flash.  Its ComposeIO cover makes audio
+# a bus ACTUATOR — e.g. `dradis/contacts` shows Cylons -> publish an audio-cue slot ->
+# the C3 fires the DY-SV5F to play the alert track (the throttle-controller's
+# imminent extension, David 2026-07-26).  Complexity at the leaf: the C3 owns the
+# UART/trigger protocol; the bus carries only the semantic "play track N" intent.
+#
+# SOURCED 2026-07-26 from David's community part `sv5w.fzpz` -> cached breadboard SVG
+# at `render/engine/parts/svg/dy-sv5f.svg` (self-contained, 1575x1623 viewBox, 14
+# connectorNpin terminals).  NOTE: the sourced footprint is the DY-SV5W, the
+# pin-compatible sibling in the DY voice-module family (same 14-pin layout); catalogued
+# as `dy-sv5f` per David's project reference.  Connector NAMES are real in the .fzp, so
+# the pin->connector map is AUTHORITATIVE (no board-confirm caveat).
+
+dy-sv5f:
+  description: DY-SV5F/W voice + MP3 playback module — UART or one-line/IO-triggered audio actuator.
+
+  # Canonical pin map — the netlist (hookup.wires) speaks EXACTLY these names.
+  # The dual-function pins keep the module silkscreen labels (e.g. TXD/IO0: TXD in
+  # UART mode, IO0 in one-line/IO mode).  A wire endpoint naming a pin not here is a
+  # hard parse error (S2).
+  pins:
+    - GND
+    - VCC              # 3.3-5V
+    - TXD/IO0
+    - RXD/IO1
+    - IO2
+    - IO3
+    - ONE_LINE/IO4     # one-wire serial control OR IO4
+    - IO5
+    - IO6
+    - IO7
+    - BUSY             # HIGH while a track is playing (poll/interrupt for done)
+    - GND-12
+    - Spk-             # speaker output (drives a small speaker directly)
+    - Spk+
+
+  # No adc_pins: a peripheral, not an MCU (it has no ADC to read a slot).  It is an
+  # OUTPUT actuator — the MCU drives IT.
+
+  # Hookup-SVG art (S3).  Real community footprint (David-supplied .fzpz, cached).
+  fritzing: dy-sv5f.svg
+  fritzing_part: "DY-SV5F / DY-SV5W voice module"
+  fritzing_source: "David-supplied sv5w.fzpz (DY-SV5W, pin-compatible with DY-SV5F), 2026-07-26"
+  # pin -> breadboard connector id.  AUTHORITATIVE from the .fzp connector NAMES.
+  fritzing_connectors:
+    "GND": connector0
+    "VCC": connector1
+    "TXD/IO0": connector2
+    "RXD/IO1": connector3
+    "IO2": connector4
+    "IO3": connector5
+    "ONE_LINE/IO4": connector6
+    "IO5": connector7
+    "IO6": connector8
+    "IO7": connector9
+    "BUSY": connector10
+    "GND-12": connector11
+    "Spk-": connector12
+    "Spk+": connector13
+  fritzing_note: >-
+    Real DY-SV5W community footprint (David-supplied .fzpz, cached), pin-compatible with
+    the DY-SV5F.  The pin->connector map is AUTHORITATIVE from the .fzp connector names,
+    so no board-confirm caveat.  S3's compositing pass places this SVG and anchors wires
+    to the connectorNpin terminals.
+
+  # Future KiCad interpreter target (documented; not built).  No stock symbol; a generic
+  # 14-pin module / connector footprint + a hand symbol apply.
+  kicad:
+    symbol: "Connector_Generic:Conn_01x14"
+    footprint: "Module:DY-SV5F"

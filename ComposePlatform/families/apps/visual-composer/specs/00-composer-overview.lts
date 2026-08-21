@@ -1,0 +1,217 @@
+---
+scope: "Highest-level map of the ComposeIO Composer — what it is, its major feature areas, and the index into the specification corpus"
+audience: "Composer developers, ComposeIO/ComposeUX spec authors, Intelligences driving or extending Composer"
+boundary: "Overview and corpus index only. Feature areas are specified in their own subcategory documents; this document owns none of them in detail. Design principles are in 00-composer-design-principles.lts."
+not-this: "Not a user manual; not the ComposeIO bus protocol (see ../spec/01-composeio-bus-protocol.smd); not the config schema (see ../spec/02-composeio-config-schema.smd); not an implementation guide."
+depends-on: ["00-composer-design-principles.lts", "01-composer-architecture.lts"]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# ComposeIO Composer — System Overview [SYSTEM:CXC-OVERVIEW]
+
+> The visual builder for ComposeUX control surfaces, itself a ComposeIO bus application. This document is the root of the Composer specification lattice: it names what Composer is, enumerates its major feature areas, and indexes every subcategory and legacy spec. Read this first; traverse from here.
+
+---
+
+## What Composer Is
+
+### [CXC-WHAT] Composer Is a Visual Builder That Is Itself a Bus Application
+
+- definition: A desktop tool that lets a builder assemble a ComposeUX control surface visually — drag widgets onto a canvas, group them into modules, bind them to bus namespaces — and emit a ComposeIO configuration as the output artifact.
+- key-insight: Composer dogfoods the platform it designs for. Its own panels (palette, canvas, property editor, preview, inspectors) are autonomous modules communicating over an internal ComposeIO bus. No panel holds a direct reference to another. The same namespace pub/sub that wires a physical button to a relay wires Composer's own UI together.
+- role: Move the specificity boundary for ComposeUX from code to visual layout — a builder should never need to write Python to produce a working control surface.
+- status: operational
+- see-also: [CXC-CREDO], [CXC-HIER]
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-CREDO] An Intelligence Drives Composer Identically to a Human
+
+- definition: Every builder action is a bus message. A human dragging a widget and an Intelligence publishing `composer/canvas/widget_added` are peers — the bus is the equalizing layer, and neither path is privileged.
+- key-insight: This is the design credo, not a feature bolted on. Because the interaction surface is the bus, Composer is drivable headlessly, fully observable, and scriptable. The capability is inherited by the surfaces it builds: a widget authored in Composer is itself bus-native and equally Intelligence-drivable.
+- implication: The MCP bridge ([CXC-FEAT-INTEL]) is a client of the same bus a human uses — it adds no privileged back door.
+- status: operational
+- see-also: [CXC-FEAT-INTEL], [CXC-WHAT]
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-HIER] The Design Hierarchy Is Design > Module > Widget
+
+- definition: A Composer design describes a complete ComposeUX surface: modules arranged in a spatial grid, each module containing widgets, with namespace bindings between them. The hierarchy is explicit and mirrors real ComposeIO systems (modules are boards; boards carry buttons/relays/gauges).
+- constraint: Module boundaries are visible on the canvas and are also namespace boundaries. Cross-module bindings use global scope; intra-module bindings use local scope.
+- status: operational
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+---
+
+## Major Feature Areas
+
+Each node below is a feature area with its own (current or planned) subcategory spec. Detail lives in the subcategory; this is the enumeration and status roll-up.
+
+### [CXC-FEAT-CANVAS] Visual Canvas & Layout
+
+- role: The spatial editing surface. Add/move/resize/remove modules and widgets on a grid; module frames are distinct visual groups.
+- implemented-by: `composer/modules/canvas.py`
+- status: operational
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-FEAT-PALETTE] Widget Palette & Extensible Catalog
+
+- role: Presents available widget types; publishing a selection begins placement. The catalog is a discoverable registry, not a hardcoded list — custom widget types register without modifying Composer source.
+- built-in-widgets: ButtonWidget, GaugeWidget, RelayWidget, CoordinateEntryWidget, BusMonitorWidget, TabWidget
+- gap: No ImageWidget or Callout/annotation widget yet — blocks the M31 flagship testbed. Tracked in the widgets subcategory.
+- implemented-by: `composer/modules/palette.py`, `composer/widgets/builtin.py`
+- status: operational
+- see-also: [CXC-CORPUS-WIDGETS]
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-FEAT-PROPS] Property & Binding Editors
+
+- role: Configure a selected widget's properties and its namespace bindings visually — pickers and drag-connect, never typing raw namespace strings. State-engine selection is a picker (binary, tri_level, stop_light, continuous_0_255, enum, json).
+- implemented-by: `composer/modules/property_editor.py`, `composer/modules/binding_editor.py`
+- status: operational
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-FEAT-PREVIEW] Live Preview With Real Bus
+
+- role: Instantiates actual ComposeUX widgets on a real ComposeIO bus, separate from the internal tool bus. Clicking a preview button publishes state; bound widgets respond. Not a mockup — a running system.
+- implemented-by: `composer/modules/preview.py`
+- status: operational
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-FEAT-BUS] Dual Internal / External Bus
+
+- role: Composer runs an in-process internal bus (tool messages: `composer/selection`, `composer/canvas/*`) and an external bus bridged over MQTT (Intelligence protocol, remote drive). The external bridge auto-connects when `COMPOSEUX_MQTT_BROKER` is set.
+- implemented-by: `composer/app.py`, ComposeIO `ComposeApp`
+- status: operational
+- see-also: [CXC-FEAT-INTEL]
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-FEAT-INTEL] Intelligence API (MCP Bridge)
+
+- role: An MCP server speaks the `composer/intelligence/*` protocol over the MQTT broker — exports intent/request_state/request_layout, imports state/layout snapshots — letting an Intelligence drive and observe a live Composer GUI as a bus peer.
+- implemented-by: `composer/modules/intelligence_coordinator.py`, `composeio-intelligence-mcp`
+- status: operational
+- see-also: [CXC-CREDO]
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-FEAT-SERDE] Serialization & Round-Trip
+
+- role: Save, load, and export designs to ComposeIO config. Disk I/O is a bus request handled by a non-visual FileOpsModule; visual modules rebuild from the shared design document on `composer/file/loaded`. Round-trip fidelity (byte-identical save→load→save) is the standing goal.
+- implemented-by: `composer/modules/file_ops.py`, `composer/serialization/*`
+- status: operational
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-FEAT-UNDO] Structural Undo / Redo
+
+- role: Every canvas operation is a reversible command on a bus-published history stack — structural undo, not text-diff undo.
+- status: partial — history module records commands, but undo/redo is not yet reachable via the Intelligence bridge and forward-exec does not yet capture full reversal data. Architecture decision pending (bridge `composer/command/undo|redo` vs. explicit MCP undo/redo tools).
+- implemented-by: `composer/modules/history.py`
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-FEAT-INSPECT] Namespace Inspector & Bus Monitor
+
+- role: The namespace registry for the design-in-progress is always visible — every namespace, its state engine, publishers, and subscribers. The bus monitor shows live traffic.
+- implemented-by: `composer/modules/namespace_inspector.py`, `composer/modules/bus_monitor.py`
+- status: operational
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+---
+
+## Module Roster (Overview → Implementation)
+
+> The set of modules Composer loads at runtime. Visual modules are CTkFrames on the internal bus; non-visual modules are bus participants with no UI. This roster is the bridge from feature areas to `composer/app.py::MODULE_LAYOUT`.
+
+- visual-modules: toolbar, palette, canvas, property_editor, binding_editor, preview, namespace_inspector, connection, bus_monitor
+- non-visual-modules: history, design_dispatcher, intelligence_coordinator, file_ops
+- source-file: `ux_composer/src/composer/app.py`
+- status: operational
+
+---
+
+## Spec Corpus Map
+
+> The Composer specification is a lattice, not a linear chain. This section is its index. The entire corpus is FactLattice `.lts`: the 16 foundational documents were migrated from SMD in one pass, and new specs are authored under subcategory directories.
+
+### [CXC-CORPUS-UX] Subcategory: UX & Interaction
+
+- role: Enhancements to the builder's interaction surface — the ergonomics of placing, selecting, binding, and previewing. This is where in-flight UX improvement ideas are specified.
+- location: `specs/ux/`
+- pre-vis: `specs/ux/composer-workshop-previs.v1.html` — the approved interactive mockup of the redesigned Composer (Widget Workshop 2/3 + tabbed Widget Configuration 1/3 + spanning telemetry bar). The build-toward reference for Composer's UX; realized in [CXC-RM-M4].
+- status: in-progress — core layout + composite model aligned (pixel-stack composite, WW/WC tabs, telemetry bar); pre-vis approved; additional UX aspects pending discussion
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-CORPUS-WIDGETS] Subcategory: Widget Catalog & Renderers
+
+- role: The extensible widget catalog and per-widget renderers, including the M31 flagship testbed (bus:// ImageWidget + data-bound CalloutOverlayWidget).
+- location: `specs/widgets/`
+- corpus-anchor: 11-composer-widget-renderers.lts, 12-composeux-render-engine.lts
+- status: planned
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-CORPUS-RENDER] Subcategory: Render Engine, Reactive Layer & Bus Substrate
+
+- role: The define-once render engine and everything layered on it — the reactive binding/behavior layer, the media widgets, headless (rendering-optional) logic, the bus substrate's pattern-subscription primitive, and the sandboxed expression DSL. This is where "a widget authored once renders/runs pixel- and bit-identically across macOS / RPi / CYD / browser" is actually specified and enforced.
+- documents:
+  - 12-composeux-render-engine [SPEC:CXC-RENDER] — the normative 3-layer render architecture + Canvas contract + backends + config-driven boot.
+  - 16-composeux-bindings-behaviors [SPEC:CXC-BIND] — the reactive layer (bindable attrs/transforms/variables + engine-owned behaviors); "state on the bus, behavior in the widget".
+  - 17-composeux-lottie [SPEC:CXC-LOTTIE], 18-composeux-svg [SPEC:CXC-SVG], 19-composeux-gestures [SPEC:CXC-GESTURE] — vector animation, vector graphics, single-touch swipe.
+  - 20-composeux-headless-widgets [SPEC:CXC-HEADLESS] — rendering-optional bus-native logic units + the headless runtime + 3 scheduling modes (Pass 1 operational).
+  - 21-composebus-pattern-subscription [SPEC:CXC-PATSUB] — the wildcard-subscribe primitive (CAN-ready; hardware acceptance-mask push-down).
+  - 22-composeux-expression-dsl [SPEC:CXC-DSL] — the sandboxed, bit-identical-across-backends expression language; scope = the 6 use-cases harvested from Headless Pass 1.
+  - 23-composeux-widget-primitives [SPEC:CXC-PRIM] — six missing UI primitives (progress bar, slider, switch, dropdown, keyboard, numpad) as forkable component composites + two small interaction seams; pre-vis `ux/widget-primitives-previs.v1.html`.
+  - 24-composer-flow-headless-authoring [SPEC:CXC-FLAUTH] — Headless Pass 3: authoring headless widgets as logic nodes in Flow (introspection, output wires, expr/schedule editing, roster deploy) + the Confirmation observability tier; pre-vis `ux/flow-headless-authoring-previs.v1.html`. Diagnosis tier = Pass 4 ([CXC-HW-INTROSPECT]).
+  - 25-composeux-audio [SPEC:CXC-AUDIO] — concept capture: sound as an actuator output parallel to the display (headed or headless); define-once intent, per-platform backends (I2S/DFPlayer/MIDI/HDMI). Needs shaping before build.
+  - 26-composeux-nfc [SPEC:CXC-NFC] — concept capture: an NFC reader as an input peripheral (sees a tag → publishes a semantic namespace; internal-vs-bus = scope). The input dual of audio; a Tier-2 citizen of the Peripheral HAL.
+  - 27-composeux-peripheral-hal [SPEC:CXC-HAL] — concept capture: a tiered sensor HAL (declarative value/edge sensors → reusable-driver bus parts → direct-integration stateful devices; boundary is per-interaction-face). Generalizes the peripheral-binding pattern; makes "bind reality in incrementally" config-cheap.
+  - 28-composeux-headless-monitor [SPEC:CXC-HMON] — Headless Pass 4 (Diagnosis observability): the runtime instruments its tick loop → publishes trace/state/health to `_bus/headless/<id>/*` (opt-in/throttled, via a DSL trace mode), and one define-once Monitor surface consumes it (Flow pop-out + standalone ops app). Pre-vis `ux/headless-monitor-previs.v1.html`.
+  - 29-composeux-embedded-reactive [SPEC:CXC-EMBED-REACTIVE] — the Reactive Embedded Tier: a board-agnostic C++ reactive core (on-device bus client + bindings/behaviors + on-chip DSL) across three ESP32 variants (C3/CYD/S3), + on-device input/output HAL + render/dirty-band. Slices R1–R5 (C3-first), CH32 deferred.
+- build-sequencing: tracked in `roadmap/00-render-engine-roadmap.lts` [PROJECT:CXC-ROADMAP].
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+### [CXC-CORPUS-CORE] Foundational Corpus (Migrated to FactLattice)
+
+- role: The foundational Composer specification set — principles, architecture, internal bus, module contracts, serialization, preview, intelligence API, widget renderers, and more. Fully converted from SMD to FactLattice `.lts` in the migration test-case pass.
+- documents: 00-composer-design-principles, 01-composer-architecture, 02-composer-internal-bus, 03-composer-modules, 04-composer-serialization, 05-composer-preview-system, 06-composer-intelligence-api, 07-composer-agent-build-plan, 08-composer-tab-container, 09-composer-reactive-window, 10-composer-runtime-dashboard, 11-composer-widget-renderers, 12-composeux-render-engine, 13-mcp-action-binding, 14-composer-components, 15-composer-device-monitor (all `.lts`)
+- conventions: 99-composeio-conventions.smd (symlink into the ComposeIO platform corpus, which remains SMD until its own migration); domain profile `platform-composeio.lts` registers the CXC- prefix.
+- migration-recipe: `tools/smd_to_lts.py` (rename + domain-binding + surgical intra-corpus ref rewrite)
+- status: operational
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+---
+
+## Design Decisions
+
+### [CXC-DD-LATTICE] Adopt FactLattice; Full SMD→LTS Conversion as Migration Test Case
+
+- decision: Composer specifications are authored in FactLattice `.lts`. The full 16-document SMD corpus was converted to `.lts` in a single scripted pass — deliberately, to exercise and validate the SMD→FactLattice migration workflow on a real project. ComposeIO is the first project migrated end-to-end.
+- rationale: Making the migration workflow itself the deliverable produces a reusable, verified recipe (rename + `domain:` binding + surgical intra-corpus ref rewrite; cross-corpus refs preserved) and a uniform corpus that is easier to tool and reason about than a mixed one.
+- status: operational
+- change: "Composer spec corpus fully converted from SMD (.smd) to FactLattice (.lts) in a single migration pass; supersedes the earlier opportunistic-migration plan."
+- context_for_change:
+  - prior_state: "16 Composer specs in SMD; an earlier revision of this decision chose opportunistic per-area migration to avoid up-front effort."
+  - reasoning: "David elected to use ComposeIO as the test case for a full SMD→LTS conversion. Doing the whole corpus now yields a proven, reusable migration recipe and removes the coexistence boundary."
+  - rejected_alternative: "Opportunistic migration (convert each .smd only when its area is revised) — the prior decision, now superseded."
+  - counter_argument: "Full migration touches documents not otherwise being worked, risking churn."
+  - counter_response: "The migration is mechanical and script-driven (rename + domain + ref-rewrite, no content rewrite), so churn is bounded and verifiable; VERIFY steps confirmed 78 intra-corpus refs rewritten and all cross-corpus refs preserved."
+  - invalidating_assumption: "That the conversion is purely mechanical. If future enrichment (multi-notation, confidence annotations) requires per-document human-in-the-loop rewriting, treat that as separate work, not migration."
+  - implication: "The corpus is uniformly .lts; `tools/smd_to_lts.py` is the reusable recipe for the next corpus (e.g. the ComposeIO platform spec/ set)."
+- part-of: [SYSTEM:CXC-OVERVIEW]
+
+---
+
+## Relationships
+
+### Semantic
+
+[CXC-CREDO] DEPENDS_ON [CXC-FEAT-BUS]
+[CXC-FEAT-INTEL] DEPENDS_ON [CXC-FEAT-BUS]
+[CXC-FEAT-INTEL] IMPLEMENTS [CXC-CREDO]
+[CXC-FEAT-SERDE] DEPENDS_ON [CXC-HIER]
+[CXC-CORPUS-WIDGETS] RELATED_TO [CXC-FEAT-PALETTE]
+[CXC-CORPUS-UX] RELATED_TO [CXC-FEAT-CANVAS]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-07-06
+**Status**: Draft

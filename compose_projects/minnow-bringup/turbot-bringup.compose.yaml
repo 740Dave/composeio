@@ -1,0 +1,131 @@
+# MinnowBoard TURBOT bring-up — a ComposeUX control surface over fleetconsole provisioning.
+#
+# The Turbot sibling of minnow-bringup.compose.yaml. Mirrors the RECIPE SPLIT: this surface models
+# the `minnowboard-turbot-debian13` param set EXACTLY (session_profile axis + cabled_nic +
+# kiosk_app + screen_transform), where the MAX surface models `minnowboard-debian13` (opt_* set).
+# Both drive the same gated CommandWidget -> fleetconsole.provision_run.
+#
+# WHY A SEPARATE SURFACE (not one unified form): (1) the two recipes have DIFFERENT param models —
+# MAX = opt_avahi/opt_tailscale/opt_sshkey/opt_composeux; Turbot = session_profile/cabled_nic/
+# kiosk_app/screen_transform (avahi + ssh-key are base-always on the Turbot). (2) The CTk dashboard
+# dialect has no enum/dropdown renderer, so a per-board surface is cleaner than a conditional one.
+# See provisionIO/configurator/CONFIG_CONTRACT.md for the full namespace->param schema.
+#
+# T1: every provisioning choice is a field here (config arrives structured) — the guided skill never
+# AUQs on a defined path. session_profile=kiosk + kiosk_app + screen_transform=90 reproduces mary-ann.
+app:
+  id: turbot-bringup
+  transports: []            # in-process; the driver publishes/serves the bus directly
+
+design:
+  target: desktop
+  title: "MinnowBoard Turbot Bring-up"
+  theme: dark
+
+components:
+  option-checkbox:
+    params: [label, ns]
+    widget: {type: CheckboxWidget, namespace: "{{ns}}", label: "{{label}}"}
+
+namespaces:
+  # export:false => never crosses a transport. pw_hash is the credential hash, local-only.
+  - {name: bringup/hostname,         state_engine: json,       export: false, label: "Hostname"}
+  - {name: bringup/pw_hash,          state_engine: json,       export: false, label: "Password (hashed)"}
+  - {name: bringup/device,           state_engine: json,       export: false, label: "Serial slot"}
+  - {name: bringup/cabled_nic,       state_engine: json,       export: false, label: "Cabled NIC"}
+  # session_profile / screen_transform are ENUM-shaped but modeled as json text (the CTk dialect
+  # has no segmented/dropdown renderer — a known surface-widget gap, see CONFIG_CONTRACT.md).
+  - {name: bringup/session_profile,  state_engine: json,       export: false, label: "Session profile (headless|workstation|kiosk)"}
+  - {name: bringup/kiosk_app,        state_engine: json,       export: false, label: "Kiosk ComposeApp (.compose.yaml)"}
+  - {name: bringup/screen_transform, state_engine: json,       export: false, label: "Screen transform (0|90|180|270)"}
+  - {name: bringup/opt_tailscale,    state_engine: binary,     export: false, label: "tailscale (install client)"}
+  - {name: bringup/wipe,             state_engine: binary,     export: false, label: "wipe non-empty disk"}
+  - {name: bringup/verdict,          state_engine: stop_light, export: false, label: "Provision"}
+  - {name: bringup/plug,             state_engine: json,       export: false, label: "Kasa plug #"}
+
+modules:
+  # Optional power control — a board can't be provisioned while it's off. Power ON is benign;
+  # Power OFF is confirm-gated (it interrupts a running board). Turbot bench plug = switch5 (#5).
+  - name: power
+    label: "Power (optional)"
+    grid_row: 0
+    grid_column: 1
+    widgets:
+      - {type: TextInputWidget, namespace: bringup/plug, label: "Kasa plug #", placeholder: "5", row: 0, column: 0}
+      - type: PowerToggleWidget
+        label: "Power"
+        plug_namespace: bringup/plug
+        on_tool: fleetpower.power_on
+        off_tool: fleetpower.power_off
+        status_tool: fleetpower.power_status
+        confirm_off: true
+        row: 1
+        column: 0
+
+  - name: config
+    label: "Turbot bring-up config"
+    grid_row: 0
+    grid_column: 0
+    widgets:
+      - {type: TextInputWidget, namespace: bringup/hostname, label: "Board name (hostname)", placeholder: "skipper-2", row: 0, column: 0}
+      - {type: TextInputWidget, namespace: bringup/pw_hash, label: "Password  (hashed locally — never stored or seen in plaintext)", secret: true, row: 1, column: 0}
+      - {type: TextInputWidget, namespace: bringup/device, label: "Serial slot (fleetconsole device / cable)", placeholder: "ginger", row: 2, column: 0}
+      # cabled_nic: dual-NIC Turbot stalls at 'choose primary interface' without interface=<nic>. Default enp3s0 (S1's cabled port).
+      - {type: TextInputWidget, namespace: bringup/cabled_nic, label: "Cabled NIC  (the port with carrier; -> installer interface=)", placeholder: "enp3s0", row: 3, column: 0}
+      # session_profile: THE display/UX axis. headless = base only; kiosk = mary-ann (hands-free fullscreen app).
+      - {type: TextInputWidget, namespace: bringup/session_profile, label: "Session profile  (headless | workstation | kiosk)", placeholder: "headless", row: 4, column: 0}
+      - {type: TextInputWidget, namespace: bringup/kiosk_app, label: "Kiosk app  (session_profile=kiosk: the .compose.yaml, run --fullscreen)", placeholder: "apps/touch_viz.compose.yaml", row: 5, column: 0}
+      - {type: TextInputWidget, namespace: bringup/screen_transform, label: "Screen transform  (workstation/kiosk on a rotated panel: 0|90|180|270)", placeholder: "90", row: 6, column: 0}
+      - {use: option-checkbox, label: "tailscale  (install client — base avahi + ssh-key are always on)", ns: bringup/opt_tailscale, row: 7, column: 0}
+      - {use: option-checkbox, label: "⚠ Wipe non-empty target disk (consent — Turbots often arrive with a prior OS)", ns: bringup/wipe, row: 8, column: 0}
+
+  - name: action
+    label: "Provision"
+    grid_row: 1
+    grid_column: 0
+    widgets:
+      - type: CommandWidget
+        label: "Provision (Turbot / Debian 13)"
+        binding:
+          type: mcp_action
+          tool: fleetconsole.provision_run
+          args:
+            recipe: minnowboard-turbot-debian13
+            device: "${bringup/device}"        # the serial slot (cable) to drive; default ginger
+            params:
+              hostname:         "${bringup/hostname}"
+              password_crypted: "${bringup/pw_hash}"
+              cabled_nic:       "${bringup/cabled_nic}"
+              session_profile:  "${bringup/session_profile}"
+              kiosk_app:        "${bringup/kiosk_app}"
+              screen_transform: "${bringup/screen_transform}"
+              opt_tailscale:    "${bringup/opt_tailscale}"
+              wipe_nonempty:    "${bringup/wipe}"
+          confirm: true                          # destructive: wipes the SSD + installs
+          result_namespace: bringup/verdict
+        row: 0
+        column: 0
+      - {type: RelayWidget, namespace: bringup/verdict, label: "Provision", state_engine: stop_light, row: 1, column: 0}
+
+  # Restore from a saved template — the pick list IS a document_store query over the fleet's Turbot
+  # recovery docs. Selecting one loads its rebuild spec (incl. the saved $6$ hash) into the form.
+  - name: restore
+    label: "Restore from saved"
+    grid_row: 1
+    grid_column: 1
+    widgets:
+      - type: DocPickerWidget
+        label: "Saved Turbots"
+        collection: fleet_devices
+        where: {provision.recipe: minnowboard-turbot-debian13}
+        title_field: device
+        subtitle_field: role
+        load_map:
+          provision.params.hostname:         bringup/hostname
+          provision.password_crypted:        bringup/pw_hash
+          provision.params.cabled_nic:       bringup/cabled_nic
+          provision.params.session_profile:  bringup/session_profile
+          provision.params.kiosk_app:        bringup/kiosk_app
+          provision.params.screen_transform: bringup/screen_transform
+        row: 0
+        column: 0

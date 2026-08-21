@@ -1,0 +1,69 @@
+# Document Storage viewer — a navigation SHELL over docstore / doc://
+# ([SPEC:CXC-LAUNCHBAR] [CXC-DOCNAV-APP] [CXC-DOCNAV-BROWSE] [CXC-DOCNAV-VIEW]).
+#
+# Tile 5's target.  Launched by `_app/docstore/open` (compose_projects/intelligence/tools/
+# app_launcher.py -> a SCENE spawn with --transports).  It BROWSES the document
+# store (collections -> entries, `doc://<collection>/<id>`) and, on selecting an
+# entry, hands it to the EXISTING doc-viewer by publishing `_app/doc/open` — the
+# out-of-process doc_viewer_launcher spawns the read-only viewer window.  It adds
+# NO renderer (a navigation shell, [CXC-DOCNAV-APP]) and NO write/delete path
+# ([CXC-DOCNAV-READONLY]).
+#
+# `_app/doc/open` MUST reach the GLOBAL (MQTT) leg — the doc_viewer_launcher is a
+# separate process subscribing composeio/global/_app/doc/open — so it is declared
+# scope: global and the launcher spawns this scene WITH the mqtt transport
+# ([CXC-RETRO-AWAYWATCH-OPEN-REACHES-LAUNCHER]).
+#
+# RESIZABLE + reflow + persisted geometry ([SPEC:CXC-RENDER] [CXC-R-WINDOW-RESIZE]),
+# the Designer-family viewer parity bar: a flex COLUMN that fills the window
+# (header measures to text; the browser GROWS to consume the rest), floored at
+# 640x480, geometry persists under `docstore-viewer`.
+#
+#   python3 -m composeio.render.engine.runtime \
+#       apps/compose_platform_launch_bar/docstore_viewer.compose.yaml --transports
+
+app:
+  id: docstore-viewer
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+design:
+  title: "Document Storage"
+  theme: dark
+  width: 820
+  height: 720
+  resizable: true
+  min_width: 640
+  min_height: 480
+  persist_geometry: true
+  window_key: docstore-viewer
+  padding: 0
+  gap: 0
+
+# `_app/doc/open` is a SEND-only intent consumed by the out-of-process
+# doc_viewer_launcher; scope: global pins it to the MQTT leg (DP-CIO-5) so it
+# never strands local.
+namespaces:
+  - {name: _app/doc/open, state_engine: json, export: true, scope: global,
+     label: "Open doc (select)"}
+
+widgets:
+  - type: stack
+    id: frame
+    direction: column
+    align: stretch
+    grow: 1
+    background: "#0A0E17"
+    corner_radius: 0
+    clip: true
+    padding: [14, 16, 12, 16]
+    gap: 8
+    children:
+      - type: store_browser
+        id: browser
+        store: docstore
+        title: "Document Storage"
+        open_namespace: _app/doc/open
+        grow: 1

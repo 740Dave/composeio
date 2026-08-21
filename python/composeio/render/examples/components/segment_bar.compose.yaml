@@ -1,0 +1,118 @@
+# ComposeUX Widget Primitive — segment_bar
+# [SPEC:CXC-PRIM] [CXC-PRIM-CATALOG] segment_bar + [CXC-PRIM-SEGBAR]
+#
+# An N-segment LED bargraph (the classic 10-segment look) built as a
+# `components:` composite — NO new engine Widget class. The generator stays
+# trivial: a `repeat` ([CXC-PRIM-REPEAT]) unrolls one segment `rect` into N
+# concrete children at load; ALL per-segment logic (lit/dim + green/yellow/
+# red zone) is ONE bound expression evaluated by the runtime DSL
+# ([SPEC:CXC-DSL]). This is the dividend of building the DSL before the widgets.
+#
+#   Value is normalized 0..1 on the bus. Segment i lights when
+#   value * segments >= i + 1 (i.e. floor(value*N) segments lit). The lit
+#   colour is zoned by index: i < green -> green, i < green+yellow -> yellow,
+#   else red (red count = segments - green - yellow). Unlit -> dim_color.
+#
+# COLOUR BINDING: a `rect`'s bindable colour attribute is `fill_color`
+# (see engine/bindings.py BINDABLE_ATTRS_BY_TYPE['rect'] = fill_color/
+# stroke_color; there is no bare `color` attr on a rect). The spec sketch
+# writes `color:`; the engine binds `fill_color`. The expression result (a
+# '#RRGGBB' string) is coerced to the rect's RGBA tuple at the binding site
+# (coerce_expr_value -> COLOR_ATTRS -> rgba()).
+#
+# ORIENT: `orient` is `horizontal` (default) or `vertical`. The engine
+# aliases these to the flex-native `row`/`column` in build_node
+# (_DIRECTION_ALIASES), so both vocabularies work; the param carries
+# David's horizontal/vertical spelling. [SPEC:CXC-PRIM]
+#
+# Run live:
+#   python3 -m composeio.render.engine.runtime examples/components/segment_bar.compose.yaml
+# then from any bus peer:  publish audio/level = 0.0 .. 1.0
+
+app:
+  id: segment-bar-demo
+
+design:
+  title: "segment_bar — LED bargraph"
+  theme: dark
+  width: 420
+  height: 300
+
+namespaces:
+  - {name: audio/level,   state_engine: json, export: true, label: "Level"}
+  - {name: audio/level_v, state_engine: json, export: true, label: "Level (vertical)"}
+
+# --------------------------------------------------------------------------
+# The composite
+# --------------------------------------------------------------------------
+components:
+  segment_bar:
+    params: [value_ns]
+    defaults:
+      id_prefix: seg           # unique id root per instance (avoids id clash)
+      segments: 10             # N
+      green: 6                 # green zone count (indices 0 .. green-1)
+      yellow: 2                # yellow zone count; red = segments-green-yellow
+      orient: horizontal       # horizontal | vertical (aliased to flex row/column)
+      green_color: "#4bb07d"   # semantic good  ([CXC-PRIM-TOKENS])
+      yellow_color: "#d99a34"  # semantic warn
+      red_color: "#dd5b52"     # semantic crit
+      dim_color: "#22303c"     # unlit LED — a dark inset
+      bezel_color: "#0d1117"   # dark bezel behind the segments
+      seg_gap: 4
+      seg_w: 22
+      seg_h: 40
+      radius: 6
+    widget:
+      type: stack
+      id: "{{id_prefix}}_bar"
+      direction: "{{orient}}"
+      align: center
+      justify: center
+      gap: "{{seg_gap}}"
+      padding: [10, 12, 10, 12]
+      background: "{{bezel_color}}"
+      corner_radius: "{{radius}}"
+      children:
+        # ONE segment, unrolled N times; {{i}} = 0..segments-1.
+        - repeat: "{{segments}}"
+          as: i
+          child:
+            type: rect
+            id: "{{id_prefix}}_{{i}}"
+            width: "{{seg_w}}"
+            height: "{{seg_h}}"
+            corner_radius: 2
+            # lit/dim AND green/yellow/red zone in ONE expression; index and
+            # counts are load-time literals, only ns('...') is dynamic.
+            fill_color:
+              expr: "ns('{{value_ns}}') * {{segments}} >= {{i}} + 1 ? ({{i}} < {{green}} ? '{{green_color}}' : ({{i}} < {{green}} + {{yellow}} ? '{{yellow_color}}' : '{{red_color}}')) : '{{dim_color}}'"
+
+# --------------------------------------------------------------------------
+# Demo instances
+# --------------------------------------------------------------------------
+widgets:
+  - type: label
+    id: title
+    text: "segment_bar — publish audio/level 0..1"
+    font_size: 16
+    font_weight: bold
+    color: "#e6ecf3"
+    align: center
+    height: 28
+
+  # Horizontal 10-segment bar matching the reference image (6 green / 2
+  # yellow / 2 red).
+  - {use: segment_bar, value_ns: "audio/level", segments: 10, green: 6, yellow: 2}
+
+  - type: label
+    id: vlabel
+    text: "vertical variant (audio/level_v)"
+    font_size: 13
+    color: "#808c9b"
+    align: center
+    height: 22
+
+  # Vertical variant: column layout, segments wide-and-short.
+  - {use: segment_bar, value_ns: "audio/level_v", id_prefix: v, orient: vertical,
+     seg_w: 60, seg_h: 16, segments: 10, green: 6, yellow: 2}

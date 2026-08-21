@@ -1,0 +1,363 @@
+# Unified board bring-up descriptor — SINGLE SOURCE for this board+role.
+# Schema shared byte-for-byte with cyd/qualia/hosyond-s3/waveshare-c6/esp32c3/ch32v203.
+# The markdown recipe (esp32c3-supermini-can.md) is the human view; the app consumes THIS file.
+# LOCAL-FIRST: eyeball before pushing. Not on the bus yet (future home: doc://board_profiles/*).
+#
+# DISTINCT FROM esp32c3.descriptor.yaml, which covers the C3 family in the
+# firmware/reactive_core tree (Arduino, WiFi/MQTT, actuator HAL). This is the
+# SAME SILICON in a different ROLE: an ESP-IDF headless CAN node built out of
+# cyd/, with no radio at all. Role, not part, is what makes it its own entry —
+# the pin map, the toolchain and the failure modes share nothing.
+
+board_id: esp32c3-supermini-can
+name: "ESP32-C3 Super Mini + SN65HVD230 — headless CAN first-light node"
+
+chip:
+  part: esp32-c3             # QFN32 rev v0.4, read off the device 2026-08-12 (esptool flash-id)
+  arch: riscv32              # RV32IMAC — SINGLE core, 160MHz. NO FPU (irrelevant here: headless, no canvas)
+  flash_kb: 4096             # 4MB EMBEDDED XMC (manufacturer 0x46, device 0x4016); 40MHz crystal
+  ram_kb: 0                  # NO PSRAM. Firmware uses 24.4KB of 320KB DRAM — the tier question does not arise
+
+connect:
+  bus: usb
+  kind: native-usb-cdc        # native USB-Serial-JTAG; flash + console share one port
+  port_glob: "/dev/cu.usbmodem*"     # ini pins usbmodem11301 — see quirk port-path-is-not-identity
+  baud: 115200
+
+flash:
+  tool: esptool               # via PlatformIO / ESP-IDF
+  cmd: "cd cyd && pio run -e esp32_c3_can_bringup -t upload"
+  enter_bootloader: auto      # native-USB auto-download; BOOT button IS brought out on this board
+  retries:
+    - errno6-native-usb        # transient native-USB CDC re-enumeration; retry the upload ONCE (family-wide)
+  notes: >
+    Build wiring layers sdkconfig.defaults -> sdkconfig.c3.defaults (shared with env:esp32c3_dsl_test —
+    the requirement is identical, native-USB console on a C3), plus -DCXC_CAN_BRINGUP=1, a CMake CACHE VAR
+    that selects the branch in src/CMakeLists.txt and NEVER reaches the compiler. Every compile-time switch
+    (CXC_CAN_BRINGUP_APP, CXC_DEVICE_PREFIX, CXC_CAN_TX_GPIO/RX_GPIO/BITRATE) is a
+    target_compile_definitions in that branch. VERIFIED in compile_commands.json, 2026-08-12: all five
+    present in 14 TUs, and the bare cache var CXC_CAN_BRINGUP present in ZERO — the trap, demonstrated.
+    The branch MUST sit above the "not esp32 -> DSL only" early-return: esp32c3 hits that guard.
+    monitor: pio device monitor -e esp32_c3_can_bringup.
+    A serial reset without esptool (and so without a bootloader entry): open the port and pulse RTS.
+
+config_source: null   # headless CAN node — no scene, no config fetch, no HTTP, no radio
+
+# ------------------------------------------------------------------------
+# THE PIN CONTRACT — machine-readable, and CHECKED (not prose).
+# ------------------------------------------------------------------------
+# ⛔ WHY IT LIVES IN THIS DESCRIPTOR, WHICH IS A ROLE AND NOT A BARE BOARD.
+# The contract states which PADS EXIST on the ESP32-C3 SuperMini and which are
+# spoken for by the silicon — facts of the board, not of the CAN role.  It is
+# here because this descriptor holds the fleet's ONLY MEASURED accessibility
+# evidence for those pads (the bring-up's ten-pin scan, 2026-08-12).  If a bare
+# `esp32c3-supermini.descriptor.yaml` is ever created, the contract MOVES there
+# and the catalog's `descriptor:` link follows it; nothing else changes.
+#
+# ⛔ `reserved:` MEANS RESERVED BY THE SILICON, NEVER "in use by a project".
+# GPIO5/GPIO6 carry CTX/CRX in THIS role and are NOT reserved here: the TM1637
+# quad panel legitimately claims the same two pins, and only one of the two is
+# ever built on a given board.  A project's own pin claims belong in that
+# scene's `hookup.must_not:`, where they bind to that scene alone.
+#
+# CONSUMED BY: render/engine/hookup_descriptor.py::check_pin_parity — a netlist
+# that wires a reserved pad, or a pad this contract does not account for, FAILS
+# the parity test.  The prose above and below cannot be checked; this can.
+pin_contract:
+  complete: true              # accounts for every pin in the catalog part
+  source: >-
+    MEASURED 2026-08-12 — the CAN bring-up's boot-time pin probe scanned every
+    accessible pin (0,1,2,3,4,5,6,7,20,21) on this physical board.  The strap
+    identities are Espressif's (ESP32-C3 TRM strapping pins); the USB pair is
+    absent from the header on the SuperMini layout by construction.
+  pins:
+    "5V": "USB VBUS direct — NOT downstream of the 3.3 V LDO"
+    "3V3": "LDO output, feeds the core"
+    GND: "ground"
+    GPIO0: "ADC1 CH0 — probed"
+    GPIO1: "ADC1 CH1 — probed"
+    GPIO3: "ADC1 CH3 — probed"
+    GPIO4: "ADC1 CH4 — probed"
+    GPIO5: "general purpose — probed"
+    GPIO6: "general purpose — probed"
+    GPIO7: "general purpose — probed"
+    GPIO20: "U0RXD — the ROM bootloader console"
+    GPIO21: "U0TXD — the ROM bootloader console"
+  # ⚠ THE THIRD STATE.  A pin contract that is only {clean, reserved} cannot
+  # say "this pad exists and nobody has confirmed it", which is the true state
+  # of GPIO10 on this board — and a netlist that wires it drew SILENCE from the
+  # first version of this check.  `caution:` is a warning, not a refusal: using
+  # it is a legitimate choice, made knowingly.
+  caution:
+    GPIO10: >-
+      ON THE HEADER PER THE SILKSCREEN, NOT IN THE PROBED SET (the 2026-08-12
+      scan covered 0,1,2,3,4,5,6,7,20,21 and not this pad).  Confirm continuity
+      from the pad to the pin before designing it in.  It is the free pin that
+      buys GPIO6 back for the audio cover if it checks out.
+  reserved:
+    GPIO2: >-
+      STRAPPING PIN (ESP32-C3).  A pull on this pad at reset changes boot mode;
+      wiring it into a signal net makes boot depend on the peripheral's state.
+    GPIO8: >-
+      STRAPPING PIN (ESP32-C3).  Must be HIGH at reset for the ROM to enter the
+      normal boot path.
+    GPIO9: >-
+      STRAPPING PIN (ESP32-C3) — the BOOT button pad.  Low at reset enters
+      download mode.
+  not_broken_out: []          # GPIO18/GPIO19 are the USB D-/D+ pair and are
+                              # absent from the catalog pin map entirely, so
+                              # there is no pad for a netlist to reference.
+
+requires:
+  - ref: "hardware://sn65hvd230-transceiver"
+    kind: transceiver
+    status: BLOCKED
+    note: "TWAI pins are LOGIC LEVEL. Wired CTX=GPIO5 -> D/TXD, CRX=GPIO6 -> R/RXD (owner-confirmed 2026-08-12; GPIO4 is connected to nothing). Two faults found and fixed — the firmware listened on GPIO4, and there was no ground between breadboard and Pi HAT. STILL BLOCKED: CANH/CANL appear open — the transceiver idles its R output cleanly recessive and never sees the bus, while the C3 now transmits into bus-off. See quirk canh-canl-open."
+  - ref: "can://pi.example.local/can0"
+    kind: segment
+    status: present
+    note: "Waveshare 2-CH CAN HAT on rpi5, 500 kbit/s, sample point 0.875, clock 8MHz, brp 1. can1 is jumpered to the same segment with its terminator OFF and is the INDEPENDENT WITNESS — never the interface the bridge uses."
+  - ref: "deploy/can_mqtt_bridge/composeio-can-bridge.env"
+    kind: bridge-config
+    status: present
+    note: "CAN_BRIDGE_REGISTER must name every namespace this node speaks; they are CAN-ONLY, so the bridge's self-populating registry can never learn them by observing MQTT. Nine entries added 2026-08-12 and VERIFIED end-to-end by frame injection (see verify.machine bridge-names-our-hashes)."
+  - ref: null
+    kind: firmware
+    status: placeholder
+    note: "no bus-hosted image today; built locally from cyd/ (-DCXC_CAN_BRINGUP=1)"
+  - ref: "docs/board-bringup/factory-images/esp32c3-supermini-c28020-factory-4mb.bin"
+    kind: rollback-image
+    status: present
+    note: "full 4MB dump taken BEFORE the first flash. NOT a vendor demo — an ESP-IDF v4.4.6 app from earlier work. Restore: esptool --port <port> write-flash 0 <file>"
+
+verify:
+  machine:
+    - check: build
+      expect: "pio run -e esp32_c3_can_bringup -> SUCCESS"
+      note: "VERIFIED 2026-08-12. 595,740 byte image; DRAM 26.07%."
+    - check: compile-definitions-reached-compiler
+      expect: "CXC_CAN_BRINGUP_APP, CXC_DEVICE_PREFIX, CXC_CAN_TX_GPIO, CXC_CAN_RX_GPIO, CXC_CAN_BITRATE in 14 TUs; bare CXC_CAN_BRINGUP in 0"
+      note: "VERIFIED 2026-08-12 against .pio/build/esp32_c3_can_bringup/compile_commands.json. The zero is the point: a #if defined(CXC_CAN_BRINGUP) would be dead code that looked correct."
+    - check: serial-token
+      expect: "build: <date> <time> — matches the firmware just flashed"
+      note: "VERIFIED 2026-08-12. Compiler-written __DATE__/__TIME__, never a hand-maintained tag (quirk no-hand-maintained-build-tag)."
+    - check: serial-token
+      expect: "device id: c3can-c28020"
+      note: "VERIFIED 2026-08-12. CXC_DEVICE_PREFIX=\"c3can\" + last 3 bytes of STA MAC AA:BB:CC:DD:EE:FF."
+    - check: twai-self-test-loopback
+      expect: "PASS is evidence; FAIL is NOT — this check is asymmetric, see quirk loopback-selftest-unrepeatable"
+      note: "WITHDRAWN AS PROOF 2026-08-12. It returned PASS (id 0x1600090E out and back, payload match, tx_err=0) and later FAIL (tx_err=128) for the SAME binary on the SAME board, on three pads each proven good by drive-and-read-back. An earlier report leaned on the PASS as a headline proof of the MCU-side stack; that claim is withdrawn. An unrepeatable test is not a measurement. The firmware's own verdict string now says INCONCLUSIVE rather than accusing the MCU."
+    - check: bridge-names-our-hashes
+      expect: "CAN->MQTT  _device/c3can-c28020/status = 'ACTIVE' (type=state)"
+      note: "VERIFIED 2026-08-12, WITHOUT THE C3 IN THE LOOP. Arbitration id 0x162A410E computed in Python, injected on can1 by `cangen` (a tool this project did not write), named correctly by the bridge and published to MQTT. Independently validates the id derivation, CAN_BRIDGE_REGISTER and the CAN->MQTT path."
+    - check: segment-undisturbed
+      expect: "can0/can1 bus-errors 0, no change in error-warn/error-pass/bus-off across the session"
+      note: "VERIFIED 2026-08-12. can0 held at bus-errors 0 / error-warn 2 / error-pass 2 / bus-off 0 (its pre-existing baseline) and can1 at all zeros, through several C3 bus-off episodes. RX/TX moved only by deliberate injections."
+    - check: heartbeat-on-can1
+      expect: "candump can1 shows id 1600090E at 1 Hz, and the bridge publishes _device/c3can-c28020/heartbeat"
+      note: "NOT ACHIEVED 2026-08-12 — blocked by quirk transceiver-not-reaching-gpio. Zero frames from this node have reached the segment. The expectation and the independently-derived id are recorded so the check is a one-command re-run once the wire is fixed."
+    - check: throttle-left-inbound
+      expect: "console logs `RX  throttle/left = <value>` as the physical lever moves"
+      note: "NOT ACHIEVED 2026-08-12 — same blocker. The subscription is registered (`subscribed throttle/left (hash 0x03F6, persistent)`) and the bridge's MQTT->CAN allowlist already carries throttle/left, so no configuration change is outstanding; only the wire is."
+    - check: twai-health-published
+      expect: "_device/c3can-c28020/status = ACTIVE and seven twai/* counters every 5s"
+      note: "PARTIALLY ACHIEVED 2026-08-12: the health report is produced and logged to console every 5s with all eight fields, and it is what diagnosed this board. It has not reached MQTT because no frame leaves the node."
+  human: >
+    NOT YET REACHED, and the remaining work is a continuity check rather than eyes on glass — see quirk
+    canh-canl-open. This board has no glass, so the usual human tier (colour, geometry, touch) does not
+    apply; its equivalent is a bench measurement, and it is the outstanding work. See quirk
+    transceiver-not-reaching-gpio for the four checks, in order. Everything on the MCU side of the
+    transceiver is machine-proven and needs no eyes.
+
+quirks:
+  - id: canh-canl-open
+    resolved: false
+    note: >
+      THE REMAINING BLOCKER (2026-08-12), after two other faults were found and fixed. Post-ground-fix
+      evidence, all measured: GPIO6 (CRX) idles clean recessive HIGH with ZERO transitions and
+      listen-only bus_err=0 at every rate, while cangen puts 200 frame/s on the segment (confirmed by
+      can1 TX +6000 during the window) — so the transceiver is powered and driving its R output, and
+      simply never sees the bus. Meanwhile the C3 DOES transmit: heartbeat 1 sent, tx_error_counter
+      climbs to 160 and the node goes BUS-OFF, which by the tec-zero-means-never-transmitted rule is
+      "transmitted and something came back wrong" rather than "never started". can0 RX did not move.
+      Both directions dead at the CANH/CANL layer with the transceiver's logic side healthy. CHECK:
+      continuity CANH<->CANH and CANL<->CANL between breakout and HAT (CAN does NOT cross; UART does),
+      and that the breakout's 120R sits across the pair rather than to ground.
+  - id: rx-pin-was-gpio6-not-gpio4
+    resolved: true
+    note: >
+      FIXED 2026-08-12. The firmware listened on GPIO4; the transceiver's R/RXD is wired to GPIO6 and
+      GPIO4 is connected to nothing. CXC_CAN_RX_GPIO 4 -> 6; CTX=GPIO5 was correct throughout and the
+      owner's wiring was NOT changed. The diagnostic signature of the wrong pin was tx_error_counter
+      pinned at 0 with msgs_to_tx at 17 — never started — versus, after the fix, TEC climbing to 128
+      and bus-off, which is a genuinely different and more advanced failure.
+  - id: missing-ground-breadboard-to-hat
+    resolved: true
+    note: >
+      FIXED by the owner 2026-08-12. The C3 is USB-powered from the Mac and the HAT from the Pi, so the
+      pair had NO shared common-mode reference. Measured before/after on the floating-input probe of
+      GPIO5: before, hi/lo = 351866/46145 with 6734 transitions and 125-138 ns pulses, and listen-only
+      bus_err 7832 at 500k; after, hi/lo = 399720/0 with ZERO transitions and bus_err 0 at every rate.
+      The "noise" characterised at length before the fix was common-mode garbage on an unreferenced
+      pair. NOTE THE DIAGNOSTIC TRAP: an unconnected pin and a pin whose transceiver has no ground
+      reference read IDENTICALLY, so the GPIO scan (which DID cover GPIO6 and correctly reported no
+      dominant pulse) could not separate them. The two faults were SIMULTANEOUS, not sequential, so no
+      ordering of software tests would have isolated either — the limit of "never let two suspects be
+      live at once" is that you do not always get to choose.
+  - id: loopback-selftest-unrepeatable
+    resolved: false
+    note: >
+      ⚠ THIS INSTRUMENT'S FAILURES MEAN NOTHING; ONLY ITS PASSES ARE EVIDENCE. The TWAI NO_ACK
+      self-reception loopback (CTX and CRX on one unconnected pad) returned PASS with id and payload
+      matching byte for byte and tx_err=0, and later returned FAIL with tx_err pinned at 128 for the
+      SAME BINARY on the SAME BOARD, across pads GPIO10/7/3 — each proven good by a drive-and-read-back
+      test (drove LOW -> read 0, drove HIGH -> read 1). Cause: with tx_io == rx_io the driver configures
+      ONE pad twice, once output and once input, and the surviving direction is not the test's to
+      control; gpio_set_direction(GPIO_MODE_INPUT_OUTPUT) after install made it DETERMINISTIC but not
+      passing. An earlier report used its PASS as the headline proof that "the MCU side is fully
+      proven"; that claim is WITHDRAWN. The firmware's verdict string now reads INCONCLUSIVE and states
+      that a failure is not an MCU indictment — because a self-test that accuses the component it
+      exists to exonerate is the same defect this file already records under no-ack-mode-is-not-a-loopback.
+  - id: sweep-linearity-was-over-read
+    resolved: true
+    note: >
+      The six-rate listen-only sweep showed bus_error_count scaling LINEARLY with bit rate rather than
+      dipping at any one rate, and that was reported as EXCLUDING a bitrate mismatch. The inference was
+      sound but one hypothesis short: linear scaling is equally the signature of "there is no data on
+      this line at all", which is what was actually true. A good instrument, over-read — the error was
+      in the conclusion drawn, not the measurement.
+  - id: transceiver-not-reaching-gpio
+    resolved: true
+    note: >
+      SUPERSEDED — this was the pre-diagnosis entry, kept because its measurements are what two
+      simultaneous faults look like from software. RESOLVED INTO: rx-pin-was-gpio6-not-gpio4 plus
+      missing-ground-breadboard-to-hat. No GPIO on this board carried a decodable 500 kbit/s CAN receive
+      signal, so the node had never put a frame on the segment. Measured, not inferred, by three
+      independent instruments in can_bringup_main.cpp:
+      (1) PRE-PROTOCOL PIN PROBE, before twai_driver_install() so nothing is the protocol's fault —
+          gpio4 reads all-LOW floating and all-HIGH with the internal pull-up (high impedance, nothing
+          driving it); gpio5 idles HIGH and shows activity whose duty cycle tracks segment traffic
+          (1.2% low idle -> 2.2% at 40 frame/s -> 11.6% under dense cangen).
+      (2) BIT-TIME, one uninterrupted 16384-sample capture with interrupts off: gpio5's SHORTEST DOMINANT
+          PULSE is 125-138 ns. One bit at 500 kbit/s is 2000 ns. The signal is 15x too narrow to be data —
+          it is coupling or ringing, not a transceiver R output.
+      (3) LISTEN-ONLY TRIALS (TWAI_MODE_LISTEN_ONLY never drives the bus, so this is safe on a live
+          segment and isolates RX from TX completely): ZERO frames on gpio5 at every rate the driver has a
+          table for — 1M/800k/500k/250k/125k/100k — and zero on gpio4. bus_error_count scaled linearly with
+          bit rate rather than dipping at any one, which EXCLUDES a bit-rate mismatch rather than leaving
+          it a suspicion.
+      A scan of every accessible pin (0,1,2,3,4,5,6,7,20,21) found no pin with a ~2000 ns dominant pulse.
+      BENCH CHECKS, IN ORDER: (a) continuity C3 GND <-> transceiver GND <-> Pi HAT GND — a missing ground
+      is the single hypothesis that explains coupling-instead-of-signal on gpio5, a floating gpio4, and
+      no decodable data at any rate; (b) 3.3V on the transceiver VCC (it is a 3.3V part, 5V will not do);
+      (c) continuity C3 gpio5 <-> breakout R/RXD and gpio4 <-> breakout D/TXD; (d) CANH<->CANH and
+      CANL<->CANL to the Pi — CAN does NOT cross, unlike UART, and that habit carries between links.
+  - id: tec-zero-means-never-transmitted
+    resolved: true
+    note: >
+      THE DIAGNOSTIC KEY, worth more than the fix it led to. `twai_transmit failed: ESP_ERR_TIMEOUT` under
+      bus_can.cpp's message "no other node is present to ACK" points at the FAR END, and the far end was
+      healthy throughout. The discriminator is tx_error_counter. A node that TRANSMITS into a segment that
+      never ACKs reaches TEC 128 in about thirty attempts and goes error-passive, then bus-off. A node
+      whose CRX never sees bus-idle NEVER STARTS, so TEC stays at 0 while msgs_to_tx pins at 17 (the
+      16-deep queue plus one in the controller). Both look identical from inside the driver. This board
+      showed TEC=0/msgs_to_tx=17 with CRX on the floating pin, and TEC=128/bus-off with CRX on the noisy
+      one — two different faults, one log line. Ask what the counter would read if the OTHER story were true.
+  - id: no-ack-mode-is-not-a-loopback
+    resolved: true
+    note: >
+      TWAI_MODE_NO_ACK on this silicon still monitors the REAL CRX pin for bit errors. A self-test run in
+      NO_ACK mode on the live pins drove tx_error_counter to 128 and reported 'FAIL — the fault is on the
+      MCU side' while the MCU side was in fact perfect. A self-test that fails because of the very thing it
+      exists to exclude is worse than no self-test: it accuses the wrong component with total confidence.
+      The working form assigns CTX and CRX to ONE unconnected pad (GPIO10 here) so the GPIO matrix feeds
+      the controller's output back to its input, and it needs no external hardware at all.
+  - id: sampling-gaps-fabricate-pulses
+    resolved: true
+    note: >
+      The first bit-time instrument checked esp_timer every 100 GPIO reads and reported 'shortest dominant
+      run = 1 sample => ~5812 kbit/s' with complete confidence. It was measuring ITSELF: the timer call left
+      a ~15us blind gap, and a level change across a gap is indistinguishable from a one-sample pulse. The
+      tell was that the pulse count (23574 in 500ms) matched the GAP count almost exactly. Fixed by
+      capturing one uninterrupted burst into RAM with interrupts off and analysing it afterwards, discarding
+      the runs that touch either end of the buffer because those are clipped by the window, not the signal.
+      Recorded because the wrong number was plausible, precise, and would have sent the next reader hunting
+      a 5.8 Mbit/s bus that does not exist.
+  - id: eight-bytes-cannot-carry-a-health-struct
+    resolved: true
+    note: >
+      A classic CAN data field is EIGHT bytes and the limit is the CONTROLLER, not a setting. The eight-field
+      twai_get_status_info() report therefore goes up as ONE NAMESPACE PER FIELD (_device/<id>/twai/<field>,
+      names matching the ESP-IDF struct members verbatim) plus a short state string on _device/<id>/status.
+      The state string budget is SEVEN characters — bus_value_encode_str emits [len][utf8...] — so
+      'ERROR-ACTIVE' does not fit and is REFUSED by publish_state rather than truncated. Hence ACTIVE /
+      WARN / PASSIVE / BUSOFF / RECOVER / STOPPED. A truncated status string decodes cleanly as a DIFFERENT
+      status, which is the worst possible failure for a health namespace.
+  - id: bridge-value-decoder-is-a-fourth-copy
+    resolved: false
+    note: >
+      services/can_mqtt_bridge/bridge.py::message_from_can carries its OWN value decoder, and it is missing
+      the `len(data)==4 -> struct.unpack('<f')` branch that composeio.transport_uart.decode_value (the
+      canon, which cyd/src/bus_frame.h mirrors) has. So a float32 published from CAN arrives on MQTT as
+      int.from_bytes(data,'little') — heartbeat 42.0 would publish as 1109393408. The same file already
+      IMPORTS encode_value from transport_uart for the MQTT->CAN direction, so it is asymmetric within one
+      module. This is the [BP-TYPE-CODES] defect shape recurring in the VALUE codec: a table/decoder copied
+      per transport, drifting, with no test across the seam. NASTIEST PROPERTY: a healthy segment produces
+      all-zero counters, and float32 0.0 decodes to 0 under BOTH codecs — so the bug is invisible exactly
+      when everything looks fine, and appears only once a counter goes non-zero. NOT FIXED HERE: the fix is
+      to delete the copy and call decode_value, but it lands in a live production service and belongs in its
+      own change with its own before/after. Strings and 1-byte ints are unaffected.
+  - id: device-id-in-can-only-namespaces
+    resolved: false
+    note: >
+      Every namespace this node speaks embeds its device id, and all of them are CAN-ONLY — nothing on MQTT
+      publishes them, so the bridge's self-populating registry can never learn them by observation. Nine
+      entries had to be hand-typed into CAN_BRIDGE_REGISTER, and the only error report for a missing one is
+      a 16-bit hash nobody can reverse. A second CAN node, or this one reflashed onto different silicon,
+      costs nine more. A `_device/*` prefix rule on the CAN->MQTT side, or hash registration announced by
+      the node itself over DISCOVERY, would remove the hand-maintenance. Recorded rather than fixed: a first
+      light and a registry redesign are two blast radii.
+  - id: bus-off-is-invisible-to-the-transport-seam
+    resolved: false
+    note: >
+      bus_can.cpp answers BusTransport::connected() with `s_started`, never calls twai_get_status_info(),
+      never enables TWAI_ALERT_BUS_OFF and never calls twai_initiate_recovery() — and ESP-IDF's TWAI driver
+      does NOT recover on its own. So a bus-off ESP32 reports CONNECTED forever and is permanently deaf and
+      mute. OBSERVED LIVE on this board 2026-08-12, repeatedly. This env builds the missing INSTRUMENT (the
+      5s health report, which named the state correctly every time) and deliberately does not change the
+      POLICY: recovery semantics and a first light are two changes whose blast radii would compound, and the
+      policy question — retry forever? backoff? announce? — is genuinely unmade.
+  - id: port-path-is-not-identity
+    resolved: true
+    note: >
+      /dev/cu.usbmodem11301 belonged to a different board an hour before this env was written, and during
+      this session the OTHER usbmodem port changed device entirely (a Hosyond moved to wall power and a live
+      throttle controller took its place). Both C3s on this bench share the MAC prefix AA:BB:CC, so a prefix
+      match is not enough. Verify the FULL USB serial number passively before every destructive operation:
+      `ioreg -r -c IOUSBHostDevice -l -w0`, pairing "USB Serial Number" to "IOCalloutDevice". Native-USB
+      ESP32s publish their MAC as the USB serial number. `esptool chip-id` is NOT an acceptable identity
+      check — it RESETS the board, which is the harm being prevented.
+  - id: no-hand-maintained-build-tag
+    resolved: true
+    note: >
+      The boot banner prints __DATE__ and __TIME__, written by the compiler. A hand-bumped tag read 'TF13'
+      through roughly ten flashes across three boards on 2026-08-11, including one that did not exist when
+      the string was written — the instrument built to detect staleness had itself gone stale. A value no
+      human maintains cannot rot; one that requires maintenance will.
+  - id: diagnostics-cost-eight-seconds-of-boot
+    resolved: true
+    note: >
+      Boot runs the pin probe, the bit-time capture, the loopback self-test, a six-rate listen-only sweep and
+      a ten-pin scan before the transport starts — about 8 s. Deliberately left ON: this is a first-light
+      board that does not yet work, and each stage is the thing that made a different fault attributable.
+      Turning them off is how the next person loses them. Trim the listen-only sweep to the configured rate
+      once the link is proven.
+  - id: watchdog-tripped-by-its-own-probe
+    resolved: true
+    note: >
+      The first pin probe span a tight sampling loop for 400ms on this SINGLE-CORE part and tripped the task
+      watchdog ('IDLE (CPU 0) did not reset the watchdog in time'), crashing the boot it was diagnosing —
+      the same shape as a per-frame ESP_LOGW on a receive path. Now sampled in 10ms slices with a yield
+      between them; 10ms still resolves a 500 kbit/s frame many times over.
+
+variants: []   # single physical board

@@ -1,0 +1,964 @@
+---
+scope: "ComposeUX platform-independent rendering engine — a unified rendering contract, layout engine, interaction model, and platform backend interface that produces pixel-identical widget output across desktop, browser, embedded displays, and mobile"
+audience: "ComposeUX framework developers, platform backend implementers, widget authors, ComposeIO firmware developers"
+boundary: "IN: Rendering primitives, layout engine, interaction model (hit testing, focus, text editing, multitouch), platform backend interface, asset loading from document_store, config-driven display boot. OUT: Individual widget implementations (those reference this contract), bus protocol, transport bindings, ComposeUX design tool UI"
+not-this: "Not a general-purpose UI framework. The widget vocabulary is finite and defined by ComposeUX. Not a browser DOM replacement. Not a game engine."
+depends-on: [../spec/08-composeio-app-framework.smd, ../spec/00-composeio-design-principles.smd]
+confidentiality: internal-only
+artifact-readiness: system-design
+domain: PLT.CUX
+---
+
+# ComposeUX Render Engine [SPEC:CXC-RENDER]
+
+> ComposeUX widgets render identically across desktop, browser, embedded displays, and mobile. The rendering engine owns every pixel — it does not delegate to platform-native widgets. A gauge on a 4" ESP32-S3 display looks the same as a gauge in a browser looks the same as a gauge on a Mac desktop. Three layers: drawing primitives (platform backends implement), interaction and layout (platform-independent), and the widget contract (reusable visual components bound to bus namespaces).
+
+---
+
+## 1. Design Principles
+
+### [CXC-R-DP-1] Own Every Pixel
+
+> The rendering engine draws every visual element directly. No platform-native widgets, no CSS, no LVGL widget toolkit, no CTk frames. The engine produces identical output on every platform because it controls every pixel. Platform-specific look-and-feel is intentionally absent — the ComposeUX visual identity IS the look-and-feel.
+
+### [CXC-R-DP-2] Rendering Target Is a Transport-Level Concern
+
+> Just as ComposeIO treats I2C, CAN, and MQTT as transport-level details beneath a unified bus protocol [DP-CIO-6], ComposeUX treats Skia, Canvas 2D, and direct framebuffer as rendering-level details beneath a unified drawing contract. Widget code never references a platform. It calls `draw_arc()`, and the platform backend produces pixels.
+
+### [CXC-R-DP-3] Configuration Drives Everything
+
+> A display device running generic ComposeIO firmware receives its widget composition from bus_storage and its assets from document_store. The hardware is fungible — the same ESP32-S3 with a 4" display can be a weather widget, a gauge cluster, or a Board Manager mini-dashboard depending solely on which `.compose.yaml` bus_storage hands it based on its UUID [DP-CIO-1], [DP-CIO-7].
+
+### [CXC-R-DP-4] Assets Are First-Class
+
+> Icons, fonts, images, animation sprites live in document_store and are referenced by URI in widget definitions. The rendering engine fetches assets at startup and caches them. Adding a weather icon to a widget is a config change + an asset upload to document_store, not a firmware update.
+
+---
+
+## 2. Architecture
+
+### [CXC-R-ARCH] Three-Layer Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  WIDGETS (Layer 3)                                          │
+│  Gauge, LED, Button, TextInput, TabContainer, TaskList...   │
+│  Each widget: draw commands + hit regions + state machine   │
+│  Defined in .compose.yaml, composed in ComposeUX tool       │
+├─────────────────────────────────────────────────────────────┤
+│  ENGINE (Layer 2) — platform-independent, written once      │
+│  Layout engine (flexbox model)                              │
+│  Hit testing + pointer event dispatch                       │
+│  Focus management + keyboard routing                        │
+│  Text editing (cursor, selection, IME, clipboard)           │
+│  Multitouch gesture recognition                             │
+│  Animation engine (property interpolation + easing)         │
+│  Asset manager (fetch from document_store, cache)           │
+│  Config parser (.compose.yaml → widget tree)                │
+├─────────────────────────────────────────────────────────────┤
+│  PLATFORM BACKEND (Layer 1) — thin, per-platform            │
+│  Drawing primitives (arc, rect, text, image, path...)       │
+│  Event input (pointer, keyboard, touch → engine events)     │
+│  Display surface management (window, canvas, framebuffer)   │
+│  Asset decoding (PNG, font loading)                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### [CXC-R-ARCH-BACKENDS] Platform Backends
+
+| Platform | Backend | Drawing Surface | Asset Fetch | Input Source |
+|----------|---------|----------------|-------------|--------------|
+| Desktop (Python) | Skia (skia-python) | GPU-accelerated window | HTTP → document_store | OS mouse/keyboard events |
+| Browser | Canvas 2D or CanvasKit WASM | HTML `<canvas>` element | HTTP → document_store | DOM pointer/keyboard events → engine events |
+| ESP32-S3 | Direct SPI framebuffer | TFT display (ILI9341, ST7789, etc.) | HTTP → document_store at boot, cached in PSRAM | Touch controller (FT6236, CST816S) → engine events |
+| Flutter (iOS, Android, macOS, Windows, Linux, Web) | Flutter Canvas via CustomPainter | Flutter rendering surface (Impeller/Skia) | HTTP → document_store | Flutter gesture system → engine events |
+| ESP32 (CYD) | Band-rendered SPI framebuffer | ILI9341 240x320 TFT | SD card / WiFi → document_store | XPT2046 resistive touch → engine events |
+
+Each backend implements the Layer 1 interface (~15 functions). Everything above Layer 1 is shared code that runs identically on every platform.
+
+### [CXC-R-ARCH-FLUTTER] Flutter Canvas Backend
+
+Flutter's `Canvas` API maps near-1:1 to the ComposeUX drawing contract:
+
+| ComposeUX Canvas | Flutter Canvas |
+|-----------------|---------------|
+| `fill_rect(x,y,w,h)` | `drawRect(Rect.fromLTWH(x,y,w,h), paint)` |
+| `fill_circle(cx,cy,r)` | `drawCircle(Offset(cx,cy), r, paint)` |
+| `stroke_arc(cx,cy,r,start,end)` | `drawArc(Rect, startAngle, sweepAngle, false, paint)` |
+| `draw_line(x1,y1,x2,y2)` | `drawLine(Offset(x1,y1), Offset(x2,y2), paint)` |
+| `draw_text(text,x,y,align)` | `drawParagraph(paragraph, Offset(x,y))` |
+| `fill_path(commands)` | `drawPath(path, paint)` |
+| `save()`/`restore()` | `save()`/`restore()` |
+| `clip_rect(x,y,w,h)` | `clipRect(Rect.fromLTWH(x,y,w,h))` |
+| `set_fill_color(r,g,b,a)` | `paint.color = Color.fromARGB(a,r,g,b)` |
+| `draw_image(handle,x,y,w,h)` | `drawImageRect(image, src, dst, paint)` |
+
+The `FlutterCanvas` backend (~150 lines of Dart) wraps Flutter's Canvas inside a `CustomPainter`. Widget code is ported once to Dart and serves all 6 Flutter platforms. The widget tree is driven by `.compose.yaml` parsed at runtime — the app binary is generic, the config determines what renders.
+
+```
+Flutter App (single Dart codebase)
+ └── ComposeUXWidget (StatefulWidget)
+      └── CustomPainter
+           └── FlutterCanvas (implements ComposeUX Canvas contract)
+                └── Widget tree (from .compose.yaml)
+                     └── MQTT client (dart_mqtt) for bus data
+```
+
+**Why Flutter over standalone Skia on mobile:**
+
+| Factor | Standalone Skia | Flutter |
+|--------|----------------|---------|
+| Platforms from one codebase | 1 (macOS via Python) | 6 (iOS, Android, macOS, Windows, Linux, Web) |
+| App shell | Custom per-platform | Flutter provides shell, lifecycle, permissions |
+| Touch/gesture input | Custom per-platform | Flutter gesture system, unified |
+| Text rendering | Skia native (rasterizer-dependent) | Can use bitmap atlas via CustomPainter (pixel-identical) |
+| Distribution | N/A (dev tool) | App Store, Play Store, web deploy |
+| Hot reload | No | Yes (development velocity) |
+
+Flutter subsumes the desktop Skia backend for all production use. The Python/Skia backend remains as the development/test harness and automated visual QA reference renderer (pixel_comparison.py, crosscheck scripts). Two widget implementations cover all platforms:
+
+| Implementation | Platforms | Role |
+|---------------|-----------|------|
+| **Dart** (Flutter) | iOS, Android, macOS, Windows, Linux, Web | Production rendering |
+| **C++** (bare metal) | ESP32/CYD, future embedded | Resource-constrained devices |
+| **Python** (Skia) | macOS | Dev/test harness, visual QA reference |
+
+Font unification extends naturally: the Flutter backend can use the same bitmap atlas via `CustomPainter` pixel blitting, ensuring text fidelity across Flutter, CYD, and the Python reference renderer.
+
+---
+
+## 3. Layer 1: Drawing Primitives [CXC-R-DRAW]
+
+### [CXC-R-DRAW-CONTRACT] Platform Backend Drawing Interface
+
+The platform backend implements these drawing functions. All coordinates are in logical pixels (the backend handles DPI scaling).
+
+#### Geometry
+
+| Function | Parameters | Description |
+|----------|-----------|-------------|
+| `fill_rect(x, y, w, h)` | Coordinates, current fill style | Filled rectangle |
+| `stroke_rect(x, y, w, h)` | Coordinates, current stroke style | Outlined rectangle |
+| `fill_round_rect(x, y, w, h, radius)` | Corner radius (uniform or per-corner) | Rounded rectangle |
+| `fill_circle(cx, cy, r)` | Center + radius | Filled circle |
+| `stroke_circle(cx, cy, r)` | Center + radius | Circle outline |
+| `fill_arc(cx, cy, r, start_angle, end_angle)` | Angles in radians | Filled arc sector |
+| `stroke_arc(cx, cy, r, start_angle, end_angle)` | Angles in radians | Arc outline |
+| `draw_line(x1, y1, x2, y2)` | Endpoints, current stroke style | Line segment |
+| `draw_path(commands)` | List of moveTo/lineTo/curveTo/close | Arbitrary path |
+| `fill_path(commands)` | Same as draw_path | Filled arbitrary path |
+
+#### Style State
+
+| Function | Parameters | Description |
+|----------|-----------|-------------|
+| `set_fill_color(r, g, b, a)` | RGBA 0-255 | Set fill color |
+| `set_stroke_color(r, g, b, a)` | RGBA 0-255 | Set stroke color |
+| `set_stroke_width(w)` | Logical pixels | Set line width |
+| `set_linear_gradient(x1, y1, x2, y2, stops)` | Endpoint + color stops | Gradient fill |
+| `set_radial_gradient(cx, cy, r, stops)` | Center + radius + stops | Radial gradient |
+| `set_shadow(offset_x, offset_y, blur, color)` | Shadow parameters | Drop shadow for subsequent draws |
+| `set_opacity(a)` | 0.0 - 1.0 | Global opacity multiplier |
+
+#### Transform and Clip
+
+| Function | Parameters | Description |
+|----------|-----------|-------------|
+| `save()` | — | Push graphics state (style + transform) |
+| `restore()` | — | Pop graphics state |
+| `translate(dx, dy)` | Offset | Translate origin |
+| `rotate(angle)` | Radians | Rotate around current origin |
+| `scale(sx, sy)` | Scale factors | Scale |
+| `clip_rect(x, y, w, h)` | Clipping rectangle | Restrict drawing to region |
+| `clip_round_rect(x, y, w, h, radius)` | Rounded clipping region | Restrict drawing to rounded region |
+
+#### Text
+
+| Function | Parameters | Description |
+|----------|-----------|-------------|
+| `set_font(family, size, weight)` | Family name, logical px, weight enum | Set current font |
+| `draw_text(text, x, y, align)` | String, position, alignment (left/center/right) | Draw text at position |
+| `measure_text(text)` | String | Returns `{width, height, ascent, descent}` |
+
+#### Image
+
+| Function | Parameters | Description |
+|----------|-----------|-------------|
+| `draw_image(image_handle, x, y, w, h)` | Cached image + destination rect | Draw image (scaled to fit) |
+| `load_image(uri)` | `doc://` or `bus://` URI | Load + decode image, return handle. Async on embedded. |
+| `decode_image(bytes)` | Raw image bytes (PNG/JPEG) | Decode to a backend image handle; `null`/`None` when not decodable (caller renders its fallback). The Layer-1 codec seam for byte payloads the engine fetched itself. |
+
+- change: "decode_image(bytes) promoted from a Skia-backend helper to the normative Canvas contract (Python ABC `render/canvas.py` + C++ `cyd/include/canvas.h`), decision David 2026-07-06 ([CXC-RM-M2] resolved-inputs)."
+- context_for_change:
+  - prior_state: "The contract exposed only load_image(uri); the M1 AssetManager reached decode_image on SkiaCanvas via getattr duck-typing — an undeclared dependency a new backend could silently miss."
+  - reasoning: "Asset DECODING is a declared Layer-1 responsibility ([CXC-R-ARCH]) but the engine, not the backend, fetches bytes for doc:// documents (base64 payload extraction) and bus:// assets (composeio.resolve). A URI-only codec entry point forces every backend to re-implement fetching; a bytes-level seam keeps fetch policy in Layer 2 and codecs in Layer 1."
+  - rejected_alternative: "Keep decode_image informal (duck-typed) — rejected: the browser backend (M3) and any future backend must be told, by the contract, that the codec seam exists; conformance can't test an informal method."
+  - counter_argument: "The CYD cannot decode PNG/JPEG today, so the contract forces a method it can't honor."
+  - counter_response: "The contract defines the SEAM, not the codec inventory: ESP32Canvas::decode_image returns nullptr (documented 'not decodable' result) and callers take the fallback path — the same tiered-pipeline behavior [CXC-R-DRAWIMAGE] already mandates. The real decoder lands with the M5 draw_image work."
+  - invalidating_assumption: "That the engine remains the byte-fetcher for doc:// payloads. If asset fetching moves wholly into Layer 1, load_image(uri) suffices and decode_image could demote."
+  - implication: "Every backend (Skia today; browser M3; CYD M5-complete) must implement decode_image; the M2 ImageWidget doc:// path and the m2_image_decode_contract golden exercise it."
+
+- change: "C++ contract port (cyd/include/canvas.h) gained translate/rotate/scale + set_opacity declarations with documented no-op ESP32Canvas stubs (2026-07-06, the [SPEC:CXC-BIND] bindable-transform pass) — FLAGGED FOR DAVID'S RATIFICATION as a C++ surface change."
+- context_for_change:
+  - prior_state: "The transform ops and set_opacity were ALWAYS in this contract table and the Python ABC (render/canvas.py) + SkiaCanvas, but the C++ port declared only save/restore/clip_rect — an undeclared subset a C++ widget author could not see."
+  - reasoning: "[SPEC:CXC-BIND] makes rotation/scale/opacity BINDABLE WIDGET ATTRIBUTES (David explicitly requested bindable rotation — the dradis sweep), so the engine draw pass now emits transform calls as part of normal widget rendering, not as an exotic path. Following the decode_image precedent: the contract defines the SEAM; a backend that cannot honor it yet stubs it visibly rather than omitting it silently."
+  - rejected_alternative: "Leave the C++ header as-is until M5 implements raster transforms — rejected: the CYD would compile against a contract that no longer matches what the shared engine emits, and the gap would be rediscovered as a bug instead of read as a documented degradation."
+  - counter_argument: "Pure-virtual additions force every C++ backend to change and the ESP32 stubs are dead weight until M5."
+  - counter_response: "ESP32Canvas is the only concrete C++ backend; the stubs are 3 empty methods + set_opacity, each carrying the degradation contract in its comment (transform-bound widgets draw untransformed on the CYD tier; a band-renderer raster rotate needs per-band inverse mapping or a scratch surface — M5+ work, CYD is POC-priority)."
+  - invalidating_assumption: "That CYD widget configs avoid transform bindings as load-bearing UI. If a deployed CYD screen NEEDS a rotating element, the M5 raster-transform work (or a precomputed sprite rotation) moves up the priority list."
+  - implication: "Python and C++ contract surfaces are again method-for-method in lockstep. The engine applies transforms centrally (engine/layout.draw_child), so backends only ever see plain canvas transform calls."
+
+- change: "M5 (2026-07-07): ESP32Canvas made contract-REAL for fill_arc, draw_path/fill_path (PathCommand struct ported to C++), draw_image + decode_image (BMP24/BMP32/CI16 codecs -> RGB565+A8 DecodedImage), and set_opacity (per-pixel global multiplier). C++-only lifecycle op free_image(handle) added (Python backends GC). translate/rotate/scale REMAIN documented no-ops on this tier — ESCALATED, not silently degraded."
+- context_for_change:
+  - prior_state: "The 2026-07-06 record above declared the seams with no-op stubs; M5's config-driven boot needed the real primitives (image assets in configs, opacity, arcs/paths for future SVG/dradis work)."
+  - reasoning: "fill_arc = per-pixel radius test w/ rim AA (sector edges hard — AA delta class); paths = curve flattening (16 steps) into a 384-edge static pool + even-odd scanline fill per band (no heap in the draw loop); images decode to RGB565 + optional A8 at 2-3 B/px (RGBA8888 rejected: 4 B/px blows the no-PSRAM heap for sprite sequences), 120 KB decoded cap. PNG/JPEG stay OFF-device: offline bakers emit BMP/CI16 (decode_image returns nullptr -> documented fallback)."
+  - rejected_alternative: "Geometry-level CTM for rotate/scale (transform vertices before rasterizing) — rejected this pass: rects under rotation need the path filler for EVERY rect, glyph rasters cannot rotate at all, and gradients would evaluate in the wrong space; a half-true transform is worse than a documented no-op. Real band-renderer rotation needs per-band inverse mapping of a rendered source or full path-conversion incl. text — that is its own budgeted pass (or the Qualia S3 full-framebuffer tier, where PSRAM makes it trivial)."
+  - counter_argument: "A rotating dradis needle was the flagship ask; without canvas rotate the CYD cannot play it."
+  - counter_response: "It plays today via [CXC-R-C18]: the ratified Lottie evaluator bakes the rotation OFFLINE into a CI16 sprite sequence (scripts/bake_lottie_sprite.py) and the CYD draw_image's the frames — verified on hardware 2026-07-07 (~3.7 fps sweep). Pre-rendered rotation is the sanctioned constrained-tier degradation."
+  - invalidating_assumption: "That constrained-tier configs never need LIVE arbitrary-angle rotation (needle bound to a namespace value, not a baked loop). If one does, the per-band inverse-mapping pass gets scheduled."
+  - implication: "The C++ contract is now implementation-real except transforms; the CI16 raw format (magic 'CI16', u16 w/h LE, RGB565 LE) is the embedded sprite interchange format the bakers target."
+
+#### Surface
+
+| Function | Parameters | Description |
+|----------|-----------|-------------|
+| `create_surface(width, height)` | Logical pixels | Create the drawing surface (window, canvas, framebuffer) |
+| `present()` | — | Flush drawing commands to display. Called once per frame. |
+| `get_surface_size()` | — | Returns `{width, height}` in logical pixels |
+
+### [CXC-R-DRAW-FONT] Font Strategy
+
+ComposeUX ships exactly two font families (decision David 2026-07-06, [CXC-RM-M2] resolved-inputs): **IBM Plex Sans** (UI text; regular/medium/bold) and **IBM Plex Mono** (monospace; regular/bold), licensed SIL OFL 1.1. The TTFs are bus assets (`bus://assets/fonts/IBMPlexSans-*.ttf`, `bus://assets/fonts/IBMPlexMono-*.ttf` + `LICENSE-OFL.txt`) and live in the repo `fonts/` directory for development; backends resolve via `render/fonts.py` (env dir → repo → local cache → bus fetch).
+
+- glyph-source: On EVERY platform, glyph rasterization is engine-owned and derives from the same Plex TTF bytes:
+  - Desktop (macOS, Linux/RPi): the engine rasterizes glyphs itself with pinned freetype-py (`render/ft_text.py` — no autohint at ≥8px / no hinting below, grayscale AA, 72 DPI, integer 26.6 advances); the platform backend (Skia) only BLITS the coverage bitmaps. This is the DEFAULT text mode.
+  - ESP32/CYD: pre-rendered glyph atlas (`cyd/fonts/generate_atlas.py`, identical FreeType settings, sizes 6–16px) baked from the same TTFs into `font_atlas.h` + `font_atlas_data.json`.
+  - Native platform text APIs (Skia drawTextBlob → CoreText/FreeType) survive only as an explicit fallback (`COMPOSEIO_NATIVE_TEXT=1` or when the bundled fonts are unreachable); their output is NOT cross-platform-stable.
+- family-mapping: any `sans-serif`/unknown family → Plex Sans; families containing mono/courier/consolas/menlo → Plex Mono. There is deliberately NO system-font fallback chain; glyphs Plex lacks are substituted at the backend seam (`fonts.GLYPH_SUBSTITUTIONS`: ⚠→!, ✗→×, ⛔→Ø) identically everywhere.
+- verified: text conformance scenes (`text` atlas, `text_native` FreeType) 100.00% identical / max_delta 0 between macOS (arm64) and Raspberry Pi 5 (Linux/aarch64), 2026-07-06.
+
+- change: "Font = IBM Plex Sans + IBM Plex Mono, AND desktop text rendering moved from native Skia text to engine-owned FreeType glyph rasterization (Skia blits engine-rendered coverage bitmaps)."
+- context_for_change:
+  - prior_state: "Spec said 'a clean sans-serif, rendered via Skia/Canvas text API'. M1 shipped fontconfig/CoreText MakeFromName lookup — macOS↔Linux text was not even face-identical. The M2 resolved-input assumed bundling one TTF loaded via Typeface.MakeFromFile would yield pixel identity."
+  - reasoning: "Measured 2026-07-06: MakeFromFile with the identical Plex TTF still diverged ~8% of text pixels (max_delta 225) between macOS and RPi5 — skia-python delegates glyph SCALING to the platform scaler (CoreText on macOS, FreeType on Linux) and their AA coverage differs. Pixel-identical text therefore requires owning rasterization: freetype-py is pinned (2.13.2, wheel bundles libfreetype) and uses the exact generate_atlas.py settings, so desktop glyphs are byte-identical across OS/arch and design-identical to the CYD atlas."
+  - rejected_alternative: "(a) Accept ~92% text identity and loosen the pixel gate — rejected, [CXC-R-C1] is a gate not a preference. (b) Extend the bitmap atlas to all desktop sizes — rejected: widgets use arbitrary/fractional sizes; nearest-neighbor atlas scaling degrades desktop text quality."
+  - counter_argument: "Per-glyph image blits are slower than a Skia text blob, and dropping the platform shaper loses kerning/ligatures/complex scripts."
+  - counter_response: "Glyph images cache per (face,size,char,color); measured frame budget held ≥55fps with live text on both platforms (330fps macOS / 59.5fps RPi kiosk loop). Skia's simple MakeFromString path did no shaping either — nothing was lost; IME/complex text was already deferred ([CXC-R-ENGINE-TEXT] Phase 3)."
+  - invalidating_assumption: "That widget text stays simple-script LTR and freetype-py stays version-pinned across deploy targets. If complex-script shaping becomes a requirement, revisit with a shaping engine (HarfBuzz) rasterizing through the same FreeType path; if a platform can't run freetype-py, it needs the atlas mode."
+  - implication: "All goldens re-baked once against Plex+FreeType (2026-07-06). Every future desktop backend inherits ft_text.py rather than its platform text API. The browser backend (M3) must either run the same rasterizer (Pyodide: freetype-py compiled to WASM) or blit pre-rendered glyphs — native canvas fillText would break the pixel gate."
+
+Custom fonts for specific widgets are fetched from document_store by URI.
+
+### [CXC-R-DRAW-SVG] SVG Rendering
+
+SVG is a core rendering capability, not an optional extension. The engine parses SVG documents and decomposes them into Layer 1 drawing primitives (paths, rects, circles, text, fills, strokes, gradients, transforms, clip regions). This makes every tool that outputs SVG — Mermaid.js, Graphviz, PlantUML, D3, matplotlib — renderable on any ComposeUX surface.
+
+#### SVG Parser Contract
+
+The engine includes a platform-independent SVG parser that converts SVG elements to drawing commands:
+
+| SVG Element | Drawing Primitive |
+|-------------|-------------------|
+| `<rect>` | `fill_rect` / `fill_round_rect` |
+| `<circle>` | `fill_circle` / `stroke_circle` |
+| `<ellipse>` | `fill_path` (approximated as arc path) |
+| `<line>` | `draw_line` |
+| `<polyline>`, `<polygon>` | `draw_path` / `fill_path` |
+| `<path>` | `draw_path` / `fill_path` (M, L, C, Q, A, Z commands) |
+| `<text>` | `draw_text` with `set_font` |
+| `<image>` | `draw_image` (href resolved via asset manager) |
+| `<g>` | `save` / `restore` with group transform |
+| `<defs>`, `<use>` | Resolved at parse time (inline expansion) |
+| `<linearGradient>` | `set_linear_gradient` |
+| `<radialGradient>` | `set_radial_gradient` |
+| `<clipPath>` | `clip_rect` / `clip_round_rect` or path-based clip |
+
+SVG attributes `fill`, `stroke`, `stroke-width`, `opacity`, `transform` (translate, rotate, scale, matrix) map directly to style state and transform functions.
+
+#### Diagram Rendering Pipeline
+
+Diagram tools (Mermaid, Graphviz, etc.) produce SVG. The rendering pipeline:
+
+```
+Diagram text (in .compose.yaml or referenced document)
+  → Diagram service (hub workload, runs Mermaid.js/Graphviz in Node.js)
+  → SVG output stored in document_store
+  → Widget references: src: doc://diagrams/{id}.svg
+  → Render engine fetches SVG, parses to drawing commands, renders on any surface
+```
+
+The diagram service is a simple hub workload — it watches for diagram text in bus_storage, renders to SVG, stores the result in document_store. When diagram source changes, the service re-renders and the widget updates (config poll or bus event).
+
+#### Widget: DiagramView
+
+A dedicated widget type for rendering SVG diagrams:
+
+```yaml
+- type: diagram_view
+  id: causal_graph
+  src: doc://diagrams/lattice-causal-graph.svg
+  # Or inline Mermaid source (rendered by diagram service):
+  mermaid: |
+    graph TD
+      A[Spec] --> B[Build]
+      B --> C[Test]
+      C --> D[Deploy]
+  fit: contain          # contain, cover, or actual-size
+  pan: true             # Enable pan gesture
+  pinch_zoom: true      # Enable pinch-to-zoom
+```
+
+When `mermaid:` (or `graphviz:`, `plantuml:`) is specified inline, the widget triggers the diagram service to render it to SVG. The widget displays the result. On source change, the diagram re-renders.
+
+Pan and pinch-zoom are critical for diagrams on small displays — a Lattice dependency graph won't fit on a 4" screen at readable size, but pinch-zoom makes it navigable.
+
+### [CXC-R-DRAW-LOTTIE] Lottie Animation
+
+Lottie (JSON-based animation format) is supported via platform-specific capabilities:
+
+| Platform | Lottie support | Method |
+|----------|---------------|--------|
+| Desktop (Skia) | Native | Skottie (Skia's Lottie player) |
+| Browser | Native | lottie-web or CanvasKit |
+| ESP32 | Pre-rendered | `composeio push` converts Lottie → sprite sheet at target resolution, stored in document_store. Engine plays back as frame sequence. |
+
+As-built (2026-07-07, [SPEC:CXC-LOTTIE] operational): skia-python binds no Skottie, so the Skia tier plays Lottie via the engine's Canvas-contract subset evaluator (`render/lottie/`, renderer seam documented there) — Skia still rasterizes every pixel; see the [SPEC:CXC-LOTTIE] change records (renderer decision ratified by David 2026-07-07; stroked-contour determinism finding).
+
+Lottie assets live in document_store. Widget usage:
+
+```yaml
+- type: lottie
+  id: loading_anim
+  src: doc://animations/loading.json
+  loop: true
+  autoplay: true
+  namespace: app_state     # Optional — animation plays when namespace matches trigger value
+  trigger: "loading"
+```
+
+### [CXC-R-DRAW-PDF] PDF Rendering
+
+PDF rendering is a desktop and browser capability (Skia and CanvasKit support PDF natively). Not available on ESP32 — embedded displays show a placeholder or a pre-rendered page image.
+
+```yaml
+- type: pdf_view
+  id: spec_viewer
+  src: doc://specs/lattice-dossier.pdf
+  page: 1
+  fit: width
+  pan: true
+  pinch_zoom: true
+```
+
+PDF rendering enables spec review directly in ComposeUX surfaces — a Lattice dossier page displayed on a desktop dashboard or in the browser portal without leaving the ComposeUX environment.
+
+---
+
+## 4. Layer 2: Engine [CXC-R-ENGINE]
+
+### [CXC-R-ENGINE-LAYOUT] Layout Engine
+
+Flexbox-inspired layout model. Every widget has layout properties:
+
+```yaml
+layout:
+  direction: row | column          # Main axis
+  align: start | center | end | stretch  # Cross axis
+  justify: start | center | end | space-between | space-around
+  gap: 8                           # Gap between children (logical px)
+  padding: [8, 12, 8, 12]         # Top, right, bottom, left
+  margin: [0, 0, 0, 0]
+  width: 200 | "50%" | "auto"     # Fixed, percentage, or auto
+  height: 100 | "auto"
+  min_width: 0
+  max_width: "infinity"
+  min_height: 0
+  max_height: "infinity"
+  overflow: visible | hidden | scroll
+```
+
+Container widgets (TabContainer, Stack, Grid, ScrollContainer) implement layout policies using these properties. The engine runs a two-pass layout: measure (bottom-up, each widget reports its preferred size) then arrange (top-down, each container assigns positions to children).
+
+### [CXC-R-ENGINE-HIT] Hit Testing and Pointer Events
+
+Every widget that responds to interaction registers a **hit region** — a bounding rect (or custom path for non-rectangular widgets). The engine maintains a spatial index of hit regions.
+
+Pointer event dispatch:
+1. Platform backend converts native event (mouse click, touch) to engine pointer event: `{type: down|move|up|cancel, x, y, pointer_id, timestamp}`
+2. Engine hit-tests against the spatial index, topmost-first (z-order)
+3. Event dispatched to the hit widget's handler
+4. Widget may claim the pointer (for drag, scroll, etc.) — subsequent move/up events route to the claiming widget regardless of position
+
+### [CXC-R-ENGINE-FOCUS] Focus Management
+
+Widgets that accept keyboard input (TextInput, TextArea, SearchField) participate in focus:
+- Tap/click on a focusable widget → gains focus, previous loses focus
+- Tab key cycles focus in document order
+- Focus ring drawn by the engine (consistent across platforms)
+- Keyboard events dispatch to the focused widget only
+
+### [CXC-R-ENGINE-TEXT] Text Editing
+
+The text editing subsystem handles cursor, selection, and input:
+
+| Capability | Implementation |
+|------------|---------------|
+| Cursor positioning | `measure_text()` to map click x → character index |
+| Selection | Shift+click or touch-drag selects range, highlighted with selection color |
+| Keyboard input | Character events from platform backend → insert at cursor |
+| IME composition | Platform backend forwards composition events; engine renders inline preview |
+| Clipboard | Platform backend implements copy/paste; engine manages selection state |
+| Undo/redo | Per-widget undo stack (optional, TextArea only) |
+
+Text editing is the highest-complexity subsystem. Phase 1: single-line ASCII input (TextInput widget). Phase 2: multi-line with word wrap (TextArea). Phase 3: IME and international input.
+
+### [CXC-R-ENGINE-TOUCH] Multitouch and Gestures
+
+The engine recognizes gestures from raw pointer events:
+
+| Gesture | Recognition | Widget receives |
+|---------|-------------|-----------------|
+| Tap | Pointer down + up within 300ms, <10px movement | `on_tap(x, y)` |
+| Long press | Pointer down held >500ms | `on_long_press(x, y)` |
+| Pan/drag | Pointer down + move >10px | `on_pan_start()`, `on_pan(dx, dy)`, `on_pan_end()` |
+| Pinch | Two pointers, distance changing | `on_pinch(scale, center_x, center_y)` |
+| Scroll | Mouse wheel or two-finger trackpad | `on_scroll(dx, dy)` |
+
+Gesture recognition is platform-independent. The platform backend provides raw pointer events with `pointer_id` to distinguish fingers. The engine's gesture recognizer converts these to semantic gesture callbacks.
+
+### [CXC-R-ENGINE-ANIM] Animation Engine
+
+Property animation with easing:
+
+```python
+# Engine API for widget authors
+self.animate("needle_angle", from_value=0, to_value=180, duration=500, easing="ease_out")
+self.animate("opacity", from_value=1.0, to_value=0.0, duration=200, easing="linear")
+self.animate("fill_color", from_value=(255,0,0), to_value=(0,255,0), duration=1000)
+```
+
+The animation engine interpolates property values each frame and triggers widget redraws. Easing functions: linear, ease_in, ease_out, ease_in_out, spring. Color interpolation in HSL space for perceptually smooth transitions.
+
+Frame rate: 60fps on desktop/browser, 30fps on ESP32 (configurable per platform).
+
+### [CXC-R-ENGINE-ASSETS] Asset Manager
+
+Assets (images, icons, fonts) are referenced by URI in widget definitions and fetched from document_store:
+
+```yaml
+widgets:
+  - type: image
+    src: doc://assets/weather/sunny.png
+    namespace: weather_icon
+    # Image changes when namespace value changes:
+    # weather_icon: "sunny" → doc://assets/weather/sunny.png
+    # weather_icon: "cloudy" → doc://assets/weather/cloudy.png
+```
+
+Asset resolution:
+- `doc://` → HTTP GET from document_store endpoint
+- `bus://` → HTTP GET from bus_storage endpoint
+- `file://` → Local filesystem (desktop development only)
+
+The asset manager:
+1. Parses all URIs from the widget tree at startup
+2. Fetches assets in parallel (HTTP)
+3. Decodes images (PNG, JPEG → pixel buffer) and fonts (TTF → glyph data)
+4. Caches in memory (desktop/browser) or PSRAM (ESP32)
+5. Provides `get_asset(uri) → handle` to widgets during render
+6. On ESP32: assets pre-fetched at boot and cached for the lifetime of the config. Config change triggers re-fetch.
+
+---
+
+## 5. Layer 3: Widget Contract [CXC-R-WIDGET]
+
+### [CXC-R-WIDGET-CONTRACT] Widget Base Class
+
+Every ComposeUX widget implements:
+
+```python
+class Widget:
+    # Identity
+    widget_id: str               # Unique within the composition
+    widget_type: str             # "gauge", "led", "text_input", etc.
+
+    # Layout
+    layout: LayoutProperties     # Flexbox properties
+    preferred_size: Size         # Measured preferred size
+
+    # Lifecycle
+    def on_mount(self, ctx):     # Called when added to widget tree. ctx provides bus, assets.
+    def on_unmount(self):        # Called when removed from widget tree.
+
+    # Measurement and Drawing
+    def measure(self, constraints): # Return preferred size given max width/height constraints
+    def draw(self, canvas, rect):   # Draw into the assigned rect using canvas primitives
+
+    # Interaction
+    def hit_test(self, x, y) -> bool:  # Is (x,y) within this widget?
+    def on_tap(self, x, y): pass
+    def on_long_press(self, x, y): pass
+    def on_pan_start(self): pass
+    def on_pan(self, dx, dy): pass
+    def on_pan_end(self): pass
+    def on_pinch(self, scale, cx, cy): pass
+    def on_scroll(self, dx, dy): pass
+    def on_key(self, key, modifiers): pass
+    def on_focus(self): pass
+    def on_blur(self): pass
+
+    # Bus integration
+    def on_bus_state(self, namespace, value):  # Bound namespace changed
+    def publish(self, namespace, value):        # Widget publishes to bus
+
+    # Animation
+    def animate(self, prop, from_val, to_val, duration, easing): pass
+    def on_animation_frame(self, prop, current_val): pass  # Override for custom animation
+```
+
+### [CXC-R-WIDGET-BUS] Namespace Binding
+
+Widgets bind to ComposeIO namespaces declaratively in `.compose.yaml`:
+
+```yaml
+widgets:
+  - type: gauge
+    id: engine_temp
+    namespace: engine/coolant_temp     # Subscribe — gauge reads this value
+    min: 0
+    max: 120
+    unit: "°C"
+    warning_threshold: 95
+    danger_threshold: 105
+
+  - type: button
+    id: start_btn
+    label: "Start"
+    publish_namespace: dashboard_cmd   # Publish — button writes to this namespace
+    publish_value: "start"
+```
+
+The engine wires namespace subscriptions at mount time. When `engine/coolant_temp` changes on the bus, the gauge widget's `on_bus_state()` is called, it updates its internal value, and requests a redraw. The redraw produces new drawing commands. The platform backend paints the updated gauge. The bus event arrived via MQTT (on ESP32) or in-process (on desktop) or SSE (in browser) — the widget doesn't know or care.
+
+### [CXC-R-WIDGET-CONTAINER] Container Widgets
+
+Container widgets hold children and implement layout:
+
+```yaml
+widgets:
+  - type: tab_container
+    id: main_tabs
+    tabs:
+      - label: "Dashboard"
+        children:
+          - type: stack
+            direction: row
+            gap: 16
+            children:
+              - type: gauge
+                id: temp_gauge
+                namespace: engine/coolant_temp
+              - type: gauge
+                id: pressure_gauge
+                namespace: engine/oil_pressure
+      - label: "Controls"
+        children:
+          - type: button
+            id: start_btn
+            publish_namespace: dashboard_cmd
+            publish_value: "start"
+```
+
+Container widgets call `measure()` on children, run their layout algorithm, then call `draw()` on each child with its assigned rect. The engine handles clip regions — children outside the container's bounds are clipped automatically.
+
+---
+
+## 6. Display Device Boot Sequence [CXC-R-BOOT]
+
+### [CXC-R-BOOT-SEQUENCE] Generic Display Device
+
+An ESP32-S3 (or any device) running generic ComposeIO display firmware:
+
+```
+1. Power on → initialize display hardware (SPI, framebuffer)
+2. Connect to network (WiFi or Ethernet)
+3. Connect to MQTT broker
+4. Announce on bus: _bus/discovery/{uuid}
+   {uuid, role: "display", capabilities: {width, height, touch, color_depth}}
+5. Request config from bus_storage: GET /api/v1/config/{uuid}
+   → Receives .compose.yaml (widget composition, namespace bindings, asset URIs)
+6. Parse widget tree from config
+7. Fetch assets from document_store (fonts, icons, images)
+   → Cache in PSRAM
+8. Initialize rendering engine (create surface, load fonts)
+9. Run layout (measure + arrange)
+10. Draw initial frame
+11. Subscribe to bound namespaces via MQTT
+12. Enter event loop:
+    - Bus events → update widget state → redraw dirty regions
+    - Touch events → hit test → dispatch to widget → widget may publish to bus
+    - Config poll (every 5 min) → if config changed, re-parse and re-render
+```
+
+### [CXC-R-BOOT-FUNGIBLE] Hardware Fungibility
+
+The device is generic. Its behavior is entirely determined by the `.compose.yaml` it receives from bus_storage. Changing the config changes the device's function:
+
+| Same ESP32-S3 + 4" display | Config from bus_storage | Result |
+|-----------------------------|------------------------|--------|
+| UUID: `esp32-kitchen-01` | Weather widget composition | Shows temperature, humidity, forecast icons |
+| UUID: `esp32-garage-01` | Engine gauge cluster | Shows coolant temp, oil pressure, RPM |
+| UUID: `esp32-desk-01` | Board Manager mini-dashboard | Shows active tasks, status lights |
+| UUID: `esp32-door-01` | Nexus participant status | Shows who's online, recent activity |
+
+Replacing a dead device: power on the replacement, it gets the same UUID assignment (or reassign in bus_storage), receives the same config, fetches the same assets, renders the same widgets. Zero firmware changes [DP-CIO-23], [DP-CIO-11].
+
+- change: "M5 as-built (2026-07-07, classic CYD): config-driven boot is OPERATIONAL on hardware — generic firmware (cyd/src/main.cpp contains ZERO composition), config source of truth = bus_storage assets namespace `bus://assets/displays/<device_id>.compose.yaml` with `displays/default.compose.yaml` fallback; device_id = `cyd-` + last-3 MAC octets (printed at boot) unless DISPLAY_DEVICE_ID overrides. RATIFIED by David 2026-07-07 (bus-native asset addressing; reuses existing bus_storage, keyed per device)."
+- context_for_change:
+  - prior_state: "[CXC-R-BOOT-SEQUENCE] step 5 names `GET /api/v1/config/{uuid}`; bus_storage as deployed has no /config-by-uuid endpoint but a fully working nested-assets namespace."
+  - reasoning: "The assets namespace already gives per-device addressing, PUT-to-update (drives [CXC-R-C10] re-poll), and the same fetch path as every other bus:// asset — one client code path on a heap-starved MCU. A default-config fallback makes a factory-fresh unit render SOMETHING and log its identity, so assigning its config is a bus_storage PUT, never a firmware touch."
+  - rejected_alternative: "Add a bespoke /api/v1/config/{uuid} endpoint to bus_storage — deferred: it duplicates the asset GET with a second addressing scheme; revisit if per-device config wants server-side logic (templating, capability negotiation)."
+  - invalidating_assumption: "That displays stay on the flat 192.0.2.x segment where bus_storage is IP-reachable (mDNS is unavailable to ESP32 here and .local will not cross the planned VLAN30/35 split — the firmware bakes the IP via wifi_config.h)."
+  - implication: "As-built boot subset: WiFi -> splash w/ device id -> fetch -> yaml_min parse (bounded YAML subset, host-tested vs all 6 example configs) -> compose_scene build -> render -> touch registry -> 60s config re-poll (byte-compare -> live scene swap, verified on hardware). DEFERRED, logged not faked: MQTT namespace subscribe/publish (steps 3/4/11 — bindings/behaviors in configs log 'deferred, no bus on this tier'), bus discovery announce, doc:// assets, PSRAM asset cache. Acceptance measured 2026-07-07: C9 boot->rendered-frame 2.2-2.9 s typical (worst 14 s on slow WiFi assoc), touch from frame 1; C12 one binary rendered THREE different configs (gauge dashboard / fleet status board / dradis sprite scene) by asset swap alone; C10 live re-poll swap captured in logs."
+
+---
+
+## 7. Intelligence Render Control [CXC-R-INTELLIGENCE]
+
+Any ComposeUX surface is programmable by an Intelligence through bus namespaces. Three rendering modes coexist on the same engine, same Canvas backend, same display hardware. The difference is who decides what gets drawn.
+
+### [CXC-R-CONTROL] Render Control Namespace Contract
+
+An Intelligence can modify the widget composition at runtime without a config redeploy. The render engine subscribes to control namespaces on the internal bus:
+
+| Namespace | Payload | Effect |
+|-----------|---------|--------|
+| `_app/render/composition` | JSON widget tree | Full composition replacement. Engine diffs against current tree, re-renders changed subtrees only. |
+| `_app/render/widget/{id}/props` | JSON property map | Per-widget property override. Changes label text, gauge range, LED color — without replacing the tree. |
+| `_app/render/widget/{id}/visible` | boolean | Show/hide individual widgets. Engine skips hidden widgets in layout and draw passes. |
+| `_app/render/layout` | JSON layout config | Layout mutations — switch container mode, change column count, reorder children. |
+| `_app/render/transition` | JSON transition spec | Trigger animated transitions between compositions (fade, slide, swap). Uses the animation engine from Phase 7. |
+| `_app/render/interaction` | (published by engine) | User interaction events: `{type: "tap", widget_id: "start_btn", x: 120, y: 340}`. Intelligence subscribes to react. |
+
+The render control namespaces follow the `_app/` visibility boundary — they are internal by default. An Intelligence running as an AppModule (or an external Intelligence connected via MQTT with a `route_external` rule) can drive any display it has namespace access to.
+
+**Composition diffing**: When `_app/render/composition` receives a new tree, the engine compares widget IDs and types against the current tree. Widgets with matching IDs are updated in place (property changes only, no teardown). New IDs are created. Missing IDs are removed. This makes composition replacement efficient — pushing a 50-widget tree where 2 widgets changed results in 2 redraws, not 50.
+
+**Use cases**:
+- Intelligence detects anomaly → pushes a new composition that zooms into relevant metrics
+- Intelligence guides a user through a workflow → swaps widget compositions per step
+- Intelligence manages a multi-screen environment → different compositions to different display UUIDs
+
+### [CXC-R-RAWCANVAS] Raw Canvas Mode
+
+A display surface can operate as a blank canvas where an Intelligence draws directly using rendering primitives or SVG. No pre-defined widgets — the Intelligence is the renderer.
+
+#### Canvas Command Protocol
+
+The Intelligence publishes drawing commands to `_app/render/draw` as a JSON array of Canvas operations:
+
+```json
+[
+  {"op": "clear", "color": "#09090b"},
+  {"op": "fill_rect", "x": 10, "y": 10, "w": 200, "h": 50, "color": "#26A69A"},
+  {"op": "fill_circle", "cx": 400, "cy": 400, "r": 150, "color": "#EF5350"},
+  {"op": "draw_text", "text": "Intelligence-rendered", "x": 20, "y": 35, "size": 18, "color": "#FFFFFF"},
+  {"op": "draw_path", "commands": "M 100 200 Q 250 50 400 200", "color": "#FFA726", "stroke_width": 2},
+  {"op": "draw_svg", "uri": "doc://gallery/twelve_voice_canon.svg", "x": 0, "y": 0, "w": 800, "h": 800},
+  {"op": "present"}
+]
+```
+
+Each operation maps 1:1 to a Canvas contract method. The command buffer is executed sequentially against the Canvas backend. `present` flushes the framebuffer to the display. Commands between `present` calls accumulate — the Intelligence controls frame timing.
+
+#### SVG as Bridge Format
+
+SVG is the natural language for complex Intelligence-generated visuals:
+- Intelligences already generate SVG fluently (generative art, data visualizations, diagrams)
+- SVG elements map directly to Canvas primitives: `<rect>` → `fill_rect`, `<circle>` → `fill_circle`, `<path>` → `draw_path` (including `Q` quadratic and `A` arc commands)
+- Mermaid, Graphviz, and d3.js all output SVG
+- SVG is resolution-independent — an 800x800 artwork renders correctly on 240x320 CYD or 1920x1080 RPi display
+- `draw_svg` accepts either a `doc://` URI (fetched from document_store) or an inline SVG string
+
+#### Interaction Loop
+
+In raw canvas mode, the Intelligence is the event loop:
+
+```
+Display                          Intelligence
+  │                                    │
+  │  ◀── _app/render/draw ────────────│  (Intelligence draws)
+  │  (execute commands, present)       │
+  │                                    │
+  │  ── _app/render/interaction ──▶   │  (user taps at x=120, y=340)
+  │                                    │
+  │  ◀── _app/render/draw ────────────│  (Intelligence redraws in response)
+  │  (new frame reflecting tap)        │
+```
+
+The display publishes all touch/pointer events to `_app/render/interaction` with coordinates, gesture type, and timing. The Intelligence subscribes, processes, and pushes a new frame. Latency depends on the Intelligence's reaction time and the bus transport — local AppModule (~1ms), MQTT (~10-50ms).
+
+#### Mixed Mode
+
+Raw canvas and widget composition are not mutually exclusive. A `CanvasWidget` occupies a region of the screen while standard widgets occupy the rest:
+
+```yaml
+widgets:
+  - type: stack
+    direction: row
+    children:
+      - type: canvas
+        id: intelligence_canvas
+        namespace: _app/render/draw
+        width: 600
+        height: 800
+      - type: stack
+        direction: column
+        children:
+          - type: led
+            id: status_led
+            namespace: system/status
+          - type: label
+            id: info_label
+            namespace: system/info
+```
+
+The `CanvasWidget` is a standard widget that delegates its `draw()` to the Intelligence's command buffer instead of built-in rendering logic. It participates in layout, receives a bounding rect, clips to its region, and its namespace binding is the drawing command channel.
+
+#### Pixel Buffer Operations
+
+Vector commands (`fill_rect`, `draw_path`, `draw_svg`) give an Intelligence structured drawing tools. Pixel buffer operations give direct framebuffer access — the Intelligence computes raw pixel data algorithmically and writes it to the surface.
+
+| Operation | Payload | Purpose |
+|-----------|---------|---------|
+| `create_buffer` | `{id, w, h}` | Allocate an offscreen RGBA8888 pixel buffer |
+| `write_pixels` | `{id, x, y, w, h, data}` | Write a rectangular region of pixels (base64 RGBA) |
+| `write_scanline` | `{id, y, data}` | Write a single row (efficient for line-by-line algorithms) |
+| `set_pixel` | `{id, x, y, color}` | Write a single pixel (convenient but slow for bulk operations) |
+| `blit` | `{id, x, y, w?, h?}` | Composite the pixel buffer onto the canvas at the given position. Optional w/h for scaling. |
+| `destroy_buffer` | `{id}` | Free the pixel buffer |
+
+Pixel buffers are offscreen — writes to a buffer do not produce visible output until `blit` composites it onto the canvas and `present` flushes to the display. Multiple buffers can coexist (layers, double-buffering, intermediate computation).
+
+Use cases: generative art (Perlin noise, reaction-diffusion, fractals), cellular automata, fluid simulation, neural style transfer output, image processing pipelines, procedural textures. The Intelligence runs the algorithm, the display shows the result.
+
+Vector commands and pixel operations coexist in the same command buffer:
+
+```json
+[
+  {"op": "clear", "color": "#09090b"},
+  {"op": "create_buffer", "id": "noise", "w": 400, "h": 400},
+  {"op": "write_pixels", "id": "noise", "x": 0, "y": 0, "w": 400, "h": 400, "data": "<base64>"},
+  {"op": "blit", "id": "noise", "x": 200, "y": 200},
+  {"op": "draw_text", "text": "Perlin Noise Field", "x": 300, "y": 620, "size": 16, "color": "#FFFFFF"},
+  {"op": "present"}
+]
+```
+
+#### Canvas Capture
+
+Any rendering surface can capture its current framebuffer to an image file. This serves two purposes: (1) an Intelligence saves its artwork or visualization output, and (2) automated visual verification — a QA agent captures what a remote display is showing, fetches the image, and compares against a reference without a human photographing a screen.
+
+| Operation | Payload | Purpose |
+|-----------|---------|---------|
+| `capture` | `{format, quality?, uri?}` | Capture the current canvas to an image |
+
+**Formats**: `png` (lossless, best for reference comparison), `jpeg` (lossy, smaller, configurable quality 1-100), `bmp` (uncompressed, trivial to encode on constrained devices).
+
+**Output targets**:
+- `uri: "doc://gallery/piece_001.png"` — push to document_store. Any bus participant can fetch it.
+- `uri: "file:///path/to/output.png"` — save to local filesystem (desktop, RPi) or SD card (ESP32).
+- No `uri` — return the image data as a base64 payload in a bus event on `_app/render/captured`. A subscribing Intelligence receives the image directly.
+
+**Capture namespace**: An external trigger can request a capture by publishing to `_app/render/capture_request`:
+
+```json
+{"format": "png", "uri": "doc://debug/cyd_screen_001.png"}
+```
+
+The render engine captures the current framebuffer and publishes the result. This enables remote debugging: a QA agent publishes a capture request to a CYD on the network, the CYD pushes the screenshot to document_store, the QA agent fetches and compares it — zero human involvement.
+
+**Platform implementation**:
+
+| Platform | Encoding | Notes |
+|----------|----------|-------|
+| Desktop (Skia) | Native PNG/JPEG encode | Trivial — Skia has built-in codecs |
+| Browser (Canvas 2D) | `canvas.toBlob()` | Native browser API |
+| ESP32 | BMP (trivial) or JPEG (`esp_jpeg` component) | PNG encoding is memory-heavy on ESP32; prefer BMP for lossless or JPEG for compact |
+| Headless | Same as desktop | No display, render to buffer, encode, save/upload |
+
+#### Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-R-C20 | Render control composition replacement | Push new composition via `_app/render/composition` → display re-renders with new widget tree within 1 frame |
+| CXC-R-C21 | Render control per-widget property override | Push property change via `_app/render/widget/{id}/props` → widget updates without full re-render |
+| CXC-R-C22 | Raw canvas primitive execution | Push drawing commands via `_app/render/draw` → Canvas backend executes and presents |
+| CXC-R-C23 | Raw canvas SVG rendering | Push `draw_svg` command with inline SVG → SVG renders correctly via Canvas primitives |
+| CXC-R-C24 | Raw canvas interaction loop | Tap on canvas → `_app/render/interaction` event published with correct coordinates |
+| CXC-R-C25 | Mixed mode (CanvasWidget + standard widgets) | Layout contains both a CanvasWidget and standard widgets → both render correctly in their regions |
+| CXC-R-C26 | Pixel buffer write and blit | Create buffer, write RGBA pixels, blit to canvas → pixels appear at correct position |
+| CXC-R-C27 | Canvas capture to document_store | Publish capture request → image appears in document_store → fetchable by any bus participant |
+| CXC-R-C28 | Remote capture for automated QA | QA agent publishes capture request to remote display → fetches resulting image → pixel-diff against reference passes |
+
+---
+
+## 8. Sprites and Image Rendering [CXC-R-SPRITES]
+
+> Sprites are namespace-bound visual entities — images positioned and transformed by bus data. The draw_image() canvas primitive enables raster content on all platforms. Together, they bridge data-driven rendering and visual assets.
+
+### 8.1 draw_image() Canvas Primitive [CXC-R-DRAWIMAGE]
+
+A new Canvas method added to all platform backends:
+
+```
+draw_image(x, y, width, height, image_data, format, alpha)
+```
+
+Parameters:
+- x, y: destination position
+- width, height: destination size (scaling applied if differs from source)
+- image_data: raw pixel bytes or asset reference
+- format: RGBA8888, RGB565, PNG, BMP
+- alpha: compositing opacity (0.0-1.0), multiplied with per-pixel alpha
+
+Asset resolution follows a tiered pipeline:
+- asset-source: local — Check SD card / local filesystem first (zero latency, no network)
+- asset-source: document_store — Fetch from document_store service (network, centralized)
+- asset-source: fallback — Render a placeholder shape (ensures screen is never broken)
+
+Platform backend implementations:
+- Skia (desktop): skia.Image.open() + canvas.drawImage() with alpha paint
+- Canvas 2D (browser): drawImage() on CanvasRenderingContext2D
+- ESP32 (CYD): iterate source pixels within current band, alpha-blend via put_pixel(). Assets pre-converted to raw RGBA at fetch time, cached to SD. SD-first lookup avoids repeated network fetches.
+
+The draw_image() primitive also serves the raw canvas pixel buffer operations in [CXC-R-RAWCANVAS] — blit from a pixel buffer to the canvas uses the same compositing pipeline.
+
+### 8.2 Sprite Definition [CXC-R-SPRITE-DEF]
+
+A sprite is a visual entity with three bindings:
+- asset: an image (PNG, BMP, or vector-drawn) sourced via the draw_image() asset pipeline
+- data namespace: a bus namespace providing position, rotation, and state
+- render namespace: `_app/render/sprites/{sprite_id}` for direct property control
+
+Sprite properties:
+- asset: string — asset reference (doc_store path, SD path, or inline vector definition)
+- x: float — horizontal position (from data namespace binding or direct)
+- y: float — vertical position (from data namespace binding or direct)
+- rotation: float — rotation in degrees (default 0)
+- scale: float — uniform scale factor (default 1.0)
+- alpha: float — opacity 0.0-1.0 (default 1.0)
+- visible: bool — visibility toggle (default true)
+- z_index: int — draw order within sprite layer (default 0)
+- tint: color — optional color multiply for state indication (flash red, dim grey)
+
+### 8.3 Namespace Binding [CXC-R-SPRITE-BIND]
+
+Sprites bind to bus namespaces via JSONPath-style field mapping:
+
+```yaml
+sprite:
+  id: "raider-001"
+  asset: "dradis/cylon-raider.png"
+  bind:
+    namespace: "galaxy/raiders/r-001"
+    x: "$.x"
+    y: "$.y"
+    rotation: "$.heading"
+  z_index: 5
+```
+
+When the source namespace updates, the sprite's bound properties update and the widget redraws. Unbound properties (scale, tint, alpha) retain their current values and can be set by the Intelligence via the sprite's render namespace.
+
+Sprite lifecycle is data-driven:
+- A sprite is created when its bound namespace first publishes data (or when explicitly created via `_app/render/sprites/{id}`)
+- A sprite is destroyed when its bound namespace is removed or when explicitly destroyed
+- A container widget (e.g., a DRADIS scope) manages sprite creation/destruction based on business logic (range filtering, object type filtering)
+
+### 8.4 Sprite Container Widget [CXC-R-SPRITE-CONTAINER]
+
+A SpriteContainer widget manages a dynamic collection of sprites over a background:
+
+- Subscribes to a namespace pattern (e.g., `galaxy/#`)
+- Applies a filter function to determine which objects get sprites (e.g., distance < DRADIS_RANGE)
+- Maps object types to asset references (raider → raider.png, basestar → basestar.png)
+- Transforms world coordinates to screen coordinates
+- Manages sprite lifecycle: create on enter, update on move, destroy on exit
+
+The SpriteContainer draws its sprites between lower z-index layers (backgrounds, dynamic content) and higher z-index layers (static overlays like a DRADIS bezel). This enables the transparency compositing pattern: opaque overlay artwork with transparent regions through which sprites are visible.
+
+### 8.5 Compliance
+
+- [CXC-R-C29] draw_image() primitive exists on all three platform backends (Skia, Canvas 2D, ESP32)
+- [CXC-R-C30] draw_image() supports alpha compositing with per-pixel and global alpha
+- [CXC-R-C31] Asset resolution follows the tiered pipeline: local → document_store → fallback
+- [CXC-R-C32] Sprites update position/rotation/state when their bound namespace publishes new data
+- [CXC-R-C33] Sprites are individually addressable via their render namespace `_app/render/sprites/{id}`
+- [CXC-R-C34] SpriteContainer creates and destroys sprites based on data namespace lifecycle
+- [CXC-R-C35] Transparent overlay compositing works: sprites render under an overlay with alpha=0 regions
+
+---
+
+## 9. Phase Plan
+
+### [CXC-R-PHASES] Implementation Phases
+
+| Phase | Scope | Deliverable |
+|-------|-------|-------------|
+| 1 | Drawing primitives + desktop backend (Skia) | Render static widgets on desktop. Gauge, LED, text label, rectangle, circle. |
+| 2 | Layout engine + containers + render control namespaces + draw_image() | Stack, grid, tab container. Intelligence render control contract ([CXC-R-CONTROL]). Composition diffing. draw_image() primitive on all backends ([CXC-R-DRAWIMAGE]). |
+| 3 | Pointer interaction + hit testing + raw canvas + sprites | Tap, click, button widgets. Desktop mouse events. CanvasWidget + raw canvas command protocol ([CXC-R-RAWCANVAS]). Interaction event publishing. Sprite definition, namespace binding, and SpriteContainer ([CXC-R-SPRITE-DEF], [CXC-R-SPRITE-BIND], [CXC-R-SPRITE-CONTAINER]). |
+| 4 | Browser backend (Canvas 2D) | Same widgets render in browser. SSE for bus events via WebBusModule. |
+| 5 | Text editing | TextInput (single-line), focus management, keyboard routing. |
+| 6 | ESP32 backend (direct framebuffer) | Same widgets render on TFT display. Touch input. Asset fetch from document_store. |
+| 7 | Animation engine | Property interpolation, easing, smooth gauge needle movement. |
+| 8 | TextArea + IME | Multi-line text, international input, clipboard. |
+| 9 | Advanced gestures | Multitouch, pinch, scroll containers with momentum. |
+| 10 | Flutter backend + .compose.yaml rendering | FlutterCanvas backend (Dart CustomPainter implementing Canvas contract). Widget library ported to Dart. .compose.yaml parser drives widget tree at runtime. MQTT bus binding via dart_mqtt. Bitmap font atlas integration for pixel-identical text. Single Flutter app serves iOS, Android, macOS, Windows, Linux, Web. |
+
+Each phase is independently useful. Phase 1 replaces CTk widget rendering. Phase 4 replaces hand-coded HTML in ComposeApps. Phase 6 replaces LVGL on embedded. Phase 10 replaces the desktop Skia backend for production use and extends to mobile — Flutter subsumes Phases 4 (browser) and the desktop path with a single codebase.
+
+---
+
+## 10. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-R-C1 | Pixel-identical output | Same .compose.yaml rendered on desktop and browser produces visually identical screenshots |
+| CXC-R-C2 | Platform backend implements drawing contract | Backend passes drawing primitive test suite (render reference shapes, compare output) |
+| CXC-R-C3 | Widgets render from .compose.yaml (Phase 3+) | Parse config → render → widgets appear with correct layout and data binding. Phase 1 satisfies this via programmatic construction; config-driven rendering is a Phase 3 deliverable. |
+| CXC-R-C4 | Bus namespace binding works | Change namespace value → widget updates visually within 1 frame |
+| CXC-R-C5 | Assets load from document_store | Widget references doc:// URI → image/icon renders correctly |
+| CXC-R-C6 | Hit testing dispatches to correct widget | Click on button → button receives tap event, not the widget behind it |
+| CXC-R-C7 | Layout engine produces correct positions | Container with 3 children, gap=8, direction=row → children positioned correctly |
+| CXC-R-C8 | Text input accepts keyboard input | Focus text field → type → characters appear at cursor |
+| CXC-R-C9 | ESP32 boot sequence completes | Device powers on → fetches config → renders widgets → responds to touch within 5 seconds |
+| CXC-R-C10 | Config change triggers re-render | Update config in bus_storage → device detects change → re-renders with new composition |
+| CXC-R-C11 | Animation runs at target frame rate | Gauge needle animation at 60fps on desktop, 30fps on ESP32 |
+| CXC-R-C12 | Generic display firmware | Same firmware binary on two ESP32 devices with different configs → different widget compositions |
+| CXC-R-C13 | SVG rendering | Load SVG from document_store → renders correctly using drawing primitives on all platforms |
+| CXC-R-C14 | SVG element coverage | rect, circle, line, path (M/L/C/Q/A/Z), text, gradients, transforms, clip → all render correctly |
+| CXC-R-C15 | Mermaid diagram pipeline | Mermaid text in widget config → diagram service renders SVG → widget displays diagram |
+| CXC-R-C16 | DiagramView pan and zoom | Pinch-zoom on touch, scroll-zoom on desktop → diagram scales and pans smoothly |
+| CXC-R-C17 | Lottie animation playback | Lottie JSON from document_store → plays at correct frame rate on desktop and browser |
+| CXC-R-C18 | Lottie on ESP32 via sprite sheet | `composeio push` pre-renders Lottie → sprite sheet in document_store → ESP32 plays frame sequence |
+| CXC-R-C19 | PDF rendering (desktop/browser) | PDF from document_store → renders page with correct text, vectors, images |
+| CXC-R-C36 | Flutter backend pixel equivalence | Same .compose.yaml rendered on Flutter (any platform) and Python/Skia reference produces visually identical screenshots via pixel_comparison.py |
+| CXC-R-C37 | Flutter bitmap atlas text | Flutter CustomPainter renders text from bitmap font atlas, producing pixel-identical glyphs to CYD and Python reference |
+| CXC-R-C38 | Flutter .compose.yaml runtime parsing | Flutter app loads .compose.yaml at runtime, renders widget tree without recompilation — app binary is generic |
+
+---
+
+## Relationships
+
+- depends-on: [SPEC:CIO-APP] (ComposeApp framework — widgets live in ComposeApps)
+- depends-on: [SPEC:CIO-PRINCIPLES] (DP-CIO-1, DP-CIO-6, DP-CIO-7, DP-CIO-18, DP-CIO-23)
+- see-also: ComposeUX widget specs in ux_composer/specs/ (individual widget definitions reference this rendering contract)
+- see-also: bus_storage service (config delivery to display devices)
+- see-also: document_store service (asset delivery for fonts, icons, images)
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-29
+**Status**: Draft — foundational spec for review

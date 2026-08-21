@@ -1,0 +1,133 @@
+# ComposeUX R3 demo — reactive display ([SPEC:CXC-EMBED-REACTIVE]
+# [CXC-ER-RENDER]).  One publish moves the needle:
+#
+#   push this config:
+#     curl -X PUT --data-binary @cyd/configs/cyd_reactive_demo.compose.yaml \
+#       http://mqtt-broker.local:8420/api/v1/assets/displays/cyd-45302c.compose.yaml
+#
+#   drive it (from any bus peer):
+#     mosquitto_pub -h mqtt-broker.local -p 1883 \
+#       -t 'composeio/global/demo/gauge' \
+#       -m '{"ns":"demo/gauge","type":"state","val":72,"src":"mac","scope":"global"}'
+#
+#   verify (eyes-free): curl http://<cyd-ip>/capture.bmp -o after.bmp
+#     — the gauge needle moves, LEVEL text updates, the HIGH LED flips
+#     at >75, and the alert banner appears when demo/alert is truthy.
+#
+# Binding shapes exercised (all three [CXC-ER-RENDER] forms):
+#   object form   {namespace:, default:}   gauge.value, label.text
+#   expr form     {expr: "<dsl>"}          led.state via the on-chip DSL
+#   bare string   visible: demo/alert      M4 hidden-until-it-speaks
+#   widget-level  namespace:               led primary attr (echo LED)
+
+app:
+  id: cyd-reactive-demo
+
+design:
+  title: "R3 Reactive"
+  width: 240
+  height: 320
+  background: "#101318"
+
+widgets:
+  - type: pixel_stack
+    id: scene
+    width: 240
+    height: 320
+    children:
+      - type: label
+        id: heading
+        text: "REACTIVE R3"
+        font_size: 14
+        font_weight: bold
+        color: "#26A69A"
+        x: 12
+        y: 8
+        w: 216
+        h: 20
+
+      # The star: gauge.value <- demo/gauge (object form + default).
+      - type: gauge
+        id: main_gauge
+        x: 40
+        y: 40
+        w: 160
+        h: 150
+        min_val: 0
+        max_val: 100
+        unit: "%"
+        label: "demo/gauge"
+        warning_threshold: 60
+        danger_threshold: 85
+        value:
+          namespace: demo/gauge
+          default: 25
+
+      # Same namespace through a text binding — one publish, two widgets.
+      - type: label
+        id: level_caption
+        text: "LEVEL"
+        font_size: 10
+        color: "#8888AA"
+        x: 16
+        y: 208
+        w: 60
+        h: 14
+      - type: label
+        id: level_value
+        font_size: 18
+        font_weight: bold
+        color: "#DDDDEE"
+        x: 16
+        y: 224
+        w: 80
+        h: 24
+        text:
+          namespace: demo/gauge
+          default: "25"
+
+      # Expr form: the on-chip DSL derives the LED state.
+      - type: led
+        id: high_led
+        x: 150
+        y: 204
+        w: 56
+        h: 56
+        label: "HIGH"
+        state:
+          expr: "ns('demo/gauge') > 75"
+          default: "off"
+
+      # Widget-level namespace: (primary attr) — LED echoes demo/alert.
+      - type: led
+        id: alert_led
+        namespace: demo/alert
+        x: 96
+        y: 204
+        w: 56
+        h: 56
+        label: "ALERT"
+
+      # Bare-string visible binding: hidden until demo/alert speaks
+      # truthy (M4 semantics).
+      - type: rect
+        id: alert_banner
+        x: 12
+        y: 272
+        w: 216
+        h: 36
+        fill_color: "#B71C1C"
+        corner_radius: 6
+        visible: demo/alert
+      - type: label
+        id: alert_text
+        text: "RED ALERT"
+        font_size: 14
+        font_weight: bold
+        color: "#FFFFFF"
+        align: center
+        x: 12
+        y: 282
+        w: 216
+        h: 18
+        visible: demo/alert

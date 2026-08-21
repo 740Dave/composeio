@@ -1,0 +1,47 @@
+# Partition table for [env:esp32_c3_st7796] — 4 MB flash.
+#
+# WHY THIS BOARD HAS ITS OWN TABLE INSTEAD OF partitions.csv: NVS goes
+# 0x6000 (24 KB) -> 0x10000 (64 KB).  `config_cache_store()` writes the WHOLE
+# scene into NVS on every successful fetch — boot AND every 60-second re-poll —
+# and this board's scene is 8,139 bytes.  An 8 KB blob in a 24 KB
+# log-structured store that ALSO holds WiFi calibration fills the partition and
+# never recovers.
+#
+# THE DAMAGE IS NOT WHERE THE ERROR IS.  The cache write fails loudly and
+# apparently harmlessly ("config cache write failed (ESP_ERR_NVS_NOT_ENOUGH_
+# SPACE) — the board still runs"), but a FULL NVS partition starves every OTHER
+# key on the device.  Measured here 2026-08-12, AFTER a complete
+# `esptool erase-region 0x9000 0x6000`: a FOUR-BYTE transport selection still
+# failed to store —
+#     E bus_select: nvs write failed (ESP_ERR_NVS_NOT_ENOUGH_SPACE)
+#                   — selection NOT stored
+# which silently disables the `_device/<id>/transport` and
+# `_device/<id>/config_source` control planes.  Those exist so a board can be
+# re-pointed WITHOUT a reflash, so the real failure is "the escape hatch is
+# welded shut, and the only message about it names the scene cache".
+#
+# ⚠ NVS SITS AFTER THE APP, NOT AT THE CONVENTIONAL 0x9000, AND THAT IS
+# LOAD-BEARING.  Growing NVS in place would push `factory` from 0x10000 to
+# 0x20000 — and PlatformIO still writes the app image at 0x10000, so the
+# bootloader read the new table, looked at 0x20000, found `invalid magic byte`
+# and boot-looped on `No bootable app partitions`.  Observed on this board
+# 2026-08-12; recovered by a normal reflash (the ROM bootloader is untouched,
+# so this is a stall, not a brick).  Keeping `factory` at 0x10000 means the
+# image offset every tool assumes stays true, and NVS takes its extra 40 KB
+# from the SPIFFS region, which nothing on this board uses.
+#
+# SCOPED TO THIS ENV DELIBERATELY.  Widening the SHARED partitions.csv would
+# move the NVS of every board in the fleet — classic CYD, Qualia, Hosyond,
+# Waveshare C6 — none of which is on the bench, and each of which would lose
+# stored WiFi calibration and any transport/config_source selection.  The
+# cross-cutting fix (bound what config_cache_store is willing to write, and
+# refuse rather than churn) is recorded in
+# docs/board-bringup/esp32c3-supermini-st7796.md and deliberately NOT done
+# here: it lands in shared code and three of the four affected boards cannot be
+# verified today.
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+phy_init,   data, phy,     0xf000,   0x1000,
+factory,    app,  factory, 0x10000,  0x200000,
+nvs,        data, nvs,     0x210000, 0x10000,
+storage,    data, spiffs,  0x220000, 0x1E0000,

@@ -1,0 +1,76 @@
+# Bus Storage viewer — a navigation SHELL over bus_storage / bus://assets
+# ([SPEC:CXC-LAUNCHBAR] [CXC-BUSNAV-APP] [CXC-BUSNAV-BROWSE] [CXC-BUSNAV-VIEW]).
+#
+# Tile 6's target.  Launched by `_app/busstore/open` (app_launcher.py -> a SCENE
+# spawn with --transports).  Same shell-over-store pattern as the Document
+# Storage viewer ([CXC-DOCNAV-APP]); the ONLY difference is the store client it
+# reads (bus_storage REST, :8420) and the address scheme (`bus://assets/<path>`).
+# On selecting an asset it fetches it repo-scoped and publishes `_app/doc/open`,
+# and the EXISTING doc-viewer renders it (compose.yaml / svg icon / png / md).
+# NO renderer, NO upload/delete path ([CXC-BUSNAV-READONLY]).
+#
+# STORE-API GAP (flagged): bus_storage exposes GET /api/v1/assets/{path} +
+# GET /api/v1/namespaces but NO asset-DIRECTORY listing endpoint, so the asset
+# tree cannot be enumerated from the API today.  Until the server grows a
+# listing endpoint, the top level is seeded from the curated `roots:` below
+# (reachability + fetch + view work fully against the real store).  See the
+# store_browser BusStoreAdapter note + the build SUMMARY.
+#
+# `_app/doc/open` reaches the GLOBAL (MQTT) leg (scope: global + --transports) so
+# the out-of-process doc_viewer_launcher receives it.
+#
+# RESIZABLE + reflow + persisted geometry ([CXC-R-WINDOW-RESIZE]); flex column,
+# floored 640x480, geometry persists under `busstore-viewer`.
+#
+#   python3 -m composeio.render.engine.runtime \
+#       apps/compose_platform_launch_bar/busstore_viewer.compose.yaml --transports
+
+app:
+  id: busstore-viewer
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+design:
+  title: "Bus Storage"
+  theme: dark
+  width: 820
+  height: 720
+  resizable: true
+  min_width: 640
+  min_height: 480
+  persist_geometry: true
+  window_key: busstore-viewer
+  padding: 0
+  gap: 0
+
+namespaces:
+  - {name: _app/doc/open, state_engine: json, export: true, scope: global,
+     label: "Open asset (select)"}
+
+widgets:
+  - type: stack
+    id: frame
+    direction: column
+    align: stretch
+    grow: 1
+    background: "#0A0E17"
+    corner_radius: 0
+    clip: true
+    padding: [14, 16, 12, 16]
+    gap: 8
+    children:
+      - type: store_browser
+        id: browser
+        store: busstore
+        title: "Bus Storage"
+        open_namespace: _app/doc/open
+        grow: 1
+        # curated top-level assets (bus_storage has no asset-listing API — see
+        # the header note).  Point these at the assets a curator browses today.
+        roots:
+          - bus://assets/displays/cyd-45302c.compose.yaml
+          - bus://assets/animations/dradis.json
+          - bus://assets/fonts/IBMPlexSans-Regular.ttf
+          - bus://assets/icons/compose_console.svg

@@ -1,0 +1,200 @@
+# R503 fingerprint-game — player / character / RBAC BINDING UI.
+#
+# FUNCTIONAL PLACEHOLDER ([SPEC:CXC-FPSVC-*]).  The operator enters people,
+# captures up to two templates each, defines the character RBAC, casts people
+# to characters, and STARTS a game (which fires the roster push).  This scene
+# composes EXISTING widgets (text_input, emit_button, label) + the ONE new
+# info_list panel — nothing is forked.  The Colonial (BSG) visual language is
+# David's to author; this is FUNCTION + REUSE only.
+#
+# Run headless:  python -m composeio.render.examples.fingerprint.drive
+#
+# The commands are published by the emit_buttons, which interpolate the live
+# text_input values; the info_list panels render the binder's fp/view/* state.
+
+app:
+  id: fp-casting
+  transports: []                 # in-process bus; the binder rides it
+
+# [CXC-PROJECT-WIDGETS] import the module that self-registers `info_list`
+# BEFORE any type: is resolved — zero engine edits.
+widget_modules:
+  - composeio.render.widgets.fingerprint_panel
+
+design:
+  target: desktop
+  title: "R503 — Player / Character / RBAC binding (placeholder)"
+  theme: dark
+  width: 1200
+  height: 920
+
+namespaces:
+  - {name: "fp/in/person_id",    state_engine: json}
+  - {name: "fp/in/display_name", state_engine: json}
+  - {name: "fp/in/role",         state_engine: json}
+  - {name: "fp/in/capabilities", state_engine: json}
+  - {name: "fp/in/character",    state_engine: json}
+  - {name: "fp/cmd/add_person",       state_engine: json}
+  - {name: "fp/cmd/capture_template", state_engine: json}
+  - {name: "fp/cmd/define_role",      state_engine: json}
+  - {name: "fp/cmd/define_character", state_engine: json}
+  - {name: "fp/cmd/cast",             state_engine: json}
+  - {name: "fp/cmd/start_game",       state_engine: json}
+  - {name: "fp/view/roster",   state_engine: json}
+  - {name: "fp/view/castings", state_engine: json}
+  - {name: "fp/view/roles",    state_engine: json}
+  - {name: "fp/view/push",     state_engine: json}
+  - {name: "fp/view/status",   state_engine: json}
+
+widgets:
+  - type: label
+    id: title
+    text: "R503 fingerprint game — bind players, characters & RBAC, then start"
+    font_size: 18
+    font_weight: bold
+    color: [0x8A, 0xD4, 0xFF]
+    align: left
+    height: 28
+
+  - type: label
+    id: subtitle
+    namespace: "fp/view/status"
+    text: "status…"
+    font_size: 12
+    color: [0xFF, 0xC1, 0x66]
+    align: left
+    height: 18
+
+  - type: stack
+    id: body
+    direction: row
+    gap: 18
+    align: start
+
+    children:
+      # ─────────────── LEFT: the binding form (existing widgets) ───────────────
+      - type: stack
+        id: form_col
+        direction: column
+        gap: 8
+        padding: 14
+        width: 380
+        background: [0x22, 0x24, 0x2E, 235]
+        border: [0x3A, 0x3E, 0x4C]
+        corner_radius: 10
+
+        children:
+          - {type: label, text: "PERSON", font_size: 12, font_weight: bold,
+             color: [0x8A, 0xD4, 0xFF], height: 18}
+          - {type: text_input, id: f_person_id, label: "person id",
+             placeholder: "e.g. adama", namespace: "fp/in/person_id", height: 60}
+          - {type: text_input, id: f_display_name, label: "display name",
+             placeholder: "e.g. William Adama", namespace: "fp/in/display_name",
+             height: 60}
+          - type: emit_button
+            id: b_add_person
+            label: "Add / Update Person"
+            emits:
+              - namespace: "fp/cmd/add_person"
+                value:
+                  person_id: {namespace: "fp/in/person_id", default: ""}
+                  display_name: {namespace: "fp/in/display_name", default: ""}
+            height: 36
+
+          - {type: label, text: "TEMPLATES  (max 2, keyed by person+ordinal)",
+             font_size: 12, font_weight: bold, color: [0x8A, 0xD4, 0xFF],
+             height: 18}
+          - type: emit_button
+            id: b_capture_1
+            label: "Capture finger #1 for person id"
+            emits:
+              - namespace: "fp/cmd/capture_template"
+                value:
+                  person: {namespace: "fp/in/person_id", default: ""}
+                  ordinal: 1
+            height: 34
+          - type: emit_button
+            id: b_capture_2
+            label: "Capture finger #2 for person id"
+            emits:
+              - namespace: "fp/cmd/capture_template"
+                value:
+                  person: {namespace: "fp/in/person_id", default: ""}
+                  ordinal: 2
+            height: 34
+
+          - {type: label, text: "RBAC  (role -> capabilities; character -> role)",
+             font_size: 12, font_weight: bold, color: [0x8A, 0xD4, 0xFF],
+             height: 18}
+          - {type: text_input, id: f_role, label: "role",
+             placeholder: "e.g. command", namespace: "fp/in/role", height: 60}
+          - {type: text_input, id: f_caps, label: "capabilities (comma-sep)",
+             placeholder: "e.g. open_hatch, jump", namespace: "fp/in/capabilities",
+             height: 60}
+          - type: emit_button
+            id: b_define_role
+            label: "Define Role"
+            emits:
+              - namespace: "fp/cmd/define_role"
+                value:
+                  role: {namespace: "fp/in/role", default: ""}
+                  capabilities: {namespace: "fp/in/capabilities", default: ""}
+            height: 36
+          - {type: text_input, id: f_character, label: "character",
+             placeholder: "e.g. commander", namespace: "fp/in/character", height: 60}
+          - type: emit_button
+            id: b_define_char
+            label: "Define Character (uses role above)"
+            emits:
+              - namespace: "fp/cmd/define_character"
+                value:
+                  character: {namespace: "fp/in/character", default: ""}
+                  role: {namespace: "fp/in/role", default: ""}
+            height: 36
+
+          - {type: label, text: "CAST & START  (person id + character above)",
+             font_size: 12, font_weight: bold, color: [0x8A, 0xD4, 0xFF],
+             height: 18}
+          - type: emit_button
+            id: b_cast
+            label: "Cast person as character"
+            emits:
+              - namespace: "fp/cmd/cast"
+                value:
+                  person: {namespace: "fp/in/person_id", default: ""}
+                  character: {namespace: "fp/in/character", default: ""}
+            height: 36
+          - type: emit_button
+            id: b_start_game
+            label: ">> START GAME  (fires roster push)"
+            emits:
+              - namespace: "fp/cmd/start_game"
+                value: {go: 1}
+            height: 40
+
+      # ─────────────── RIGHT: live model views (the new info_list) ───────────────
+      - type: stack
+        id: views_col
+        direction: column
+        gap: 12
+        width: 760
+
+        children:
+          - {type: info_list, id: v_roster, title: "ROSTER  (person · name · fp count · cast)",
+             namespace: "fp/view/roster", empty_text: "no people yet",
+             width: 760, height: 190}
+          - type: stack
+            id: mid_row
+            direction: row
+            gap: 12
+            align: start
+            children:
+              - {type: info_list, id: v_castings, title: "CASTINGS",
+                 namespace: "fp/view/castings", empty_text: "no castings",
+                 width: 374, height: 190}
+              - {type: info_list, id: v_roles, title: "RBAC ROLES",
+                 namespace: "fp/view/roles", empty_text: "no roles",
+                 width: 374, height: 190}
+          - {type: info_list, id: v_push, title: "LAST ROSTER PUSH  (what crossed the bus — NO slot)",
+             namespace: "fp/view/push", empty_text: "no game started yet",
+             width: 760, height: 258}

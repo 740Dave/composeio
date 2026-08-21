@@ -1,0 +1,121 @@
+# BSG "2-up" — TWO stacked Colonial Consoles ([SPEC:CXC-CIC] [CXC-CIC-TWO-UP])
+#
+# David's spec: "When on the BSG widget, two instances of the Colonial Console
+# should be rendered one on top of the other, with 20 px of vertical padding."
+#
+# This is the APP the carousel BSG tile launches: the launcher's BSG tile fires
+# `_app/bsg/open` on a center-tap, and the deploy-time host router opens THIS
+# scene fullscreen (see launcher.compose.yaml + README "rpi5 deploy mechanism").
+# It is NOT a carousel tile body — the carousel owns all pointer input and a 4:3
+# console cannot fit or stay interactive in a 520px tile; the 2-up fills the full
+# portrait surface as its own scene.
+#
+# Portrait 1080x1920 — the rpi5 kiosk (HDMI-A-1 rotated 270), which is exactly
+# why two 4:3 consoles stack VERTICALLY: each fills 1080 wide -> 810 tall (4:3).
+# The top console is TOP-aligned (y=0) and the bottom console BOTTOM-aligned
+# (y=1110), so each is flush to its screen edge (David's alignment).  This is
+# the 16:9-flipped-portrait duty-station PAIRING ([CXC-CIC-TWO-UP]).
+#
+# The two consoles are DISTINCT DUTY STATIONS ([CXC-CIC-DUTY-STATION]):
+#   * top    = cic.1.helm   (namespaces colonial_console/cic.1.helm/*)
+#   * bottom = cic.2.helm   (namespaces colonial_console/cic.2.helm/*)
+# so they carry INDEPENDENT selection/content/status and never cross-wire — a
+# publish to one station moves only that console (proven in the test + proof).
+#
+# COMPOSED, never forked: each console is the full landed exact-art
+# `colonial_console` widget (Tiny5, SVG row artwork, radios, exact REBOOT/SHUT
+# DOWN, DRADIS drop-in).  This scene invents NO widget code — it stacks two of
+# them in a pixel_stack (Composer's absolute-layout export format).
+#
+#   Run headless:  cd python && PYTHONPATH=. python3 \
+#     -m composeio.render.run_compose \
+#     ../compose_projects/carousel/bsg_app.compose.yaml --headless /tmp/bsg.png
+#   Run live:      COMPOSEUX_MQTT_BROKER=mqtt-broker.local PYTHONPATH=. \
+#     python3 -m composeio.render.run_compose \
+#     ../compose_projects/carousel/bsg_app.compose.yaml --fullscreen --transports
+#
+# [DEC-STATION-ID-IS-A-RUNTIME-BINDING-ATTRIBUTE] The two `station:` values
+# below are document `variables:` ($station_1/$station_2, declared just below),
+# not hardcoded constants — a LAUNCH override (env `COMPOSEIO_VAR_STATION_1=...`
+# / `COMPOSEIO_VAR_STATION_2=...`, or `run_compose ... --var station_1=...`) can
+# replace either default at run-time, per physical device, with NO scene edit.
+# Giving two physical monitors the SAME override id MIRRORS their selection
+# state (the station scoping already keys on this id); giving them DIFFERENT
+# ids keeps them independent, exactly as today. No override given == today's
+# exact cic.1.helm / cic.2.helm behavior, byte-for-byte.
+
+variables:
+  station_1: cic.1.helm
+  station_2: cic.2.helm
+
+# The `colonial_console` widget is PROJECT-LOCAL to BSG ([CXC-PROJECT-WIDGETS]):
+# declaring the BSG widget module here makes the parser import + self-register it
+# from compose_projects/bsg/widgets/ BEFORE resolving the `type:` tokens below.
+widget_modules:
+  - compose_projects.bsg.widgets
+
+app:
+  id: bsg-two-up
+  # External bus transport ([DP-CIO-5]).  Connected ONLY with --transports (the
+  # kiosk launches this scene with it), so the two consoles' duty-station
+  # namespaces (colonial_console/cic.1.helm/*, colonial_console/cic.2.helm/*)
+  # are LIVE on the shared broker.  mqtt-broker.local == mqtt-broker.local.
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+design:
+  width: 1080
+  height: 1920
+  title: Battlestar Galactica — CIC 2-up
+  padding: 0
+  gap: 0
+  background: "#000000"
+
+widgets:
+  # The 2-up is a pixel_stack (absolute px layout — Composer's export format):
+  # two consoles placed at explicit y.  Each console is sized 1080x810 (an exact
+  # 4:3 box) and its measure() fills that rect, so it renders EXACTLY 810px tall
+  # (measured headless: top 140->950, bottom 970->1780 before this edit).
+  # `compute_geometry` scales the native 1280x960 layer bands in with no
+  # distortion.
+  #
+  # VERTICAL ALIGNMENT (David): the top console is flush to the TOP edge and the
+  # bottom console is flush to the BOTTOM edge (was: centered 140/970).  With a
+  # measured 810px console height: top y=0 (0..810), bottom y=1110 (1110..1920).
+  - type: pixel_stack
+    id: bsg_2up
+    width: 1080
+    height: 1920
+    background: "#000000"
+    children:
+
+      # ── TOP console — duty station cic.1.helm ──────────────────────────────
+      # y=0: TOP-aligned, top edge flush to the screen top; 1080x810 = 4:3.
+      # radio_selected: 2 -> EXT (of [DRADIS=0, STD=1, EXT=2, CHRONO=3]) — boots
+      # to the external-view rotating art ([CXC-CIC-RADIO-MODE]).
+      - type: colonial_console
+        id: cic_top
+        station: "$station_1"
+        theme: cic
+        firmware: "COLONIAL FLEET OS v0.1  ·  STN 1"
+        radio_selected: 2
+        x: 0
+        y: 0
+        w: 1080
+        h: 810
+
+      # ── BOTTOM console — duty station cic.2.helm ───────────────────────────
+      # y = 1920 - 810 = 1110: BOTTOM-aligned, bottom edge flush to screen bottom.
+      # radio_selected: 1 -> STD (the standard nav content / DRADIS drop-in).
+      - type: colonial_console
+        id: cic_bottom
+        station: "$station_2"
+        theme: cic
+        firmware: "COLONIAL FLEET OS v0.1  ·  STN 2"
+        radio_selected: 1
+        x: 0
+        y: 1110
+        w: 1080
+        h: 810

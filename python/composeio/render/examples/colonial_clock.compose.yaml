@@ -1,0 +1,40 @@
+# [CXC-SEVEN-SEG] Colonial Clock — a live digital HH:MM:SS clock, styled as a
+# clean single-line Colonial (BSG) UX widget (amber lit segments + amber wash).
+#
+#
+# The GENERIC SevenSegmentDisplay widget (render/widgets/seven_segment.py),
+# styled by a project SVG: the seven segment shapes come from
+# assets/seven_segment.svg (David's named a..g groups) and the ':' from
+# assets/seven_segment_colon.svg — the widget only lights/dims + recolors them.
+#
+#   $ cd python/composeio/render/examples
+#   $ python3 -m composeio.render.engine.runtime colonial_clock.compose.yaml
+#
+# Bus surface (control-is-a-peer) — from any bus peer:
+#   publish  clock/color = "#39d0e0"        -> the LIT segment color recolors
+#
+# The clock updates every second off the clocked-widget substrate
+# (register_clocked / on_clock_tick), the same deterministic tick seam the EXT
+# rotation and Lottie playback ride.
+
+design:
+  width: 900
+  height: 280
+  title: Colonial Clock
+  background: [10, 12, 18]
+  background_wash: {color: [217, 103, 25, 22], cx: 0.5, cy: 0.5, r: 0.75}
+
+widgets:
+  # -- the live clock (HH:MM:SS), driven by the clocked substrate -----------
+  - type: seven_segment
+    id: clock
+    x: 30
+    y: 35
+    width: 840
+    height: 210
+    src: file://assets/seven_segment.svg
+    colon_src: file://assets/seven_segment_colon.svg
+    lit_color: "#ff9a30"
+    clock: true
+    clock_format: "%H:%M:%S"
+    color_namespace: clock/color        # publish a color here to recolor

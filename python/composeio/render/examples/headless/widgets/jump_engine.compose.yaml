@@ -1,0 +1,50 @@
+# ComposeUX headless widget — jump_engine
+# ([SPEC:CXC-HEADLESS] [CXC-HW-MODEL] · re-authored for [SPEC:CXC-DSL]
+# Pass 2, [CXC-DSL-TRIAD])
+#
+# Subscribes fuel + charge; publishes jumpdrive/readiness when BOTH
+# thresholds are met — as ONE expression:
+#
+#     ns('fuel/remaining') >= $fuel_min and ns('ship/charge') >= $charge_min
+#
+# This closes [CXC-HW] compliance C2 for real.  The Pass-1 declarative
+# workaround (harvested DSL use-cases #3 and #4) needed THREE widgets,
+# TWO intermediate namespaces (jumpdrive/fuel_ok, jumpdrive/charge_ok),
+# a 1e9 `in:`-range sentinel for >=, and a binding + hold-behavior
+# revert composition — all collapsed into the single expression above,
+# with no inline code ([CXC-BIND-BOUNDARY] upheld, C8).
+#
+# Bus-triggered: readiness re-evaluates the instant either input
+# publishes (no per-hop tick latency — Pass 1 took two 0.1 s hops).
+# The published value is the typed boolean (canon 'on'/'off' downstream:
+# bind a visual LED's state to jumpdrive/readiness and it just works).
+
+app:
+  id: headless-jump-engine
+
+headless:
+  schedule:
+    mode: bus_triggered
+    trigger:
+      - fuel/remaining
+      - ship/charge
+
+variables:
+  fuel_min: 40.0              # jump needs fuel/remaining  >= 40
+  charge_min: 60.0            # ...and ship/charge         >= 60
+
+namespaces:
+  - name: jumpdrive/readiness
+    state_engine: json
+    initial: false            # not ready until proven ready
+
+widgets:
+  - type: gauge
+    id: readiness
+    label: "Jump readiness"
+    min: 0
+    max: 1
+    value: { expr: "ns('fuel/remaining') >= $fuel_min and ns('ship/charge') >= $charge_min ? 1.0 : 0.0" }
+    outputs:
+      - namespace: jumpdrive/readiness
+        expr: "ns('fuel/remaining') >= $fuel_min and ns('ship/charge') >= $charge_min"

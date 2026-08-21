@@ -1,0 +1,176 @@
+# Document Store Binary Enhancement Spec vs Implementation Gap Analysis [ANALYSIS:DS-BINARY-GAP]
+
+> Systematic comparison of spec/document-store-binary-enhancement.smd against server.py and python/composeio/docstore.py
+
+---
+
+## Meta
+
+{"type":"meta","id":"gap-analysis-meta","version":"2.0","created":"2026-03-30T00:00:00","product":"document_store_binary","spec_source":"services/document_store/spec/document-store-binary-enhancement.smd","spec_files":["document-store-binary-enhancement.smd"],"impl_source":["services/document_store/server.py","python/composeio/docstore.py"],"areas_analyzed":["storage","http_api","python_client","compliance"],"prior_report":null,"reports_dir":"services/document_store/spec-impl-gap-reports/"}
+
+---
+
+## Delta Since Last Analysis
+
+No prior report found. This is the first run. Delta analysis skipped.
+
+---
+
+## Spec Files Analyzed
+
+| File | Entities | Description |
+|------|----------|-------------|
+| document-store-binary-enhancement.smd | 16 | Binary upload/download enhancement to document_store; filesystem + SQLite; Python client extension |
+
+---
+
+## Cross-Reference Map
+
+{"type":"cross_ref","spec_id":"DS-BINARY-STORAGE-FS","spec_file":"document-store-binary-enhancement.smd","impl_files":["server.py"],"impl_status":"full","notes":"_blob_path() uses os.path.join; blobs/{collection}/{doc_id} layout matches spec exactly"}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-STORAGE-META","spec_file":"document-store-binary-enhancement.smd","impl_files":["server.py"],"impl_status":"full","notes":"_binary_meta table created in _load_collections() with all specified columns and PRIMARY KEY"}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-STORAGE-PLAT","spec_file":"document-store-binary-enhancement.smd","impl_files":["server.py"],"impl_status":"full","notes":"os.path.join, os.makedirs(exist_ok=True), open wb — all satisfied"}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-API-DISPATCH","spec_file":"document-store-binary-enhancement.smd","impl_files":["server.py"],"impl_status":"full","notes":"PUT handler checks Content-Type; absent or application/json goes JSON path; anything else goes binary path"}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-API-PUT","spec_file":"document-store-binary-enhancement.smd","impl_files":["server.py"],"impl_status":"partial","notes":"Response shape matches spec. Status code is 201 not 200 — spec shows 200 implicitly (no explicit code stated). Minor drift only."}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-API-GET","spec_file":"document-store-binary-enhancement.smd","impl_files":["server.py"],"impl_status":"full","notes":"Binary-first check in GET handler; falls through to JSON if no binary record"}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-API-DELETE","spec_file":"document-store-binary-enhancement.smd","impl_files":["server.py"],"impl_status":"full","notes":"delete_binary() removes file + metadata row; falls through to JSON delete"}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-API-LIST","spec_file":"document-store-binary-enhancement.smd","impl_files":["server.py"],"impl_status":"full","notes":"Collection GET merges json_docs + binary_docs with type markers; matches spec shape exactly"}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-API-STATUS","spec_file":"document-store-binary-enhancement.smd","impl_files":["server.py"],"impl_status":"full","notes":"binary_stats() merged into status() response; all three fields present"}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-CLIENT-METHODS","spec_file":"document-store-binary-enhancement.smd","impl_files":["python/composeio/docstore.py"],"impl_status":"partial","notes":"put_binary() and get_binary() present with correct signatures. put_binary() returns None on error instead of raising — see gap below."}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-CYD-PORT","spec_file":"document-store-binary-enhancement.smd","impl_files":[],"impl_status":"missing","notes":"wifi_config.h not present in the scoped implementation files. Port alignment to 8421 not verified."}
+
+{"type":"cross_ref","spec_id":"DS-BINARY-CYD-PATH","spec_file":"document-store-binary-enhancement.smd","impl_files":[],"impl_status":"missing","notes":"CYD upload path PUT /api/v1/collections/captures/{device_id}/{timestamp}.bmp — server supports nested doc_id via /'.join(parts[5:]) so the path WOULD work, but CYD firmware side is out of scope of the two specified impl files"}
+
+---
+
+## Findings by Area
+
+### storage
+
+{"type":"gap","id":"gap-DS-BINARY-STORAGE-FS-1","category":"UNDERSPECIFIED_NOW_IMPLEMENTED","priority":"P3","area":"storage","spec_ref":"DS-BINARY-STORAGE-FS","spec_file":"document-store-binary-enhancement.smd","spec_says":"Default blob directory: /var/lib/composeio/blobs/","impl_has":"_db_dir is parent of the .db file; blobs subdirectory is relative to that. If COMPOSEIO_DOCSTORE_DB=/var/lib/composeio/docstore.db then blob_directory=/var/lib/composeio/blobs — matches. But if DB is elsewhere the blob root moves with it.","impl_file":"server.py","recommendation":"Spec and implementation agree when using the default path. Add a note to the spec clarifying that blob_directory is always co-located with the DB file, not a fixed path. No code change needed.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-STORAGE-META-1","category":"UNDERSPECIFIED_NOW_IMPLEMENTED","priority":"P3","area":"storage","spec_ref":"DS-BINARY-STORAGE-META","spec_file":"document-store-binary-enhancement.smd","spec_says":"Table created at startup alongside existing collection tables.","impl_has":"Table created inside _load_collections(), which is called from __init__. Correct. However, _load_collections() also excludes _binary_meta from the _collections_cache set, which is correct but not stated in the spec.","impl_file":"server.py","recommendation":"Informational only. Implementation is sound. No action needed.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-storage","area":"storage","total_gaps":2,"by_category":{"UNDERSPECIFIED_NOW_IMPLEMENTED":2},"by_priority":{"P3":2},"notes":"Storage layer is fully implemented and matches the spec. Both findings are informational."}
+
+### http_api
+
+{"type":"gap","id":"gap-DS-BINARY-API-PUT-1","category":"SPEC_IMPL_MISMATCH","priority":"P3","area":"http_api","spec_ref":"DS-BINARY-API-PUT","spec_file":"document-store-binary-enhancement.smd","spec_says":"Response body shows status/collection/doc_id/size_bytes/content_type. No HTTP status code specified in the spec text.","impl_has":"Returns HTTP 201 Created for all PUT operations (both JSON and binary paths). The spec response example implies 200 by omission but does not state it explicitly.","impl_file":"server.py","recommendation":"201 is semantically correct for a create/upsert. Update the spec to explicitly state HTTP 201. No code change needed.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-API-LIST-1","category":"IMPLEMENTED_NOT_SPECIFIED","priority":"P3","area":"http_api","spec_ref":"DS-BINARY-API-LIST","spec_file":"document-store-binary-enhancement.smd","spec_says":"GET /api/v1/collections/{collection} returns documents array with type markers.","impl_has":"The JSON document entries include only {id, type:json} — no size_bytes or content_type for JSON docs, which is consistent with spec. However, the spec does not address the case where a collection has no JSON table (binary-only collection). Implementation handles this via binary_collections() set difference in list_collections(), but list_docs() for a binary-only collection would return empty list rather than 404.","impl_file":"server.py","recommendation":"Informational. The binary-only collection case is handled gracefully. Consider adding a note to the spec.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-API-GET-1","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"http_api","spec_ref":"DS-BINARY-API-GET","spec_file":"document-store-binary-enhancement.smd","spec_says":"GET checks _binary_meta first; if binary record exists serve raw bytes with stored Content-Type; otherwise fall through to JSON lookup.","impl_has":"Implementation does binary-first check correctly. However: if the binary metadata row exists but the filesystem file is missing (os.path.exists check fails), get_binary() returns None and the handler falls through to the JSON lookup instead of returning a 404 or 500. This creates a silent data-loss scenario — a corrupt store (meta row present, file deleted) returns a JSON 404 rather than an error indicating the binary record is broken.","impl_file":"server.py","recommendation":"In DocumentStore.get_binary(), when meta is found but file is missing, log an error and return a sentinel (e.g., raise an exception or return a distinct value) so the handler can return HTTP 500 or 404 with an informative body. Add a compliance note in the spec for this edge case.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-http_api","area":"http_api","total_gaps":3,"by_category":{"SPEC_IMPL_MISMATCH":2,"IMPLEMENTED_NOT_SPECIFIED":1},"by_priority":{"P2":1,"P3":2},"notes":"One substantive gap (P2): missing-file-but-metadata-present case is silently swallowed. Two minor informational gaps."}
+
+### python_client
+
+{"type":"gap","id":"gap-DS-BINARY-CLIENT-1","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"python_client","spec_ref":"DS-BINARY-CLIENT-METHODS","spec_file":"document-store-binary-enhancement.smd","spec_says":"put_binary(collection, doc_id, data, content_type) -> dict","impl_has":"Returns None on exception rather than raising. The return type annotation says -> dict but the implementation can return None. Callers doing result['status'] will get a TypeError with no indication of what failed beyond a logged message.","impl_file":"python/composeio/docstore.py","recommendation":"Either annotate as -> dict | None (and update spec) or raise on failure. Given the existing client methods all return None on error, the pattern is consistent — but the spec signature implies dict always. Align spec to dict | None or add explicit error handling contract.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-CLIENT-2","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"python_client","spec_ref":"DS-BINARY-CLIENT-METHODS","spec_file":"document-store-binary-enhancement.smd","spec_says":"get_binary(collection, doc_id) -> tuple[bytes, str]","impl_has":"Returns None on 404 or exception. Same return-type mismatch as put_binary. Additionally, the timeout is 30s for binary methods vs 5s for JSON methods — this is a reasonable implementation choice not covered in the spec.","impl_file":"python/composeio/docstore.py","recommendation":"Update spec signature to tuple[bytes, str] | None. The 30s timeout is appropriate for large files; add a note to the spec or docstring.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-CLIENT-3","category":"IMPLEMENTED_NOT_SPECIFIED","priority":"P3","area":"python_client","spec_ref":"DS-BINARY-CLIENT-METHODS","spec_file":"document-store-binary-enhancement.smd","spec_says":"Spec lists put_binary and get_binary as the two methods to add. No mention of Content-Length header on upload.","impl_has":"put_binary() explicitly sets Content-Length header on the request. This is correct HTTP practice and ensures the server can use _read_body() reliably. urllib.request may also set it automatically, making this redundant but harmless.","impl_file":"python/composeio/docstore.py","recommendation":"Informational only. No action needed.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-python_client","area":"python_client","total_gaps":3,"by_category":{"SPEC_IMPL_MISMATCH":2,"IMPLEMENTED_NOT_SPECIFIED":1},"by_priority":{"P2":2,"P3":1},"notes":"Two P2 return-type mismatches between spec signatures and actual implementation behavior. These are documentation accuracy gaps, not functional bugs."}
+
+### compliance
+
+{"type":"gap","id":"gap-DS-BINARY-C1","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C1","spec_file":"document-store-binary-enhancement.smd","spec_says":"Binary PUT with Content-Type: image/bmp stores file to filesystem and metadata to SQLite","impl_has":"PASS. PUT handler dispatches to binary path for image/bmp. put_binary() writes to filesystem and commits to _binary_meta. Fully implemented.","impl_file":"server.py","recommendation":"No action needed.","status":"resolved","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-C2","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C2","spec_file":"document-store-binary-enhancement.smd","spec_says":"Binary GET returns raw bytes with correct Content-Type header","impl_has":"PASS. GET handler calls get_binary(); _send_binary() sets Content-Type from stored metadata. Fully implemented. (Caveat: missing-file edge case from gap-DS-BINARY-API-GET-1 applies.)","impl_file":"server.py","recommendation":"Address gap-DS-BINARY-API-GET-1 to harden this compliance item.","status":"resolved","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-C3","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C3","spec_file":"document-store-binary-enhancement.smd","spec_says":"JSON PUT behavior is completely unchanged","impl_has":"PASS. JSON path is guarded by `ct.startswith('application/json') or ct == ''`. The existing _store.put() call and 201 response are unchanged from original behavior.","impl_file":"server.py","recommendation":"No action needed.","status":"resolved","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-C4","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C4","spec_file":"document-store-binary-enhancement.smd","spec_says":"JSON GET behavior is completely unchanged","impl_has":"PASS. GET handler falls through to _store.get() after binary check returns None. JSON documents unaffected.","impl_file":"server.py","recommendation":"No action needed.","status":"resolved","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-C5","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C5","spec_file":"document-store-binary-enhancement.smd","spec_says":"Collection listing includes both JSON and binary documents","impl_has":"PASS. Collection GET builds json_docs list and merges with list_binary_docs() result. Shape matches spec exactly.","impl_file":"server.py","recommendation":"No action needed.","status":"resolved","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-C6","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C6","spec_file":"document-store-binary-enhancement.smd","spec_says":"Binary DELETE removes both filesystem file and metadata row","impl_has":"PASS. delete_binary() checks meta exists, removes file (if present), then deletes metadata row. Both operations committed.","impl_file":"server.py","recommendation":"No action needed.","status":"resolved","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-C7","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C7","spec_file":"document-store-binary-enhancement.smd","spec_says":"Python client put_binary() successfully uploads a binary file","impl_has":"PASS — functionally. Method is present, constructs correct PUT with binary Content-Type, reads JSON response. Return-type signature mismatch noted in gap-DS-BINARY-CLIENT-1 is a doc gap, not a functional failure.","impl_file":"python/composeio/docstore.py","recommendation":"No functional action needed. Resolve gap-DS-BINARY-CLIENT-1 for spec accuracy.","status":"resolved","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-C8","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C8","spec_file":"document-store-binary-enhancement.smd","spec_says":"Python client get_binary() successfully downloads a binary file with correct content type","impl_has":"PASS — functionally. Method is present, reads Content-Type from response headers, returns (bytes, str). Return-type signature mismatch noted in gap-DS-BINARY-CLIENT-2 is a doc gap.","impl_file":"python/composeio/docstore.py","recommendation":"No functional action needed. Resolve gap-DS-BINARY-CLIENT-2 for spec accuracy.","status":"resolved","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-C9","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C9","spec_file":"document-store-binary-enhancement.smd","spec_says":"Service starts and creates blob directory on first binary upload","impl_has":"PASS. Blob directory is NOT created at startup — it is created lazily on first put_binary() call via os.makedirs(os.path.dirname(blob), exist_ok=True). The spec says 'on first binary upload' so lazy creation is correct behavior.","impl_file":"server.py","recommendation":"No action needed. The spec wording and implementation are aligned.","status":"resolved","delta":"NEW"}
+
+{"type":"gap","id":"gap-DS-BINARY-C10","category":"SPEC_NOT_IMPLEMENTED","priority":"P0","area":"compliance","spec_ref":"DS-BINARY-C10","spec_file":"document-store-binary-enhancement.smd","spec_says":"No new Python dependencies beyond stdlib","impl_has":"PASS. server.py imports: json, logging, os, sqlite3, time, http.server, pathlib, urllib.parse — all stdlib. docstore.py imports: json, logging, urllib.request, urllib.error, typing — all stdlib.","impl_file":"server.py, python/composeio/docstore.py","recommendation":"No action needed.","status":"resolved","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-compliance","area":"compliance","total_gaps":10,"by_category":{"SPEC_NOT_IMPLEMENTED":10},"by_priority":{"P0":10},"notes":"All 10 compliance items pass. Two items (C2, C7, C8) have associated documentation-level caveats from other findings but are functionally compliant."}
+
+---
+
+## Summary
+
+### Compliance Scorecard
+
+| Item | Result | Notes |
+|------|--------|-------|
+| DS-BINARY-C1 | PASS | Binary PUT stores file + metadata |
+| DS-BINARY-C2 | PASS* | *Edge case: missing file silently falls through (gap-DS-BINARY-API-GET-1) |
+| DS-BINARY-C3 | PASS | JSON PUT unchanged |
+| DS-BINARY-C4 | PASS | JSON GET unchanged |
+| DS-BINARY-C5 | PASS | Collection listing merged correctly |
+| DS-BINARY-C6 | PASS | DELETE removes file + row |
+| DS-BINARY-C7 | PASS* | *Return type is dict | None, not dict (gap-DS-BINARY-CLIENT-1) |
+| DS-BINARY-C8 | PASS* | *Return type is tuple | None, not tuple (gap-DS-BINARY-CLIENT-2) |
+| DS-BINARY-C9 | PASS | Blob dir created lazily on first upload |
+| DS-BINARY-C10 | PASS | No dependencies beyond stdlib |
+
+### By Category
+
+| Category | Count | P0 | P1 | P2 | P3 |
+|----------|-------|----|----|----|----|
+| SPEC_IMPL_MISMATCH | 4 | 0 | 0 | 3 | 1 |
+| IMPLEMENTED_NOT_SPECIFIED | 2 | 0 | 0 | 0 | 2 |
+| UNDERSPECIFIED_NOW_IMPLEMENTED | 2 | 0 | 0 | 0 | 2 |
+| SPEC_NOT_IMPLEMENTED (all PASS) | 10 | 0 | 0 | 0 | 0 |
+
+*Note: The 10 compliance-area entries are all PASS verdicts recorded for traceability, not actual gaps.*
+
+### Actionable Gaps Only
+
+| ID | Priority | Area | Summary |
+|----|----------|------|---------|
+| gap-DS-BINARY-API-GET-1 | P2 | http_api | Metadata-present / file-missing case returns silent None, falls through to JSON 404 |
+| gap-DS-BINARY-CLIENT-1 | P2 | python_client | put_binary() return type is dict | None; spec says dict |
+| gap-DS-BINARY-CLIENT-2 | P2 | python_client | get_binary() return type is tuple | None; spec says tuple[bytes, str] |
+| gap-DS-BINARY-API-PUT-1 | P3 | http_api | PUT returns HTTP 201; spec implies 200 by omission |
+| gap-DS-BINARY-API-LIST-1 | P3 | http_api | Binary-only collection path undocumented in spec |
+| gap-DS-BINARY-CLIENT-3 | P3 | python_client | Explicit Content-Length header on upload not in spec (harmless) |
+| gap-DS-BINARY-STORAGE-FS-1 | P3 | storage | Blob dir tied to DB location, not fixed path — clarify in spec |
+| gap-DS-BINARY-STORAGE-META-1 | P3 | storage | _binary_meta exclusion from collections_cache not documented |
+
+### Gate Assessment
+
+- P0 issues: 0 — no blockers
+- P1 issues: 0 — no significant documentation accuracy issues
+- P2 issues: 3 — the missing-file edge case and the two return-type mismatches should be addressed before the spec is marked production-ready
+- P3 issues: 5 — informational; address at spec update time
+
+### Top Recommendations
+
+1. In server.py DocumentStore.get_binary(): when meta row exists but filesystem file is absent, return a distinct error value (or raise) so the HTTP handler can respond with 500/data-corruption rather than silently falling through to JSON lookup.
+2. Update spec signatures for put_binary() and get_binary() to reflect dict | None and tuple[bytes, str] | None return types, consistent with the rest of the client's error contract.
+3. Update spec section DS-BINARY-API-PUT to state HTTP 201 explicitly — the implementation is correct, the spec is ambiguous.
+
+---
+
+## Decision Log
+
+{Empty — decisions to be added during human review}
+
+---
+
+**Generated**: 2026-03-30T00:00:00
+**Report File**: /Users/davidleeburnett/Dropbox/Maker/composeio/services/document_store/spec-impl-gap-reports/gap-analysis-2026-03-30T00-00-00.smd
+**Prior Report**: None (first run)
+**Analysis Duration**: single-pass

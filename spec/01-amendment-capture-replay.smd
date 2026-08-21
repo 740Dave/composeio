@@ -1,0 +1,458 @@
+---
+scope: "Bus-level traffic capture, replay, and synthetic generation — the ComposeIO equivalent of CAN bus logging and playback. Replay sources: captured .bustrace, synthetic patterns, and external time-series archives (Prometheus/TSDB) for retroactive-fixture QA. Includes actuation-quarantine safety for replay onto a control-carrying bus."
+audience: "Bus library implementers, ComposeApp developers, makers testing dashboards without live hardware"
+boundary: "Capture format and replay transport only; bus protocol in 01-composeio-bus-protocol.smd; transport interface in 08-composeio-app-framework.smd"
+not-this: "Not application-level simulation logic; not widget rendering; not test mocking"
+depends-on: [SPEC:CIO-BUS-PROTOCOL, SPEC:CIO-APP]
+amends: SPEC:CIO-BUS-PROTOCOL
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# Amendment: Bus Capture and Replay [AMEND:BP-CAPTURE-REPLAY]
+
+> Every CAN toolchain ships a bus logger and replay tool. ComposeIO needs the same capability: tap a live bus, record traffic to a file, replay it later as though the original sources were publishing. A replay file played into a design bus is indistinguishable from live hardware — the consuming application (dashboard, ComposeUX preview, bus monitor) cannot tell the difference.
+
+---
+
+## 1. Problem Statement [CR-PROBLEM]
+
+### 1.1 The Missing Test Harness [CR-PROBLEM-GAP]
+
+A maker designs a dashboard panel in ComposeUX: gauges bound to `engine_rpm`, buttons bound to `ftl_arm`, relays bound to `shields`. To see the dashboard actually work, they need live bus traffic on those namespaces. Today, that requires:
+
+- Physical hardware on the bus (CAN button panel, MQTT sensors), or
+- Another application publishing to the same namespaces
+
+Neither is available when designing from first principles, testing remotely, or demoing without infrastructure.
+
+### 1.2 The Automotive Precedent [CR-PROBLEM-PRECEDENT]
+
+CAN bus toolchains (Vector CANoe, PCAN-Explorer, Kvaser) solve this with capture/replay:
+
+1. **Capture**: Tap a live CAN bus, record every frame with timestamp
+2. **Replay**: Play the recording back onto a bus segment. The speedometer under test sees the same frames as during the original drive.
+3. **Generation**: Author synthetic traffic patterns (ramp, sine, toggle) for namespaces that don't have real hardware yet.
+
+ComposeIO needs all three. The replay mechanism should be a transport — it plugs into the same slot as MQTT or UART, and the bus dispatch path handles it identically.
+
+---
+
+## 2. Capture Format [CR-FORMAT]
+
+### 2.1 File Format: `.bustrace` [CR-FORMAT-FILE]
+
+A `.bustrace` file is a newline-delimited JSON (NDJSON) file. Each line is one captured bus message with a wall-clock delta from the previous message.
+
+```jsonl
+{"dt":0,"ns":"engine_rpm","type":"state","val":"128","src":"ecu-1","scope":"global","seq":1}
+{"dt":30000,"ns":"engine_rpm","type":"state","val":"142","src":"ecu-1","scope":"global","seq":2}
+{"dt":30000,"ns":"cabin_temp","type":"state","val":"72","src":"sensor-3","scope":"global","seq":5}
+{"dt":500,"ns":"ftl_arm","type":"event","val":"pressed","src":"panel-1","scope":"global","seq":100}
+{"dt":0,"ns":"ftl_arm","type":"state","val":"on","src":"panel-1","scope":"global","seq":101}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `dt` | uint32 | Delta time in milliseconds since previous message. First message has `dt: 0`. |
+| `ns` | string | Namespace (from captured BusMessage) |
+| `type` | string | Message type enum string: `state`, `event`, `heartbeat`, `discovery`, etc. |
+| `val` | string or object | Value (from captured BusMessage). Strings for state/event, objects for discovery/json engine |
+| `src` | string | Source module ID (from captured BusMessage) |
+| `scope` | string | Scope enum string: `local`, `global`, `remote`, `auto` |
+| `seq` | uint16 | Sequence number (from captured BusMessage) |
+
+Optional fields (included when present in the original message):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ttl` | uint8 | TTL hop count |
+| `pri` | string | Priority: `low`, `normal`, `high`, `critical` |
+| `cid` | uint16 | Correlation ID |
+
+### 2.2 File Header [CR-FORMAT-HEADER]
+
+The first line of a `.bustrace` file is a metadata header (distinguished by having a `_header` key):
+
+```json
+{"_header":true,"version":1,"captured":"2026-03-28T14:30:00Z","source":"mqtt:mqtt-broker.local:1883","duration_ms":300000,"message_count":4200,"namespaces":["engine_rpm","cabin_temp","ftl_arm","shields"]}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `_header` | bool | Always `true`. Distinguishes header from message lines |
+| `version` | int | Format version. Current: `1` |
+| `captured` | string | ISO 8601 timestamp of capture start. `null` for synthetic traces |
+| `source` | string | Transport that was captured. Format: `{type}:{details}`. `null` for synthetic |
+| `duration_ms` | uint64 | Total duration of the trace in milliseconds |
+| `message_count` | int | Number of message lines (excluding header) |
+| `namespaces` | string[] | Unique namespaces appearing in the trace |
+
+### 2.3 Design Rationale [CR-FORMAT-RATIONALE]
+
+- **NDJSON over binary**: Human-readable, editable, `grep`-able. A maker can open a trace in any text editor, find the message they care about, and modify it. Binary capture formats (CAN BLF, ASC) require specialized tools.
+- **Delta time over absolute**: Delta encoding is smaller and makes replay timing trivial — sleep for `dt` milliseconds, then publish. Absolute timestamps require computing offsets at replay time.
+- **Same fields as BusMessage**: The capture format mirrors [BP-MSG-FIELDS] exactly. No translation needed between capture and replay. What goes in is what comes out.
+
+### 2.4 Size Estimation [CR-FORMAT-SIZE]
+
+A typical bus message line is ~120 bytes JSON. At 10 messages/second (moderate traffic), a 5-minute capture is ~360KB. A 1-hour drive capture at 100 messages/second is ~43MB. Compression (gzip) reduces by ~80%. `.bustrace.gz` is a valid capture file — the capture/replay tools MUST handle gzip-compressed files transparently.
+
+---
+
+## 3. Capture Mechanism [CR-CAPTURE]
+
+### 3.1 Bus Tap [CR-CAPTURE-TAP]
+
+Capture is a **read-only bus participant** that subscribes to all namespaces on a transport and writes every received message to a `.bustrace` file.
+
+```python
+# Conceptual API
+capture = BusCapture(output="highway_drive.bustrace")
+capture.tap(bus, transport="mqtt")  # Subscribe to all messages on MQTT transport
+# ... time passes, traffic flows ...
+capture.stop()  # Flush, write header, close file
+```
+
+The capture participant:
+1. Calls `transport.subscribe_all(callback)` on the target transport
+2. Records each message with `dt` = wall-clock milliseconds since previous message
+3. Buffers writes (flush every 1 second or 100 messages, whichever comes first)
+4. On `stop()`: writes the header line (prepended or appended — implementation MAY use a temp file and prepend, or write header last and reverse on read)
+
+### 3.2 Capture Scope [CR-CAPTURE-SCOPE]
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| All traffic | Subscribe to every namespace on the transport | Full bus recording |
+| Filtered | Subscribe only to specified namespaces | Focused capture (e.g., only engine namespaces) |
+| Multi-transport | Tap multiple transports simultaneously into one file | Record both MQTT and CAN traffic |
+
+Namespace filtering is specified at capture time:
+
+```python
+capture.tap(bus, transport="mqtt", namespaces=["engine_rpm", "cabin_temp"])
+```
+
+Multi-transport capture interleaves messages from all tapped transports in timestamp order. The `src` field disambiguates origin.
+
+### 3.3 CLI Tool [CR-CAPTURE-CLI]
+
+```bash
+# Capture all MQTT traffic for 5 minutes
+composeio capture --broker mqtt-broker.local --duration 5m -o session.bustrace
+
+# Capture specific namespaces
+composeio capture --broker mqtt-broker.local --namespaces engine_rpm,cabin_temp -o engine.bustrace
+
+# Capture from UART
+composeio capture --uart /dev/ttyUSB0 --baudrate 115200 -o can_bridge.bustrace
+
+# Capture until Ctrl+C
+composeio capture --broker mqtt-broker.local -o live.bustrace
+```
+
+---
+
+## 4. Replay Transport [CR-REPLAY]
+
+### 4.1 Replay as a Transport [CR-REPLAY-TRANSPORT]
+
+Replay is a **Transport implementation** — it implements the same interface as `MQTTTransport`, `UARTTransport`, etc. This means it plugs into `ComposeApp.connect_transport()` and the bus dispatch path handles it identically to live traffic.
+
+```python
+# Connect replay transport to a ComposeApp
+app.connect_transport('replay', file='highway_drive.bustrace')
+
+# Or in YAML config
+app:
+  transports:
+    - type: replay
+      file: highway_drive.bustrace
+      loop: true
+      speed: 1.0
+```
+
+When replay is connected as a transport, the bus's `_wire_transport_incoming` dispatches replayed messages to namespace subscribers. Import crossover forwards them to the internal bus. Widget renderers update. The consuming application cannot distinguish replay from live traffic.
+
+### 4.2 Replay Transport Interface [CR-REPLAY-INTERFACE]
+
+The `ReplayTransport` class implements the standard Transport interface:
+
+| Method | Behavior |
+|--------|----------|
+| `start()` | Open the trace file, parse header, begin playback thread |
+| `stop()` | Stop playback, close file |
+| `send(message)` | No-op (replay is read-only). Log WARNING if called. |
+| `subscribe(namespace, callback)` | Register namespace-specific callback (standard transport behavior) |
+| `subscribe_all(callback)` | Register wildcard callback (standard transport behavior) |
+
+### 4.3 Playback Timing [CR-REPLAY-TIMING]
+
+The replay transport reads each message line, sleeps for `dt` milliseconds (adjusted by speed multiplier), then dispatches the message to subscribers.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `speed` | float | `1.0` | Playback speed multiplier. `2.0` = double speed, `0.5` = half speed, `0.0` = as-fast-as-possible |
+| `loop` | bool | `false` | Restart from beginning when trace ends |
+| `start_offset_ms` | uint64 | `0` | Skip to this point in the trace before starting playback |
+
+Speed `0.0` is useful for testing — it dumps all messages as fast as possible, ignoring timing. This exercises the full dispatch path under load.
+
+### 4.4 Playback Thread [CR-REPLAY-THREAD]
+
+Replay runs on a dedicated thread (like MQTT's network thread). Messages are dispatched by calling subscriber callbacks from this thread. The thread safety contract is the same as for MQTT — consumers MUST handle callbacks from a non-main thread (see [DASH-LIFECYCLE-THREADS] for CTk `after()` pattern).
+
+### 4.5 Source Rewriting [CR-REPLAY-SRC]
+
+By default, replayed messages retain their original `src` field. The bus sees messages "from" `panel-1` or `ecu-1` even though no such module is connected.
+
+Optional `src_prefix` parameter prepends a tag to distinguish replayed sources:
+
+```yaml
+- type: replay
+  file: highway_drive.bustrace
+  src_prefix: "replay:"
+```
+
+With this config, `src: "panel-1"` becomes `src: "replay:panel-1"`. Bus monitor can filter replay traffic from live traffic.
+
+---
+
+## 5. Synthetic Trace Generation [CR-SYNTHETIC]
+
+### 5.1 Generator Config [CR-SYNTHETIC-CONFIG]
+
+A synthetic trace is a `.bustrace` file generated from a pattern description rather than captured from live traffic. The generator reads a YAML config and produces a trace file.
+
+```yaml
+# engine_sim.gen.yaml
+duration: 60s
+namespaces:
+  - name: engine_rpm
+    state_engine: continuous_0_255
+    pattern:
+      type: sine
+      min: 0
+      max: 255
+      period: 10s
+    publish_rate: 10hz
+
+  - name: cabin_temp
+    state_engine: continuous_0_255
+    pattern:
+      type: ramp
+      from: 65
+      to: 78
+      duration: 60s
+    publish_rate: 0.5hz
+
+  - name: ftl_arm
+    state_engine: binary
+    pattern:
+      type: toggle
+      interval: 5s
+
+  - name: shields
+    state_engine: tri_level
+    pattern:
+      type: cycle
+      interval: 3s
+
+  - name: alert_status
+    state_engine: stop_light
+    pattern:
+      type: sequence
+      values: [green, green, green, yellow, red, green]
+      interval: 4s
+```
+
+### 5.2 Pattern Types [CR-SYNTHETIC-PATTERNS]
+
+| Pattern | Parameters | Behavior | Applicable Engines |
+|---------|-----------|----------|-------------------|
+| `constant` | `value` | Publish once, never change | All |
+| `toggle` | `interval` | Advance state engine to next value on interval | `binary`, `tri_level`, `stop_light`, `enum` |
+| `cycle` | `interval` | Same as toggle — cycle through all values | `binary`, `tri_level`, `stop_light`, `enum` |
+| `ramp` | `from`, `to`, `duration` | Linear interpolation from start to end over duration | `continuous_0_255` |
+| `sine` | `min`, `max`, `period` | Sinusoidal oscillation between min and max | `continuous_0_255` |
+| `triangle` | `min`, `max`, `period` | Triangle wave between min and max | `continuous_0_255` |
+| `random` | `min`, `max`, `interval` | Random value in range at each interval | `continuous_0_255` |
+| `sequence` | `values[]`, `interval` | Step through explicit value list, loop | All |
+| `noise` | `center`, `amplitude`, `interval` | Gaussian noise around center value | `continuous_0_255` |
+
+### 5.3 Generator CLI [CR-SYNTHETIC-CLI]
+
+```bash
+# Generate a trace from pattern config
+composeio generate engine_sim.gen.yaml -o engine_sim.bustrace
+
+# Generate with custom duration (overrides config)
+composeio generate engine_sim.gen.yaml --duration 5m -o engine_sim_5min.bustrace
+```
+
+The generator computes all message timestamps and values deterministically, then writes the `.bustrace` file. No bus connection needed — it's pure offline computation.
+
+### 5.4 Live Synthetic Mode [CR-SYNTHETIC-LIVE]
+
+As a convenience, the generator config can drive a live transport directly without producing a trace file:
+
+```yaml
+# In a ComposeApp transport config
+app:
+  transports:
+    - type: synthetic
+      config: engine_sim.gen.yaml
+      loop: true
+```
+
+The `SyntheticTransport` reads the generator config and produces messages in real-time, behaving identically to `ReplayTransport` but without a pre-generated file. This is useful for development — no capture step needed, just describe the traffic patterns you want and connect.
+
+`SyntheticTransport` and `ReplayTransport` share the same dispatch interface. The difference is source: file vs real-time generation.
+
+---
+
+## 5.5 External Archive Replay: Prometheus / TSDB [CR-ARCHIVE]
+
+§3 captures from a live bus tap; §5 generates synthetic. A third source: an external time-series archive (Prometheus, Thanos, Cortex, VictoriaMetrics) that has been retaining telemetry all along. This replays traffic **you never tapped**.
+
+### 5.5.1 Retroactive fixtures — the unique value [CR-ARCHIVE-WHY]
+
+A `.bustrace` exists only if someone was capturing at the moment of interest. A TSDB retains metrics continuously. So a production incident — e.g. a device's thermal/link/`pf_states` trajectory in the hour it failed — is replayable **after the fact** as a regression fixture, even though nobody was recording the bus that night. This is impossible with §3 capture and is the reason to add a TSDB source at all: **incidents you didn't know to record become golden masters.**
+
+### 5.5.2 Range query → replay stream [CR-ARCHIVE-QUERY]
+
+The projection bridge that maps `promql → namespace` for *live* instant-queries ([SPEC:CIO-UX-DEVMON] DM-6) runs in a second time-mode. A **range query** (`/api/v1/query_range?query&start&end&step`) returns `(t, value)` samples per series; a k-way temporal **merge** across the mapped series yields one time-ordered stream, emitted through the existing `ReplayTransport` (same `speed`/`loop`). It MAY be materialized to a `.bustrace` first — so the archive slice becomes an ordinary grep-able, editable fixture — or streamed live.
+
+```yaml
+- type: replay
+  source: tsdb                       # new source kind alongside file/synthetic
+  endpoint: http://prometheus.lan:9090
+  window: {start: "2026-07-05T02:00:00Z", end: "2026-07-05T04:00:00Z"}
+  step: 15s
+  map:                               # promql -> namespace (shared with the live projection bridge)
+    - {query: 'node_hwmon_temp_celsius{instance="ginger"}', ns: ginger/cpu_temp_c}
+    - {query: 'pf_states{instance="velo540"}',              ns: velo540/pf_states}
+  speed: 60.0                        # replay 2h in 2min
+```
+
+### 5.5.3 Fidelity boundary — trajectories, not sequences [CR-ARCHIVE-FIDELITY]
+
+A TSDB reconstructs a metric **trajectory** at scrape/`step` resolution, interpolating around staleness and (under downsampling/recording rules) shedding detail. Right source for *"temp climbed 33→61 over 2h."* **Wrong** source for exact event **ordering** (*"link_up then link_down 40ms apart"*) — that belongs to a lossless event source: a `.bustrace` (§3) or an event log (jsonl/Loki). Name the source to the need: **TSDB = trajectories; `.bustrace`/event-log = sequences.** Do not manufacture millisecond event order from a 15s TSDB.
+
+### 5.5.4 Determinism — inject archived time [CR-ARCHIVE-TIME]
+
+For repeatable QA, a range-sourced replay SHOULD stamp each message with its **archived absolute timestamp**, not a fresh `now()`, so consumer logic computing rates/windows/debounce yields byte-identical results every run. The §2 `dt` format is relative; a TSDB replay carries absolute source time and SHOULD set the message timestamp from it. A consumer that keys off wall-clock instead of message time is non-deterministic under replay — a testability smell the harness should surface.
+
+---
+
+## 5.6 Replay Safety — Actuation Quarantine [CR-SAFETY]
+
+Replay/synthetic traffic now shares a bus that can carry **control** (`mcp_action`, relays, power — [SPEC:CIO-UX-MCPACTION]). A replayed `disk_pressure=red` or `shields=on` must never drive a *real* actuation. §4.5 `src_prefix` distinguishes replay for the monitor; it does **not** prevent consumption. This section closes that gap — a hazard that postdates the original amendment (2026-03), which assumed display-only consumers.
+
+- **[CR-SAFETY-1]** Replayed and synthetic messages MUST carry an authoritative provenance marker (`synthetic: true`, or a reserved `src` prefix) — metadata a consumer can gate on, not cosmetic.
+- **[CR-SAFETY-2]** Actuation-capable consumers (mcp_action runners, relay/actuator/power services) MUST refuse synthetic-provenance input by default; accepting it requires explicit test-harness opt-in, never the default. This is external-authority + the mcp_action allowlist (MCPA-5) applied to time: **history is not authority.**
+- **[CR-SAFETY-3]** Preferred isolation for QA is a dedicated test bus (`bus_id`) with **no** actuator participants — replay there, assert on a tap, and no live actuator is even reachable. Provenance-gating (SAFETY-1/2) is the defense-in-depth for when replay must share a bus.
+- **[CR-SAFETY-4]** Replay into a shared *production* bus that carries actuation is DISALLOWED absent **both** provenance-marking and actuator opt-out. This is the single configuration that can turn a regression test into a real power-cycle.
+
+---
+
+## 6. Integration Points [CR-INTEGRATION]
+
+### 6.1 ComposeApp Transport Config [CR-INTEGRATION-APP]
+
+Two new transport types for [CS-APP-TRANSPORTS]:
+
+| Type | Required Fields | Description |
+|------|----------------|-------------|
+| `replay` | `file` | Replay a `.bustrace` file |
+| `synthetic` | `config` | Generate traffic from pattern config |
+
+Both support `loop` (bool, default false) and `speed` (float, default 1.0).
+
+### 6.2 ComposeUX Design Bus [CR-INTEGRATION-COMPOSEUX]
+
+ComposeUX's connection module ([CXC-BUS-CONNECT]) gains two new connection modes:
+
+| Mode | Transport | When | Use Case |
+|------|-----------|------|----------|
+| Replay | ReplayTransport | User loads `.bustrace` via connection panel | Testing designs against recorded traffic |
+| Synthetic | SyntheticTransport | User loads `.gen.yaml` via connection panel | Testing designs against pattern-generated traffic |
+
+These sit alongside the existing modes (Offline, Simulator, MQTT, UART, CAN, Hybrid). The connection panel's transport selector adds "Replay file..." and "Synthetic config..." options.
+
+### 6.3 Runtime Dashboard [CR-INTEGRATION-DASHBOARD]
+
+The dashboard's `--no-connect` mode could be extended to accept a replay or synthetic source:
+
+```bash
+# Replay captured traffic into dashboard
+python -m composeio.dashboard my_panel.yaml --replay highway_drive.bustrace
+
+# Use synthetic traffic patterns
+python -m composeio.dashboard my_panel.yaml --synthetic engine_sim.gen.yaml
+```
+
+Or via YAML transport config — the dashboard already reads `app.transports[]`.
+
+### 6.4 Bus Library [CR-INTEGRATION-BUS]
+
+The `composeio` Python library gains two new Transport implementations:
+
+- `composeio/transport_replay.py` — `ReplayTransport`
+- `composeio/transport_synthetic.py` — `SyntheticTransport`
+- `composeio/capture.py` — `BusCapture` (capture tap)
+- `composeio/generate.py` — Trace generator from pattern config
+
+These are library-level additions, usable by any ComposeApp, not specific to ComposeUX or the dashboard.
+
+---
+
+## 7. Compliance Requirements [CR-COMPLIANCE]
+
+A compliant implementation MUST:
+
+1. **[CR-C1]** Read and write `.bustrace` files in the NDJSON format defined in [CR-FORMAT]
+2. **[CR-C2]** Handle gzip-compressed `.bustrace.gz` files transparently (detect by magic bytes or extension)
+3. **[CR-C3]** `ReplayTransport` MUST implement the standard Transport interface (`start`, `stop`, `subscribe`, `subscribe_all`)
+4. **[CR-C4]** Replayed messages MUST be dispatched through the same bus path as live transport messages — `_wire_transport_incoming` and namespace subscriber callbacks
+5. **[CR-C5]** Replay timing MUST respect `dt` deltas scaled by `speed` multiplier (tolerance: +/- 5ms per message)
+6. **[CR-C6]** `BusCapture` MUST record all mandatory BusMessage fields ([BP-MSG-FIELDS]) without loss
+7. **[CR-C7]** The generator MUST produce valid `.bustrace` files that replay without error
+8. **[CR-C8]** All pattern types listed in [CR-SYNTHETIC-PATTERNS] MUST be implemented
+
+A compliant implementation SHOULD:
+
+9. **[CR-S1]** Support `loop` mode for continuous replay
+10. **[CR-S2]** Support `speed: 0.0` for as-fast-as-possible replay (testing/benchmarking)
+11. **[CR-S3]** Support `src_prefix` for distinguishing replayed traffic from live traffic
+12. **[CR-S4]** Support namespace filtering in `BusCapture`
+13. **[CR-S5]** `SyntheticTransport` SHOULD support real-time generation without intermediate file
+
+Actuation safety — a compliant implementation MUST:
+
+14. **[CR-C9]** Mark all replayed/synthetic messages with authoritative provenance ([CR-SAFETY-1])
+15. **[CR-C10]** Ensure actuation-capable consumers refuse synthetic provenance by default; opt-in only ([CR-SAFETY-2]); never replay into a production actuation bus without provenance-marking AND actuator opt-out ([CR-SAFETY-4])
+
+A compliant implementation SHOULD:
+
+16. **[CR-S6]** Support a `tsdb` replay source (range query → merged replay stream), directly or via materialized `.bustrace` ([CR-ARCHIVE-QUERY])
+17. **[CR-S7]** Stamp TSDB-sourced messages with their archived absolute timestamp for deterministic replay ([CR-ARCHIVE-TIME])
+
+---
+
+## Relationships
+
+- amends: [SPEC:CIO-BUS-PROTOCOL] (adds capture format and replay/synthetic/tsdb transport sources)
+- depends-on: [SPEC:CIO-APP] (transport interface, `connect_transport`, `_wire_transport_incoming`)
+- see-also: [SPEC:CIO-DASHBOARD] (consumer of replay/synthetic traffic)
+- see-also: [SPEC:CXC-ARCH] (ComposeUX design bus connection modes)
+- see-also: [SPEC:CIO-UX-DEVMON] DM-6 (the live projection bridge; TSDB replay is its range-query time-mode)
+- see-also: [SPEC:CIO-UX-MCPACTION] (the actuation plane that [CR-SAFETY] quarantines replay from)
+
+---
+
+**Version**: 1.1
+**Created**: 2026-03-28
+**Updated**: 2026-07-05 — added §5.5 external-archive (Prometheus/TSDB) replay source (retroactive fixtures, trajectory-vs-sequence fidelity boundary, archived-time determinism) and §5.6 actuation-quarantine safety (closes a gap introduced by the mcp_action control plane).
+**Status**: Draft — ready for design review

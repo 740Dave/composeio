@@ -1,0 +1,112 @@
+# MinnowBoard bring-up — a ComposeUX control surface over fleetconsole provisioning.
+# Form fields publish to bringup/* namespaces; the Provision button is an mcp_action that
+# resolves those namespaces (${ns}) into fleetconsole.provision_run params. The password is
+# hashed LOCALLY by the secret field and only its $6$ hash lands on a NON-EXPORTED namespace
+# — the operating agent never sees the plaintext.
+app:
+  id: minnow-bringup
+  transports: []            # in-process; the driver publishes/serves the bus directly
+
+design:
+  target: desktop
+  title: "MinnowBoard Bring-up"
+  theme: dark
+
+components:
+  option-checkbox:
+    params: [label, ns]
+    widget: {type: CheckboxWidget, namespace: "{{ns}}", label: "{{label}}"}
+
+namespaces:
+  # export:false => never crosses a transport. pw_hash is the credential hash, local-only.
+  - {name: bringup/hostname,      state_engine: json,       export: false, label: "Hostname"}
+  - {name: bringup/pw_hash,       state_engine: json,       export: false, label: "Password (hashed)"}
+  - {name: bringup/opt_avahi,     state_engine: binary,     export: false, label: "avahi"}
+  - {name: bringup/opt_tailscale, state_engine: binary,     export: false, label: "tailscale"}
+  - {name: bringup/opt_sshkey,    state_engine: binary,     export: false, label: "ssh key + sudo"}
+  - {name: bringup/verdict,       state_engine: stop_light, export: false, label: "Provision"}
+  - {name: bringup/plug,          state_engine: json,       export: false, label: "Kasa plug #"}
+  - {name: bringup/wipe,          state_engine: binary,     export: false, label: "wipe non-empty card"}
+  - {name: bringup/opt_composeux, state_engine: binary,     export: false, label: "ComposeUX stack"}
+
+modules:
+  # Optional power control — a board can't be provisioned while it's off. Power ON is
+  # benign (just applies mains); Power OFF is confirm-gated (it interrupts a running board).
+  - name: power
+    label: "Power (optional)"
+    grid_row: 0
+    grid_column: 1
+    widgets:
+      - {type: TextInputWidget, namespace: bringup/plug, label: "Kasa plug #", placeholder: "5", row: 0, column: 0}
+      - type: PowerToggleWidget
+        label: "Power"
+        plug_namespace: bringup/plug
+        on_tool: fleetpower.power_on
+        off_tool: fleetpower.power_off
+        status_tool: fleetpower.power_status
+        confirm_off: true
+        row: 1
+        column: 0
+
+  - name: config
+    label: "Bring-up config"
+    grid_row: 0
+    grid_column: 0
+    widgets:
+      - {type: TextInputWidget, namespace: bringup/hostname, label: "Board name (hostname)", placeholder: "ginger", row: 0, column: 0}
+      - {type: TextInputWidget, namespace: bringup/pw_hash, label: "Password  (hashed locally — never stored or seen in plaintext)", secret: true, row: 1, column: 0}
+      - {use: option-checkbox, label: "avahi  (mDNS .local discovery)",          ns: bringup/opt_avahi,     row: 2, column: 0}
+      - {use: option-checkbox, label: "tailscale  (install client)",             ns: bringup/opt_tailscale, row: 3, column: 0}
+      - {use: option-checkbox, label: "install my SSH key + NOPASSWD sudo",      ns: bringup/opt_sshkey,    row: 4, column: 0}
+      - {use: option-checkbox, label: "Install ComposeUX-Required Packages  (render/headless stack)", ns: bringup/opt_composeux, row: 5, column: 0}
+      - {use: option-checkbox, label: "⚠ Wipe non-empty target card (consent)",  ns: bringup/wipe,          row: 6, column: 0}
+
+  - name: action
+    label: "Provision"
+    grid_row: 1
+    grid_column: 0
+    widgets:
+      - type: CommandWidget
+        label: "Provision (Debian 13)"
+        binding:
+          type: mcp_action
+          tool: fleetconsole.provision_run
+          args:
+            recipe: minnowboard-debian13
+            device: ginger                    # the serial slot (FTDI) to drive
+            params:
+              hostname:         "${bringup/hostname}"
+              password_crypted: "${bringup/pw_hash}"
+              opt_avahi:        "${bringup/opt_avahi}"
+              opt_tailscale:    "${bringup/opt_tailscale}"
+              opt_sshkey:       "${bringup/opt_sshkey}"
+              opt_composeux:    "${bringup/opt_composeux}"
+              wipe_nonempty:    "${bringup/wipe}"
+          confirm: true                        # destructive: wipes the card + installs
+          result_namespace: bringup/verdict
+        row: 0
+        column: 0
+      - {type: RelayWidget, namespace: bringup/verdict, label: "Provision", state_engine: stop_light, row: 1, column: 0}
+
+  # Restore from a saved template — the pick list IS a document_store query over the fleet's
+  # recovery docs. Selecting one loads its rebuild spec (incl. the saved $6$ hash) into the
+  # form namespaces, so the existing Provision button re-creates that board identically.
+  - name: restore
+    label: "Restore from saved"
+    grid_row: 1
+    grid_column: 1
+    widgets:
+      - type: DocPickerWidget
+        label: "Saved MinnowBoards"
+        collection: fleet_devices
+        where: {provision.recipe: minnowboard-debian13}
+        title_field: device
+        subtitle_field: role
+        load_map:
+          provision.params.hostname: bringup/hostname
+          provision.password_crypted: bringup/pw_hash
+          provision.params.opt_avahi: bringup/opt_avahi
+          provision.params.opt_tailscale: bringup/opt_tailscale
+          provision.params.opt_sshkey: bringup/opt_sshkey
+        row: 0
+        column: 0
