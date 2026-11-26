@@ -18,9 +18,16 @@ pushed. `PRIVATE_DIR` is the directory that holds the private vocabulary (`publi
 | 4 | secret scan | `python3 -I tools/ci_gitleaks.py --tree .` | exit 0 (pinned gitleaks 8.30.1, sha256-checked, built-in rules) |
 | 5 | history scan | `python3 -I tools/ci_gitleaks.py --tree . --history-base BASE --require-history` | exit 0. The run scans every commit in `BASE..HEAD` (with `-m`), so a secret added and then removed is still caught. |
 
-Gates 3 to 5 also run in CI and in the merge queue (`.github/workflows/`). The merge queue runs main's copies of the
-tools, never the PR's (`docs/leakcheck/RUNNER.md`). Running the gates by hand before the push does not replace that,
-and CI does not replace running them by hand.
+Where the gates run besides by hand:
+
+- **Hosted CI** (`ci.yml`) runs gates 4 and 5 (gitleaks over the tree and the PR's commits). It also runs the
+  negative control with a **synthetic** vocabulary of made-up terms. That proves the mechanism fires, but CI never
+  runs gate 3 with the real vocabulary.
+- **The merge queue** (`merge-queue.yml`) runs gate 3 with the **real** vocabulary, plus main's copy of gitleaks and
+  the real-vocabulary negative control. These run only on the self-hosted runner that holds the vocabulary, and
+  always from main's copies of the tools, never the PR's (`docs/leakcheck/RUNNER.md`).
+
+Neither replaces running all five gates by hand before the push.
 
 ## Cleanup, for ComposeIO
 
@@ -39,17 +46,24 @@ A pushed change:
 
 ## Neutrality rules do not apply here
 
-The disclosure guard can also load generated neutrality rules: agent ids and corpus ids, read from
-`FACTLATTICE_NEUTRALITY_TERMS`. **They do not apply to ComposeIO.** This is HoP's selection, recorded as
-`zd-dsd-answers DEC-DSD-1A21679CF61-D1`. Quoted verbatim, except for one company name, which the vocabulary blocks
-and which is shown here as `[the ZB company]`:
+The disclosure guard can also load generic neutrality rules: agent ids and corpus ids, read from
+`FACTLATTICE_NEUTRALITY_TERMS`. **They are not used for ComposeIO**, because HoP's selection allows agent role names
+in text. The selection is recorded as `zd-dsd-answers DEC-DSD-1A21679CF61-D1`. Quoted verbatim, except for one
+company name, which the vocabulary blocks and which is shown here as `[the ZB company]`:
 
 > "Block secrets, private host names and IP addresses, absolute home, Dropbox and drive paths, [the ZB company] names,
 > BSG game files and the vendor R503 PDF manuals; allow your name, your project names (BSG, carousel, R503, Haven,
 > Gnomon) and agent role names such as Plumb and composeux-architect in text"
 
-That company's corpus ids and product ids are caught by the vocabulary's `org-zb` and `org-zb-product` rules, so no
-neutrality list is needed for them.
+The rest of what a neutrality list would cover is blocked by the private vocabulary's `org-zb` rules:
+
+- that company's name;
+- its corpus ids, by one prefix rule over the registered id prefixes;
+- its product and component names.
+
+These rules are built from named sources, not from a sweep: the corpus registry that the engine loads, and that
+company's portfolio overview. The vocabulary file's header names both. A term whose owner or origin is unclear is
+left out until it is decided, never added by guess.
 
 The scans therefore run **without** `--require-neutrality-terms`. Every guard run prints this line, and it is
 expected:
