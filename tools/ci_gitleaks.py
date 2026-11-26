@@ -20,7 +20,8 @@ the tree are not scanned and a new file in a PR is); (2) the history of the PR (
 one commit and removed in the next is caught too, including one added in a merge commit's own conflict resolution (`-m`: git shows no diff for a merge otherwise). BASE is --history-base, else the BASE_REF environment variable (ci.yml and the merge queue set it). With
 --require-history (the CI form) a missing or unresolvable BASE is exit 2; without it the history scan is announced as skipped.
 The binary is the pinned release below, downloaded from GitHub and checked against the sha256 recorded here (from the release's own checksums file, 2026-11-19);
-GITLEAKS_BIN names a binary to use instead (it is then NOT checked, and its version is printed). A scan that could not run is exit 2, never a pass.
+GITLEAKS_BIN names a binary to use instead (it is then NOT checked, and its version is printed); ComposeIO refuses it (exit 2) when CI or
+GITHUB_ACTIONS is set, so in CI only the pinned, checked binary runs. A scan that could not run is exit 2, never a pass.
 """
 import argparse
 import hashlib
@@ -162,8 +163,13 @@ def main(argv=None):
     ap.add_argument("--require-history", action="store_true")
     a = ap.parse_args(argv)
     work = tempfile.mkdtemp(prefix="ci-gitleaks-")  # left in place (the runner's temp is discarded)
+    override = os.environ.get("GITLEAKS_BIN")
+    if override and (os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS")):  # ComposeIO: in CI only the pinned, sha-checked binary runs
+        print("[ci_gitleaks] FAIL: GITLEAKS_BIN is set while CI/GITHUB_ACTIONS is set; in CI only the pinned, sha256-checked "
+              f"gitleaks {VERSION} may run (scan NOT run)")
+        return 2
     try:
-        binary = os.environ.get("GITLEAKS_BIN") or fetch_binary(work)
+        binary = override or fetch_binary(work)
     except CouldNotRun as e:
         print(f"[ci_gitleaks] FAIL: {e}")
         return 2
