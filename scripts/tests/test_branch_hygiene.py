@@ -290,3 +290,43 @@ def test_worktree_rows_unknown_shape_falls_back_with_note(monkeypatch):
     _stub_wt(monkeypatch, {"schema": 9})
     rows, note = bh._worktree_paths_via_wt()
     assert rows == [] and note and "git worktree list" in note
+
+
+# --------------------------------------------------------------------------------------
+# 5. Field drift and EMPTY rows in the worktree enumeration (candidate review P2/P3).
+#    Rows that all lack a path, or zero rows (a repo always has its main worktree), must
+#    not read as "every worktree is clean": the scan must fall back to
+#    `git worktree list` and STATE why.
+# --------------------------------------------------------------------------------------
+
+def test_worktree_rows_field_drift_is_noted():
+    rows, note = bh.worktree_rows_from_wt_json(
+        {"schema": 2, "items": [{"branch": "main", "location": {"dir": "/srv/demo-repo"}}]})
+    assert rows == []
+    assert note and "drift" in note and "git worktree list" in note
+
+
+def test_worktree_rows_empty_items_is_noted():
+    rows, note = bh.worktree_rows_from_wt_json({"schema": 2, "items": []})
+    assert rows == []
+    assert note and "no rows" in note and "git worktree list" in note
+
+
+def test_integrated_set_empty_items_is_noted():
+    integ, note = bh.integrated_from_wt_json({"schema": 2, "items": []})
+    assert integ == set()
+    assert note and "no rows" in note and "SKIPPED" in note
+
+
+def test_dirty_scan_field_drift_falls_back_to_git_and_says_so(monkeypatch, capsys):
+    _stub_wt(monkeypatch, {"schema": 2, "items": [{"branch": "main"}]})
+    monkeypatch.setattr(bh, "_worktree_paths_via_git",
+                        lambda: [("/srv/demo-repo", "main", None)])
+    monkeypatch.setattr(bh, "_porcelain_files", lambda p: (["work.py"], None))
+    findings, note = bh.dirty_worktree_findings()
+    # the git fallback ran: the dirty worktree is FOUND, not hidden behind "clean"
+    assert [f["path"] for f in findings] == ["/srv/demo-repo"]
+    assert note and "drift" in note
+    bh.show_dirty(findings, note)
+    shown = capsys.readouterr().out
+    assert "drift" in shown and "every worktree is clean" not in shown

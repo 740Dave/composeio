@@ -178,6 +178,9 @@ def integrated_from_wt_json(data):
     items, why = _wt_items(data)
     if items is None:
         return set(), "wt list JSON %s — `⊂` integrated cross-check SKIPPED" % why
+    if not items:
+        # A repo always has at least its main worktree, so zero rows is itself a fault.
+        return set(), "wt list returned no rows — `⊂` integrated cross-check SKIPPED"
     integ, saw_state = set(), False
     for b in items:
         state = _wt_item_state(b)
@@ -287,6 +290,9 @@ def worktree_rows_from_wt_json(data):
     items, why = _wt_items(data)
     if items is None:
         return [], "wt list JSON %s — enumerating via `git worktree list`" % why
+    if not items:
+        # A repo always has at least its main worktree, so zero rows is itself a fault.
+        return [], "wt list returned no rows — enumerating via `git worktree list`"
     rows = []
     for w in items:
         path, wtf = _wt_item_path_and_changes(w)
@@ -298,6 +304,11 @@ def worktree_rows_from_wt_json(data):
                         or wtf.get("staged") or wtf.get("deleted")
                         or wtf.get("renamed"))
         rows.append((path, w.get("branch") or "(detached)", wt_dirty))
+    if not rows:
+        # Field drift: rows came back but none carries a path we know. An empty list
+        # here would print "every worktree is clean" — fall back and say so instead.
+        return [], ("wt list rows carry neither `path` (schema 1) nor `worktree.path` "
+                    "(schema 2) — field drift, enumerating via `git worktree list`")
     return rows, None
 
 
@@ -326,7 +337,8 @@ def dirty_worktree_findings():
     (findings, note) where findings is a list of dicts and note is a human string
     about degraded enumeration (or None)."""
     rows, note = _worktree_paths_via_wt()
-    if note is not None:          # wt unavailable/unusable — fall back to git
+    if note is not None:          # wt unavailable/unusable/drifted — fall back to git
+                                  # (the note rides out to show_dirty and is printed)
         rows = _worktree_paths_via_git()
     findings = []
     for path, branch, wt_dirty in rows:
