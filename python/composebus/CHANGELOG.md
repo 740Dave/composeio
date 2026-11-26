@@ -1,5 +1,9 @@
 # composebus changelog
 
+## 0.1.2
+
+0.1.2: replace device identifiers in a source comment with documentation-range placeholders; no code change.
+
 ## 0.1.1
 
 Fix lost messages under concurrent publish (unlocked `_emitted_fingerprints` trim); no API change.

@@ -10,4 +10,4 @@ Importing this package imports nothing else; import the module you need
 (e.g. ``from composebus.bus import ComposeIOBus``).
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
