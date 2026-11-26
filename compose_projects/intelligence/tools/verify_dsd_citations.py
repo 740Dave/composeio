@@ -44,7 +44,7 @@ destroys exactly the distinction that tells you what to fix.
 Claude Code marks each user record with where it came from. This checker reads
 the same marking as `extract_design_inputs.py` and calls that tool's own
 `excluded_kind()`, so the two cannot disagree about who spoke. A quote that
-sits in a `peer` (another agent's), `task-notification` or other non-human turn
+sits in a `peer` (another agent's), `coordinator`, `task-notification` or other non-human turn
 is never "verified": its verdict is NOT-STAKEHOLDER and it names the kind. So is
 a quote CITED AT such a line (or a tool-result line), even when a human turn
 elsewhere holds the same words. A message the stakeholder types mid-turn is a
@@ -630,8 +630,39 @@ def banner(marked: bool, excluded: dict[int, tuple[str, str]], fallback: int = 0
     return "origin: verified; origin.kind == human only counts as the stakeholder's" + tail
 
 
+#: what `--help` says. Exit 3 is listed here on purpose: a caller that reads
+#: "non-zero" as "bad DSD" would misread it (it is a limit of the transcript).
+HELP_DESCRIPTION = (
+    "Verify every citation in an audit DSD against the session transcript and the specs: each "
+    "`**<Name> said** (line N): \"...\"` quote must occur in a turn the STAKEHOLDER wrote, and each "
+    "bracketed node id must exist in a --spec file.")
+HELP_EPILOG = """\
+exit codes:
+  0  every citation resolves and every quote's speaker is verified as the stakeholder
+  1  unverified citations present (a quote not found or NOT-STAKEHOLDER, an unknown node id, a
+     [NEW:]/[PROPOSED:] node that already exists, or with --strict a long unattributed quote);
+     with --self-test, a self-test assertion failed
+  2  usage error (bad or missing arguments)
+  3  the citations resolve, but the speaker is NOT verified: a quote resolves only through a
+     record with no speaker marking (a transcript that predates origin marking, or records before
+     its first origin-marked record). Not a failure of the DSD; a limit of the transcript.
+
+who counts as the stakeholder (speaker limits):
+  Only a user record marked origin.kind == human (or a queued_command attachment marked
+  attachment.origin.kind == human) is the stakeholder's. A quote in, or cited at, a peer,
+  coordinator, task-notification, auto-continuation, tool-result or other non-human turn is
+  NOT-STAKEHOLDER. A queue-operation record counts only when its text equals, after whitespace
+  normalisation, a human-origin turn. A human-marked record that BEGINS with a harness prefix
+  (the default list, plus any added by the overlay) is excluded as harness-injection.
+  Limits: the rule trusts origin.kind as the harness stamps it; the harness-prefix check is
+  lexical and catches only the listed prefixes; an unmarked record cannot be told apart by
+  speaker, so a quote that resolves only there exits 3, never 0.
+"""
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=HELP_DESCRIPTION, epilog=HELP_EPILOG,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dsd", type=Path, nargs="?")
     ap.add_argument("--transcript", type=Path)
     ap.add_argument("--spec", type=Path, action="append", default=[])

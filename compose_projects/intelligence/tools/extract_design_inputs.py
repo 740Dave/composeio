@@ -259,7 +259,8 @@ claimant.
 ⛔ WHO SPOKE (the origin rule)
 -----------------------------
 Claude Code marks each user record with `origin.kind`. Only `human` counts as
-the stakeholder's. `peer` (another agent), `task-notification`,
+the stakeholder's. `peer` (another agent), `coordinator` (a coordinating
+agent's message, seen on sidechain records), `task-notification`,
 `auto-continuation`, tool results (no origin), meta records, compaction
 summaries and anything else are EXCLUDED and counted by kind. A queued record
 has no origin, so it counts only when its text EQUALS (after whitespace
@@ -817,7 +818,8 @@ def excluded_kind(rec: dict) -> str | None:
     None if the stakeholder's (`origin.kind == "human"`), else the kind it is.
 
     Measured on 302 real transcripts: `origin.kind` is `human`, `peer` (another
-    agent's cross-session message), `task-notification` or `auto-continuation`;
+    agent's cross-session message), `task-notification` or `auto-continuation`
+    (and `coordinator`, seen since on sidechain records);
     tool results, meta records, compaction summaries and slash-command echoes
     carry NO origin at all. Everything but `human` is excluded.
     """

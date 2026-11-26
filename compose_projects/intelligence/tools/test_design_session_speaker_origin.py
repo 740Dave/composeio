@@ -1268,8 +1268,15 @@ def test_the_verifier_refuses_an_agents_words_cited_as_the_stakeholders(tmp_path
     for marker in ('"peer"', '"task-notification"', '"assistant"'):
         n = next(i for i, raw in enumerate(lines, 1) if marker in raw)
         r = _verify_one(tmp_path, t, AGENT_QUOTE, n)
-        assert r.returncode != 0, (marker, r.stdout)
+        # exactly 1 (unverified citations), never 0 and never a crash (a traceback exits 1 too, so the stderr and
+        # the verdict line are checked as well)
+        assert r.returncode == 1, (marker, r.returncode, r.stdout, r.stderr)
+        assert "Traceback" not in r.stderr, (marker, r.stderr)
+        assert "UNVERIFIED CITATIONS PRESENT" in r.stdout, (marker, r.stdout)
         assert "citations resolve" not in r.stdout.splitlines()[-1:], (marker, r.stdout)
+        if marker != '"assistant"':
+            # a peer or notification record is a user record of a marked transcript: its verdict names it
+            assert "NOT-STAKEHOLDER" in r.stdout, (marker, r.stdout)
 
 
 def test_control_the_stakeholders_own_words_still_verify(tmp_path):
@@ -1280,3 +1287,38 @@ def test_control_the_stakeholders_own_words_still_verify(tmp_path):
     n = next(i for i, raw in enumerate(lines, 1) if q in raw and '"human"' in raw)
     r = _verify_one(tmp_path, t, q, n)
     assert r.returncode == 0, r.stdout
+
+
+# --- the verifier's --help documents every exit code and the speaker limits --------------------------------------------
+
+def test_the_verifier_help_names_every_exit_code_including_3_and_the_speaker_limits():
+    r = _run(VERIFIER, "--help")
+    assert r.returncode == 0, r.stdout + r.stderr
+    flat = " ".join(r.stdout.split())
+    assert "exit codes:" in r.stdout, r.stdout
+    for code in ("0 ", "1 ", "2 ", "3 "):
+        assert re.search(r"^\s+" + code, r.stdout, re.M), (code, r.stdout)
+    assert "3 the citations resolve, but the speaker is NOT verified" in flat, flat
+    assert "record with no speaker marking" in flat, flat
+    assert "origin.kind == human" in flat and "NOT-STAKEHOLDER" in flat, flat
+    for kind in ("peer", "coordinator", "task-notification"):
+        assert kind in flat, (kind, flat)
+
+
+def test_every_exit_code_the_verifier_can_return_is_in_its_help():
+    """The help's list is checked against the codes the source returns (plus argparse's usage error, 2)."""
+    src = VERIFIER.read_text(encoding="utf-8")
+    returned = set(re.findall(r"\breturn (\d)\b", src))
+    returned |= {c for pair in re.findall(r"\b(\d) if [\w.]+ else (\d)\b", src) for c in pair}
+    returned |= {"2"} if "ap.error(" in src else set()
+    helped = set(re.findall(r"^  (\d)  ", _run(VERIFIER, "--help").stdout, re.M))
+    assert {"0", "1", "3"} <= returned, returned
+    assert returned <= helped, (returned, helped)
+
+
+def test_the_help_exit_code_check_can_fail():
+    """Negative control: help text with the exit-3 line removed does not pass the line check."""
+    text = _run(VERIFIER, "--help").stdout
+    cut = "\n".join(l for l in text.splitlines() if not re.match(r"^\s+3\s", l))
+    assert not re.search(r"^\s+3 ", cut, re.M)
+    assert "3 the citations resolve, but the speaker is NOT verified" not in " ".join(cut.split())
