@@ -649,8 +649,8 @@ explicitly ring-fenced.
   A native-USB ESP32 publishes its **MAC as the USB serial number**.
 * ⛔ **`esptool chip-id` is NOT an identity check.** It resets the board to connect, and that
   reset is precisely the harm the identity check exists to prevent.
-* ⚠ **`00:00:5E:00:53:02` is the LIVE dual-throttle controller. `00:00:5E:00:53:03` is the
-  c3lcd/c3can board. Never either.**
+* ⚠ **The LIVE dual-throttle controller is on `$FLASH_DENY_SERIALS`; the c3lcd/c3can board is
+  `$C3LCD_EXPECT_SERIAL` (host overlay). Never either.**
 
 ### F3 — seat the module, and re-measure
 

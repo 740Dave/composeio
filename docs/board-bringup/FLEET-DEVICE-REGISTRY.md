@@ -27,13 +27,19 @@ and may I touch it?" is a **lookup, not a re-derivation**.
 
 ## The registry
 
+> ⛔ **No real identity lives in this public file** (slice 7d). The identity column names the
+> **host-overlay variable** that holds each value; the flash guard
+> (`python/scripts/pio_flash_guard.py` → `python/composeio/flash_guard.py`) reads those variables and
+> **refuses** when one is unset. A MAC quoted here would be a pseudonym that matches no real board,
+> so a guard comparing against it would pass for the ring-fenced controller it exists to protect.
+
 | Full MAC / serial | device_id | board | role / firmware | USB identity | on bench 2026-09-11? | status / ⛔ notes | source |
 |---|---|---|---|---|---|---|---|
-| `00:00:5E:00:53:02` | `cio-ctrl-db1c` | ESP32-C3 | throttle controller — reaches the bridge over **MQTT**, puts **no** frames on CAN | native-USB (MAC=serial) | **no** | ⛔ **RING-FENCED — NEVER TOUCH.** Shares the `1C:DB:D4` prefix with `c3lcd`; only the full MAC separates them. | CANV2-SWEEP `[CANV2-ROSTER]` |
-| `00:00:5E:00:53:03` | `c3lcd-047dd8` | ESP32-C3 SuperMini + ST7796 LCD + SN65HVD230 CAN | CAN/LCD node, **on CAN v2**, `listen-only`; fw `1b72183-dirty` (Aug 14 2026) | native-USB (MAC=serial) | **yes** | Transceiver **DRIVER is DEAD** (receiver OK) → invisible on the wire until the transceiver is replaced. `ns_announce` armed, blocked only by the dead driver. Role note: register list names `c3can-047dd8` but live fw announces `c3lcd-047dd8` — an UNMADE identity decision (`[CANV2-REGISTER-UNMADE]`). | CANV2-SWEEP; `composeio-can-bridge.env`; CAN-ACCEPTANCE-FILTER-RESULTS.md |
-| `00:00:5E:00:53:06` | *(S3, unset)* | ESP32-S3 SuperMini | `reactive_core` build target / **R503-probe** dev board (`r503_probe/build.sh` pins this as `EXPECT_SERIAL`) | native-USB (MAC=serial) | **yes** | Role slightly ambiguous: `reactive_core` is the throttle-controller firmware tree and this S3 is its dev target + the R503 fingerprint probe. Confirm intended role before flashing. | `firmware/reactive_core/platformio.ini:264,376`; `firmware/r503_probe/{platformio.ini,build.sh}` |
+| on `FLASH_DENY_SERIALS` | `cio-ctrl-<last3>` | ESP32-C3 | throttle controller — reaches the bridge over **MQTT**, puts **no** frames on CAN | native-USB (MAC=serial) | **no** | ⛔ **RING-FENCED — NEVER TOUCH.** Shares the `1C:DB:D4` prefix with `c3lcd`; only the full MAC separates them. | CANV2-SWEEP `[CANV2-ROSTER]` |
+| `C3LCD_EXPECT_SERIAL` | `c3lcd-<last3>` | ESP32-C3 SuperMini + ST7796 LCD + SN65HVD230 CAN | CAN/LCD node, **on CAN v2**, `listen-only`; fw `1b72183-dirty` (Aug 14 2026) | native-USB (MAC=serial) | **yes** | Transceiver **DRIVER is DEAD** (receiver OK) → invisible on the wire until the transceiver is replaced. `ns_announce` armed, blocked only by the dead driver. Role note: register list names `c3can-<last3>` but live fw announces `c3lcd-<last3>` — an UNMADE identity decision (`[CANV2-REGISTER-UNMADE]`). | CANV2-SWEEP; `composeio-can-bridge.env`; CAN-ACCEPTANCE-FILTER-RESULTS.md |
+| `R503_EXPECT_SERIAL` | *(S3, unset)* | ESP32-S3 SuperMini | `reactive_core` build target / **R503-probe** dev board (`r503_probe/build.sh` and `env:fingerprint_s3` pin this as `R503_EXPECT_SERIAL`) | native-USB (MAC=serial) | **yes** | Role slightly ambiguous: `reactive_core` is the throttle-controller firmware tree and this S3 is its dev target + the R503 fingerprint probe. Confirm intended role before flashing. | `firmware/reactive_core/platformio.ini` (`env:fingerprint_s3`); `firmware/r503_probe/{platformio.ini,build.sh}` |
 | `display-node.local` | `node-rpi5` | Raspberry Pi 5 | CAN bridge host — 2× MCP2515 (`spi0.0`/`spi0.1`) + `composeio-can-bridge.service`; `CAN_BRIDGE_NODE_ID=1` | host (mDNS name) | n/a (network) | Fleet's fixed infra CAN peer (`src=1`). `sjw 2` @ SP 0.875 on `can0`/`can1`. | CANV2-SWEEP `[CANV2-ROSTER]`,`[CANV2-BITTIMING]` |
-| FTDI `<device-serial>` | *(unknown)* | — | **UNIDENTIFIED far end** | FTDI USB↔serial bridge (adapter serial, not a MAC) | **yes** | ⛔ **NEEDS DAVID'S EYES — do not probe or flash.** Opening the port asserts DTR/RTS and may reset the far end. Flagged unknown since 2026-08-15; still unknown. | CANV2-SWEEP `[CANV2-UNPROVEN]`; bench scan 2026-09-11 |
+| FTDI (adapter serial: host overlay; candidate for `FLASH_DENY_SERIALS`) | *(unknown)* | — | **UNIDENTIFIED far end** | FTDI USB↔serial bridge (adapter serial, not a MAC) | **yes** | ⛔ **NEEDS DAVID'S EYES — do not probe or flash.** Opening the port asserts DTR/RTS and may reset the far end. Flagged unknown since 2026-08-15; still unknown. | CANV2-SWEEP `[CANV2-UNPROVEN]`; bench scan 2026-09-11 |
 
 ## Conventions
 - **`device_id = <board>-<last-3-MAC-hex>`** (e.g. MAC `…00:53:03` → `c3lcd-**005303**`). This is the

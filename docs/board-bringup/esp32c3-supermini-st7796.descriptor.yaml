@@ -46,7 +46,7 @@ flash:
     USES ITS OWN PARTITION TABLE, partitions_c3_st7796.csv — see quirk nvs-too-small-starves-everything
     and quirk growing-nvs-moved-the-app.
 
-config_source: http           # bus://assets/displays/c3lcd-047dd8.compose.yaml on bus_storage :8420
+config_source: http           # bus://assets/displays/c3lcd-<last3(${C3LCD_EXPECT_SERIAL})>.compose.yaml on bus_storage :8420
                               # (config-over-CAN is blocked — see quirk config-over-can-is-blocked)
 
 requires:
@@ -84,10 +84,10 @@ requires:
       A new device on established namespaces is a new PEER, not a new vocabulary.  Contrast the headless
       CAN node, whose nine CAN-only `_device/c3can-*` namespaces each had to be hand-typed into
       CAN_BRIDGE_REGISTER.
-  - ref: "http://192.0.2.75:8420"
+  - ref: "${COMPOSEIO_FW_STORAGE_URL}"   # host overlay
     kind: asset-store
     status: present
-    note: "bus_storage — the scene is PUT to assets/displays/c3lcd-047dd8.compose.yaml"
+    note: "bus_storage — the scene is PUT to assets/displays/c3lcd-<last3(${C3LCD_EXPECT_SERIAL})>.compose.yaml"
   - ref: "compose_projects/bsg/game_hardware/engine_thrust_panel/engine_thrust_480x320.compose.yaml"
     kind: scene
     status: present
@@ -95,11 +95,11 @@ requires:
       The landscape redesign, not a rescale.  16 widgets, 6 bindings, 2 subscriptions.  led_bar / rect /
       label only — see quirk no-fpu-decides-the-scene.  Kept DELIBERATELY sparse on comments: see quirk
       yaml-arena-is-sized-from-raw-length.
-  - ref: "docs/board-bringup/factory-images/esp32c3-supermini-047dd8-factory-4mb.bin"
+  - ref: "${C3LCD_FACTORY_IMAGE}"   # host overlay: path of this board's factory dump
     kind: rollback-image
     status: present
     note: >
-      NO NEW BACKUP TAKEN AND NONE NEEDED — same physical board, same MAC 00:00:5e:00:53:03, dumped
+      NO NEW BACKUP TAKEN AND NONE NEEDED — same physical board, same MAC (${C3LCD_EXPECT_SERIAL}), dumped
       before the first write on 2026-08-12 by the CAN bring-up.  SHA-256 re-verified 2026-08-12 for this
       bring-up: 13961a23051013f7143caacc868bae02cb2becdd8a5f81ac638878dbb4b56905.  Restore:
       esptool --port <port> write-flash 0 <file>.
@@ -121,10 +121,10 @@ verify:
       expect: "build: <date> <time> — matches the firmware just flashed"
       note: "VERIFIED 2026-08-12. Compiler-written __DATE__/__TIME__, never a hand-maintained tag."
     - check: serial-token
-      expect: "Device id: c3lcd-047dd8"
+      expect: "Device id: c3lcd-<last3(${C3LCD_EXPECT_SERIAL})>"
       note: >
-        VERIFIED 2026-08-12. CXC_DEVICE_PREFIX=\"c3lcd\" + last 3 bytes of STA MAC 00:00:5e:00:53:03.
-        DISTINCT from the headless role's `c3can-047dd8` on purpose — two roles on one MAC must not
+        VERIFIED 2026-08-12. CXC_DEVICE_PREFIX=\"c3lcd\" + last 3 bytes of STA MAC (== ${C3LCD_EXPECT_SERIAL}, host overlay), lowercase hex.
+        DISTINCT from the headless role's `c3can-<last3(${C3LCD_EXPECT_SERIAL})>` on purpose — two roles on one MAC must not
         answer to one id or they fight over one scene.
     - check: serial-token
       expect: "Board profile: esp32c3-supermini-st7796 ... | Panel: 480x320 rect"
@@ -182,14 +182,14 @@ verify:
       note: >
         VERIFIED 2026-08-12, WITH AN INSTRUMENT THIS PROJECT DID NOT WRITE.  `cansend can1
         088740A4#0468747470` on rpi5 (arbitration id computed in Python from [BP-CAN-ID], value
-        [len][utf8]) produced `BUS _device/c3lcd-047dd8/config_source = 'http'` on the C3.  That proves
+        [len][utf8]) produced `BUS _device/c3lcd-<last3(${C3LCD_EXPECT_SERIAL})>/config_source = 'http'` on the C3.  That proves
         the WHOLE receive path in one shot: transceiver -> GPIO6 -> TWAI listen-only -> id decode ->
         ns-hash resolution -> value codec -> BusEvent -> the app shell's drain.  A `_device/*` namespace
         was chosen rather than `throttle/*` DELIBERATELY: the bridge's registry has learned the throttle
         names from MQTT, so injecting one would have been republished and would have moved the owner's
         LIVE game state.
     - check: bus-control-plane-persists
-      expect: "`_device/c3lcd-047dd8/transport` = \"can\" over CAN -> 'transport selection stored' -> next boot reads 'from nvs'"
+      expect: "`_device/c3lcd-<last3(${C3LCD_EXPECT_SERIAL})>/transport` = \"can\" over CAN -> 'transport selection stored' -> next boot reads 'from nvs'"
       note: >
         VERIFIED 2026-08-12 across a reboot.  This is the escape hatch that takes the board out of
         listen-only without a reflash, and it was BROKEN until the NVS partition was enlarged — see
@@ -451,9 +451,10 @@ quirks:
     note: >
       /dev/cu.usbmodem11301 changed device FOUR times on this bench in one evening, and iterating over
       ports once reset a live controller that had been explicitly ring-fenced.  Both C3s here share the
-      MAC prefix 1C:DB:D4, so a prefix match is NOT enough — this board is 00:00:5E:00:53:03 and the LIVE
-      dual-throttle controller is 00:00:5E:00:53:02.  Verify the FULL USB serial passively before every
-      destructive operation: `ioreg -r -c IOUSBHostDevice -l -w0`, pairing "USB Serial Number" to
+      MAC prefix 1C:DB:D4, so a prefix match is NOT enough — this board is ${C3LCD_EXPECT_SERIAL} and the LIVE
+      dual-throttle controller is on ${FLASH_DENY_SERIALS} (both host overlay; public code names neither).
+      The flash guard (python/scripts/pio_flash_guard.py) ENFORCES both before any upload; to look
+      yourself, verify the FULL USB serial passively before every destructive operation: `ioreg -r -c IOUSBHostDevice -l -w0`, pairing "USB Serial Number" to
       "IOCalloutDevice".  Native-USB ESP32s publish their MAC as the USB serial number.  `esptool
       chip-id` is NOT an acceptable identity check: it RESETS the board, which is the harm being
       prevented.  Done before every one of the five flashes in this bring-up.

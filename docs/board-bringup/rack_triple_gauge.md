@@ -335,8 +335,9 @@ the real firmware deliberately leaves as inputs (`IODIRB = 0xF0`).
    > adapter RX to board TX.
 3. ⚠ **Identity before flashing.** `ioreg -r -c IOUSBHostDevice -l -w0`, match the **full** USB
    serial. `esptool chip-id` is **not** an identity check — it resets the board, which is the harm
-   being prevented. `00:00:5E:00:53:02` is the **live dual-throttle controller**;
-   `00:00:5E:00:53:03` is the c3lcd/c3can board. Never either.
+   being prevented. The **live dual-throttle controller** is on `$FLASH_DENY_SERIALS`
+   and the c3lcd/c3can board is `$C3LCD_EXPECT_SERIAL` (host overlay). Never either; the flash guard
+   refuses the first and fails closed when the list is unset.
 4. ⚠ **There is no factory image and there never will be.** A custom board has no as-shipped
    firmware to back up, so the fleet's usual `esptool read-flash` net does not exist. **The recovery
    path is the socket**: pull the module and flash it out of circuit, or on a spare. Second net:

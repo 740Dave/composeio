@@ -12,7 +12,8 @@
  *
  * Board:  ESP32-C3 Super Mini  (QFN32 rev v0.4, RISC-V RV32IMAC,
  *         SINGLE core, 160 MHz, 4 MB embedded XMC flash, NO PSRAM,
- *         NO FPU).  MAC 00:00:5e:00:53:03 -> device id `c3lcd-047dd8`.
+ *         NO FPU).  MAC = C3LCD_EXPECT_SERIAL (host overlay) -> device id
+ *         `c3lcd-<last 3 MAC bytes>`.
  * Panel:  LCDWIKI MSP3525 / MSP3526, 3.5" IPS 480x320, ST7796S over
  *         4-wire SPI.  Capacitive touch (FT6336U) is FITTED on the
  *         module but its four CTP_* pins are UNCONNECTED — the C3 has

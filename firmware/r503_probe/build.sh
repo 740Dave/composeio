@@ -16,36 +16,53 @@
 # Usage:
 #   ./build.sh                 build only
 #   ./build.sh upload          build + flash
-#                              ⛔ flashes ONLY the board whose USB serial number is
-#                                 00:00:5E:00:53:06. The port is resolved from that
-#                                 serial AT USE TIME. It is never cached.
+#                              ⛔ flashes ONLY the board whose USB serial equals
+#                                 $R503_EXPECT_SERIAL (set in the host overlay), and
+#                                 never one on $FLASH_DENY_SERIALS. The port is resolved
+#                                 from that serial AT USE TIME. It is never cached.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SRC_DIR}/../.." && pwd)"
-BUILD_DIR="${HOME}/.cache/composeio/r503_probe_build"
-
-# ⛔ The ONE board this firmware may ever be written to. David's ESP32-S3 SuperMini.
-#    The ESP32-C3 (00:00:5E:00:53:02) and the FTDI bridge (<device-serial>) are OFF LIMITS.
-# The board identity is deployment config (composeio-deploy: r503_probe.env). Unset = refuse to flash.
-EXPECT_SERIAL="${R503_EXPECT_SERIAL:-}"
-if [[ "${1:-}" == "upload" && -z "${EXPECT_SERIAL}" ]]; then
-  echo "refusing to flash: set R503_EXPECT_SERIAL to the USB serial of the one board this firmware may write" >&2
-  exit 2
-fi
-
-mkdir -p "${BUILD_DIR}"
-rsync -a --delete \
-  --exclude '.pio/' \
-  "${SRC_DIR}/" "${BUILD_DIR}/"
+GUARD="${REPO_ROOT}/python/composeio/flash_guard.py"
+HOOK="${REPO_ROOT}/python/scripts/pio_flash_guard.py"
+# The mirror PRESERVES the repo-relative layout (firmware/r503_probe + the guard files)
+# so platformio.ini's `pre:../../python/scripts/pio_flash_guard.py` resolves in it too.
+MIRROR_ROOT="${HOME}/.cache/composeio/r503_probe_build"
+BUILD_DIR="${MIRROR_ROOT}/firmware/r503_probe"
 
 TARGET="${1:-}"
 
+# ⛔ IDENTITY GATE — runs BEFORE anything is copied, built or enumerated.
+#    The one board this firmware may write is deployment config (host overlay:
+#    R503_EXPECT_SERIAL); the never-flash list is FLASH_DENY_SERIALS. Unset = refuse.
+#    Public code names no device: a pseudonymous serial here would never match the real
+#    board, so a guard comparing against it would PASS for the board it exists to protect.
 if [ "${TARGET}" = "upload" ]; then
-  # ⛔ Resolve the port FROM THE SERIAL, now. A device path is a lease: this board
-  #    has native USB and re-enumerates when BOOT is pressed.
-  PORT="$(python3 "${REPO_ROOT}/probe/r503probe.py" --serial "${EXPECT_SERIAL}" port)"
-  echo "resolved ${EXPECT_SERIAL} -> ${PORT}"
+  if [ -z "${FLASH_DENY_SERIALS:-}" ]; then
+    echo "refusing to flash: set FLASH_DENY_SERIALS (host overlay) to the USB serials that must never be written" >&2
+    exit 2
+  fi
+  if [ -z "${R503_EXPECT_SERIAL:-}" ]; then
+    echo "refusing to flash: set R503_EXPECT_SERIAL to the USB serial of the one board this firmware may write" >&2
+    exit 2
+  fi
+  # ⛔ Resolve the port FROM THE SERIAL, now, through the shared guard (passive: no
+  #    port is opened). A device path is a lease: this board has native USB and
+  #    re-enumerates when BOOT is pressed.
+  PORT="$(python3 "${GUARD}" resolve --expect-var R503_EXPECT_SERIAL)"
+  echo "resolved R503_EXPECT_SERIAL -> ${PORT}"
+fi
+
+mkdir -p "${BUILD_DIR}" "${MIRROR_ROOT}/python/composeio" "${MIRROR_ROOT}/python/scripts"
+rsync -a --delete \
+  --exclude '.pio/' \
+  "${SRC_DIR}/" "${BUILD_DIR}/"
+cp "${GUARD}" "${MIRROR_ROOT}/python/composeio/flash_guard.py"
+cp "${HOOK}" "${MIRROR_ROOT}/python/scripts/pio_flash_guard.py"
+
+if [ "${TARGET}" = "upload" ]; then
+  # The PlatformIO hook re-checks the same identity at upload time (belt and braces).
   cd "${BUILD_DIR}" && pio run -t upload --upload-port "${PORT}"
 else
   cd "${BUILD_DIR}" && pio run

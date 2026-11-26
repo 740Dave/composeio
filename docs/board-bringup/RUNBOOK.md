@@ -46,7 +46,12 @@ mid-bring-up: the boards you'd regress are usually not on the bench.
    *Read from the kit before inventing anything — but never port a demo into the tree. It is reference,
    not architecture.*
 3. **BACK UP THE FACTORY FLASH FIRST.** Before the first write.
+   ⛔ **Every esptool command resets the board it connects to** — run the identity gate on the port
+   first, every time. It reads the USB serial passively and refuses unless the host overlay sets
+   `FLASH_DENY_SERIALS` and the port is not on it (`pio run -t upload` runs the same gate itself,
+   through `python/scripts/pio_flash_guard.py`). Public code names no device identity.
    ```bash
+   python3 python/composeio/flash_guard.py check --port <port> || exit 1   # [--expect-var <BOARD>_EXPECT_SERIAL]
    esptool.py --port <port> flash-id                       # get the size first
    esptool.py --port <port> read-flash 0 <size> factory.bin
    ```

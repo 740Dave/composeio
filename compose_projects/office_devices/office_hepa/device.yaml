@@ -17,13 +17,12 @@ device:
   # EXTERNAL FTDI (TX/RX crossed); powered externally at 12V DC (brownouts on
   # FTDI power alone).  NOTE: office_fan + office_hepa share the same FTDI
   # cable in this pass — flash them ONE AT A TIME on this port.
-  upload_port: /dev/cu.usbserial-<device-serial>
+  upload_port: ${OFFICE_RELAY_SERIAL_PORT}   # host overlay; never a literal here
 
   # Build/flash from composeio, MANUAL download mode (IO0->GND, tap EN):
   #   cd composeio/firmware/reactive_core
-  #   pio run -e office_hepa -t upload \
-  #       --upload-port /dev/cu.usbserial-<device-serial>
-  #   pio device monitor --port /dev/cu.usbserial-<device-serial> -b 115200
+  #   pio run -e office_hepa -t upload    # port = $OFFICE_RELAY_SERIAL_PORT
+  #   pio device monitor --port "$OFFICE_RELAY_SERIAL_PORT" -b 115200
   firmware:
     platform: composeio
     tier: reactive_core
@@ -37,7 +36,7 @@ device:
     bus_path: bus://assets/displays/office_hepa.compose.yaml
     # push the config to the bus asset store:
     #   curl -X PUT --data-binary @office_hepa.compose.yaml \
-    #     http://192.0.2.75:8420/api/v1/assets/displays/office_hepa.compose.yaml
+    #     $COMPOSEIO_FW_STORAGE_URL/api/v1/assets/displays/office_hepa.compose.yaml
 
 # Relay HAL (from the fetched compose.yaml; active-HIGH, break-before-make):
 #   office_hepa/speed = off/low/medium/high

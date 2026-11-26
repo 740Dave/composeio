@@ -22,7 +22,7 @@ Bring-up date: 2026-08-11. Vendor kit:
 | chip | ESP32-S3 (QFN56) rev v0.2, dual core + LP, 240 MHz, Xtensa LX7 |
 | flash | 16 MB quad, 3.3 V per eFuse, `dio` mode |
 | PSRAM | 8 MB **octal** @ 80 MHz — AP vendor, generation 3, 64 Mbit die (read off the live chip) |
-| MAC / device id | `00:00:5e:00:53:01` → `hosyond-080739` |
+| MAC / device id | this board's STA MAC (read passively; not written in public code) → `hosyond-<last 3 MAC bytes>` |
 | port | `/dev/cu.usbmodem31101` — native USB (VID `0x303a` / PID `0x1001`) |
 | panel | 2.8" IPS 240×320, ILI9341V, portrait |
 | touch | FT6336G capacitive, I²C `0x38`, chip id `0x64` |

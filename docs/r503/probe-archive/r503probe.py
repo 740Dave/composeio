@@ -36,9 +36,12 @@ except ImportError:
     sys.stderr.write("pyserial is required:  python3 -m pip install pyserial\n")
     raise SystemExit(2)
 
-# ⛔ The ONE board this tool may talk to. David's ESP32-S3 SuperMini.
-#    ESP32-C3 00:00:5E:00:53:02 and FTDI bridge <device-serial> are OFF LIMITS.
-DEFAULT_SERIAL = "00:00:5E:00:53:06"
+# ⛔ The ONE board this tool may talk to: the ESP32-S3 SuperMini whose USB serial is
+#    R503_EXPECT_SERIAL in the host overlay. Every other board is OFF LIMITS, and any
+#    serial on FLASH_DENY_SERIALS is refused even if named with --serial. Public code
+#    names no device: unset = refuse (main()), never a made-up default.
+import os  # noqa: E402
+DEFAULT_SERIAL = os.environ.get("R503_EXPECT_SERIAL", "").strip()
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SESSIONS = REPO / "probe" / "sessions"
@@ -762,7 +765,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--serial", default=DEFAULT_SERIAL,
-                    help="USB serial number of the S3 (NOT a device path)")
+                    help="USB serial number of the S3 (NOT a device path); "
+                         "default $R503_EXPECT_SERIAL")
     ap.add_argument("--observer", default=None, help="name recorded in the session log")
     ap.add_argument("-v", "--verbose", action="store_true", help="echo the line protocol")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -800,6 +804,19 @@ def main():
     p.set_defaults(fn=cmd_listen)
 
     args = ap.parse_args()
+    deny = {t.strip().upper() for t in
+            os.environ.get("FLASH_DENY_SERIALS", "").replace(",", " ").split() if t.strip()}
+    if not args.serial:
+        sys.stderr.write("refusing: R503_EXPECT_SERIAL is unset and no --serial was given "
+                         "(set it in the host overlay)\n")
+        raise SystemExit(2)
+    if not deny:
+        sys.stderr.write("refusing: FLASH_DENY_SERIALS is unset or empty "
+                         "(set it in the host overlay)\n")
+        raise SystemExit(2)
+    if args.serial.strip().upper() in deny:
+        sys.stderr.write("refusing: --serial is on FLASH_DENY_SERIALS\n")
+        raise SystemExit(2)
     rc = args.fn(args)
     raise SystemExit(rc or 0)
 

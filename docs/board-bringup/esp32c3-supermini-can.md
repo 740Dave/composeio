@@ -75,7 +75,7 @@ MAC prefix `1C:DB:D4`** — match the full serial.
 ioreg -r -c IOUSBHostDevice -l -w0 | awk '/"USB Serial Number"/{sn=$NF} /IOCalloutDevice/{print sn, $NF}'
 ```
 
-Target is `"00:00:5E:00:53:03" "/dev/cu.usbmodem11301"`. **`esptool chip-id` is not an identity
+Target is the port whose serial equals `$C3LCD_EXPECT_SERIAL` (host overlay); the flash guard enforces it, and refuses anything on `$FLASH_DENY_SERIALS`. **`esptool chip-id` is not an identity
 check** — it resets the board, which is the harm being prevented.
 
 To reset without esptool (and so without a bootloader entry), pulse RTS on the open port.

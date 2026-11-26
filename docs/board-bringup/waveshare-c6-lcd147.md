@@ -22,7 +22,7 @@ ESP-IDF demo is the authoritative pin/init source).
 | radios | Wi-Fi 6, BT 5 LE, 802.15.4 |
 | flash | 4 MB embedded; `partitions.csv` (the CYD's 4 MB layout) applies unchanged |
 | PSRAM | **none** |
-| MAC / device id | base `00:00:5e:00:53:05` → `wsc6-07f199` |
+| MAC / device id | base MAC (read passively; not written in public code) → `wsc6-<last 3 MAC bytes>` |
 | port | `/dev/cu.usbmodem11301` — native USB-Serial-JTAG, no bridge chip |
 | panel | 1.47" IPS **172×320**, ST7789T, portrait, **no touch** |
 

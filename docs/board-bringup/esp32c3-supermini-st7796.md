@@ -62,8 +62,8 @@ ioreg -r -c IOUSBHostDevice -l -w0 | awk '/"USB Serial Number"/{sn=$NF} /IOCallo
 
 | MAC | port | rule |
 |---|---|---|
-| `00:00:5E:00:53:03` | `/dev/cu.usbmodem11301` | **this board** |
-| `00:00:5E:00:53:02` | `/dev/cu.usbmodem31101` | **LIVE dual-throttle controller — never touch** |
+| `$C3LCD_EXPECT_SERIAL` (host overlay) | resolve at use time | **this board** — the flash guard requires it |
+| a serial on `$FLASH_DENY_SERIALS` (host overlay) | resolve at use time | **LIVE dual-throttle controller — never touch**; the flash guard refuses it |
 
 `esptool chip-id` is **not** an identity check: it resets the board, which is the harm being prevented.
 
