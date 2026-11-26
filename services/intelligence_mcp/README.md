@@ -12,7 +12,7 @@ Bridges MCP tool calls from Claude Code (or any MCP-capable agent) to the Compos
 pip install -e /path/to/composeio/python/composebus -e /path/to/composeio/python
 ```
 
-`composeio` depends on the ComposeBus kernel distribution `composebus==0.1.0`, which
+`composeio` depends on the ComposeBus kernel distribution `composebus==0.1.2`, which
 lives beside it at `python/composebus`; the one command installs both.
 Non-editable equivalent:
 

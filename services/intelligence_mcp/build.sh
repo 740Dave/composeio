@@ -14,7 +14,7 @@ rm -rf "$SCRIPT_DIR/composeio_lib"
 mkdir -p "$SCRIPT_DIR/composeio_lib"
 cp -r "$COMPOSEIO_LIB/composeio" "$SCRIPT_DIR/composeio_lib/composeio"
 cp "$COMPOSEIO_LIB/pyproject.toml" "$SCRIPT_DIR/composeio_lib/"
-# composeio depends on the ComposeBus kernel distribution (composebus==0.1.0,
+# composeio depends on the ComposeBus kernel distribution (composebus==0.1.2,
 # [SPEC:CXC-COMPOSEBUS-KERNEL] §7); ship it beside composeio so the Dockerfile's
 # single pip command resolves both locally.
 mkdir -p "$SCRIPT_DIR/composeio_lib/composebus"
