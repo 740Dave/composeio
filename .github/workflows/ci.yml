@@ -31,8 +31,8 @@ jobs:
         run: python3 -m py_compile tools/ci_gitleaks.py tools/disclosure_guard.py tools/leakcheck.py tools/runner_preconditions.py tools/queue_leakcheck.py tests/leakcheck/negative_control.py
       - name: runner preconditions refuse unmet settings and accept met ones (fixtures)
         run: |
-          python3 -I tools/runner_preconditions.py tools/queue_leakcheck.py --fixture tests/leakcheck/fixtures/preconditions/pass
-          set +e; python3 -I tools/runner_preconditions.py tools/queue_leakcheck.py --fixture tests/leakcheck/fixtures/preconditions/fail; rc=$?; set -e
+          python3 -I tools/runner_preconditions.py --fixture tests/leakcheck/fixtures/preconditions/pass
+          set +e; python3 -I tools/runner_preconditions.py --fixture tests/leakcheck/fixtures/preconditions/fail; rc=$?; set -e
           test "$rc" -eq 1 || { echo "runner_preconditions.py did not refuse the failing fixture (exit $rc)"; exit 1; }
       - name: negative control (synthetic vocabulary; every planted case must give its expected verdict)
         run: python3 -I tests/leakcheck/negative_control.py --synthetic
