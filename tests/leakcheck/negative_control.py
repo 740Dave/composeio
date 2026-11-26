@@ -111,6 +111,11 @@ def leakcheck(repo, base, pdir, work, tag, pr_text=None):
     return p.returncode, doc.get("result"), findings, p.stdout
 
 
+def cleanup(repo, base, scope):
+    p = sh(REPO, sys.executable, "-I", str(TOOLS / "cleanup_check.py"), "--repo", str(repo), "--base", base, "--scope", *scope)
+    return p.returncode, p.stdout
+
+
 def fake_key():
     alphabet = string.ascii_letters + string.digits
     return "sk-ant-api03-" + "".join(secrets.choice(alphabet) for _ in range(93)) + "AA"
@@ -197,6 +202,17 @@ def main(argv=None):
     rc, res, f, _out = leakcheck(repo, base, pdir, work, "excluded")
     hit = [x for x in f if x["rule"] == "publish-exclude-path"]
     case("red-excluded-path", rc == 1 and res == "red" and len(hit) == 1, f"exit {rc}, {res}, {len(hit)} publish-exclude-path finding(s)")
+
+    repo, base = new_repo(work, "cleanup")
+    commit(repo, {"src/__pycache__/m.cpython-313.pyc": "x\n", "src/m.py.bak1": "x\n", "python/tests/render/captures/w.png": "x\n",
+                  "held/x.txt": "a clean line\n", "other/y.txt": "a clean line\n"}, "a change carrying scratch files")
+    rc, out = cleanup(repo, base, ["src/*", "python/*", "held/*"])
+    n = sum(1 for ln in out.splitlines() if ln.startswith("  ") and "[" in ln)
+    case("red-cleanup", rc == 1 and n == 5, f"exit {rc}, {n} violation(s)")
+    repo, base = new_repo(work, "cleanup-ok")
+    commit(repo, {"src/m.py": "VALUE = 1\n"}, "a clean change")
+    rc, out = cleanup(repo, base, ["src/*"])
+    case("green-cleanup", rc == 0, f"exit {rc}")
 
     clean, cbase = new_repo(work, "clean")
     commit(clean, {"app/config.py": 'BROKER = "mqtt-broker.local"  # placeholder; the deployment supplies the real host\n'},
