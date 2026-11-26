@@ -31,7 +31,6 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 TOOLS = REPO / "tools"
 CASES = HERE / "fixtures" / "cases.tsv"
-BUILTIN_HOME_TARGET = "/Users/jdoe/checkout"  # matches the guard's builtin absolute-home-path rule (its own control names this path)
 SYNTHETIC_VOCAB = (
     "# synthetic vocabulary for the hosted negative control: made-up terms, no real ones\n"
     "\\bexample-private-host\\.invalid\\b\texample-private-host.invalid\tsynthetic private host\tsynthetic-host\n"
@@ -184,7 +183,9 @@ def main(argv=None):
     commit(repo, {"docs/link": "a clean line\n"}, "add a file")
     base = g(repo, "rev-parse", "HEAD")
     (repo / "docs" / "link").unlink()
-    os.symlink(BUILTIN_HOME_TARGET, repo / "docs" / "link")
+    home_rule = next(r for r in guard.BUILTIN_RULES if r.name == "absolute-home-path")
+    target = home_rule.rx.search(home_rule.control).group(0) + "checkout"  # built from the guard's own control: no literal path here
+    os.symlink(target, repo / "docs" / "link")
     g(repo, "add", "docs/link")
     commit(repo, {}, "replace the file with a link")
     rc, res, f, _out = leakcheck(repo, base, pdir, work, "typechange")
