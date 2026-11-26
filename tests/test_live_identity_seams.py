@@ -67,7 +67,8 @@ def test_soak_and_bringup_defaults_are_neutral(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     hud = _load("compose_projects/fleet-hud/fleet_hud.py", "_hud_default")
     assert "benchnode.local" in hud._BENCHNODE and "benchnode.local" in hud._FLEETNODE
-    assert (hud._SOAK_NODE, hud._BENCH_NAME) == ("fleetnode", "benchnode")
+    # The soak log names have NO default: unset is "not configured", never a guessed file name.
+    assert (hud._SOAK_NODE, hud._BENCH_NAME) == (None, None)
     soak = _scene("compose_projects/fleet-hud/fleet-540-soak.compose.yaml")
     assert "fleetnode_temp_c" in [n["name"] for n in soak["namespaces"]]
     bring = _scene("compose_projects/minnow-bringup/minnow-bringup.compose.yaml")

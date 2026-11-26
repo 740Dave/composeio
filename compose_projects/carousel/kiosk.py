@@ -62,13 +62,60 @@ DEFAULT_BROKER = os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local")   
 DEFAULT_PORT = 1883
 
 # target -> scene FILE (relative to this dir).  A target with NO entry here is
-# either a system action (`power`) or a deferred app (`fiat`, whose LIVE tile
-# rides the carousel — no standalone fullscreen scene exists yet); such a
-# target routes but never spawns.
+# either a system action (`power`), an OPTIONAL overlay app (`bsg`, below) or a
+# deferred app (`fiat`, whose LIVE tile rides the carousel — no standalone
+# fullscreen scene exists yet); a deferred target routes but never spawns.
 SCENES: Dict[str, str] = {
     "launcher": "launcher.compose.yaml",
-    "bsg": "bsg_app.compose.yaml",
 }
+
+# ── OPTIONAL OVERLAY SCENES ─────────────────────────────────────────────────
+# The BSG 2-up (`bsg_app.compose.yaml`) is NOT public content: it ships in the
+# private bsg overlay, which places it at the repo-relative default below (the
+# same path it has inside the overlay repo).  `COMPOSEIO_BSG_SCENE` names any
+# other location (absolute, or relative to the repo root).  When no file is
+# there, the overlay is not installed: the `bsg` intent is answered with
+# BSG_NOT_INSTALLED and the kiosk stays on the current scene, and the launcher
+# tile is told so through its `bsg_tile_hint` launch variable (see
+# ``launcher_overrides``).  An absent overlay is a stated state, never a
+# file-not-found from a spawned child.
+BSG_SCENE_ENV = "COMPOSEIO_BSG_SCENE"
+BSG_SCENE_DEFAULT = "compose_projects/carousel/bsg_app.compose.yaml"
+BSG_NOT_INSTALLED = "BSG overlay not installed"
+BSG_TILE_HINT_READY = "tap to launch"
+# The launcher scene declares `variables: {bsg_tile_hint: ...}`; the kiosk sets
+# it per spawn through the runtime's COMPOSEIO_VAR_<NAME> launch override.
+BSG_TILE_HINT_ENV = "COMPOSEIO_VAR_BSG_TILE_HINT"
+
+
+def bsg_scene_path(repo_root: str = REPO_ROOT,
+                   env: Optional[Dict[str, str]] = None) -> str:
+    """Absolute path where the BSG overlay's 2-up scene is expected."""
+    env = os.environ if env is None else env
+    raw = (env.get(BSG_SCENE_ENV) or "").strip() or BSG_SCENE_DEFAULT
+    raw = os.path.expanduser(raw)
+    return raw if os.path.isabs(raw) else os.path.join(repo_root, raw)
+
+
+def bsg_installed(repo_root: str = REPO_ROOT,
+                  env: Optional[Dict[str, str]] = None) -> bool:
+    return os.path.isfile(bsg_scene_path(repo_root, env))
+
+
+# target -> (resolver of an OPTIONAL scene's absolute path, the message the
+# kiosk gives when that file is absent, the env name that relocates it).
+OPTIONAL_SCENES: Dict[str, tuple] = {
+    "bsg": (bsg_scene_path, BSG_NOT_INSTALLED, BSG_SCENE_ENV),
+}
+
+
+def launcher_overrides(repo_root: str = REPO_ROOT,
+                       env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """The launch-variable env the LAUNCHER child gets, computed at each spawn
+    so installing (or removing) the overlay shows on the next return to it."""
+    hint = (BSG_TILE_HINT_READY if bsg_installed(repo_root, env)
+            else BSG_NOT_INSTALLED)
+    return {BSG_TILE_HINT_ENV: hint}
 BOOT_TARGET = "launcher"
 # Every intent the router subscribes.  `fiat` is subscribed so the intent is
 # OBSERVED (and logged as deferred) rather than silently dropped.
@@ -150,12 +197,15 @@ class SceneRunner:
 
     # -- child env / spawn ----------------------------------------------------
 
-    def _child_env(self) -> dict:
+    def _child_env(self, scene: Optional[str] = None) -> dict:
         """The environment a spawned scene inherits.  The wayfire autostart
         provides PYTHONPATH / COMPOSEIO_FONT_DIR / the Wayland+XDG session env;
         we FILL PYTHONPATH + COMPOSEIO_FONT_DIR from --repo-root if unset so a
-        forgetful autostart line still yields a working child."""
+        forgetful autostart line still yields a working child.  The LAUNCHER
+        child also gets ``launcher_overrides`` (the BSG tile's state)."""
         env = dict(os.environ)
+        if scene is not None and os.path.basename(scene) == SCENES[BOOT_TARGET]:
+            env.update(launcher_overrides(self.repo_root, env))
         py = os.path.join(self.repo_root, "python")
         existing = env.get("PYTHONPATH", "")
         if py not in existing.split(os.pathsep):
@@ -213,7 +263,7 @@ class SceneRunner:
             if not force and scene == self.current and self.alive():
                 return f"already showing {os.path.basename(scene)}"
             self._kill_locked()
-            self._proc = self._spawn(scene, self._child_env())
+            self._proc = self._spawn(scene, self._child_env(scene))
             self.current = scene
             return f"showing {os.path.basename(scene)} (pid {self._proc.pid})"
 
@@ -243,6 +293,7 @@ class KioskSupervisor:
         self.broker = broker
         self.port = port
         self.scenes = dict(SCENES) if scenes is None else dict(scenes)
+        self.optional = dict(OPTIONAL_SCENES)
         self.runner = runner if runner is not None else SceneRunner(
             repo_root, broker, port)
         self.power = power if power is not None else PowerAction()
@@ -265,6 +316,18 @@ class KioskSupervisor:
             self._log(f"power intent -> command={res['command']} "
                       f"fired={res['fired']}")
             return {"action": "power", **res}
+        if target in self.optional and target not in self.scenes:
+            resolve, absent_msg, env_name = self.optional[target]
+            path = resolve(self.repo_root)
+            if not os.path.isfile(path):
+                self._log(f"intent '{target}' -> {absent_msg} (no scene at "
+                          f"{path}; set {env_name}) — staying on current")
+                return {"action": "unavailable", "target": target,
+                        "reason": absent_msg, "scene": path}
+            detail = self.runner.show(path)
+            self._log(f"intent '{target}' -> {detail}")
+            return {"action": "show", "target": target,
+                    "scene": os.path.basename(path), "detail": detail}
         name = self.scenes.get(target)
         if name is None:
             # `fiat` has no standalone fullscreen scene yet (its LIVE tile rides
@@ -375,7 +438,11 @@ def _selftest() -> int:
     assert calls[-1] == "launcher.compose.yaml", "(4) boot shows launcher"
 
     r = sup.route("bsg")
-    assert r["action"] == "show" and calls[-1] == "bsg_app.compose.yaml", "(5) bsg"
+    if bsg_installed():
+        assert r["action"] == "show" and calls[-1] == "bsg_app.compose.yaml", "(5) bsg"
+    else:
+        assert (r["action"] == "unavailable" and r["reason"] == BSG_NOT_INSTALLED
+                and calls[-1] == "launcher.compose.yaml"), "(5) bsg absent -> stated, no spawn"
 
     r = sup.route("launcher")
     assert calls[-1] == "launcher.compose.yaml", "(6) back to launcher"

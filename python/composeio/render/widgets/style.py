@@ -68,6 +68,7 @@ STATUS_COLORS = {                        # CommandWidget lifecycle dot
     "ok": (0x2E, 0xCC, 0x71),
     "fail": (0xE0, 0x3B, 0x3B),
     "blocked": (0xE6, 0x7E, 0x22),
+    "not_configured": (0xE6, 0xB4, 0x50),   # amber: nothing was probed
 }
 
 FONT_UI = "sans-serif"        # -> IBM Plex Sans

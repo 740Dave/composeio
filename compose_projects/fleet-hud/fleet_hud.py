@@ -15,6 +15,7 @@ PYTHONPATH must include composeio/python (the launcher below adds it relative to
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import subprocess
@@ -33,13 +34,31 @@ CONFIG = HERE / "fleet-540-soak.compose.yaml"
 # fleetnode is behind the 540 NAT: reach it via the reverse tunnel (benchnode:22222).
 #: SSH targets are CONFIGURATION: FLEET_BENCH_HOST (neutral default benchnode.local).
 _BENCH_HOST = os.environ.get("FLEET_BENCH_HOST", "benchnode.local")
-#: Remote soak log names carry the node names: CONFIGURATION too (FLEET_SOAK_NODE_NAME, FLEET_BENCH_NAME).
-_SOAK_NODE = os.environ.get("FLEET_SOAK_NODE_NAME", "fleetnode")
-_BENCH_NAME = os.environ.get("FLEET_BENCH_NAME", "benchnode")
+#: The tunnel login defaults to the INVOKING user (FLEET_SOAK_SSH_USER overrides it).
+_SOAK_SSH_USER = os.environ.get("FLEET_SOAK_SSH_USER") or getpass.getuser()
+#: Remote soak log names carry the node names: CONFIGURATION, supplied by the deploy overlay
+#: (FLEET_SOAK_NODE_NAME, FLEET_BENCH_NAME). There is NO default: a guessed name tails a file that
+#: does not exist and blanks the soak panel silently. Unset = the panel says "not configured".
+_SOAK_NODE = os.environ.get("FLEET_SOAK_NODE_NAME", "").strip() or None
+_BENCH_NAME = os.environ.get("FLEET_BENCH_NAME", "").strip() or None
 _FLEETNODE = (f"ssh -o ProxyCommand='ssh -W %h:%p {_BENCH_HOST}' "
            "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "
-           "-p 22222 davidleeburnett@localhost")
+           f"-p 22222 {_SOAK_SSH_USER}@localhost")
 _BENCHNODE = f"ssh -o ConnectTimeout=8 {_BENCH_HOST}"
+#: The 540's REST status URL, as fleetnode reaches it: CONFIGURATION (FLEET_FW_STATUS_URL). No
+#: default: an unset target is "not configured", never a probe of a placeholder that reports a
+#: firewall that is up as "unreachable".
+_FW_STATUS_URL = os.environ.get("FLEET_FW_STATUS_URL", "").strip() or None
+
+#: The soak panel's configuration line (namespace ``soak_config``), and the probe's unset state.
+SOAK_NOT_CONFIGURED = "soak logs not configured: set FLEET_SOAK_NODE_NAME and FLEET_BENCH_NAME"
+FW_NOT_CONFIGURED = "540 status not configured: set FLEET_FW_STATUS_URL"
+
+
+def soak_missing_names() -> list:
+    """The soak-log env names that are unset (empty list = configured)."""
+    return [n for n, v in (("FLEET_SOAK_NODE_NAME", _SOAK_NODE),
+                           ("FLEET_BENCH_NAME", _BENCH_NAME)) if not v]
 
 
 def _sh(cmd: str, timeout: int = 20) -> str:
@@ -63,13 +82,24 @@ def _last_json(blob: str) -> dict:
 
 def poll() -> dict:
     """Pull current values from the live soak. Returns namespace -> value."""
-    # one fleetnode round-trip for all three soak logs
-    g = _sh(f"{_FLEETNODE} 'for f in ~/soak/logs/dut_540.jsonl ~/soak/logs/node_{_SOAK_NODE}.jsonl "
-            f"~/soak/logs/iperf_{_BENCH_NAME}.jsonl; do tail -1 \"$f\" 2>/dev/null; echo; done'")
-    parts = [p for p in g.split("\n") if p.strip().startswith("{")]
-    dut = _last_json(parts[0]) if len(parts) > 0 else {}
-    node = _last_json(parts[1]) if len(parts) > 1 else {}
-    iperf = _last_json(parts[2]) if len(parts) > 2 else {}
+    missing = soak_missing_names()
+    if missing:
+        # The DUT log name carries no node name, so the DUT panel still reads; the node + iperf
+        # logs are NOT guessed at. soak_config states why their gauges are empty.
+        g = _sh(f"{_FLEETNODE} 'tail -1 ~/soak/logs/dut_540.jsonl 2>/dev/null; echo'")
+        parts = [p for p in g.split("\n") if p.strip().startswith("{")]
+        dut = _last_json(parts[0]) if parts else {}
+        node, iperf = {}, {}
+        soak_config = SOAK_NOT_CONFIGURED
+    else:
+        # one fleetnode round-trip for all three soak logs
+        g = _sh(f"{_FLEETNODE} 'for f in ~/soak/logs/dut_540.jsonl ~/soak/logs/node_{_SOAK_NODE}.jsonl "
+                f"~/soak/logs/iperf_{_BENCH_NAME}.jsonl; do tail -1 \"$f\" 2>/dev/null; echo; done'")
+        parts = [p for p in g.split("\n") if p.strip().startswith("{")]
+        dut = _last_json(parts[0]) if len(parts) > 0 else {}
+        node = _last_json(parts[1]) if len(parts) > 1 else {}
+        iperf = _last_json(parts[2]) if len(parts) > 2 else {}
+        soak_config = f"soak logs: node {_SOAK_NODE}, bench {_BENCH_NAME}"
     ev_count = _sh(f"{_BENCHNODE} 'wc -l < ~/velo540_console_events.jsonl'").strip()
 
     ports_up = dut.get("ports_up", 0)
@@ -83,6 +113,7 @@ def poll() -> dict:
         "soak_verdict": "yellow",   # pending until Monday collection + power-cycle merge
         os.environ.get("COMPOSEIO_VAR_SOAK_NODE_TEMP_NS", "fleetnode_temp_c"): node.get("temp_c"),
         "console_activity": int(ev_count) if ev_count.isdigit() else None,
+        "soak_config": soak_config,
     }
     return {k: v for k, v in ns.items() if v is not None}
 
@@ -109,9 +140,17 @@ def _act_console_tail(args: dict) -> dict:
 
 def _act_fw_status(args: dict) -> dict:
     """Live 540 REST status via fleetnode. Demonstrates external authority honestly:
-    with fleetnode down + tunnel dead this returns a real failure, NOT an optimistic green."""
+    with fleetnode down + tunnel dead this returns a real failure, NOT an optimistic green.
+    With no target configured it probes NOTHING and says so: neither green nor red."""
+    if not _FW_STATUS_URL:
+        return {"ok": False, "not_configured": True, "summary": FW_NOT_CONFIGURED,
+                "detail": "no probe was run: FLEET_FW_STATUS_URL is unset"}
+    if any(c in _FW_STATUS_URL for c in "'\"`$\\;&|<>() \t"):
+        return {"ok": False, "summary": "FLEET_FW_STATUS_URL holds a quote, space or shell character; "
+                                        "no probe was run",
+                "detail": "the URL is passed inside a remote shell command and must be a plain URL"}
     out = _sh(f"{_FLEETNODE} 'curl -sk --connect-timeout 6 "
-              f"https://198.51.100.16/api/core/system/status || echo __UNREACHABLE__'",
+              f"{_FW_STATUS_URL} || echo __UNREACHABLE__'",
               timeout=25)
     ok = bool(out.strip()) and "__UNREACHABLE__" not in out and "closed" not in out.lower()
     return {"ok": ok,

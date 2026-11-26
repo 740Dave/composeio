@@ -23,6 +23,9 @@
 #   ./deploy_rpi5.sh --restart-only  # just the safe bus scene-swap restart
 #   ./deploy_rpi5.sh --grim          # sync/restart, then pull a grim readback PNG
 #   ./deploy_rpi5.sh --mirror        # OPT-IN --delete (mirror; prune rpi5 extras)
+#   ./deploy_rpi5.sh --plan          # LOCAL preflight only: print the resolved target,
+#                                    # closure, BSG overlay state and restart targets;
+#                                    # no ssh, no rsync, nothing changes
 #
 # SYNC IS ADD/UPDATE BY DEFAULT (no --delete).  rpi5's python/ has legitimately
 # diverged from the mac tree (pip editable-install composeio.egg-info/, a
@@ -30,8 +33,17 @@
 # --mirror is opt-in and should only be run after reviewing a --dry-run.
 #
 # ENV OVERRIDES
-#   RPI_HOST (davidleeburnett@display-node.local)  RPI_DIR (maker/composeio)
-#   BROKER   (mqtt-broker.local)      RESTART_TARGETS ("launcher bsg")
+#   RPI_HOST (${USER}@display-node.local: the SSH login defaults to the INVOKING user)
+#   RPI_DIR  (maker/composeio)        BROKER (mqtt-broker.local)
+#   RESTART_TARGETS ("launcher bsg" with the BSG overlay installed, else "launcher")
+#   COMPOSEIO_BSG_SCENE (compose_projects/carousel/bsg_app.compose.yaml)
+#
+# THE BSG 2-UP IS OPTIONAL OVERLAY CONTENT.  bsg_app.compose.yaml ships in the
+# private bsg overlay, which places it at the COMPOSEIO_BSG_SCENE default above
+# (absolute, or relative to the repo root).  When the file is there it joins the
+# closure, the verify list and the restart targets.  When it is not, preflight
+# says "BSG overlay not installed" and the deploy carries on without it: the
+# kiosk then shows the BSG tile as not installed instead of failing to launch.
 #
 set -euo pipefail
 
@@ -39,10 +51,31 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 MANIFEST="${HERE}/deploy.manifest"
 
-RPI_HOST="${RPI_HOST:-davidleeburnett@display-node.local}"
+RPI_HOST="${RPI_HOST:-${USER:-$(id -un)}@display-node.local}"
 RPI_DIR="${RPI_DIR:-maker/composeio}"          # relative to the ssh login home
 BROKER="${BROKER:-mqtt-broker.local}"
-RESTART_TARGETS="${RESTART_TARGETS:-launcher bsg}"   # full round-trip = fresh child
+BSG_NOT_INSTALLED="BSG overlay not installed"
+BSG_SCENE="${COMPOSEIO_BSG_SCENE:-compose_projects/carousel/bsg_app.compose.yaml}"
+case "$BSG_SCENE" in
+    /*) BSG_SCENE_ABS="$BSG_SCENE" ;;
+    *)  BSG_SCENE_ABS="${REPO_ROOT}/${BSG_SCENE}" ;;
+esac
+BSG_SCENE_REL=""                               # set when the overlay scene ships
+BSG_STATE="$BSG_NOT_INSTALLED (no scene at ${BSG_SCENE_ABS}; set COMPOSEIO_BSG_SCENE)"
+if [ -f "$BSG_SCENE_ABS" ]; then
+    case "$BSG_SCENE_ABS" in
+        "${REPO_ROOT}/"*)
+            BSG_SCENE_REL="${BSG_SCENE_ABS#"${REPO_ROOT}/"}"
+            BSG_STATE="BSG overlay installed: ${BSG_SCENE_REL}" ;;
+        *)
+            BSG_STATE="BSG overlay scene ${BSG_SCENE_ABS} is outside the repo; not shipped" ;;
+    esac
+fi
+if [ -n "$BSG_SCENE_REL" ]; then
+    RESTART_TARGETS="${RESTART_TARGETS:-launcher bsg}"   # full round-trip = fresh child
+else
+    RESTART_TARGETS="${RESTART_TARGETS:-launcher}"
+fi
 BACKUP_KEEP=5
 # grim runs from an ssh session (no session env); supply the wayfire seat.
 GRIM_ENV="${GRIM_ENV:-XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1}"
@@ -63,7 +96,7 @@ warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[err]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── argument parsing ───────────────────────────────────────────────────────
-DRY_RUN=0 SYNC_ONLY=0 RESTART_ONLY=0 GRIM=0 MIRROR=0
+DRY_RUN=0 SYNC_ONLY=0 RESTART_ONLY=0 GRIM=0 MIRROR=0 PLAN=0
 for arg in "$@"; do
     case "$arg" in
         --dry-run)      DRY_RUN=1 ;;
@@ -71,6 +104,7 @@ for arg in "$@"; do
         --restart-only) RESTART_ONLY=1 ;;
         --grim)         GRIM=1 ;;
         --mirror)       MIRROR=1 ;;
+        --plan)         PLAN=1 ;;
         -h|--help)      grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)              die "unknown arg: $arg" ;;
     esac
@@ -85,17 +119,44 @@ while IFS= read -r _line; do
     ENTRIES+=("$_line")
 done < <(grep -vE '^[[:space:]]*(#|$)' "$MANIFEST")
 [ "${#ENTRIES[@]}" -gt 0 ] || die "manifest declares no paths"
+# The optional overlay scene joins the closure only when it is installed.
+[ -n "$BSG_SCENE_REL" ] && ENTRIES+=("$BSG_SCENE_REL")
+
+# Load-bearing files whose sha256 must match after the sync (verify()).  CIC art
+# (chrome/EXT/nav) is served from the bus store, NOT deployed — so it is not
+# checksummed.  The BSG entries are overlay content: the 2-up scene, and the
+# project-local widget cluster's nav parser it imports ([CXC-PROJECT-WIDGETS]),
+# are checked only when present locally.
+VERIFY_FILES=(
+    "compose_projects/carousel/kiosk.py"
+    "compose_projects/carousel/launcher.compose.yaml"
+)
+if [ -n "$BSG_SCENE_REL" ]; then
+    VERIFY_FILES+=("$BSG_SCENE_REL")
+    [ -f "${REPO_ROOT}/compose_projects/bsg/widgets/cic/menu.py" ] \
+        && VERIFY_FILES+=("compose_projects/bsg/widgets/cic/menu.py")
+fi
 
 # ── preflight ──────────────────────────────────────────────────────────────
-preflight() {
-    log "preflight: ${RPI_HOST}"
-    ssh -o ConnectTimeout=6 "$RPI_HOST" \
-        "test -d ~/${RPI_DIR} && test -x ~/${RPI_DIR}/.venv/bin/python3" \
-        || die "rpi5 not reachable, or ~/${RPI_DIR}/.venv missing"
+# local_preflight needs no network: it is all of --plan, and the first half of
+# every other mode (a local defect fails before anything touches the Pi).
+local_preflight() {
+    log "target: ${RPI_HOST}:${RPI_DIR}  broker: ${BROKER}"
+    if [ -n "$BSG_SCENE_REL" ]; then log "$BSG_STATE"; else warn "$BSG_STATE"; fi
     for e in "${ENTRIES[@]}"; do
         [ -e "${REPO_ROOT}/${e}" ] || die "manifest path missing locally: ${e}"
     done
     log "manifest closure (${#ENTRIES[@]} entries): ${ENTRIES[*]}"
+    log "verify list: ${VERIFY_FILES[*]}"
+    log "restart targets: ${RESTART_TARGETS}"
+}
+
+preflight() {
+    local_preflight
+    log "preflight: ${RPI_HOST}"
+    ssh -o ConnectTimeout=6 "$RPI_HOST" \
+        "test -d ~/${RPI_DIR} && test -x ~/${RPI_DIR}/.venv/bin/python3" \
+        || die "rpi5 not reachable, or ~/${RPI_DIR}/.venv missing"
 }
 
 # ── backup (timestamped, reversible) ───────────────────────────────────────
@@ -136,18 +197,8 @@ sync_tree() {
 # ── verify (sha256 of the load-bearing files must match) ───────────────────
 verify() {
     log "verify: checksum load-bearing files (mac vs rpi5)"
-    # CIC art (chrome/EXT/nav) is served from the bus store, NOT deployed — so it
-    # is not checksummed here.  The bundled OFFLINE fallback + the project-local
-    # widget cluster now ride under compose_projects/bsg/widgets/ ([CXC-PROJECT-
-    # WIDGETS]); menu.py is the load-bearing nav parser the 2-up imports.
-    local files=(
-        "compose_projects/carousel/kiosk.py"
-        "compose_projects/carousel/launcher.compose.yaml"
-        "compose_projects/carousel/bsg_app.compose.yaml"
-        "compose_projects/bsg/widgets/cic/menu.py"
-    )
     local ok=1 f local_sum remote_sum
-    for f in "${files[@]}"; do
+    for f in "${VERIFY_FILES[@]}"; do
         local_sum="$(shasum -a 256 "${REPO_ROOT}/${f}" | awk '{print $1}')"
         remote_sum="$(ssh "$RPI_HOST" "sha256sum ~/${RPI_DIR}/${f} 2>/dev/null | awk '{print \$1}'")"
         if [ "$local_sum" = "$remote_sum" ] && [ -n "$remote_sum" ]; then
@@ -191,6 +242,11 @@ grim_readback() {
 
 # ── orchestration ──────────────────────────────────────────────────────────
 main() {
+    if [ "$PLAN" -eq 1 ]; then
+        local_preflight
+        log "plan complete (local only: no ssh, no rsync, nothing changed)."
+        return 0
+    fi
     preflight
     if [ "$RESTART_ONLY" -eq 1 ]; then
         restart

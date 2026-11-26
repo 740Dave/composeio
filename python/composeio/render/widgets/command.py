@@ -146,18 +146,25 @@ class CommandWidget(Widget):
         elif kind == "result":
             ok = bool(ev.get("ok"))
             blocked = bool(ev.get("blocked"))
+            # A tool whose target is not configured ran NOTHING: that is neither a
+            # pass nor a failure, so it must not paint red (a fake red is as false
+            # as a fake green).  It shows as "not configured", amber.
+            unconfigured = bool(ev.get("not_configured")) and not ok
             summary = ev.get("summary") or self.tool
-            state = "blocked" if blocked else ("ok" if ok else "fail")
-            self._set_status(state, {"blocked": "gated ⛔", "ok": "done ✓",
+            state = ("not_configured" if unconfigured else
+                     "blocked" if blocked else ("ok" if ok else "fail"))
+            self._set_status(state, {"not_configured": "not configured",
+                                     "blocked": "gated ⛔", "ok": "done ✓",
                                      "fail": "failed ✗"}[state])
             self._result_text = summary
             self._result_color = ((0xCC, 0xCC, 0xCC) if ok else
-                                  (0xE6, 0xB4, 0x50) if blocked else
+                                  (0xE6, 0xB4, 0x50) if (blocked or unconfigured) else
                                   (0xE0, 0x90, 0x8F))
             # Republish a SUMMARIZED result (stop_light) for siblings (MCPA-2)
             if self.result_ns is not None:
                 self.publish(self.result_ns,
-                             "green" if ok else ("yellow" if blocked else "red"))
+                             "green" if ok else
+                             ("yellow" if (blocked or unconfigured) else "red"))
             self._busy = False
 
     # -- measure / draw --------------------------------------------------------------

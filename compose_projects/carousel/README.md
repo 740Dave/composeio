@@ -46,7 +46,7 @@ it never spawns — widget-owns-intent / launcher-owns-runtime):
 | Tile | Order | Status | Notes |
 |---|---|---|---|
 | **Fiat** | 0 | LIVE (minimal) | Native ComposePlatform EV dash: a `fiat/speed` SPEED dial + a `fiat/soc` SOC LED-bar, subscribing the bus by reference. **Deferred:** `range`/`gear` readouts, a full skeuomorphic dash, and — the load-bearing gap — the **CAN→bus bridge** (nothing publishes `fiat/*` yet; see below). |
-| **BSG** | 1 | LAUNCH COVER → 2-up app | A labeled tile (`BSG` ring + "Battlestar Galactica" + "tap to launch") that fires `_app/bsg/open`. The app it launches is the settled **2-up** ([CXC-CIC-TWO-UP]): TWO stacked Colonial Consoles, 20px vertical padding, portrait 1080×1920 — built as its own scene [`bsg_app.compose.yaml`](bsg_app.compose.yaml) (two distinct duty stations `cic.1.helm` / `cic.2.helm`; independent selection/content/status). NOT inlined as a tile body — the carousel owns all pointer input and a 4:3 console can't fit/stay interactive in a 520px tile — so it is **launched** via the `_app/bsg/open` seam. Proof PNGs in [`proofs/`](proofs/) (`bsg_2up.png`, `bsg_2up_independent.png`). |
+| **BSG** | 1 | LAUNCH COVER → 2-up app | A labeled tile (`BSG` ring + "Battlestar Galactica" + "tap to launch") that fires `_app/bsg/open`. The app it launches is the settled **2-up** ([CXC-CIC-TWO-UP]): TWO stacked Colonial Consoles, 20px vertical padding, portrait 1080×1920 — built as its own scene [`bsg_app.compose.yaml`](bsg_app.compose.yaml) (two distinct duty stations `cic.1.helm` / `cic.2.helm`; independent selection/content/status). NOT inlined as a tile body — the carousel owns all pointer input and a 4:3 console can't fit/stay interactive in a 520px tile — so it is **launched** via the `_app/bsg/open` seam. Proof PNGs in [`proofs/`](proofs/) (`bsg_2up.png`, `bsg_2up_independent.png`). **The 2-up scene is OPTIONAL overlay content**, shipped by the private bsg overlay at `compose_projects/carousel/bsg_app.compose.yaml` (relocate it with `COMPOSEIO_BSG_SCENE`). Without it the tile reads "BSG overlay not installed", `kiosk.py` answers the tap with that message and stays on the carousel, and `start-colonial-ux.sh` / `deploy_rpi5.sh` say the same instead of failing. |
 | **Power** | 2 | LIVE (action) | System shutdown affordance (red power glyph). Center-tap fires `_app/power/open`; the host binds that to the poweroff path. HA tile **DROPPED** per the DSD. |
 
 ## Fiat data namespaces — what was found
@@ -106,7 +106,8 @@ compose_projects/carousel/deploy_rpi5.sh --restart-only   # safe scene-swap only
   is the source of truth; the package's bundled copies cover a store-unreachable
   kiosk (the rows are never blank).
 - **Transport:** per-entry `rsync -aR` (path structure preserved) to
-  `davidleeburnett@display-node.local:~/maker/composeio/`. **Add/update by default** — no
+  `<user>@display-node.local:~/maker/composeio/` (`RPI_HOST`; the login defaults to the invoking
+  user, `${USER}`). **Add/update by default** — no
   `--delete`, because rpi5's `python/` has legitimately diverged (pip
   editable-install `composeio.egg-info/`, a `python/services` dir). `--mirror`
   opts into `--delete` after a `--dry-run` review.

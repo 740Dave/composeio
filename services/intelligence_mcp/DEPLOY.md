@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- SSH access to `mqtt-broker.local` as `davidleeburnett` (passwordless sudo)
+- SSH access to `mqtt-broker.local` as your deploy user (`$USER` in the commands below; passwordless sudo)
 - Docker running on the target (verified: Docker 29.2.1)
 - Mosquitto MQTT broker on port 1883 (systemd service, configured with `allow_anonymous true` on `0.0.0.0`)
 

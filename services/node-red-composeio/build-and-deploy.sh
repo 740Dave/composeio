@@ -5,8 +5,9 @@ set -euo pipefail
 # Copies the custom nodes package to mqtt-broker.local, installs it,
 # and restarts the Node-RED container.
 
-REMOTE_USER="davidleeburnett"
-REMOTE_HOST="mqtt-broker.local"
+# Overrides: NODERED_USER (default: the invoking user) and NODERED_HOST.
+REMOTE_USER="${NODERED_USER:-${USER:-$(id -un)}}"
+REMOTE_HOST="${NODERED_HOST:-mqtt-broker.local}"
 REMOTE_DIR="~/composeio/services/node-red-composeio"
 PACKAGE_DIR="$(cd "$(dirname "$0")" && pwd)"
 

@@ -44,6 +44,10 @@ namespaces:
   - {name: $soak_node_temp_ns,    state_engine: json,       export: true, label: "fleetnode °C"}
   - {name: console_activity, state_engine: json,       export: true, label: "console events"}
   - {name: velo540_action,   state_engine: stop_light, export: true, label: "Last action"}
+  # The soak panel's configuration line: fleet_hud.py publishes "not configured" when the deploy
+  # overlay does not name the soak logs (FLEET_SOAK_NODE_NAME, FLEET_BENCH_NAME), so an unconfigured
+  # panel says why it is empty instead of rendering blank gauges.
+  - {name: soak_config,      state_engine: json,       export: true, label: "Soak config"}
 
 modules:
   - name: dut
@@ -64,6 +68,8 @@ modules:
       - {type: GaugeWidget, namespace: soak_tx_mbit, label: "Throughput Mbit/s", min_val: 0, max_val: 400, row: 0, column: 0}
       - {type: GaugeWidget, namespace: soak_retx, label: "iperf retransmits", min_val: 0, max_val: 100, row: 0, column: 1}
       - {type: GaugeWidget, namespace: $soak_node_temp_ns, label: "fleetnode °C", min_val: 0, max_val: 90, row: 1, column: 0}
+      - {type: label, id: soak_config_line, text: {namespace: soak_config, default: "soak logs: waiting for the first poll"},
+         font_size: 13, row: 1, column: 1}
 
   - name: console
     label: "540 console — semantic events (observer)"

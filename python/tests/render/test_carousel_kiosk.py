@@ -64,6 +64,17 @@ def _quiet_supervisor(**kw):
     return kiosk.KioskSupervisor(**kw)
 
 
+@pytest.fixture
+def bsg_overlay(monkeypatch, tmp_path):
+    """The 2-up is OPTIONAL overlay content (private bsg overlay); these routing
+    tests install a stub where COMPOSEIO_BSG_SCENE points, so they hold whether
+    or not the overlay is present in this checkout."""
+    scene = tmp_path / "bsg_app.compose.yaml"
+    scene.write_text("app: {id: stub}\n")
+    monkeypatch.setenv(kiosk.BSG_SCENE_ENV, str(scene))
+    return scene
+
+
 # ---------------------------------------------------------------------------
 # namespace parsing
 # ---------------------------------------------------------------------------
@@ -93,7 +104,7 @@ def test_boot_shows_carousel_launcher():
     assert runner.shows[-1][0] == "launcher.compose.yaml"
 
 
-def test_bsg_open_switches_to_two_up():
+def test_bsg_open_switches_to_two_up(bsg_overlay):
     runner = RecordingRunner()
     sup = _quiet_supervisor(runner=runner)
     sup.boot()
@@ -103,7 +114,7 @@ def test_bsg_open_switches_to_two_up():
     assert runner.current.endswith("bsg_app.compose.yaml")
 
 
-def test_launcher_open_returns_to_carousel():
+def test_launcher_open_returns_to_carousel(bsg_overlay):
     runner = RecordingRunner()
     sup = _quiet_supervisor(runner=runner)
     sup.boot()
@@ -111,6 +122,17 @@ def test_launcher_open_returns_to_carousel():
     res = sup.route("launcher")            # BACK affordance
     assert res["action"] == "show"
     assert runner.current.endswith("launcher.compose.yaml")
+
+
+def test_bsg_open_without_overlay_is_stated_not_spawned(monkeypatch, tmp_path):
+    monkeypatch.setenv(kiosk.BSG_SCENE_ENV, str(tmp_path / "absent.compose.yaml"))
+    runner = RecordingRunner()
+    sup = _quiet_supervisor(runner=runner)
+    sup.boot()
+    res = sup.route("bsg")
+    assert res["action"] == "unavailable"
+    assert res["reason"] == "BSG overlay not installed"
+    assert [s for s, _ in runner.shows] == ["launcher.compose.yaml"]
 
 
 def test_fiat_open_is_deferred_no_spawn():
@@ -124,7 +146,7 @@ def test_fiat_open_is_deferred_no_spawn():
     assert len(runner.shows) == n          # nothing spawned
 
 
-def test_on_intent_routes_via_bus_callback():
+def test_on_intent_routes_via_bus_callback(bsg_overlay):
     """The bus callback (ns, new_val, old_val) parses the target and routes."""
     runner = RecordingRunner()
     sup = _quiet_supervisor(runner=runner)
@@ -199,7 +221,7 @@ _PORT = kiosk.DEFAULT_PORT
 
 @pytest.mark.skipif(not _broker_up(_BROKER, _PORT),
                     reason=f"MQTT broker {_BROKER}:{_PORT} not reachable")
-def test_live_bsg_open_over_mqtt_switches_scene():
+def test_live_bsg_open_over_mqtt_switches_scene(bsg_overlay):
     """A published `_app/bsg/open` on the REAL broker reaches the router's bus
     and swaps the scene — the full MQTT -> route -> runner path."""
     from composeio.bus import ComposeIOBus

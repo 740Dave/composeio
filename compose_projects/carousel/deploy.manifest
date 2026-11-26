@@ -3,7 +3,8 @@
 # non-comment line is a path relative to the repo root (…/composeio); a trailing
 # slash means a directory (synced recursively).  `deploy_rpi5.sh` reads this and
 # rsyncs each entry (preserving path structure) to
-# davidleeburnett@display-node.local:~/maker/composeio/.
+# <user>@display-node.local:~/maker/composeio/ (RPI_HOST; the login defaults to
+# the invoking user, ${USER}).
 #
 # WHY A MANIFEST: the kiosk once shipped the python package but NOT the
 # compose_projects/ authoring tree, so the CIC nav (cic_menu_structure.md) was
@@ -18,7 +19,11 @@
 #       (bus://assets/icons/carousel/{fiat_logo,bsg_shield,power_off}.png) the
 #       render engine resolves BY REFERENCE from the store at draw time — NOT
 #       file-copied here (2026-08-04; scripts/publish_carousel_assets.py).
-#   • bsg_app.compose.yaml   → the colonial_console 2-up.  It declares
+#   • bsg_app.compose.yaml   → the colonial_console 2-up: OPTIONAL overlay
+#       content, NOT listed here.  The private bsg overlay places it at
+#       compose_projects/carousel/bsg_app.compose.yaml (COMPOSEIO_BSG_SCENE);
+#       deploy_rpi5.sh adds it to the closure only when it is present, and
+#       otherwise reports "BSG overlay not installed".  It declares
 #       `widget_modules: [compose_projects.bsg.widgets]`, so the kiosk imports
 #       the PROJECT-LOCAL BSG widget cluster ([CXC-PROJECT-WIDGETS]) — that
 #       subtree (+ its package-init chain) MUST ship or the import fails and both

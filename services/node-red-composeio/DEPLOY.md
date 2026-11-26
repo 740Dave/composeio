@@ -6,13 +6,14 @@ Node-RED runs on `mqtt-broker.local` as a Docker container with `network_mode: h
 
 ## Prerequisites
 
-- SSH access to `mqtt-broker.local` as `davidleeburnett`
+- SSH access to `mqtt-broker.local` as your deploy user. `build-and-deploy.sh` logs in as the
+  invoking user (`$USER`); set `NODERED_USER` (and `NODERED_HOST`) to override.
 - Docker and Docker Compose installed on mqtt-broker.local
 - MQTT broker running on mqtt-broker.local:1883
 
 ## Quick Deploy
 
-From this directory on David's Mac:
+From this directory:
 
 ```bash
 bash build-and-deploy.sh
@@ -31,15 +32,15 @@ This script:
 
 ```bash
 rsync -avz --exclude node_modules --exclude .git --exclude test \
-  ./ davidleeburnett@mqtt-broker.local:~/composeio/services/node-red-composeio/package/
+  ./ "$USER@mqtt-broker.local:~/composeio/services/node-red-composeio/package/"
 
-scp docker-compose.yml davidleeburnett@mqtt-broker.local:~/composeio/services/node-red-composeio/
+scp docker-compose.yml "$USER@mqtt-broker.local:~/composeio/services/node-red-composeio/"
 ```
 
 ### 2. SSH into server and start Node-RED
 
 ```bash
-ssh davidleeburnett@mqtt-broker.local
+ssh "$USER@mqtt-broker.local"
 cd ~/composeio/services/node-red-composeio
 docker compose up -d
 ```

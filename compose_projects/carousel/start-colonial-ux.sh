@@ -25,6 +25,12 @@
 #   compose_projects/carousel/start-colonial-ux.sh --restart    # stop matching members, then relaunch
 #   MQTT=mqtt://mqtt-broker.local:1883 compose_projects/carousel/start-colonial-ux.sh
 #   NO_CLOCK=1 compose_projects/carousel/start-colonial-ux.sh   # 2-up only
+#   COMPOSEIO_BSG_SCENE=/path/to/bsg_app.compose.yaml compose_projects/carousel/start-colonial-ux.sh
+#
+# THE 2-UP IS OPTIONAL OVERLAY CONTENT: bsg_app.compose.yaml ships in the private bsg overlay, which
+# places it at compose_projects/carousel/bsg_app.compose.yaml (COMPOSEIO_BSG_SCENE names any other
+# path, absolute or repo-relative; kiosk.py reads the same name). Without it this script says
+# "BSG overlay not installed", skips the 2-up and still brings up the rest of the roster.
 set -euo pipefail
 
 # Repo root = TWO levels up from THIS script (compose_projects/carousel/ -> repo). Location-relative,
@@ -46,10 +52,12 @@ RESTART=""
 # ── the colonial UX roster: name|entry-module|scene (relative to REPO_ROOT) ───────────────────
 # The 2-up IS the colonial console (bsg_app stacks cic_top + cic_bottom, each mounting
 # std-helm-heading -> engine_thrust). run_compose re-exports engine.runtime's main.
+BSG_SCENE="${COMPOSEIO_BSG_SCENE:-compose_projects/carousel/bsg_app.compose.yaml}"
 ROSTER=(
-  "colonial-2up|composeio.render.run_compose|compose_projects/carousel/bsg_app.compose.yaml"
+  "colonial-2up|composeio.render.run_compose|$BSG_SCENE"
   "colonial-clock|composeio.render.engine.runtime|python/composeio/render/examples/colonial_clock.compose.yaml"
 )
+BSG_NOT_INSTALLED="BSG overlay not installed"
 # NOTE the standalone engine_thrust widget window is a DEV PREVIEW — the 2-up already renders
 # engine_thrust via the std-helm-heading scene mount, so it is deliberately NOT in the roster.
 
@@ -68,8 +76,24 @@ surface_absent() {
 
 echo "colonial UX -> bus $MQTT  repo=$REPO_ROOT  logs=$LOG_DIR${RESTART:+  (RESTART)}"
 
+# skip_member <name> <scene> — TRUE when this member must not launch: the optional 2-up whose overlay
+# scene is absent (stated, never a background file-not-found), or the clock under NO_CLOCK.
+skip_member() {
+  local name="$1" scene="$2"
+  if [[ "$name" == "colonial-2up" && ! -f "$scene" ]]; then
+    echo "  - $name: $BSG_NOT_INSTALLED (no scene at $scene; set COMPOSEIO_BSG_SCENE)"
+    return 0
+  fi
+  if [[ "$name" == "colonial-clock" && -n "${NO_CLOCK:-}" ]]; then
+    echo "  - $name: skipped (NO_CLOCK)"
+    return 0
+  fi
+  return 1
+}
+
 for row in "${ROSTER[@]}"; do
   IFS='|' read -r name module scene <<< "$row"
+  skip_member "$name" "$scene" && continue
   if [[ -n "$RESTART" ]]; then
     if pgrep -f "$scene" >/dev/null 2>&1; then
       echo "  ~ stopping $name ($(pgrep -f "$scene" | tr '\n' ' '))"
@@ -84,13 +108,16 @@ for row in "${ROSTER[@]}"; do
   else
     echo "  = $name already up (pid $(pgrep -f "$scene" | head -1))"
   fi
-  [[ "$name" == "colonial-clock" && -n "${NO_CLOCK:-}" ]] && continue
 done
 
 sleep 2
 echo "colonial UX up:"
 for row in "${ROSTER[@]}"; do
   IFS='|' read -r name _module scene <<< "$row"
+  if [[ "$name" == "colonial-2up" && ! -f "$scene" ]]; then
+    echo "  $name -> $BSG_NOT_INSTALLED"
+    continue
+  fi
   echo "  $name -> pid $(pgrep -f "$scene" | head -1 || echo '-')  (log $LOG_DIR/$name.log)"
 done
 echo "prove it: re-run — idempotent. --restart to force a fresh window. A missing window is usually a"

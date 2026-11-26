@@ -42,6 +42,16 @@ app:
       broker: mqtt-broker.local
       port: 1883
 
+# [DEC-STATION-ID-IS-A-RUNTIME-BINDING-ATTRIBUTE] launch variables.  The BSG
+# 2-up is OPTIONAL overlay content (the private bsg overlay ships
+# bsg_app.compose.yaml; kiosk.py resolves it via COMPOSEIO_BSG_SCENE).  The kiosk
+# sets this hint at every launcher spawn through COMPOSEIO_VAR_BSG_TILE_HINT:
+# "tap to launch" when the scene is installed, the default below when it is not.
+# The default is the ABSENT state on purpose: launched outside the kiosk, nothing
+# routes the tap, so "tap to launch" would be a claim no one has checked.
+variables:
+  bsg_tile_hint: "BSG overlay not installed"
+
 design:
   width: 1080
   height: 1920
@@ -143,7 +153,10 @@ widgets:
       # `compose_projects/carousel/bsg_app.compose.yaml` fullscreen — the same
       # widget-owns-intent / launcher-owns-runtime split as the fiat/power tiles
       # (README "Bus surface" + "rpi5 deploy mechanism").  This tile stays the
-      # launch COVER; the app content lives in bsg_app.compose.yaml.
+      # launch COVER; the app content lives in bsg_app.compose.yaml, which is
+      # OPTIONAL overlay content: without the bsg overlay the hint below reads
+      # "BSG overlay not installed" and the kiosk answers the tap with that
+      # message instead of launching (kiosk.py OPTIONAL_SCENES).
       - target: bsg
         label: Battlestar
         widget:
@@ -163,8 +176,8 @@ widgets:
             - {type: image, id: bsg_icon,
                src: "bus://assets/icons/carousel/bsg_shield.png",
                fit: contain, x: 60, y: 30, w: 400, h: 400}
-            - {type: label, text: "tap to launch", x: 0, y: 448, width: 520,
-               align: center, font_size: 20, color: [120, 120, 132]}
+            - {type: label, id: bsg_hint, text: $bsg_tile_hint, x: 0, y: 448,
+               width: 520, align: center, font_size: 20, color: [120, 120, 132]}
 
       # ── POWER ─ system action tile (rpi5 kiosk shutdown) ───────────────────
       # Center-tap fires _app/power/open; the host (launcher runtime / rpi5
