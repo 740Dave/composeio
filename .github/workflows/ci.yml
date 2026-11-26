@@ -34,6 +34,16 @@ jobs:
           python3 -I tools/runner_preconditions.py --fixture tests/leakcheck/fixtures/preconditions/pass
           set +e; python3 -I tools/runner_preconditions.py --fixture tests/leakcheck/fixtures/preconditions/fail; rc=$?; set -e
           test "$rc" -eq 1 || { echo "runner_preconditions.py did not refuse the failing fixture (exit $rc)"; exit 1; }
+      - name: the job's half accepts only a fresh, passing record for this repository (fixtures; negative controls)
+        run: |
+          R=tests/leakcheck/fixtures/preconditions/records; NOW=2026-11-26T12:00:00Z
+          python3 -I tools/runner_preconditions.py --verify-record --record-file $R/pass.json --now $NOW
+          for c in fail:1 stale:1 future:1 other-repo:1 unreadable:1; do
+            set +e; python3 -I tools/runner_preconditions.py --verify-record --record-file "$R/${c%%:*}.json" --now $NOW; rc=$?; set -e
+            test "$rc" -eq "${c##*:}" || { echo "verify-record accepted or misjudged the ${c%%:*} record (exit $rc)"; exit 1; }
+          done
+          set +e; RUNNER_PRECONDITIONS= python3 -I tools/runner_preconditions.py --verify-record --now $NOW; rc=$?; set -e
+          test "$rc" -eq 2 || { echo "verify-record did not refuse a missing record (exit $rc)"; exit 1; }
       - name: negative control (synthetic vocabulary; every planted case must give its expected verdict)
         run: python3 -I tests/leakcheck/negative_control.py --synthetic
 

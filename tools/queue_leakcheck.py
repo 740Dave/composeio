@@ -6,7 +6,10 @@
 
 Every tool it runs is MAIN's copy (this checkout), never the PR's: the PR head is only fetched and read as data, so a PR that
 edits tools/ci_gitleaks.py, tools/leakcheck.py, the guard or the negative control does not decide its own result. In order:
-  1. tools/runner_preconditions.py (interaction limit, fork-PR approval policy). Unmet -> refuse; no scan is run.
+  1. tools/runner_preconditions.py --verify-record (interaction limit, fork-PR approval policy): the job cannot read
+     those settings itself (no login on the runner, GITHUB_TOKEN lacks admin read), so it judges the dated record the
+     maintainer's Mac writes to the Actions variable RUNNER_PRECONDITIONS, which the workflow passes in through `vars`.
+     Missing, stale, failing or unreadable -> refuse; no scan is run.
      --local-probe skips this step, LOUDLY; the workflow never passes it.
   2. the head must contain main's tip (the PR is up to date), so the head tested is the tree that lands;
   3. the PR title and body are read (from the public API, no token) and written to a file;
@@ -90,9 +93,10 @@ def main(argv=None):
     if a.local_probe:
         say("NOTE: --local-probe: the runner preconditions were NOT checked (never passed by the workflow)")
     else:
-        rc = run(sys.executable, "-I", TOOLS / "runner_preconditions.py", "--repo", a.repo or "740Dave/composeio")
+        rc = run(sys.executable, "-I", TOOLS / "runner_preconditions.py", "--verify-record", "--repo", a.repo or "740Dave/composeio")
         if rc != 0:
-            say(f"REFUSED: runner preconditions unmet (exit {rc}); no scan was run. Deregister the runner until they hold.")
+            say(f"REFUSED: the recorded runner preconditions do not hold or could not be read (exit {rc}); no scan was run. "
+                "Re-run the check on the maintainer's Mac; deregister the runner if a setting has lapsed.")
             return 1
 
     base = subprocess.run(["git", "-C", str(MAIN), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()

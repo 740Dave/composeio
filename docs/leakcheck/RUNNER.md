@@ -21,7 +21,34 @@ pass. Reading these settings needs a token that can read the repository's admini
 
 - The runner is registered **only after** `tools/runner_preconditions.py` exits 0.
 - It is **deregistered** as soon as the script fails, for example when the interaction limit lapses.
-- The `leakcheck` job runs the same script first, through `tools/queue_leakcheck.py`, and refuses to scan when it does not pass.
+- The `leakcheck` job does **not** read the settings itself (see below). It judges the latest recorded result first,
+  through `tools/queue_leakcheck.py`, and refuses to scan when that record is missing, stale or not a pass.
+
+## Where the check runs, and how the job sees it without a credential
+
+The runner's account has no GitHub login, and the job's `GITHUB_TOKEN` cannot read either setting (both need admin
+read). An admin token stored on the runner or in Actions secrets would be the very exposure these settings guard
+against, so none is stored. The work is split:
+
+1. **The live check runs on the maintainer's Mac**, under its own `gh` login, run by git-expert at least every
+   12 hours and again just before labelling a PR `queue`:
+
+       python3 -I tools/runner_preconditions.py --record --publish --repo 740Dave/composeio
+
+   It reads both settings, then writes a dated JSON record (`checked_at`, `verdict` pass/fail/unreadable, the
+   interaction-limit expiry, the fork-PR policy) to the repository's Actions variable `RUNNER_PRECONDITIONS`. A
+   failing or unreadable check is recorded too, so a lapse replaces an older pass at once.
+2. **The job reads that variable through the `vars` context**, which GitHub injects into the run with no token, and
+   runs `runner_preconditions.py --verify-record`. It refuses (no scan) unless the record exists, parses, names this
+   repository, says `pass`, is at most 26 hours old and not future-dated, and the interaction limit it saw still has
+   at least 7 days left as of now.
+
+**Residual risk, stated plainly.** (a) A setting changed after the last record is not seen for up to 26 hours: an
+interaction limit removed by hand, or the fork-PR policy loosened, leaves a passing record in place until it goes
+stale. Only a person can change either setting, and the record's age is printed on every run. (b) Anyone who can
+write Actions variables (a collaborator, not an outside account and not a PR's `GITHUB_TOKEN`) could write a false
+pass; collaborators are already trusted below. (c) If the Mac stops running the check, the queue goes red after 26
+hours: fail-closed, not silent.
 
 ## Second layer: the job checks where it came from
 

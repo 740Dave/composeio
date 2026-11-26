@@ -19,8 +19,11 @@
 #      text the leakcheck job scanned last.
 #
 # RUNNER PRECONDITIONS (docs/leakcheck/RUNNER.md): the runner is registered only after tools/runner_preconditions.py passes
-# (interaction limit collaborators_only, fork-PR workflow approval for all outside contributors), the job re-checks them
-# first, and it refuses unless github.workflow_ref is the default branch's merge-queue.yml. A collaborator's own PR can
+# (interaction limit collaborators_only, fork-PR workflow approval for all outside contributors). Reading those settings
+# needs admin read, which neither the runner's account nor GITHUB_TOKEN has, and no admin token is stored anywhere. So the
+# maintainer's Mac runs the live check on a schedule and records a dated result in the Actions variable
+# RUNNER_PRECONDITIONS; the job reads it through `vars` (no token) and refuses when it is missing, stale or not a pass.
+# The job also refuses unless github.workflow_ref is the default branch's merge-queue.yml. A collaborator's own PR can
 # still name the runner in its own workflow: the same known limit FactLattice accepted.
 #
 # KNOWN LIMITS. A same-repository PR's own workflow can post a status named `merge-queue/tested` (FactLattice's limit too);
@@ -133,6 +136,7 @@ jobs:
           NUMBER: ${{ needs.plan.outputs.number }}
           HEAD_SHA: ${{ needs.plan.outputs.head }}
           REPO: ${{ github.repository }}
+          RUNNER_PRECONDITIONS: ${{ vars.RUNNER_PRECONDITIONS }}
         run: python3 -I tools/queue_leakcheck.py --head "$HEAD_SHA" --pr "$NUMBER" --repo "$REPO" --output "$GITHUB_OUTPUT"
     outputs:
       pr_text_sha256: ${{ steps.scan.outputs.pr_text_sha256 }}
@@ -161,6 +165,7 @@ jobs:
           now="$(python3 -I tools/queue_leakcheck.py --print-digest --pr "$NUMBER" --repo "$REPO")" || now=unreadable
           if [ -n "$SCANNED" ] && [ "$now" = "$SCANNED" ]; then echo "same=true" >> "$GITHUB_OUTPUT"; else
             echo "merge-queue: the PR title or body changed after the scan (or could not be read): re-queue"; echo "same=false" >> "$GITHUB_OUTPUT"; fi
+
       - name: post merge-queue/tested on the tested head
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
