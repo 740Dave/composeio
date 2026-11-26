@@ -33,6 +33,7 @@ SESSION="${1:?usage: transport.sh <session-id-to-resume> (run from its project d
 # server are located under it by ABSOLUTE path. We do NOT cd into either.
 REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
 PROJECTS="$REPO/compose_projects"
+[ -f "$REPO/scripts/lib/overlay-env.sh" ] && . "$REPO/scripts/lib/overlay-env.sh"  # host overlay, before our defaults ([CXC-SCL-SCRUB-OVERLAY-PARITY])
 
 CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude || echo "$HOME/.claude/local/claude")}"
 MQTT="${COMPOSEBUS_MQTT:-mqtt://mqtt-broker.local:1883}"

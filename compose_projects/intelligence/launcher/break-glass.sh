@@ -55,6 +55,7 @@ CHECK=0
 # below resolved only in the fallback branch and broke whenever the env var was set correctly.
 REPO="${COMPOSEIO_REPO_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 PROJECTS="$REPO/compose_projects"
+[ -f "$REPO/scripts/lib/overlay-env.sh" ] && . "$REPO/scripts/lib/overlay-env.sh"  # host overlay, before our defaults ([CXC-SCL-SCRUB-OVERLAY-PARITY])
 ROLE="${ROLE:-composeux-architect}"
 ID="${INTELLIGENCE_ID:-recovery-architect-2}"
 # ⚠ MIGRATION PENDING. This defaults to the home that EXISTS TODAY —

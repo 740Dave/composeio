@@ -58,6 +58,24 @@ from typing import Callable, Dict, List, Optional
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, os.pardir, os.pardir))
 
+
+# [CXC-SCL-SCRUB-OVERLAY-PARITY] Apply the host overlay BEFORE the module-level env reads below.
+# This entry point keeps its load free of the composeio package, so it runs the stdlib-only loader by path
+# (no package import); it fills only unset names and never raises.
+def _apply_host_overlay() -> None:
+    import importlib.util
+    try:
+        _p = os.path.join(REPO_ROOT, "python", "composeio", "_overlay.py")
+        _spec = importlib.util.spec_from_file_location("_composeio_overlay_entry", _p)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _mod.apply()
+    except Exception:  # noqa: BLE001 — no overlay problem may stop this entry point
+        pass
+
+
+_apply_host_overlay()
+
 DEFAULT_BROKER = os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local")    # == mqtt-broker.local, the bus master
 DEFAULT_PORT = 1883
 

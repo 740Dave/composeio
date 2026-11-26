@@ -181,22 +181,124 @@ def test_missing_required_counts_environ_and_the_file(tmp_path):
     assert names[0] in _overlay.missing_required(environ={names[0]: ""}, path=path)
 
 
-def _live_host_marker_set():
-    if os.environ.get(_overlay.LIVE_HOST_MARKER) == "1":
-        return True
-    return _overlay.read(_overlay.default_path()).values.get(_overlay.LIVE_HOST_MARKER) == "1"
+def test_live_host_status_rules(tmp_path):
+    """P2-2: a marker in the ENVIRONMENT with no overlay file is a failure, never a skip."""
+    absent = str(tmp_path / "absent.env")
+    live, problems = _overlay.live_host_status(environ={"COMPOSEIO_LIVE_HOST": "1"}, path=absent)
+    assert live and any("no overlay file" in p for p in problems)
+    full = _write(tmp_path, "".join(f"{n}=x\n" for n in _overlay.OVERLAY_REQUIRED))
+    assert _overlay.live_host_status(environ={"COMPOSEIO_LIVE_HOST": "1"}, path=full) == (True, ())
+    marked = _write(tmp_path, "COMPOSEIO_LIVE_HOST=1\nMQTT=x\n", name="marked.env")
+    live, problems = _overlay.live_host_status(environ={}, path=marked)
+    assert live and any("COMPOSEBUS_MQTT" in p for p in problems)
+    assert _overlay.live_host_status(environ={}, path=absent) == (False, ())
 
 
-@pytest.mark.skipif(not _live_host_marker_set(),
+@pytest.mark.skipif(not _overlay.live_host_status(path=_overlay.default_path())[0],
                     reason="not a live host (COMPOSEIO_LIVE_HOST unset in env and host overlay)")
 def test_live_host_has_every_overlay_required_name():
     """[CXC-SCL-SCRUB-OVERLAY-PARITY]: on a live host, a required name that neither the
     environment nor the host overlay supplies means a live function is talking to a neutral
-    public default. CI never sets the marker, so this skips there and fails loudly here."""
-    missing = _overlay.missing_required(path=_overlay.default_path())
-    assert missing == (), (
-        f"live host is missing overlay-required names {missing}: add them to "
-        f"{_overlay.default_path()} (names only are reported)")
+    public default; a marker in the environment with no overlay file fails too. CI never sets
+    the marker, so this skips there and fails loudly here."""
+    live, problems = _overlay.live_host_status(path=_overlay.default_path())
+    assert problems == (), f"live host overlay check failed (names only): {problems}"
+
+
+# --------------------------------------------------------------------------- the real os.environ
+
+@pytest.fixture
+def real_env():
+    """Tests that write the REAL os.environ (a dict hides what os.environ refuses, P1-1).
+    Every name they may set starts with OVT_ and is removed afterwards."""
+    yield os.environ
+    for k in [k for k in os.environ if k.startswith("OVT_")]:
+        del os.environ[k]
+
+
+def _write_bytes(tmp_path, data, name="live.env"):
+    p = tmp_path / name
+    p.write_bytes(data)
+    return str(p)
+
+
+def test_nul_in_a_value_is_a_skipped_line_on_the_real_environ(tmp_path, real_env):
+    path = _write_bytes(tmp_path, b"OVT_GOOD=1\nOVT_NUL=ab\x00cd\nOVT_AFTER=2\n")
+    result = _overlay.apply(path=path)
+    assert real_env.get("OVT_GOOD") == "1" and real_env.get("OVT_AFTER") == "2"
+    assert "OVT_NUL" not in real_env
+    assert [n for n, _ in result.skipped] == [2] and result.names == ("OVT_GOOD", "OVT_AFTER")
+
+
+def test_an_oversized_value_is_a_skipped_line(tmp_path, real_env):
+    big = b"x" * (5 * 1024 * 1024)
+    path = _write_bytes(tmp_path, b"OVT_BIG=" + big + b"\nOVT_OK=" + b"y" * _overlay.MAX_VALUE + b"\n")
+    result = _overlay.apply(path=path)
+    assert "OVT_BIG" not in real_env
+    assert real_env.get("OVT_OK") == "y" * _overlay.MAX_VALUE   # exactly at the cap is allowed
+    assert [n for n, _ in result.skipped] == [1]
+    # the process can still spawn a child afterwards
+    out = subprocess.run([sys.executable, "-c", "print(1)"], capture_output=True, text=True)
+    assert out.stdout.strip() == "1"
+
+
+def test_invalid_utf8_is_a_skipped_line(tmp_path, real_env):
+    path = _write_bytes(tmp_path, b"OVT_GOOD=1\nOVT_BAD=\xff\xfe\nOVT_AFTER=2\n")
+    result = _overlay.apply(path=path)
+    assert "OVT_BAD" not in real_env
+    assert real_env.get("OVT_GOOD") == "1" and real_env.get("OVT_AFTER") == "2"
+    assert [n for n, _ in result.skipped] == [2]
+
+
+def test_import_composeio_survives_a_hostile_overlay(tmp_path):
+    """The whole point: no overlay content can break `import composeio`."""
+    path = _write_bytes(tmp_path, b"OVT_NUL=a\x00b\nOVT_BAD=\xff\nOVT_BIG=" + b"z" * 70000 +
+                        b"\n\x00\x01\x02\nOVT_FINE=ok\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OVT_")}
+    env["COMPOSEIO_OVERLAY_ENV"] = path
+    env["PYTHONPATH"] = os.pathsep.join([str(REPO / "python"), env.get("PYTHONPATH", "")])
+    code = "import os, composeio, composeio._overlay as o; print(os.environ.get('OVT_FINE'), len(o.applied.skipped))"
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == ["ok", "4"]
+
+
+def test_a_non_regular_file_is_not_opened(tmp_path):
+    fifo = tmp_path / "fifo.env"
+    os.mkfifo(fifo)
+    result = _overlay.apply(path=str(fifo), environ={})    # must not block
+    assert result.names == () and result.skipped and result.skipped[0][0] == 0
+
+
+# --------------------------------------------------------------------------- duplicates, both sides
+
+DUP_FIXTURE = "OVT_DUP=first\nOVT_DUP=second\nOVT_ONE=1\nOVT_DUP=third\n"
+
+
+def test_duplicate_keys_first_wins_in_the_loader(tmp_path):
+    env = {}
+    result = _overlay.apply(path=_write(tmp_path, DUP_FIXTURE), environ=env)
+    assert env == {"OVT_DUP": "first", "OVT_ONE": "1"}
+    assert [n for n, _ in result.skipped] == [2, 4]
+    assert all("duplicate" in why for _, why in result.skipped)
+
+
+def test_duplicate_keys_first_wins_in_the_shell_helper(tmp_path):
+    path = _write(tmp_path, DUP_FIXTURE)
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "COMPOSEIO_OVERLAY_ENV": path}
+    out = _bash(f'set -euo pipefail; . "{HELPER}"; printf "%s|%s\\n" "$OVT_DUP" "$OVT_ONE"', env)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "first|1"
+
+
+def test_shell_helper_skips_an_oversized_value_and_does_not_shadow_names(tmp_path):
+    big = "x" * (_overlay.MAX_VALUE + 1)
+    path = _write(tmp_path, f"OVT_BIG={big}\nf=fv\nline=lv\nkey=kv\nvalue=vv\n")
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "COMPOSEIO_OVERLAY_ENV": path}
+    out = _bash(f'set -euo pipefail; . "{HELPER}"; '
+                'printf "%s|%s|%s|%s|%s\\n" "${OVT_BIG:-unset}" "$f" "$line" "$key" "$value"', env)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "unset|fv|lv|kv|vv"
 
 
 # --------------------------------------------------------------------------- broker fallback
@@ -266,7 +368,9 @@ def test_live_console_scenes_name_no_broker(scene):
 
 SCRIPTS = [REPO / "compose_projects/intelligence/start-console-stack.sh",
            REPO / "compose_projects/intelligence/start-console-daemons.sh",
-           REPO / "scripts/repo-health-audit.sh"]
+           REPO / "scripts/repo-health-audit.sh",
+           REPO / "compose_projects/intelligence/launcher/transport.sh",      # P1-2
+           REPO / "compose_projects/intelligence/launcher/break-glass.sh"]    # P1-2
 HELPER = REPO / "scripts/lib/overlay-env.sh"
 
 
@@ -276,8 +380,10 @@ def test_scripts_apply_the_overlay_before_their_defaults(script):
     hook = [i for i, l in enumerate(lines) if "overlay-env.sh" in l and not l.lstrip().startswith("#")]
     assert len(hook) == 1, f"{script.name}: expected one guarded overlay line, found {len(hook)}"
     assert lines[hook[0]].lstrip().startswith("[ -f "), "the line must be guarded"
+    assert 'scripts/lib/overlay-env.sh" ] && . "$REPO' in lines[hook[0]]
     defaults = [i for i, l in enumerate(lines)
-                if l.lstrip().startswith(("MQTT=\"${MQTT:-", "BROKER_HOST=\"${COMPOSEIO_MQTT_BROKER:-"))]
+                if l.lstrip().startswith(("MQTT=\"${MQTT:-", "BROKER_HOST=\"${COMPOSEIO_MQTT_BROKER:-",
+                                          "MQTT=\"${COMPOSEBUS_MQTT:-"))]
     assert defaults and hook[0] < min(defaults)
 
 
@@ -431,7 +537,8 @@ def _all_conftests():
 
 def test_conftest_discovery_is_not_vacuous():
     found = {str(p.relative_to(REPO)) for p in _all_conftests()}
-    assert {"python/tests/conftest.py", "tests/conftest.py", "compose_projects/conftest.py"} <= found
+    assert {"conftest.py", "python/tests/conftest.py", "tests/conftest.py",
+            "compose_projects/conftest.py"} <= found
     assert len(found) >= 10
 
 
@@ -450,3 +557,34 @@ def test_every_conftest_turns_the_overlay_off_before_composeio(conftest):
                or (isinstance(node, ast.Import) and any(a.name.split(".")[0] == "composeio"
                                                         for a in node.names))]
     assert not imports or guard[0] < min(imports)
+
+
+# --------------------------------------------------------------------------- Python entry points (P1-2)
+
+ENTRY_POINTS = [("compose_projects/intelligence/launcher", "launcher", "DEFAULT_MQTT", "COMPOSEBUS_MQTT"),
+                ("compose_projects/carousel", "kiosk", "DEFAULT_BROKER", "COMPOSEIO_MQTT_BROKER"),
+                ("compose_projects/carousel", "scene_swap", "DEFAULT_BROKER", "COMPOSEIO_MQTT_BROKER")]
+
+
+@pytest.mark.parametrize("where,module,attr,name", ENTRY_POINTS, ids=[e[1] for e in ENTRY_POINTS])
+def test_entry_point_applies_the_overlay_before_its_module_level_env_reads(tmp_path, where, module,
+                                                                        attr, name):
+    path = _write(tmp_path, f"{name}=from-overlay.invalid\n")
+    env = {k: v for k, v in os.environ.items() if k not in _overlay.OVERLAY_REQUIRED}
+    env["COMPOSEIO_OVERLAY_ENV"] = path
+    env["HOME"] = str(tmp_path)
+    code = (f"import sys; sys.path.insert(0, {str(REPO / where)!r}); import {module} as m; "
+            f"print(m.{attr})")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                         timeout=60, cwd=str(tmp_path))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == "from-overlay.invalid" or \
+        out.stdout.strip().splitlines()[-1] == "mqtt://from-overlay.invalid"
+
+
+# --------------------------------------------------------------------------- repo-root conftest (P2-3)
+
+def test_the_repo_root_conftest_exists_and_carries_the_guard():
+    root = REPO / "conftest.py"
+    assert root.exists(), "a repo-root conftest.py covers test dirs that have none of their own"
+    assert _GUARD.search(root.read_text())

@@ -163,6 +163,24 @@ def __getattr__(name):          # PEP 562 — module-level attribute hook
         return globals()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+# [CXC-SCL-SCRUB-OVERLAY-PARITY] Apply the host overlay BEFORE the module-level env reads below.
+# This entry point keeps its load free of the composeio package, so it runs the stdlib-only loader by path
+# (no package import); it fills only unset names and never raises.
+def _apply_host_overlay() -> None:
+    import importlib.util
+    try:
+        _p = os.path.join(os.path.dirname(_PY_ROOT), "python", "composeio", "_overlay.py")
+        _spec = importlib.util.spec_from_file_location("_composeio_overlay_entry", _p)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _mod.apply()
+    except Exception:  # noqa: BLE001 — no overlay problem may stop this entry point
+        pass
+
+
+_apply_host_overlay()
+
+
 # ── Config defaults ─────────────────────────────────────────
 DEFAULT_ID = os.environ.get("INTELLIGENCE_ID", "architect")
 DEFAULT_MQTT = os.environ.get("COMPOSEBUS_MQTT", "mqtt://mqtt-broker.local:1883")
