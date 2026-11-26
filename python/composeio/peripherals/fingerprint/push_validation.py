@@ -5,8 +5,8 @@ These are the SERVICE's preconditions ([CXC-FPBUS-REQ-SET-SIZE-LIMIT],
 device logic: a set that fails any of them is never published, so no
 template_set message ever reaches the bus. They are kept here, one pure
 function, so the service scenarios can be exercised against the reference
-without pulling in the whole fingerprint_storage service (which lands at
-services/fingerprint_storage/roster_push.py).
+without pulling in the whole fingerprint_service service (which lands at
+services/fingerprint_service/roster_push.py).
 
 The device receipt deliberately does NOT re-check these — a push that reaches a
 device already passed them ([CXC-FPBUS-PUSH-SEQUENCE]) — EXCEPT the template-

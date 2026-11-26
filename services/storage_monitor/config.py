@@ -5,7 +5,7 @@ storage_monitor is an ordinary ComposeBus client (same posture as ``time_service
 ``bus_storage``). WHERE it connects, on WHAT substrate, HOW OFTEN it measures, and WHICH
 filesystem it watches are all resolved from the environment with defaults that follow the
 current live bus master — exactly as ``time_service/config.py`` does — so the same code
-follows the broker when the cutover to a dedicated Skipper lands, with no edit.
+follows the broker when the cutover to a dedicated Buildhost lands, with no edit.
 
 ⛔ Nothing here opens a socket and nothing here names a concrete Transport class.
 Resolution is a pure function; the transport is BUILT from a spec by
@@ -19,9 +19,9 @@ from __future__ import annotations
 import os
 
 # The current live bus master (mqtt-broker.local / mqtt-broker.local, MQTT on :1883).
-# The move to a dedicated Skipper is a LOCKED plan but not yet cut over, so this default
+# The move to a dedicated Buildhost is a LOCKED plan but not yet cut over, so this default
 # follows the broker via env when it does.
-DEFAULT_BROKER_HOST = "mqtt-broker.local"
+DEFAULT_BROKER_HOST = os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local")
 DEFAULT_BROKER_PORT = 1883
 
 #: The DEFAULT substrate — read from the environment exactly like the broker address, so
@@ -34,9 +34,10 @@ DEFAULT_TRANSPORT_TYPE = os.environ.get("COMPOSEIO_TRANSPORT", "mqtt")
 #: DEFAULT, overridable via ``COMPOSEIO_STORAGE_MONITOR_INTERVAL`` or ``--interval``.
 DEFAULT_INTERVAL_S = 30.0
 
-#: The DEFAULT filesystem to watch. Skipper's Compose storage data (bus_storage :8420 +
-#: document_store :8421 + the bus_scribe logs) lives on this filesystem. David flagged
-#: skipper's drive is SMALL and a spinny disk may later be added on a DIFFERENT mount, so
+#: The DEFAULT filesystem to watch. Buildhost's Compose storage data (bus_storage :8420 —
+#: the ONE store, assets + doc-as-blob, [SPEC:CXC-STORE] — + the bus_scribe logs) lives on
+#: this filesystem. David flagged
+#: buildhost's drive is SMALL and a spinny disk may later be added on a DIFFERENT mount, so
 #: the path MUST be re-pointable without a code change — hence env-driven, defaulting to
 #: root. Override via ``COMPOSEIO_STORAGE_MONITOR_PATH`` or ``--path``.
 DEFAULT_PATH = "/"

@@ -1,0 +1,200 @@
+---
+scope: "Gap analysis of Service Hub v2 spec (13-service-hub-v2.smd) against hub.py implementation"
+audience: "David Burnett — implementation review"
+confidentiality: internal-only
+---
+
+# Service Hub v2 Spec vs Implementation Gap Analysis [ANALYSIS:CIO-SERVICE-HUB-V2-GAP]
+
+> Systematic comparison of `${COMPOSEIO_HOME}/spec/13-service-hub-v2.smd` against `${COMPOSEIO_HOME}/services/service_hub/hub.py`
+
+---
+
+## Meta
+
+{"type":"meta","id":"gap-analysis-meta","version":"2.0","created":"2026-03-29T16-00-00","product":"composeio-service-hub-v2","spec_source":"${COMPOSEIO_HOME}/spec/13-service-hub-v2.smd","spec_files":["13-service-hub-v2.smd"],"impl_source":"${COMPOSEIO_HOME}/services/service_hub/hub.py","areas_analyzed":["ComposeAppProcess","docker_lifecycle","http_api","mqtt_credential_injection","health_monitoring","coexistence"],"prior_report":null,"reports_dir":"${COMPOSEIO_HOME}/spec-impl-gap-reports/"}
+
+---
+
+## Delta Since Last Analysis
+
+No prior Service Hub v2 report found. This is the first run for this product area. Delta analysis skipped.
+
+---
+
+## Spec Files Analyzed
+
+| File | Entities | Description |
+|------|----------|-------------|
+| 13-service-hub-v2.smd | 20 | Service Hub v2 — design principles, architecture, deploy flow, API, health, compliance |
+
+Spec IDs extracted: SH-DP-1, SH-DP-2, SH-DP-3, SH-DP-4, SH-ARCH, SH-ARCH-TIERS, SH-ARCH-DECISION, SH-DEPLOY-CONFIG, SH-DEPLOY-FLOW, SH-DEPLOY-TRANSPORT, SH-DEPLOY-VOLUMES, SH-WORKLOAD, SH-API, SH-API-STATUS, SH-API-APPS, SH-HEALTH, SH-HUB-DEPLOY, SH-HUB-DIRS, SH-MIGRATION, SH-C1 through SH-C10
+
+---
+
+## Cross-Reference Map
+
+{"type":"cross_ref","spec_id":"SH-DP-1","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"full","notes":"ServiceHub class has separate workloads and apps dicts. Two-tier coexistence structurally present."}
+
+{"type":"cross_ref","spec_id":"SH-DP-2","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"full","notes":"WorkloadProcess uses subprocess, ComposeAppProcess uses docker CLI. Correct split."}
+
+{"type":"cross_ref","spec_id":"SH-DP-3","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"partial","notes":"Hub provisions container correctly. Docker restart policy handled by --restart flag. Hub does not reach into app internals. MINOR: Hub does not auto-start apps that are not running on startup — only 'Container not running — deploy via API to start' log. Spec flow step 4 says hub starts the container."}
+
+{"type":"cross_ref","spec_id":"SH-DP-4","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"partial","notes":"Hub reads .compose.yaml. But config push via PUT /api/v1/apps/{id} (bus storage) is a separate service not implemented in hub.py. Hub loads from bus storage or local dir — correct."}
+
+{"type":"cross_ref","spec_id":"SH-DEPLOY-FLOW","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"partial","notes":"Steps 1-5 covered. Step 1 (PUT /api/v1/apps/{id}) is bus storage concern, not hub — OK. Step 6 (health monitoring on 5s cycle) is implemented but only for apps where _running=True. See gap-SH-HEALTH-SCOPE."}
+
+{"type":"cross_ref","spec_id":"SH-DEPLOY-TRANSPORT","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"partial","notes":"COMPOSEIO_APP_ID, COMPOSEIO_MQTT_BROKER, COMPOSEIO_MQTT_PORT, COMPOSEIO_STORAGE_URL all injected. Correct. Minor: defaults fall back to localhost instead of mqtt-broker.local. See gap-SH-TRANSPORT-DEFAULT."}
+
+{"type":"cross_ref","spec_id":"SH-API-STATUS","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"partial","notes":"GET /api/v1/status returns workloads and apps sections. apps section shape diverges from spec shape — see gap-SH-STATUS-SHAPE."}
+
+{"type":"cross_ref","spec_id":"SH-API-APPS","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"partial","notes":"GET /api/v1/apps, GET /api/v1/apps/{id}, POST deploy/stop/restart all present. GET /api/v1/apps/{id}/logs implemented. MISSING: no 404 branch for /api/v1/apps/{id} when path has >4 segments vs ==4 — routing logic has a subtle bug. See gap-SH-API-ROUTING."}
+
+{"type":"cross_ref","spec_id":"SH-HEALTH","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"partial","notes":"check_health() uses docker inspect with Running, ExitCode, RestartCount, Status. Tracks state transitions and logs warning. Cycle is 2s loop x3 = ~6s, spec says 5s. See gap-SH-HEALTH-CYCLE and gap-SH-HEALTH-SCOPE."}
+
+{"type":"cross_ref","spec_id":"SH-WORKLOAD","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"full","notes":"WorkloadProcess unchanged. restart=always (max 10, 5s delay) and restart=never both handled."}
+
+{"type":"cross_ref","spec_id":"SH-HUB-DEPLOY","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"full","notes":"Code references COMPOSEIO_HUB_DIR, COMPOSEIO_STORAGE_URL, COMPOSEIO_HUB_PORT. Matches systemd unit env vars in spec exactly."}
+
+{"type":"cross_ref","spec_id":"SH-HUB-DIRS","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"full","notes":"workloads/, venvs/, apps/ under HUB_DIR. Matches spec directory tree."}
+
+{"type":"cross_ref","spec_id":"SH-MIGRATION","spec_file":"13-service-hub-v2.smd","impl_files":["hub.py"],"impl_status":"full","notes":"Volume reuse: Docker volumes persist by name — hub does not create/destroy volumes, they survive. Migration path is operational (write .compose.yaml, place in apps dir, POST /deploy)."}
+
+---
+
+## Findings by Area
+
+### ComposeAppProcess Class
+
+{"type":"gap","id":"gap-SH-CAPS-AUTODEPLOY","category":"SPEC_NOT_IMPLEMENTED","priority":"P1","area":"ComposeAppProcess","spec_ref":"SH-DEPLOY-FLOW","spec_file":"13-service-hub-v2.smd","spec_says":"Step 4: 'docker run' — the hub starts the container as part of the deployment flow. Step 6: health monitoring on a 5-second cycle.","impl_has":"ServiceHub.start() detects if a container is already running and logs it. For containers NOT running it logs 'Container not running — deploy via API to start' and does nothing. ComposeApps are never auto-started on hub boot unless they are already running. Only the POST /deploy endpoint triggers start().","impl_file":"hub.py:972-990","recommendation":"On hub startup, for apps whose container is not running AND whose docker config has restart=always, call app.deploy() in a background thread (or at minimum app.start() if image already exists). This brings hub behavior in line with spec step 4 and matches the principle in SH-DP-3 that the hub provisions.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-YAML-PARSER-RISK","category":"UNDERSPECIFIED_NOW_IMPLEMENTED","priority":"P2","area":"ComposeAppProcess","spec_ref":"SH-DEPLOY-CONFIG","spec_file":"13-service-hub-v2.smd","spec_says":"Hub reads .compose.yaml. Spec does not prescribe how to parse YAML — stdlib-only is a valid implementation choice.","impl_has":"Custom recursive-descent YAML parser (_parse_yaml, _parse_block, _parse_list). Handles scalars, nested mappings, sequences, quoted strings, comments. Does NOT support anchors, aliases, multi-line scalars, flow syntax.","impl_file":"hub.py:62-242","recommendation":"Document the parser's limitations prominently. The .compose.yaml spec (08-composeio-app-framework.smd) should explicitly restrict to the supported subset. Risk: a real .compose.yaml with a multi-line string in environment values (e.g., a certificate PEM) will silently lose data. Add a parser test against the canonical board-manager .compose.yaml from the spec.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-NO-YAML-LIB","category":"UNDERSPECIFIED_NOW_IMPLEMENTED","priority":"P3","area":"ComposeAppProcess","spec_ref":"SH-DEPLOY-CONFIG","spec_file":"13-service-hub-v2.smd","spec_says":"No prescription on parser library.","impl_has":"stdlib only — no PyYAML/ruamel dependency. This is intentional (hub.py has no requirements.txt/dependencies).","impl_file":"hub.py:24-36","recommendation":"If hub.py gains a requirements.txt, switch to PyYAML (safe_load). The custom parser is a maintenance liability. For now, acceptable given zero-dependency goal.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-ComposeAppProcess","area":"ComposeAppProcess","total_gaps":3,"by_category":{"SPEC_NOT_IMPLEMENTED":1,"UNDERSPECIFIED_NOW_IMPLEMENTED":2},"by_priority":{"P1":1,"P2":1,"P3":1},"notes":"Core class structure is well-aligned. Main gap is the missing auto-start-on-boot behavior."}
+
+---
+
+### Docker Lifecycle Management
+
+{"type":"gap","id":"gap-SH-RESTART-DEFAULT","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"docker_lifecycle","spec_ref":"SH-DEPLOY-CONFIG","spec_file":"13-service-hub-v2.smd","spec_says":"docker.restart: always — shown as the default/example in the spec's .compose.yaml snippet.","impl_has":"ComposeAppProcess.start() defaults restart_policy to 'no' when docker.restart is absent: `restart_policy = docker_cfg.get('restart', 'no')`. Container gets no restart policy unless explicitly declared in .compose.yaml.","impl_file":"hub.py:483","recommendation":"Change the default to 'always' to match spec intent, OR document that restart must be declared explicitly. Given SH-C10 (Docker restart policy honored), the safer fix is to require it to be explicit but emit a WARNING when no restart policy is declared.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-IMAGE-TAG","category":"UNDERSPECIFIED_NOW_IMPLEMENTED","priority":"P3","area":"docker_lifecycle","spec_ref":"SH-DEPLOY-FLOW","spec_file":"13-service-hub-v2.smd","spec_says":"Build the image. Spec does not prescribe the image tag format.","impl_has":"_build_image() always tags as '{app_id}:latest'. If the app config also specifies docker.image (a remote image), start() prefers docker.image. But if docker.build is set, the built image is tagged {app_id}:latest and start() still uses docker.image (if present) rather than the freshly built tag.","impl_file":"hub.py:414-438,474","recommendation":"After a successful build, start() should use the built tag '{app_id}:latest', not docker.image. Currently if both docker.build and docker.image are set, docker.image wins in start() — the build is wasted. Fix: when docker.build is set, derive image from the build tag, not docker.image.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-STOP-RUNNING-CHECK","category":"SPEC_IMPL_MISMATCH","priority":"P3","area":"docker_lifecycle","spec_ref":"SH-API-APPS","spec_file":"13-service-hub-v2.smd","spec_says":"POST /stop — stop container (graceful SIGTERM, then SIGKILL).","impl_has":"stop() calls 'docker stop -t 10 {container_name}' regardless of whether the container is actually running. If the container is already stopped, docker stop returns non-zero, and the method returns False — the API then returns success=False even though the desired state (stopped) is achieved.","impl_file":"hub.py:531-557","recommendation":"Before calling docker stop, check if the container is running. If not running, return True (idempotent). If docker stop returns 'No such container' treat as success.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-docker_lifecycle","area":"docker_lifecycle","total_gaps":3,"by_category":{"SPEC_IMPL_MISMATCH":2,"UNDERSPECIFIED_NOW_IMPLEMENTED":1},"by_priority":{"P2":1,"P3":2},"notes":"Docker mechanics are correctly implemented. Gaps are edge-case correctness issues and a subtle build/image precedence bug."}
+
+---
+
+### HTTP API Endpoints
+
+{"type":"gap","id":"gap-SH-API-ROUTING","category":"SPEC_IMPL_MISMATCH","priority":"P1","area":"http_api","spec_ref":"SH-API-APPS","spec_file":"13-service-hub-v2.smd","spec_says":"GET /api/v1/apps/{id} — single app status + namespace details.","impl_has":"do_GET routing uses `path.count('/') == 4` to distinguish /api/v1/apps/{id} from /api/v1/apps/{id}/logs. The path /api/v1/apps/board-manager has exactly 4 slashes. However, /api/v1/apps/board-manager/logs has 5 slashes and is caught first (the elif with endswith('/logs') comes after the count==4 check). This ordering is correct BUT the count==4 check rejects any path with more segments — so a future endpoint /api/v1/apps/{id}/something-other-than-logs would fall through to the 404 handler. More critically, the logs route check does NOT verify path.count('/') == 5, so /api/v1/apps/logs would incorrectly try to find app_id='logs'.","impl_file":"hub.py:742-769","recommendation":"Rewrite routing to split path into parts list and match by parts[4] (app_id) and parts[5] (action/subresource). Remove the count-slash heuristic. Validate parts length before indexing.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-STATUS-SHAPE","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"http_api","spec_ref":"SH-API-STATUS","spec_file":"13-service-hub-v2.smd","spec_says":"GET /api/v1/status apps section: {app_id: {running, container_id, image, ports, health, restart_count, exported_namespaces}}","impl_has":"ComposeAppProcess.status() returns: {id, running, container_id, container_name, image, ports, health, restart_count, exported_namespaces}. Extra field 'container_name' is not in spec. Field 'health' contains the Docker status string (e.g. 'running', 'exited') rather than the spec's 'healthy'/'unhealthy' terminology. The spec's example shows health: 'healthy' which implies a semantic health value, not the raw Docker state string.","impl_file":"hub.py:657-678","recommendation":"Add a health normalization step: map Docker state 'running' to 'healthy', 'exited'/'dead' to 'unhealthy', 'restarting' to 'restarting', etc. The 'container_name' field is additive and non-breaking — keep it but note it as an extension of the spec.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-API-DEPLOY-ASYNC","category":"UNDERSPECIFIED_NOW_IMPLEMENTED","priority":"P2","area":"http_api","spec_ref":"SH-API-APPS","spec_file":"13-service-hub-v2.smd","spec_says":"POST /api/v1/apps/{id}/deploy — deploy or redeploy (build + start). Spec does not address synchrony.","impl_has":"POST /deploy is synchronous — the HTTP handler blocks while docker build (up to 300s) and docker run (up to 60s) complete. The HTTP client will not receive a response for potentially 5+ minutes on a cold build. No timeout on the HTTP connection from client side.","impl_file":"hub.py:802-810","recommendation":"POST /deploy should be asynchronous: spawn a background thread for build+start, return 202 Accepted with a job ID immediately. Add GET /api/v1/apps/{id}/deploy-status or rely on GET /api/v1/apps/{id} to poll. This is especially important for CI/deploy scripts that have HTTP timeouts.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-API-WORKLOAD-MGMT","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"http_api","spec_ref":"SH-API-APPS","spec_file":"13-service-hub-v2.smd","spec_says":"SH-ARCH lists endpoints: GET /api/v1/workloads — list workloads. Spec does not define workload management endpoints (start/stop/restart for individual workloads).","impl_has":"GET /api/v1/workloads returns all workload statuses. No POST endpoints for individual workload control. No GET /api/v1/workloads/{id} endpoint.","impl_file":"hub.py:734-736","recommendation":"Acceptable for v2 scope — spec does not require workload management endpoints. Consider adding GET /api/v1/workloads/{id} for parity with apps. Low priority.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-http_api","area":"http_api","total_gaps":4,"by_category":{"SPEC_IMPL_MISMATCH":2,"UNDERSPECIFIED_NOW_IMPLEMENTED":2,"SPEC_NOT_IMPLEMENTED":0},"by_priority":{"P1":1,"P2":2,"P3":1},"notes":"The routing bug (gap-SH-API-ROUTING) is the most significant — it can misroute requests in edge cases. The synchronous deploy is an operational concern for long builds."}
+
+---
+
+### MQTT Credential Injection
+
+{"type":"gap","id":"gap-SH-TRANSPORT-DEFAULT","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"mqtt_credential_injection","spec_ref":"SH-DEPLOY-TRANSPORT","spec_file":"13-service-hub-v2.smd","spec_says":"COMPOSEIO_MQTT_BROKER sourced from app.transports[type=mqtt].broker. The spec's canonical example shows 'mqtt-broker.local'.","impl_has":"_build_transport_env() falls through to defaults 'localhost' / '1883' when no MQTT transport is declared in the config, or when the for-else fires with no MQTT transport found. A .compose.yaml without an explicit transports section gets broker=localhost injected, which will silently fail on the production machine where the broker is at mqtt-broker.local.","impl_file":"hub.py:698-701","recommendation":"Default broker should be 'mqtt-broker.local' not 'localhost', OR the hub should refuse to start a ComposeApp that has no MQTT transport declared (log ERROR and skip deploy). Silent misconfiguration is worse than a loud failure.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-TRANSPORT-OVERRIDE","category":"UNDERSPECIFIED_NOW_IMPLEMENTED","priority":"P3","area":"mqtt_credential_injection","spec_ref":"SH-DEPLOY-TRANSPORT","spec_file":"13-service-hub-v2.smd","spec_says":"Hub injects MQTT credentials via environment variables. Spec table shows 4 variables.","impl_has":"_build_transport_env() injects all 4 spec variables correctly. Additionally, start() adds env vars from docker.environment first, then calls _build_transport_env() and appends those — the hub's injected values appear last in the docker run command, which means they override any values in docker.environment for the same keys. This is the correct precedence (hub wins over config) and matches the comment 'override any from config to ensure correctness'.","impl_file":"hub.py:497-509","recommendation":"Behavior is correct and intentional. Spec says 'hub provisions transport credentials' which implies hub authority. Document this override behavior in the .compose.yaml spec (08) so app authors know not to hardcode COMPOSEIO_MQTT_BROKER in environment.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-mqtt_credential_injection","area":"mqtt_credential_injection","total_gaps":2,"by_category":{"SPEC_IMPL_MISMATCH":1,"UNDERSPECIFIED_NOW_IMPLEMENTED":1},"by_priority":{"P2":1,"P3":1},"notes":"Injection mechanism is structurally correct. The wrong default broker is the actionable issue — it will cause silent failures on mqtt-broker.local deployments."}
+
+---
+
+### Health Monitoring
+
+{"type":"gap","id":"gap-SH-HEALTH-CYCLE","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"health_monitoring","spec_ref":"SH-HEALTH","spec_file":"13-service-hub-v2.smd","spec_says":"Hub monitors ComposeApp containers on a 5-second cycle. SH-C7: hub detects stopped container within 10 seconds.","impl_has":"supervise_loop() sleeps 2 seconds between iterations, runs app health checks every 3rd iteration (app_check_counter >= 3). Actual cycle is 2s * 3 = 6 seconds, not 5. Still within the 10-second SH-C7 compliance window, but the stated spec interval is 5s.","impl_file":"hub.py:1017-1033","recommendation":"Either document that the effective cycle is 6s (still SH-C7 compliant) or change the counter threshold to 2 (2s * 3rd check) and sleep 2.5s, giving a 5s cycle. Alternatively restructure with a separate threading.Timer for app checks. The 6s vs 5s difference is not operationally significant but is a spec drift.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-HEALTH-SCOPE","category":"SPEC_IMPL_MISMATCH","priority":"P1","area":"health_monitoring","spec_ref":"SH-HEALTH","spec_file":"13-service-hub-v2.smd","spec_says":"Hub monitors ComposeApp containers on a 5-second cycle. Implied: all registered apps are monitored.","impl_has":"supervise_loop() only calls app.check_health() for apps where app._running is True. An app whose container exited and was not restarted by Docker (e.g., restart=no, exit_code=1) will have _running=False and will stop being monitored after first failure. Hub accumulates 'dark' apps that had _running set to False and are no longer checked. Status calls still work (check_health() is called from status()), but the background supervision loop is blind to them.","impl_file":"hub.py:1029-1031","recommendation":"Remove the `if app._running:` guard from the supervision loop, OR reset _running=True when check_health() detects the container is actually running (Docker restarted it). The _running flag on ComposeAppProcess conflates 'hub started this' with 'container is currently running', which Docker's restart policy can change independently.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-HEALTH-WORKLOAD-UNCHANGED","category":"IMPLEMENTED_NOT_SPECIFIED","priority":"P3","area":"health_monitoring","spec_ref":"SH-WORKLOAD","spec_file":"13-service-hub-v2.smd","spec_says":"Workload supervision loop is unchanged from v1 (2-second cycle, hub-managed restarts).","impl_has":"WorkloadProcess.supervise() restarts on exit_code != None, waits restart_delay (5s) synchronously inside the supervision loop. This means a crashing workload delays the entire supervision loop by 5 seconds — including app health checks. With multiple crashing workloads, checks could be delayed significantly.","impl_file":"hub.py:315-340,1022-1023","recommendation":"The restart delay sleep should happen in a background thread, not in the supervision loop. This is a pre-existing v1 issue but is now more impactful because app health checks share the same loop. Low priority for now but worth tracking.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-health_monitoring","area":"health_monitoring","total_gaps":3,"by_category":{"SPEC_IMPL_MISMATCH":2,"IMPLEMENTED_NOT_SPECIFIED":1},"by_priority":{"P1":1,"P2":1,"P3":1},"notes":"The dark-app problem (gap-SH-HEALTH-SCOPE) is the most significant health monitoring gap — apps that fail without a restart policy silently stop being supervised."}
+
+---
+
+### Coexistence with Existing Workload Tier
+
+{"type":"gap","id":"gap-SH-COEXIST-COMPLETE","category":"IMPLEMENTED_NOT_SPECIFIED","priority":"P3","area":"coexistence","spec_ref":"SH-DP-1","spec_file":"13-service-hub-v2.smd","spec_says":"Both tiers are first-class. Hub supervises both. No changes to workload tier.","impl_has":"Coexistence is implemented correctly. WorkloadProcess is structurally unchanged. Workloads and apps share the ServiceHub supervision loop cleanly. Both appear in /api/v1/status. The two tiers are properly isolated — a crashing container does not affect workload supervision and vice versa.","impl_file":"hub.py:855-1045","recommendation":"No action required. This area is well implemented.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-SH-HUB-RESTART-APPS","category":"SPEC_NOT_IMPLEMENTED","priority":"P1","area":"coexistence","spec_ref":"SH-C9","spec_file":"13-service-hub-v2.smd","spec_says":"SH-C9: Hub survives container crash — ComposeApp crashes, hub stays running, reports the crash.","impl_has":"The hub does survive container crashes (it uses subprocess for docker CLI, not in-process). However, because of gap-SH-HEALTH-SCOPE, once a container crashes and Docker does not restart it (_running becomes False), the hub stops monitoring it in the background loop and never logs subsequent state. The crash is logged once at the moment check_health() first detects the stopped state, then silence.","impl_file":"hub.py:617-624","recommendation":"Resolve gap-SH-HEALTH-SCOPE to fix this. Continuous monitoring of all registered apps (regardless of _running flag) ensures the hub always has current state and can report accurately.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-coexistence","area":"coexistence","total_gaps":2,"by_category":{"IMPLEMENTED_NOT_SPECIFIED":1,"SPEC_NOT_IMPLEMENTED":1},"by_priority":{"P1":1,"P3":1},"notes":"Structural coexistence is excellent. The SH-C9 compliance gap is a consequence of the _running flag design flaw, not a separate problem."}
+
+---
+
+## Compliance Table
+
+| ID | Requirement | Status | Gap |
+|----|-------------|--------|-----|
+| SH-C1 | Existing workloads continue unchanged | PASS | None |
+| SH-C2 | ComposeApp deploys via .compose.yaml | PARTIAL | Hub reads config, but does not auto-deploy on startup (gap-SH-CAPS-AUTODEPLOY) |
+| SH-C3 | MQTT credentials injected via environment | PARTIAL | Injection works, but default broker is localhost not mqtt-broker.local (gap-SH-TRANSPORT-DEFAULT) |
+| SH-C4 | Port bindings from config | PASS | Ports passed to docker run -p correctly |
+| SH-C5 | Volume persistence | PASS | Volumes passed to docker run -v, Docker handles persistence |
+| SH-C6 | Hub API returns both tiers | PASS | GET /api/v1/status includes workloads and apps |
+| SH-C7 | Container health monitoring within 10s | PARTIAL | 6s effective cycle (within 10s window), but dark-app problem (gap-SH-HEALTH-SCOPE) |
+| SH-C8 | Deploy/stop/restart via API | PARTIAL | Works but stop is not idempotent (gap-SH-STOP-RUNNING-CHECK), deploy is synchronous (gap-SH-API-DEPLOY-ASYNC) |
+| SH-C9 | Hub survives container crash | PARTIAL | Hub survives, but stops monitoring after first crash (gap-SH-HUB-RESTART-APPS) |
+| SH-C10 | Docker restart policy honored | PARTIAL | Policy is passed to docker run, but default is 'no' not 'always' (gap-SH-RESTART-DEFAULT) |
+
+---
+
+## Summary
+
+### By Category
+
+| Category | Count | P0 | P1 | P2 | P3 |
+|----------|-------|----|----|----|----|
+| SPEC_NOT_IMPLEMENTED | 3 | 0 | 2 | 0 | 1 |
+| IMPLEMENTED_NOT_SPECIFIED | 3 | 0 | 0 | 0 | 3 |
+| SPEC_IMPL_MISMATCH | 6 | 0 | 2 | 4 | 0 |
+| UNDERSPECIFIED_NOW_IMPLEMENTED | 4 | 0 | 0 | 2 | 2 |
+| **Total** | **16** | **0** | **4** | **6** | **6** |
+
+### Gate Assessment
+
+- P0 issues: 0 — no blocking issues, implementation is deployable
+- P1 issues: 4 — should be resolved before treating the hub as production-stable:
+  1. gap-SH-CAPS-AUTODEPLOY — apps not auto-started on hub boot
+  2. gap-SH-API-ROUTING — routing logic brittle, can misroute
+  3. gap-SH-HEALTH-SCOPE — stopped apps become invisible to supervision loop
+  4. gap-SH-HUB-RESTART-APPS — SH-C9 compliance consequence of SCOPE issue
+
+### Top Recommendations
+
+1. **Fix the _running flag semantics (P1, high leverage)**: gap-SH-HEALTH-SCOPE and gap-SH-HUB-RESTART-APPS are the same root cause. ComposeAppProcess._running should track hub intent ('hub wants this running'), while check_health() always runs regardless. Remove the `if app._running` guard in supervise_loop(). This single change resolves two P1 gaps and brings SH-C7 and SH-C9 into compliance.
+
+2. **Auto-start on boot (P1)**: On hub startup, for each app whose container is not already running, call app.deploy() in a background thread if the app dir has a built image, or log INFO to prompt manual deploy. The current silent 'deploy via API to start' behavior violates the provisioning principle in SH-DP-3 and SH-DEPLOY-FLOW step 4.
+
+3. **Fix routing to use parts array (P1)**: Replace count('/') heuristic with `parts = path.split('/'); app_id = parts[4]; action = parts[5] if len(parts) > 5 else None`. Fixes the logs endpoint ambiguity and makes future endpoint additions safe.
+
+4. **Fix MQTT default broker (P2)**: Change default from 'localhost' to 'mqtt-broker.local', matching the spec's canonical broker address. Silent misconfiguration here causes hard-to-debug transport failures.
+
+5. **Fix build/image precedence in start() (P2)**: When docker.build is set, start() should use '{app_id}:latest' as the image, not docker.image. Currently a build context + image spec causes the build to be ignored.
+
+6. **Normalize health status values (P2)**: Map Docker state strings to spec health semantics ('healthy'/'unhealthy') in ComposeAppProcess.status(). Clients parsing the status API should not need to know Docker's internal state terminology.
+
+---
+
+## Decision Log
+
+{Empty — decisions added during human review}
+
+---
+
+**Generated**: 2026-03-29T16:00:00
+**Report File**: ${COMPOSEIO_HOME}/spec-impl-gap-reports/gap-analysis-service-hub-v2-2026-03-29T16-00-00.smd
+**Prior Report**: None (first run for this product area)
+**Analysis Duration**: Single session

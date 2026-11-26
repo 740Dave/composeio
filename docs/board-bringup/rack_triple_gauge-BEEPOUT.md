@@ -1,7 +1,7 @@
 <!-- BEGIN BEEPOUT-PROVENANCE (composeio.maker.beepout) -->
 {
   "board": "rack_triple_gauge",
-  "derived_from": "/Users/davidleeburnett/Dropbox/Maker/pcb/rack_triple_gauge/rack_triple_gauge.kicad_pcb",
+  "derived_from": "${MAKER_HOME}/pcb/rack_triple_gauge/rack_triple_gauge.kicad_pcb",
   "derived_from_sha256": "a62cd7c777233ba9975a1df7b8d3b1ee02ccdeb3e67256a69ce6e6fdb234a007",
   "footprints": 38,
   "kicad_version": "20241229",
@@ -44,7 +44,7 @@ a *measurement*. That distinction is the entire value of this document.
 
 | | |
 |---|---|
-| derived-from | `/Users/davidleeburnett/Dropbox/Maker/pcb/rack_triple_gauge/rack_triple_gauge.kicad_pcb` |
+| derived-from | `${MAKER_HOME}/pcb/rack_triple_gauge/rack_triple_gauge.kicad_pcb` |
 | derived-from-sha256 | `a62cd7c777233ba9975a1df7b8d3b1ee02ccdeb3e67256a69ce6e6fdb234a007` |
 | kicad-version | `20241229` (generator 9.0) |
 | generated-by | `composeio.maker.beepout` |
@@ -54,7 +54,7 @@ a *measurement*. That distinction is the entire value of this document.
 **Re-check that this sheet still describes the board in your hand:**
 
 ```bash
-shasum -a 256 /Users/davidleeburnett/Dropbox/Maker/pcb/rack_triple_gauge/rack_triple_gauge.kicad_pcb
+shasum -a 256 ${MAKER_HOME}/pcb/rack_triple_gauge/rack_triple_gauge.kicad_pcb
 # must print: a62cd7c777233ba9975a1df7b8d3b1ee02ccdeb3e67256a69ce6e6fdb234a007
 ```
 

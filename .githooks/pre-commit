@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit — thin wrapper so `git config core.hooksPath .githooks` wires the gate in.
+# All logic lives in scripts/pre-commit-tests.sh (version-controlled, reviewable, runnable by hand).
+set -uo pipefail
+# Derive the root from the COMMIT CONTEXT, not from this file's location.
+# `core.hooksPath` is ONE absolute path shared by every worktree, so deriving from
+# BASH_SOURCE always resolved to the MAIN checkout — meaning a commit made inside a
+# worktree was gated by main's tests: green BY CONSTRUCTION, never executing the code
+# actually being committed. Worse than a no-op, because the green was then cited as
+# proof the guard-rail worked. `git rev-parse --show-toplevel` returns the worktree's
+# own root, so the gate finally tests what is being committed.
+# [DEFECT-THE-PRE-COMMIT-TEST-GATE-6E7171] · [INSIGHT-WORKTREE-IS-NOT-THE-ENVIRONMENT]
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$REPO_ROOT" ] || [ ! -x "$REPO_ROOT/scripts/pre-commit-tests.sh" ]; then
+  # Loud refusal over plausible-wrong: never silently fall back to a tree we did not
+  # verify — an unverifiable gate must say so rather than pass by default.
+  echo "pre-commit: cannot resolve the committing worktree's root (or its" >&2
+  echo "            scripts/pre-commit-tests.sh is missing/not executable) — REFUSING." >&2
+  echo "            Resolved REPO_ROOT='${REPO_ROOT:-<empty>}'" >&2
+  exit 1
+fi
+# ---------------------------------------------------------------------------------------------
+# RUNTIME-WRITTEN FILES: refuse to sweep them into an unrelated commit.
+#
+# These seven are written by LIVE tooling (decision-ops, defect-ops, deliverable_sweep, the
+# insights writer, the console's meta publisher, the render capture harness, and the
+# data-scientist coordination sweep). They are TRACKED ON PURPOSE -- they are the
+# project's durable record, they live in SERVED corpus roots, and untracking them would leave a
+# fresh clone unable to serve those corpora (corpora/insights-and-warts holds exactly ONE file).
+# `.gitignore` is the WRONG tool here and would be worse than nothing: it does not apply to a
+# tracked file, so it would look like protection while changing no behaviour at all.
+#
+# The real failure is not that they are versioned. It is that they CHURN CONSTANTLY and get
+# swept into commits about something else -- af9196b, a bootstrap/pointer commit, silently
+# carried corpora/insights-and-warts/insights_and_warts.lts along with it. A reviewer of that
+# diff was not reviewing that file.
+#
+# So: staging one is not forbidden, it is UNCONFIRMED. Commit it deliberately and alone (or with
+# an explicit override), never as a passenger.
+#   OVERRIDE:  COMPOSEIO_ALLOW_RUNTIME_FILES=1 git commit ...
+#
+# ⛔ THE `ALONE` BRANCH -- ADDED 2026-08-16, DSD D1, DAVID: "Implement the alone branch: if the
+# staged set is exactly runtime files and nothing else, allow the commit."
+#
+# UNTIL NOW THIS TEXT WAS FALSE. It said "commit them DELIBERATELY (alone), or override" and there
+# was NO alone branch in the code -- ANY staged runtime file was refused, including one staged
+# entirely by itself. So the ONLY reachable path was COMPOSEIO_ALLOW_RUNTIME_FILES=1, which
+# disables the check for the WHOLE COMMIT.
+#
+# THAT COARSENESS CAUSED A REAL INCIDENT, 2026-08-15. An agent set the override to commit a runtime
+# file; a CONCURRENT agent's `git commit` in the same shared working tree then swept that agent's
+# separately-staged corpus file into bc5b89a -- a commit about a bus-restart defect whose message
+# says nothing about the four freshness rulings it carried. The content survived; the ATTRIBUTION
+# did not, and no reviewer of that diff was reviewing those nodes.
+#
+# ⭐ THE FIX IS THE SAME CONDITION THAT MAKES THE MESSAGE TRUE. "Alone" is EXACTLY the predicate a
+# passenger violates: a swept-in file makes the staged set larger than the runtime set, so this
+# branch declines and the commit still refuses. One test, both problems -- the code stops lying AND
+# the ordinary case no longer needs the blunt override that caused the sweep.
+#
+# The override REMAINS as an escape hatch for the genuinely-mixed commit. It is now the exception
+# it was always described as, rather than the only door.
+# ---------------------------------------------------------------------------------------------
+# ⛔ REPOINTED 2026-08-17. FIVE OF THE SEVEN ALTERNATIVES HAD DIED AND THE GUARD SAID NOTHING.
+# The four `corpora/*` paths and `defects/defect-graph.lts` left this repo entirely (5c80438 moved
+# the corpora to ~/.claude/factlattice_corpora/composeio, a DIFFERENT git repo), and
+# `intelligence/meta/architect.meta.json` moved under compose_projects/ (f391600). A regex whose
+# alternatives match nothing never refuses -- so this guard was a no-op while still printing
+# "allowing commit". Two metrics.db, two session canaries and three .mcp.json backups were
+# committed straight through it.
+RUNTIME_PATTERNS=(
+  'compose_projects/intelligence/meta/[^/]*\.meta\.json'
+  'python/tests/render/captures/.*\.png'
+  'docs/improvement_suggestions/coordination/state-data-scientist\.json'
+)
+# ── SELF-CHECK: the guard must prove its own predicate is still live. ────────────────────────
+# This is the lesson of the failure above, encoded. Each pattern MUST still match at least one
+# TRACKED file; if one does not, the allowlist has decayed and this hook REFUSES and names it,
+# rather than degrading silently into permission. An instrument that can only report success is
+# not an instrument -- so this one can fail for a reason other than the thing it guards.
+#
+# ⛔ SCOPED BY REPO IDENTITY, VIA THE INDEX. `core.hooksPath` is an ABSOLUTE path, so THIS hook is
+# also exec'd by the throwaway fixture repos in tests/test_lts_property_gate.py -- which track none
+# of composeio's files. An unscoped decay check refused all nine of those legs.
+# The marker is a TRACKED file, not a file on disk: the fixture SYMLINKS python/ to the real tree,
+# so `[ -f .../python/composeio/__init__.py ]` is TRUE there and scoped nothing. Testing the index
+# uses the same source the patterns themselves are matched against, so the two cannot disagree.
+_dead=""
+_tracked="$(git ls-files)"
+if grep -qE '^python/composeio/__init__\.py$' <<<"$_tracked"; then
+  for _p in "${RUNTIME_PATTERNS[@]}"; do
+    # HERE-STRING, NOT A PIPE, ON PURPOSE: `printf ... | grep -q` makes grep exit early, printf
+    # takes SIGPIPE, and `set -o pipefail` (line 4) turns the whole pipeline into 141 -- so the
+    # check reported DECAYED on a pattern that had just MATCHED. A guard that refuses for the
+    # wrong reason is as broken as one that never refuses; both were observed here today.
+    grep -qE "^${_p}$" <<<"$_tracked" || _dead="${_dead} ${_p}"
+  done
+fi
+if [ -n "$_dead" ]; then
+  echo "pre-commit: !! the RUNTIME-WRITTEN allowlist has DECAYED. These pattern(s) match NO tracked file:" >&2
+  for _p in $_dead; do echo "pre-commit: !!   $_p" >&2; done
+  echo "pre-commit: !! A guard whose predicate is empty cannot refuse anything -- it would pass by" >&2
+  echo "pre-commit: !! never speaking. Update RUNTIME_PATTERNS in .githooks/pre-commit to name the" >&2
+  echo "pre-commit: !! files that are runtime-written TODAY, in the same commit that moved them." >&2
+  echo "pre-commit: REFUSING." >&2
+  exit 1
+fi
+RUNTIME_WRITTEN="^($(IFS='|'; printf '%s' "${RUNTIME_PATTERNS[*]}"))$"
+if [ "${COMPOSEIO_ALLOW_RUNTIME_FILES:-0}" != "1" ]; then
+  staged_runtime="$(git diff --cached --name-only | grep -E "$RUNTIME_WRITTEN" || true)"
+  if [ -n "$staged_runtime" ]; then
+    n_staged="$(git diff --cached --name-only | wc -l | tr -d ' ')"
+    n_runtime="$(printf '%s\n' "$staged_runtime" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+    if [ "$n_staged" = "$n_runtime" ]; then
+      # ALONE: the staged set is exactly the runtime-written file(s) and nothing else.
+      # This is the deliberate commit the message has always asked for. ALLOW it.
+      # A passenger swept in by a concurrent agent would make n_staged > n_runtime,
+      # so this branch cannot be the door that lets one through.
+      echo "pre-commit: runtime-written file(s) staged ALONE ($n_runtime) -- deliberate, allowing:" >&2
+      printf '  %s\n' $staged_runtime >&2
+    else
+      echo "pre-commit: !! RUNTIME-WRITTEN file(s) staged:" >&2
+      printf '  %s\n' $staged_runtime >&2
+      echo "pre-commit: !! ...alongside $((n_staged - n_runtime)) other file(s). These churn constantly and" >&2
+      echo "pre-commit: !! ride along in commits about something else, where nobody reviews them." >&2
+      echo "pre-commit: !! Commit them DELIBERATELY (alone) -- that is now ALLOWED and is the" >&2
+      echo "pre-commit: !! supported path -- or, for a genuinely mixed commit, override:" >&2
+      echo "pre-commit: !!   COMPOSEIO_ALLOW_RUNTIME_FILES=1 git commit ..." >&2
+      echo "pre-commit: REFUSING." >&2
+      exit 1
+    fi
+  fi
+fi
+
+exec "$REPO_ROOT/scripts/pre-commit-tests.sh" "$@"

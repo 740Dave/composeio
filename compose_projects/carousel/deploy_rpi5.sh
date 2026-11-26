@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deploy_rpi5.sh — COMPLETE, idempotent, reproducible deploy of the carousel
-# kiosk to pi.example.local, driven by the committed deploy.manifest (the declared
+# kiosk to display-node.local, driven by the committed deploy.manifest (the declared
 # asset closure).  Replaces the ad-hoc, out-of-band file copies that once
 # shipped the python package but not the compose_projects/ authoring tree and
 # blanked the CIC nav (defect 2026-07-31).
@@ -30,7 +30,7 @@
 # --mirror is opt-in and should only be run after reviewing a --dry-run.
 #
 # ENV OVERRIDES
-#   RPI_HOST (davidleeburnett@pi.example.local)  RPI_DIR (maker/composeio)
+#   RPI_HOST (davidleeburnett@display-node.local)  RPI_DIR (maker/composeio)
 #   BROKER   (mqtt-broker.local)      RESTART_TARGETS ("launcher bsg")
 #
 set -euo pipefail
@@ -39,7 +39,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 MANIFEST="${HERE}/deploy.manifest"
 
-RPI_HOST="${RPI_HOST:-davidleeburnett@pi.example.local}"
+RPI_HOST="${RPI_HOST:-davidleeburnett@display-node.local}"
 RPI_DIR="${RPI_DIR:-maker/composeio}"          # relative to the ssh login home
 BROKER="${BROKER:-mqtt-broker.local}"
 RESTART_TARGETS="${RESTART_TARGETS:-launcher bsg}"   # full round-trip = fresh child

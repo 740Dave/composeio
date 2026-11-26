@@ -216,6 +216,17 @@ When a single user action produces multiple bus messages (e.g., deleting a modul
 
 Custom state engines used by internal namespaces:
 
+### [CXC-IBUS-ENGINE-REJECT-UNIFORM] Out-of-domain rejection is uniform at every ingest BOUNDARY
+
+- error-code: `0x70 ENGINE_VALUE_REJECTED` (`DEC-ERROR-CODE-SEED-SET-V1-2026-08-25`) — `warning` at a boundary that drops it; `critical` on any path that lets it abort the process. This node is what makes the `critical` face impossible rather than merely reported.
+- requirement: a state engine RAISES on an out-of-domain value — that is the whole reason a namespace declares an engine (`state_engine.py` `is_valid` / the `current` setter). That raise is load-bearing and MUST be preserved for a PROGRAMMATIC caller of the internal `bus.publish_state` API: a raise there is catchable at the call site and is a real bug signal (pinned by `test_bus_autocreate_engine.py::test_declared_binary_namespace_still_enforces`).
+- requirement: BUT a value-ingest **BOUNDARY** — a site where a value crosses into the bus from a context whose exceptions are UNCATCHABLE or process-fatal — MUST convert that rejection into a logged DROP and never let it propagate. The two boundaries are symmetric and MUST behave identically:
+  - the EXTERNAL transport boundary (`ComposeIOBus._dispatch_incoming`): a peer's out-of-domain value is a peer contract violation → log-and-drop, keep dispatching (a malformed value must not deafen the bus to the rest of that peer's traffic, nor abort).
+  - the RENDER UI boundary (`RenderApp.publish`, through which EVERY widget / gesture / interaction callback funnels via `EngineContext.publish`): an out-of-domain value RAISES inside the native (SDL/Tk) event dispatch, which on macOS becomes an NSException that SIGABRTs the whole surface. A publisher — a finger drag, a `gestures:` producer, an Intelligence `publish()` (control-is-a-peer) — must never be able to kill the surface rendering it → log-and-drop.
+- rationale: this contract lived ONLY in code, and only on the external boundary — the render boundary was an unguarded FORK of the same invariant. The concrete crash: a `gestures:` entry that names a namespace but omits `value` publishes the empty string `""` (`states.GesturePublish` default); `""` is the [CXC-IBUS-CONV-3] "no value" string for a STRING namespace but is OUT-OF-DOMAIN for a `binary` engine (`['off','on']`), so one tap on a binary-bound widget aborted the process. A behavior enforced on one boundary and dropped on the other is exactly how a "fixed" crash recurs; naming the invariant here is what stops the CLASS.
+- boundary-vs-api: `unknown` ([SPEC:CXC-FRESHNESS]) is a separate, prior gate — it BYPASSES the engine entirely (a category, not a domain member) and is handled before this rule applies. This node governs a genuine domain member miss, not the "I do not know" sentinel.
+- test (machine): a UI-boundary publish of an out-of-domain value (incl. `""`) to a declared `binary` namespace DROPS (namespace keeps its last good value) and does NOT raise, across the direct `RenderApp.publish` route AND the `_fire_gesture_publishes` route; the internal `bus.publish_state` API STILL raises for the same value (`python/tests/render/test_ui_publish_boundary_never_aborts.py`).
+
 ### [CXC-ENGINE-TOOL-MODE] Tool Mode Engine
 
 ```yaml

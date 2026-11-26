@@ -26,6 +26,37 @@ struct CallRecord {
     std::string detail;
 };
 
+/* =========================================================================
+ * ⛔ USE-ENVELOPE — RATIFIED, LOAD-BEARING.  READ BEFORE BINDING THIS CLASS.
+ * [CXC-FPHAL-MOCK-ROLE] [DEC-R503-MOCK-STRUCTURAL-GUARD] (D9, David 2026-08-24)
+ * [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] DEFECT-ARMED-ROSTER-LOADED-R503-DEVICE-78C389
+ * =========================================================================
+ * MockFingerprintHAL is a FUNCTIONAL HAL: it stores templates, allocates
+ * slots, and — critically — can RETURN A GRANTED MATCH (script_match()).
+ * That power is exactly why it is dangerous in the wrong build.  It is kept
+ * ON PURPOSE (you cannot automate a fingertip, so it is the parity-test
+ * oracle) but its binding as the DEVICE HAL is now structurally gated.
+ *
+ *   X  HOST / NATIVE TEST ORACLE — UNRESTRICTED.  The expected value the
+ *      single parity suite runs the real backend against; the only reachable
+ *      way to exercise the six failure axes and the enrollment round-trip on
+ *      demand ([CXC-FPHAL-PARITY-TEST]).  This is host_test_main.cpp's use.
+ *   Y  BENCH / DEV ON HARDWARE WITH NO SENSOR — ONLY behind an EXPLICIT
+ *      -DFP_ALLOW_MOCK build flag.  A deliberate, opt-in developer choice,
+ *      never a default.
+ *   Z  SCRIPTED UX / FLOW DEMO — the offline demo path — ONLY behind the same
+ *      EXPLICIT -DFP_ALLOW_MOCK opt-in.
+ *   ⛔ NEVER  A SILENT PRODUCTION RUNTIME FALLBACK.  A real device whose
+ *      sensor is absent or answers late is INOPERABLE, never mock-backed:
+ *      it binds NullFingerprintHAL (fingerprint_null_hal.h) and announces
+ *      fingerprint_inoperable until the real R503 answers and the HAL is
+ *      live-rebound.  In the production env (fingerprint_tm1637_s3, no
+ *      FP_ALLOW_MOCK) this class is NOT COMPILED into the device-binding path
+ *      at all — see the #ifdef FP_ALLOW_MOCK guard on g_hal in
+ *      fingerprint_bringup_main.cpp.  That is D9: make the just-fixed defect
+ *      (a device silently impersonating an armed sensor on the mock)
+ *      un-reintroducible, not merely discouraged.
+ * ========================================================================= */
 class MockFingerprintHAL final : public FingerprintHAL {
 public:
     /* R503-shaped defaults (C70: a 200-template on-chip store).  These are the
@@ -38,6 +69,7 @@ public:
         c.feedback_channels = static_cast<uint32_t>(FeedbackChannel::AURA_LED);
         c.captures_per_template = 2;
         c.template_size_bytes = 1536;
+        c.feedback_profile = "canonical";   /* the mock IS the reference table */
         return c;
     }
 

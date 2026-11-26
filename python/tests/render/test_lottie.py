@@ -463,21 +463,21 @@ def test_c7_bus_uri_via_asset_manager(monkeypatch, slider_src):
         app.stop()
 
 
-def test_c7_doc_uri_via_asset_manager(monkeypatch):
+def test_c7_doc_uri_no_longer_resolves(monkeypatch):
+    """doc:// is FULLY DEPRECATED (2026-09-03): the AssetManager compat branch is
+    removed, so a doc:// Lottie src no longer resolves — it hard-breaks and the widget
+    loads no animation. resolve_doc must NOT even be consulted (negative control)."""
     from composeio import resolve as _resolve
-    doc = {"content": base64.b64encode(json.dumps(SLIDER).encode()).decode()}
 
-    def fake_doc(uri, **kw):
-        assert uri == "doc://animations/slider"
-        return doc
-    monkeypatch.setattr(_resolve, "resolve_doc", fake_doc)
+    def must_not_be_called(uri, **kw):
+        raise AssertionError(f"resolve_doc must not be called for doc:// asset: {uri}")
+    monkeypatch.setattr(_resolve, "resolve_doc", must_not_be_called)
 
     app = _app(_slider_config("doc://animations/slider"))
     try:
         w = _widget(app, "anim")
         app.render_frame_at(0.0)
-        assert w._anim is not None
-        assert w._anim.op == 100.0
+        assert w._anim is None
     finally:
         app.stop()
 

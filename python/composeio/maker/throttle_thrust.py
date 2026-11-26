@@ -24,7 +24,7 @@ It is NOT "a dradis director reads throttle -> heading".  It is state-on-bus::
         -> the Qualia dradis console REFLECTS it   (rotation binding; NO change)
 
 The Qualia dradis (``bsg/game_hardware/dradis_console/dradis.compose.yaml``,
-device ``qualia-6c9d0c``) already binds its ``own_heading`` input to
+device ``qualia-004df8``) already binds its ``own_heading`` input to
 ``game/own_heading`` — so the display end needs ZERO edits.  The ONE integration
 point is the world app's **thrust -> position/heading model**.
 

@@ -255,7 +255,7 @@ runs, temperature, a noisy device.
 
 | Option | Tradeoffs |
 |---|---|
-| **Widen the Pi's SJW (~4× resync window) via one argument in `can0.service`** | Costs one line and a service restart; buys margin at the weakest node. Cost: it's a **deploy** change to `pi.example.local`, which also runs the carousel kiosk |
+| **Widen the Pi's SJW (~4× resync window) via one argument in `can0.service`** | Costs one line and a service restart; buys margin at the weakest node. Cost: it's a **deploy** change to `display-node.local`, which also runs the carousel kiosk |
 | Leave it | Free; keeps the fleet's least tolerant node least tolerant |
 
 **My recommendation:** **widen it**, bundled with the next planned `rpi5` touch rather than as its own

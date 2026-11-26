@@ -1,0 +1,74 @@
+# Doc Viewer — a STANDALONE read-only doc window ([DEC-DOCVIEWER-WINDOW], David
+# 2026-07-22: "docs should open in their own windows like the Away/Night Watch
+# windows, so I can read a doc alongside the console and discuss it live — and
+# have several open at once").  This REPLACES the cramped in-console doc-browser
+# OVERLAY: the `_app/doc/open {path}` intent is now consumed by
+# compose_projects/intelligence/tools/doc_viewer_launcher.py, which spawns ONE of these windows
+# per doc (SDL2 is one-window-per-process, so each doc == its own runtime).
+#
+# PER-WINDOW CONTENT (the key design point — each window its own doc): the
+# launcher bakes the specific doc into the `variables:` block below (doc_path +
+# doc_name) when it writes the per-open scene, so every spawned window renders
+# ITS path independently — there is NO shared bus namespace that could make all
+# windows show the same doc.  This file is BOTH the canonical layout AND a
+# self-contained standalone scene: run it directly (cwd = repo root) and it
+# renders the default doc, which is what the headless render test exercises.
+#
+# No transports: a doc viewer is a pure read surface (the only interaction is
+# scroll).  The MarkdownViewerWidget is READ-ONLY by construction — no caret, no
+# write path ([CXC-MDV]); it is REUSED by reference, never forked.
+app:
+  id: doc-viewer
+  transports: []
+# 720×900 portrait-ish default (David: "sized sensibly … tunable") — a
+# comfortable single-column reading width beside the console.  RESIZABLE +
+# reflow + persisted geometry ([SPEC:CXC-RENDER] [CXC-R-WINDOW-RESIZE]): the
+# Designer-family viewer parity bar — same scene-level opt-in the console and
+# Decisions viewer use, no runtime code change.  min 560×420 keeps one
+# paragraph column legible; geometry persists under `doc-viewer`.
+design:
+  title: "Doc · $doc_name"
+  target: desktop
+  width: 720
+  height: 900
+  resizable: true
+  min_width: 560
+  min_height: 420
+  persist_geometry: true
+  window_key: doc-viewer
+  theme: dark
+  padding: 0
+  gap: 0
+# The launcher overrides these two per open; the defaults make the scene render
+# standalone (and drive the headless proof).
+variables:
+  doc_path: bootstrap/collaboration-and-design-principles.md
+  doc_name: collaboration-and-design-principles.md
+# A flex COLUMN that fills the window ([CXC-R-WINDOW-RESIZE]): header + badge
+# measure to their text; the markdown surface grows to consume the rest, so a
+# resize re-lays-out with no clip, overlap, or dead gutter (the fixed x/y/w/h
+# regions migrated to a relative container — layout containers only).
+widgets:
+- type: stack
+  id: frame
+  direction: column
+  align: stretch
+  grow: 1
+  background: '#0A0E17'
+  border: '#1E2B3C'
+  corner_radius: 0
+  clip: true
+  padding: [15, 10, 10, 20]
+  gap: 4
+  children:
+  # ── header: the doc's filename (bold ink) + a READ-ONLY badge ──
+  - {type: label, id: header, text: "$doc_name",
+     font_size: 14, font_weight: bold, color: '#EAF0F7', font_family: monospace}
+  - {type: label, id: badge, text: "DOC VIEWER · READ-ONLY",
+     font_size: 9, color: '#5C6E82', font_family: monospace}
+  # ── the read-only markdown surface, filling the rest of the window ──
+  - type: markdown_viewer
+    id: viewer
+    grow: 1
+    path: "$doc_path"
+    pad: 22

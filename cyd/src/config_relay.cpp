@@ -23,6 +23,22 @@ static uint32_t s_down_frames = 0;
 static uint32_t s_up_frames = 0;
 static uint32_t s_ttl_expiries = 0;
 static uint32_t s_drops = 0;
+static uint32_t s_membrane_blocked = 0;
+
+/* [CXC-DEVICE-BASELINE-RELAY-MEMBRANE] the wire scope code for LOCAL (canonical
+ * python/composeio/transport_can.py _SCOPE_CODES + bus_wire_codes.h scope
+ * table).  LOCAL is the ONE scope confined to its segment. */
+static constexpr uint8_t kScopeLocal = 0x0;
+
+bool config_relay_scope_crosses(uint8_t scope_bits) {
+    /* Only LOCAL is confined.  global/remote/auto cross.  ⛔ auto (unset scope,
+     * 0x3) is NOT treated as local: substituting a locality nobody claimed is
+     * the exact BP-CAN-ID v1 defect (scope reconstructed as "global"); an
+     * unclaimed scope must not be silently CONFINED either — only an explicit
+     * "local" is a locality claim strong enough to hold a frame on its segment. */
+    return scope_bits != kScopeLocal;
+}
+uint32_t config_relay_membrane_blocked(void) { return s_membrane_blocked; }
 
 void config_relay_init(const char* device_id, ConfigRelaySendFn downstream,
                        ConfigRelaySendFn upstream,
@@ -51,6 +67,14 @@ static void forward(uint16_t ns_hash, BusMessageType type, uint8_t scope_bits,
                     const uint8_t* value, size_t len, ConfigRelaySendFn send,
                     uint32_t* counter, const char* dir) {
     if (!send) return;
+
+    /* [CXC-DEVICE-BASELINE-RELAY-MEMBRANE] THE SCOPE MEMBRANE — enforced on the
+     * forward (PUBLISH) path in BOTH directions, before ANY type handling.  A
+     * LOCAL-scoped frame is confined to its own segment: crossing it would leak
+     * local chatter onto the shared bus (the exact failure [CXC-VISION-SCOPE-
+     * MEMBRANE] names).  Counted, never per-frame-logged — a per-frame log on
+     * this hot path would be the diagnostic that CAUSES the failure it reports. */
+    if (!config_relay_scope_crosses(scope_bits)) { s_membrane_blocked++; return; }
 
     /* NON-CONFIG TRAFFIC IS FORWARDED TOO, UNTOUCHED.  A relay that only
      * carried config would leave the leaf able to receive a scene and unable

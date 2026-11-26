@@ -14,10 +14,10 @@ direct WiFi/MQTT ComposeBus peer. David's first custom PCB.**
 > **peer** of `BoardProfile` under `[CXC-VISION-SEMANTIC-REALIZATION]` — *"the widget is semantic,
 > the backend is the realization."*
 
-Hardware ground truth: `~/Dropbox/Maker/pcb/rack_triple_gauge/generate_pcb.py` (there is no
+Hardware ground truth: `${MAKER_HOME}/pcb/rack_triple_gauge/generate_pcb.py` (there is no
 `.kicad_sch`; the board is emitted programmatically) confirmed against the pad→net assignments in
 the emitted `rack_triple_gauge.kicad_pcb`. Corpus characterisation: `[PCB-GAUGE3]` in
-`~/Dropbox/Maker/pcb/boards-overview.lts`, derived at `[SPEC:PCB-BOARDS-OVERVIEW]`
+`${MAKER_HOME}/pcb/boards-overview.lts`, derived at `[SPEC:PCB-BOARDS-OVERVIEW]`
 (`corpora/platform-specs/64-pcb-board-landscape.lts`).
 
 ---
@@ -335,8 +335,8 @@ the real firmware deliberately leaves as inputs (`IODIRB = 0xF0`).
    > adapter RX to board TX.
 3. ⚠ **Identity before flashing.** `ioreg -r -c IOUSBHostDevice -l -w0`, match the **full** USB
    serial. `esptool chip-id` is **not** an identity check — it resets the board, which is the harm
-   being prevented. `AA:BB:CC:DD:EE:FF` is the **live dual-throttle controller**;
-   `AA:BB:CC:DD:EE:FF` is the c3lcd/c3can board. Never either.
+   being prevented. `00:00:5E:00:53:02` is the **live dual-throttle controller**;
+   `00:00:5E:00:53:03` is the c3lcd/c3can board. Never either.
 4. ⚠ **There is no factory image and there never will be.** A custom board has no as-shipped
    firmware to back up, so the fleet's usual `esptool read-flash` net does not exist. **The recovery
    path is the socket**: pull the module and flash it out of circuit, or on a spare. Second net:

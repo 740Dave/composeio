@@ -1,0 +1,54 @@
+# Wire-protocol excerpt — R503 UART packet, command set, confirmation codes, and the
+# request/response hazards. This is the COMPLETE driver-relevant section of the spec;
+# implement the UART command/response driver from THIS and nothing else.
+
+### [CXC-R503-FRAMING] Big-endian, address-gated, and Length counts the checksum
+
+- shape: [Header 2B = 0xEF01][Address 4B][PID 1B][Length 2B][Content ...][Checksum 2B].
+- byte-order: big-endian throughout (high byte first). This statement is absent from V1.1, so a V1.1-era driver had no byte-order statement at all.
+- address: default 0xFFFFFFFF; a wrong address makes the module reject the transfer with SILENCE, not an error packet.
+- pid: 01H command, 02H data, 07H acknowledge, 08H end-of-data. A data packet must follow a command or acknowledge packet, never appear alone.
+- length-semantics: Length = content bytes plus 2 (it includes the checksum). A parser that reads Length as the content length overruns by two bytes on every packet.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+- see-also: [CXC-R503-CHECKSUM]
+
+### [CXC-R503-CHECKSUM] The checksum rule, recomputed against 21 worked examples and passing
+
+- rule: the checksum is the arithmetic sum of PID, both Length bytes, and every content byte, modulo 2^16. Header and address are NOT included.
+- verification: recomputed against all 21 worked examples in the manual set (18 fixed-command checksums plus three V1.4.1 hex traces); all 21 recompute exactly.
+- verify-machine: a unit test that recomputes the checksum for the AuraLedConfig example EF01 FFFFFFFF 01 0007 35 01 50 06 00 yields 0x0094. This runs against a byte string, touches no hardware, and is not a wire probe.
+- caution: never author a wrong-checksum or wrong-length probe against a real part; a malformed frame is a potential brick vector and there is no documented recovery path.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-UNSOLICITED-0X55] The module emits a bare unframed 0x55 at power-on AND after every soft reset
+
+- behaviour: the module sends a single unframed byte 0x55 to the host, unsolicited — the only unsolicited emission in the protocol. It fires at power-on and again after 0x3D SoftRst.
+- hazard: it is a bare byte with no header, address, length or checksum. A fixed-length-frame parser is permanently phase-shifted from that byte; a driver that absorbs it only at boot desyncs the first time it soft-resets.
+- remedy: drain RX immediately before every transmit AND parse with a sliding two-byte header window. Either alone is partial; together they absorb the power-on byte, the post-SoftRst byte, and any stale packet from an aborted transaction.
+- verify-machine: against a mock that emits a leading 0x55, assert the driver's first command still receives its framed acknowledgement. The mock, not a part, produces the stray byte.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-ACK-STREAM-BREAKS-REQ-RESP] Auto commands emit acknowledge STREAMS, and the enabling bit differs per command
+
+- behaviour: with the status-reporting config bit set, 0x31 AutoEnroll emits fifteen acknowledge packets from one command (step 0x01 through 0x0F, only 0x0F carrying the modelID); 0x32 AutoIdentify emits three.
+- hazard-config-index: the enabling parameter is at a DIFFERENT index on each command — Config3 on AutoEnroll, Config1 on AutoIdentify. A driver that generalises "Config3 enables streaming" mis-configures AutoIdentify.
+- rule: a one-response-per-command transaction assumption is wrong for these commands; the HAL must treat them as bounded streams terminated by confirmation != 0x00 or by the final step code, not by a single reply.
+- version-hazard: V1.2.1's AutoEnroll step codes are numerically incoherent and were fixed in V1.4; a driver written against V1.2.1's step table mis-sequences on current firmware.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+- see-also: [CXC-R503-AUTOIDENTIFY-STREAM-UNBOUNDED]
+
+### [CXC-R503-AUTOIDENTIFY-STREAM-UNBOUNDED] AutoIdentify's stream can be unbounded — bound it in the driver
+
+- claim: with a finger continuously present that never matches and the retry count set to zero, 0x32 AutoIdentify loops until a match or power-off, so its acknowledge stream is unbounded. This is an inference from the stated retry semantics; the manual never shows a retry trace.
+- why-the-timeout-does-not-save-you: the 10-to-15-second no-finger exit bounds the finger-ABSENT case, not the finger-present-never-matches case — exactly the case a confused or hostile user produces.
+- rule: never size a fixed ring buffer on the assumption the stream is short; the HAL match operation must impose its own bound and surface a PROTOCOL_DESYNC or a bounded no-match rather than blocking.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Feedback and timing

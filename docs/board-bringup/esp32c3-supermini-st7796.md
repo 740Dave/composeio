@@ -54,7 +54,7 @@ pio device monitor -e esp32_c3_st7796
 
 `/dev/cu.usbmodem11301` changed device **four times** in one evening on this bench, and iterating over
 ports once reset a live controller that had been explicitly ring-fenced. Both C3s here share the MAC
-prefix `AA:BB:CC`.
+prefix `1C:DB:D4`.
 
 ```bash
 ioreg -r -c IOUSBHostDevice -l -w0 | awk '/"USB Serial Number"/{sn=$NF} /IOCalloutDevice/{print sn, $NF}'
@@ -62,8 +62,8 @@ ioreg -r -c IOUSBHostDevice -l -w0 | awk '/"USB Serial Number"/{sn=$NF} /IOCallo
 
 | MAC | port | rule |
 |---|---|---|
-| `AA:BB:CC:DD:EE:FF` | `/dev/cu.usbmodem11301` | **this board** |
-| `AA:BB:CC:DD:EE:FF` | `/dev/cu.usbmodem31101` | **LIVE dual-throttle controller — never touch** |
+| `00:00:5E:00:53:03` | `/dev/cu.usbmodem11301` | **this board** |
+| `00:00:5E:00:53:02` | `/dev/cu.usbmodem31101` | **LIVE dual-throttle controller — never touch** |
 
 `esptool chip-id` is **not** an identity check: it resets the board, which is the harm being prevented.
 
@@ -336,9 +336,9 @@ The first version of the boot banner promised the one-hop form anyway. **The rea
 hops:**
 
 ```
-publish _device/c3lcd-c28020/transport = "mqtt"          # 5 bytes, fits on CAN
+publish _device/c3lcd-047dd8/transport = "mqtt"          # 5 bytes, fits on CAN
 reboot                                                    # now on MQTT
-publish _device/c3lcd-c28020/transport = "can listen=0"   # no 8-byte limit on MQTT
+publish _device/c3lcd-047dd8/transport = "can listen=0"   # no 8-byte limit on MQTT
 reboot
 ```
 
@@ -353,7 +353,7 @@ arrive on, not the widest.
 
 ```bash
 curl -X PUT --data-binary @engine_thrust_480x320.compose.yaml \
-  http://mqtt-broker.local:8420/api/v1/assets/displays/c3lcd-c28020.compose.yaml
+  http://192.0.2.75:8420/api/v1/assets/displays/c3lcd-047dd8.compose.yaml
 ```
 
 Two alternatives were considered and rejected:
@@ -393,14 +393,14 @@ independent witness channel) with `cansend`, a tool this project did not write:
 
 ```bash
 # id computed in Python from [BP-CAN-ID]: ns_hash(16) | type(4) | src(9)
-# _device/c3lcd-c28020/config_source = 0x443A, type state = 0, src = 0x0A4
-ssh pi.example.local 'cansend can1 088740A4#0468747470'      # value = [len=4]"http"
+# _device/c3lcd-047dd8/config_source = 0x443A, type state = 0, src = 0x0A4
+ssh display-node.local 'cansend can1 088740A4#0468747470'      # value = [len=4]"http"
 ```
 
 The C3 answered:
 
 ```
-I main: BUS _device/c3lcd-c28020/config_source = 'http'
+I main: BUS _device/c3lcd-047dd8/config_source = 'http'
 E bus_can: TX REFUSED — this node is in LISTEN-ONLY mode …
 ```
 
@@ -519,7 +519,7 @@ Kept because each produced a confident, plausible, **wrong** picture.
 cd cyd && pio device monitor -e esp32_c3_st7796
 
 # terminal 2 — the independent witness (read-only, never the bridge's channel)
-ssh pi.example.local 'candump -td -x can1'
+ssh display-node.local 'candump -td -x can1'
 ```
 
 Then **move the physical throttle levers**. Expect `BUS throttle/left = <value>` on the console, a

@@ -79,7 +79,7 @@ def _jsonl_reading(paths: list[str], tmp: Path) -> str:
     for p in paths:
         lines.append({"type": "assistant", "message": {"usage": {},
                       "content": [{"type": "tool_use", "name": "Read",
-                                   "input": {"file_path": f"/Users/x/composeio/{p}"}}]}})
+                                   "input": {"file_path": f"/Users/you/composeio/{p}"}}]}})
     fp = tmp / "session.jsonl"
     fp.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
     return str(fp)

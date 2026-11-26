@@ -7,10 +7,13 @@ the platform backend, cached in memory.
 
 URI schemes (resolution via composeio.resolve, DP-CIO-23):
     bus://assets/<path>       raw bytes from bus_storage      (:8420)
-    doc://<collection>/<id>   document from document_store    (:8421)
-                              — image docs carry base64 payloads or a
-                                content field; both handled here
+    bus://<collection>/<id>.json  doc-as-blob on bus_storage  (:8420)
     file://<path> or <path>   local filesystem (desktop dev only)
+
+⛔ doc:// is FULLY DEPRECATED (David 2026-09-03, [SPEC:CXC-STORE]) — the compat
+branch that translated a doc:// asset ref through resolve_doc is REMOVED. A stored
+doc:// image ref now hard-breaks (fetch fails -> placeholder; load_image raises),
+so the break surfaces and is fixed at source by rewriting it to bus://…json.
 
 The manager caches BYTES per URI (backend-independent) and decoded image
 HANDLES per (backend, URI).  Decoding goes through canvas.load_image /
@@ -19,7 +22,6 @@ the backend codec, so the engine never imports a platform library.
 
 from __future__ import annotations
 
-import base64
 import io
 import os
 import threading
@@ -73,10 +75,11 @@ class AssetManager:
         return candidate if os.path.exists(candidate) else None
 
     def _fetch(self, uri: str) -> Optional[bytes]:
+        # doc:// is FULLY DEPRECATED (David 2026-09-03) — its compat branch is gone.
+        # A stored doc:// asset ref now hard-breaks in resolve_bytes (no scheme match ->
+        # not a fetchable URI); the fetch fails and the widget renders its placeholder,
+        # surfacing the break to be fixed at source rather than silently translating it.
         try:
-            if uri.startswith("doc://"):
-                doc = _resolve.resolve_doc(uri)
-                return self._bytes_from_doc(doc)
             rel = self._scene_relative(uri)
             if rel is not None:
                 with open(rel, "rb") as f:
@@ -85,31 +88,15 @@ class AssetManager:
         except Exception:
             return None
 
-    @staticmethod
-    def _bytes_from_doc(doc: dict) -> Optional[bytes]:
-        """Extract binary content from a document_store document.
-        Accepts data/content/payload fields, base64-encoded or raw str."""
-        for key in ("data", "content", "payload", "image"):
-            val = doc.get(key)
-            if val is None:
-                continue
-            if isinstance(val, bytes):
-                return val
-            if isinstance(val, str):
-                try:
-                    return base64.b64decode(val, validate=True)
-                except Exception:
-                    return val.encode()
-        return None
-
     # -- decoded image handles ---------------------------------------------
 
     def get_image(self, canvas: Any, uri: str) -> Any:
         """Return a backend image handle for *uri*, or None.
 
         file:// and bus:// go straight to canvas.load_image (the backend
-        already resolves those).  doc:// bytes are decoded via the
-        backend's codec (Skia: Image.open on the byte stream).
+        already resolves those). doc:// is FULLY DEPRECATED (David 2026-09-03):
+        its dedicated decode branch is removed, so a doc:// URI now falls to
+        canvas.load_image, which raises (the break surfaces) and yields None.
         """
         key = (id(canvas), uri)
         with self._lock:
@@ -117,17 +104,10 @@ class AssetManager:
                 return self._handle_cache[key]
 
         handle = None
-        if uri.startswith("doc://"):
-            data = self.get_bytes(uri)
-            if data is not None:
-                decode = getattr(canvas, "decode_image", None)
-                if decode is not None:
-                    handle = decode(data)
-        else:
-            try:
-                handle = canvas.load_image(uri)
-            except Exception:
-                handle = None
+        try:
+            handle = canvas.load_image(uri)
+        except Exception:
+            handle = None
 
         if handle is not None:
             with self._lock:

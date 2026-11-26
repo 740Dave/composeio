@@ -86,7 +86,7 @@ SRC = "beepout-review"
 #: is for reading and review; paper is still how this artifact is used.
 INTENT_NS = "_app/beepout/open"
 INTENT_PUBLISHED = True
-DEFAULT_MQTT = "mqtt://mqtt-broker.local:1883"
+DEFAULT_MQTT = os.environ.get("COMPOSEBUS_MQTT", "mqtt://mqtt-broker.local:1883")
 
 PROVENANCE_RE = re.compile(
     r"<!--\s*BEGIN BEEPOUT-PROVENANCE[^>]*-->\s*(\{.*?\})\s*<!--\s*END BEEPOUT-PROVENANCE\s*-->",

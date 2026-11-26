@@ -96,11 +96,12 @@ extern "C" void app_main(void) {
         uint32_t d = config_relay_down_frames();
         uint32_t u = config_relay_up_frames();
         ESP_LOGI(TAG, "relay: %lu frames down (+%lu), %lu up (+%lu), "
-                 "%lu TTL expiries, %lu drops",
+                 "%lu TTL expiries, %lu drops, %lu membrane-blocked (local)",
                  (unsigned long)d, (unsigned long)(d - last_down),
                  (unsigned long)u, (unsigned long)(u - last_up),
                  (unsigned long)config_relay_ttl_expiries(),
-                 (unsigned long)config_relay_drops());
+                 (unsigned long)config_relay_drops(),
+                 (unsigned long)config_relay_membrane_blocked());
         last_down = d;
         last_up = u;
     }

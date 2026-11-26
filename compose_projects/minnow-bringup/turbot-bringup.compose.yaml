@@ -67,9 +67,9 @@ modules:
     grid_row: 0
     grid_column: 0
     widgets:
-      - {type: TextInputWidget, namespace: bringup/hostname, label: "Board name (hostname)", placeholder: "skipper-2", row: 0, column: 0}
+      - {type: TextInputWidget, namespace: bringup/hostname, label: "Board name (hostname)", placeholder: "buildhost-2", row: 0, column: 0}
       - {type: TextInputWidget, namespace: bringup/pw_hash, label: "Password  (hashed locally — never stored or seen in plaintext)", secret: true, row: 1, column: 0}
-      - {type: TextInputWidget, namespace: bringup/device, label: "Serial slot (fleetconsole device / cable)", placeholder: "ginger", row: 2, column: 0}
+      - {type: TextInputWidget, namespace: bringup/device, label: "Serial slot (fleetconsole device / cable)", placeholder: "fleetnode", row: 2, column: 0}
       # cabled_nic: dual-NIC Turbot stalls at 'choose primary interface' without interface=<nic>. Default enp3s0 (S1's cabled port).
       - {type: TextInputWidget, namespace: bringup/cabled_nic, label: "Cabled NIC  (the port with carrier; -> installer interface=)", placeholder: "enp3s0", row: 3, column: 0}
       # session_profile: THE display/UX axis. headless = base only; kiosk = mary-ann (hands-free fullscreen app).
@@ -91,7 +91,7 @@ modules:
           tool: fleetconsole.provision_run
           args:
             recipe: minnowboard-turbot-debian13
-            device: "${bringup/device}"        # the serial slot (cable) to drive; default ginger
+            device: "${bringup/device}"        # the serial slot (cable) to drive; default fleetnode
             params:
               hostname:         "${bringup/hostname}"
               password_crypted: "${bringup/pw_hash}"
@@ -107,7 +107,7 @@ modules:
         column: 0
       - {type: RelayWidget, namespace: bringup/verdict, label: "Provision", state_engine: stop_light, row: 1, column: 0}
 
-  # Restore from a saved template — the pick list IS a document_store query over the fleet's Turbot
+  # Restore from a saved template — the pick list IS a client-side query over the fleet's Turbot
   # recovery docs. Selecting one loads its rebuild spec (incl. the saved $6$ hash) into the form.
   - name: restore
     label: "Restore from saved"

@@ -20,7 +20,7 @@ Every bus message consists of seven mandatory fields and zero or more optional f
 | Field | JSON Key | Type | Description |
 |-------|----------|------|-------------|
 | Namespace | `ns` | string, max 64 chars | Dot-free, slash-free identifier. Lowercase alphanumeric + underscore. Examples: `ftl_arm`, `office_lights`, `_bus/time` |
-| Message Type | `type` | enum (4-bit) | One of: `state`, `event`, `config_push`, `config_request`, `heartbeat`, `discovery`, `time_sync`, `binding`, `ack`, `log_entry`. Numeric wire codes are allocated ONCE in [BP-TYPE-CODES] |
+| Message Type | `type` | enum (4-bit) | One of: `state`, `event`, `config_push`, `config_request`, `heartbeat`, `discovery`, `time_sync`, `binding`, `ack`. Numeric wire codes are allocated ONCE in [BP-TYPE-CODES] — code 9 (`log_entry`) is a PERMANENT TOMBSTONE, retired and never reallocated ([BP-TYPE-CODES-RETIRE-9]) |
 | Value | `val` | varies by type | Semantic value. String for state/event, binary blob for config_push, CRC-32 for config_request, JSON object for discovery/binding |
 | Source Module | `src` | string, max 32 chars | Unique identifier of the publishing module. Format: `{role}-{instance}` (e.g., `panel-1`, `relay-2`, `hub-main`) |
 | Timestamp | `ts` | uint32 | Bus time in seconds since bus master epoch. Wraps at 2^32 (~136 years). ⛔ **NOT CARRIED on framed binary transports — see below** |
@@ -136,7 +136,7 @@ Type enum string values — the authoritative allocation is [BP-TYPE-CODES]:
 | Time sync | `"time_sync"` | 6 |
 | Binding | `"binding"` | 7 |
 | Ack | `"ack"` | 8 |
-| Log entry | `"log_entry"` | 9 |
+| Log entry — **RETIRED, permanent tombstone, decode-only** | `"log_entry"` | 9 — see [BP-TYPE-CODES-RETIRE-9] |
 
 Scope enum string values:
 
@@ -166,7 +166,7 @@ Bit 28..26  Bit 25..22  Bit 21..6   Bit 5..2  Bit 1..0
 | Field | Bits | Description |
 |-------|------|-------------|
 | `prio` | 28..26 (3 bits) | Arbitration tier, 0 most urgent, 7 bulk ([BP-WIRE-PRIORITY]). **SENDER-SIDE ONLY** — nothing decodes it, and no receiver may route on it |
-| `type` | 25..22 (4 bits) | Message type enum. Codes 0–9 are allocated ([BP-TYPE-CODES]); 10–15 reserved. **The codes were NOT renumbered by urgency** — see [BP-WIRE-PRIORITY] |
+| `type` | 25..22 (4 bits) | Message type enum. Codes 0–9 are allocated ([BP-TYPE-CODES]); 10–15 reserved. Code 9 is a permanent decode-only tombstone — see [BP-TYPE-CODES-RETIRE-9]. **The codes were NOT renumbered by urgency** — see [BP-WIRE-PRIORITY] |
 | `ns_id` | 21..6 (16 bits) | CRC-16/CCITT of the namespace string ([BP-CAN-HASH]). Same width as v1, so v2 adds no collision exposure |
 | `src` | 5..2 (4 bits) | An **allocated** node id, 1–15. **0 = unassigned.** NOT a hash slice. Diagnostic only — CAN does not address nodes |
 | `scope` | 1..0 (2 bits) | 0=local, 1=global, 2=remote, 3=auto ([BP-MSG-FIELDS]) |
@@ -178,7 +178,7 @@ Below `ns_id` it cannot distort arbitration between two different messages at al
 
 **Why v1 was wrong.** With `ns_hash` in the top 16 bits, arbitration priority was a
 pseudo-random function of the namespace *name*: `throttle/left` (0x03F6) won everything by
-luck, `_device/wsc6-6f4ce4/config` (0x8921) outranked `_device/hosyond-d1afe8/config`
+luck, `_device/wsc6-07f199/config` (0x8921) outranked `_device/hosyond-080739/config`
 (0xC6B6) because of a MAC suffix, and `shields` (0xCC50) — a combat-critical value — lost
 arbitration to console bounding boxes. Renaming a signal silently re-ranked it. v1 also had
 **no scope field**, so scope was silently lost on every CAN round trip and reconstructed as
@@ -207,7 +207,7 @@ example** — a tier named by example goes stale the moment someone adds a names
 | 4 | liveness & coordination | type | `heartbeat`, `discovery`, `binding` |
 | 5 | live telemetry — late is stale, not wrong (**THE DEFAULT**) | namespace | `dradis/*` |
 | 6 | display state | namespace | `_app/*` |
-| 7 | bulk — nothing functional may live here | type | `config_push`, `log_entry` |
+| 7 | bulk — nothing functional may live here | type | `config_push`; `log_entry` retired, decode-only — see [BP-TYPE-CODES-RETIRE-9] |
 
 **THE ASSIGNMENT RULE.** Control-plane messages take their tier from their **type**;
 application data (nearly all of which is `state`/`event`) takes it from its **namespace**. A
@@ -371,7 +371,7 @@ do not restate it and MUST NOT diverge from it.
 | 6 | `time_sync` | [BP-TYPE-TIME-SYNC] |
 | 7 | `binding` | [BP-TYPE-BINDING] |
 | 8 | `ack` | [BP-TYPE-ACK] (01-amendment-critical-ack) |
-| 9 | `log_entry` | [BP-EXT-LOG] (01-amendment-bus-extensions) |
+| 9 | `log_entry` — **RETIRED, permanent tombstone** | [BP-TYPE-CODES-RETIRE-9] (was [BP-EXT-LOG], 01-amendment-bus-extensions) |
 | 10–15 | reserved | — |
 
 **REQUIREMENT — total round-trip.** A transport binding MUST encode and decode **every** message
@@ -399,6 +399,34 @@ the one copy is `composeio.transport.MESSAGE_TYPE_WIRE_CODES` with the
 `wire_code_for_type()` / `message_type_for_wire_code()` accessors. Implementations in languages
 that cannot import it (firmware C) MUST cite this section by name where they declare their
 constants.
+
+#### 1.6.1 Retirement: Code 9 (`log_entry`) [BP-TYPE-CODES-RETIRE-9]
+
+**PERMANENT TOMBSTONE — retire, do not reuse.** Ratified
+`DEC-LOG-ENTRY-MAY-COLLAPSE-INTO-EVENT-PLUS-RETENTION-2026-08-25`: the `log_entry` message type
+was found redundant with `event` — delivery was already identical to an event
+(`namespace.py publish_log()` notified the same `_event_subscribers` an `event` publish notifies,
+tagging the value with `event_type: "log_entry"`); the only real delta was a bounded retention
+deque, which is now an orthogonal namespace property ([BP-EXT-RETENTION],
+01-amendment-bus-extensions §7).
+
+Per this table's own allocated-once-never-renumber discipline (§1.6 above — the 2026-08-10
+four-independent-copies incident is why this table exists at all), code 9 is **retired, not
+reclaimed**:
+
+- **ONE read-only decode window.** While any deployed peer may still transmit wire code 9, a
+  decoder MUST accept it and decode it to `EVENT` with `event_type: "log_entry"` set on the
+  value — never to a standalone `log_entry` type. No implementation may ENCODE code 9 from this
+  point forward; it is decode-only and transitional, and the window closes once no deployed peer
+  emits it.
+- **After the window, code 9 is dropped**, exactly as an unallocated code is handled today (the
+  REQUIREMENT — no silent fallback, above) — reported, frame dropped, never defaulted.
+- **The allocated set for live types becomes `{0..8}`.** Code 9 is neither live nor available; it
+  is a burned marker, not a free slot.
+- **The next new message type takes code 10, never 9.** Renumbering or reclaiming a retired code
+  reintroduces the exact fork this table exists to prevent, one peer at a time.
+
+`ack` (code 8) is UNAFFECTED — this retirement is code 9 only.
 
 ---
 
@@ -951,7 +979,7 @@ Configuration (on each site's MQTT broker):
 ```
 # mosquitto bridge config
 connection remote_site_a
-address 192.0.2.1:1883
+address 198.51.100.13:1883
 topic composeio/remote/# both 1
 bridge_cafile /etc/wireguard/ca.crt
 ```
@@ -1164,7 +1192,8 @@ Scope bits are the [BP-MSG-FIELDS] scope enum: `0=local, 1=global, 2=remote, 3=a
 round-trip; `auto` is carried as `auto` and resolved by the receiving runtime, not collapsed on
 the wire.
 
-The type nibble is 4 bits and therefore carries the FULL [BP-TYPE-CODES] allocation (0–9). A UART
+The type nibble is 4 bits and therefore carries the FULL [BP-TYPE-CODES] allocation (0–9, with
+code 9 a retired decode-only tombstone — [BP-TYPE-CODES-RETIRE-9]). A UART
 binding MUST round-trip every one of them and MUST NOT substitute a default for an unallocated
 code — see the two REQUIREMENTs in [BP-TYPE-CODES].
 
@@ -1634,9 +1663,11 @@ Latency: <10ms (one I2C poll cycle).
 A compliant ComposeIO bus implementation MUST:
 
 1. **[BP-C1]** Implement all seven mandatory message fields (section 1.1)
-2. **[BP-C2]** Support all **ten** message types — codes 0–9, the full [BP-TYPE-CODES]
-   allocation. (Section 2 documents eight; `ack` and `log_entry` are allocated by the amendments
-   and are equally mandatory)
+2. **[BP-C2]** Support all **nine live** message types — codes 0–8, the full [BP-TYPE-CODES]
+   allocation for kinds still encoded. (Section 2 documents eight; `ack` is allocated by
+   01-amendment-critical-ack and is equally mandatory.) Additionally, DECODE-support code 9
+   (`log_entry`) per [BP-TYPE-CODES-RETIRE-9] — decode-only, to `EVENT(event_type=log_entry)`,
+   during the closing window; never encode it
 3. **[BP-C3]** Implement scope auto-resolution per section 3.2 — the **UNION** of applicable
    scopes. ⚠ The Python reference implementation is currently NON-CONFORMANT here (first-match);
    see the open-defect note in §3.2
@@ -1675,25 +1706,35 @@ A compliant transport binding MUST:
 
 ### 12.3 Reserved Message Type Codes
 
-**Codes 10–15 are reserved.** Codes 0–9 are ALLOCATED — [BP-TYPE-CODES] §1.6 is the single
-authoritative allocation and this section does not restate it. In particular 8 (`ack`) and 9
-(`log_entry`) are allocated AND implemented; an earlier version of this section reserved 8–15 and
-therefore contradicted §1.6 about two types that ship.
+**Codes 10–15 are reserved; code 9 is retired.** Codes 0–8 are ALLOCATED and live —
+[BP-TYPE-CODES] §1.6 is the single authoritative allocation and this section does not restate it.
+In particular 8 (`ack`) is allocated AND implemented; an earlier version of this section reserved
+8–15 and therefore contradicted §1.6 about a type that ships. Code 9 (`log_entry`) is a PERMANENT
+TOMBSTONE — retired, decode-only during the closing window, never reallocated
+([BP-TYPE-CODES-RETIRE-9], §1.6.1). The next new type takes code 10, never 9.
 
 A reserved code is not a free code: on decode, 10–15 MUST be reported and the frame dropped, never
-substituted with a default ([BP-TYPE-CODES], REQUIREMENT — no silent fallback).
+substituted with a default ([BP-TYPE-CODES], REQUIREMENT — no silent fallback). Code 9 gets the
+transitional decode-to-EVENT treatment in [BP-TYPE-CODES-RETIRE-9] instead of an outright drop —
+until the window closes, after which it joins the dropped set exactly like 10–15.
 
 JSON type strings starting with `_` are reserved.
 
 ---
 
-**Version**: 0.2
+**Version**: 0.3
 **Created**: 2026-03-17
 **Corrected**: 2026-08-14 — reconciled against the implementation ahead of migration into the
 FactLattice graph. Three internal self-contradictions closed ([BP-CAN-ID-DIVERGENCE] open vs closed,
 [BP-CAN-PRIORITY] vs [BP-WIRE-PRIORITY], §12.3 vs [BP-TYPE-CODES]); v1 CAN worked examples rebased
 onto v2; §7 reconciled against `services/bus_storage/server.py`; and every section describing an
 unbuilt mechanism now says so at the top rather than reading as shipped behaviour.
+**Corrected**: 2026-08-26 — wire code 9 (`log_entry`) retired as a PERMANENT TOMBSTONE per
+`DEC-LOG-ENTRY-MAY-COLLAPSE-INTO-EVENT-PLUS-RETENTION-2026-08-25` ([BP-TYPE-CODES-RETIRE-9], new
+§1.6.1): one read-only decode window (9 → `EVENT(event_type=log_entry)`), then dropped; the live
+allocated set is `{0..8}`; the next new type takes 10, never 9. §1.1, §1.4, [BP-CAN-ID],
+[BP-WIRE-PRIORITY], [BP-C2] and §12.3 updated to match; §1.6's table row retained, annotated
+retired, per the allocated-once-never-renumber discipline it itself states.
 
 **Status**: Draft — protocol defined; implemented in part. **Read the NOT IMPLEMENTED / DESIGN
 SKETCH banners as normative**: [BP-CAN-DATA] §1.5.2, [BP-CAN-ENUM] §1.5.4, [BP-TRANSPORT-I2C] §6.5,

@@ -391,7 +391,7 @@ def test_scene_view_decisions_button_publishes_the_scoped_open_intent(tmp_path):
 # =============================================================================
 
 FACTLATTICE = os.environ.get("FACTLATTICE_ROOT",
-                             "/Users/davidleeburnett/factlattice")
+                             os.path.expanduser("~/factlattice"))
 
 
 @pytest.mark.skipif(not os.path.isdir(FACTLATTICE),

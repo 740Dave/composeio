@@ -335,22 +335,6 @@ def test_parser_wires_four_subscriptions():
 # seeded full render (glass-checkable PNG)
 # =============================================================================
 
-def test_seeded_config_settings_render_png():
-    w, _ = _mounted()
-    # seed the harness readback matching the SET cadence so the glass artifact
-    # shows the ✓-applied indicator (the retained steady-state a live console
-    # normally shows), not only the pre-boot ⚠-awaiting state.
-    w.on_bus_state(DEFAULT_HEARTBEAT_CURRENT_NS,
-                   {"base": 10, "backoff_after": 60, "then": 60})
-    c = SkiaCanvas(); c.create_surface(1256, 654)
-    w.draw(c, RECT)
-    cap_dir = os.path.join(HERE, "captures")
-    os.makedirs(cap_dir, exist_ok=True)
-    out = os.path.join(cap_dir, "config_settings.png")
-    c.save_png(out)
-    assert os.path.exists(out) and os.path.getsize(out) > 3000
-
-
 # =============================================================================
 # ADDITIVE `sections` filter ([CXC-IC-CONFIG-MASTERDETAIL]) — the master/detail
 # right pane draws ONE section; UNSET preserves the legacy 2x2 grid

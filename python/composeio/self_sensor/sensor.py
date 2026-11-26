@@ -21,7 +21,7 @@ Two sources, in priority order:
      :class:`SessionSensor` logic, preserved byte-for-byte below, so every
      namespace the prototype computed is still produced.
 
-Extraction pattern learned from nexus-hud (``src/transcript.ts`` /
+Extraction pattern learned from haven-hud (``src/transcript.ts`` /
 ``src/context-cache.ts`` / ``src/types.ts``): accumulate
 ``assistant.message.usage``, read the latest frame for current context, pull
 ``subagent_type`` from Task ``tool_use``, watch ``compact_boundary`` entries,
@@ -226,7 +226,7 @@ def _read_matches(read_path: str, artifact_rel: str) -> bool:
     """True iff a session Read ``file_path`` refers to the manifest artifact.
 
     Matches by SUFFIX on the normalized relative path (so an absolute Read of
-    ``/Users/x/composeio/bootstrap/dusk-gifts/README.md`` matches the repo-relative
+    ``/Users/you/composeio/bootstrap/dusk-gifts/README.md`` matches the repo-relative
     ``bootstrap/dusk-gifts/README.md`` but NOT ``docs/other/README.md``).  A bare
     filename artifact falls back to basename equality."""
     r = _norm_path(read_path)
@@ -374,7 +374,7 @@ class SelfSensor:
                 pass  # not a statusline payload -> fall through to JSONL
         argv = argv if argv is not None else sys.argv[1:]
         path = argv[0] if argv else str(
-            Path.home() / ".claude/projects/-Users-davidleeburnett/"
+            Path.home() / ".claude/projects/-Users-you/"
             "59f1b46e-3cde-4c0f-8021-3b3e7bbe00f3.jsonl")
         return cls.from_jsonl(path, context_window=context_window,
                               registration_manifest=registration_manifest)

@@ -108,6 +108,20 @@ std::optional<std::string> FingerprintDevice::read_current_uuid() {
  * =================================================================== */
 
 std::string FingerprintDevice::receive_push(const TemplatePush& push) {
+    /* CHANGE-1(a) FAIL-LOUD INVARIANT: never load a roster (and so never look
+     * armed/loaded) while bound to the mock with a real sensor unconfirmed. A
+     * push landing on the mock would DownChar into a store the match path never
+     * reads — the exact silent-impersonation defect. Announce inoperable, load
+     * nothing. */
+    if (!hal_confirmed_live_) {
+        publish("fingerprint_inoperable",
+                { { "inop_code", FpValue::str("sensor_unconfirmed") },
+                  { "human_readable_inop_string",
+                    FpValue::str("real sensor present but HAL not confirmed live; "
+                                 "push refused (would load onto the mock)") } });
+        return "inoperable";
+    }
+
     const std::string& pushed_uuid = push.template_set_uuid;
 
     /* [CXC-FPBUS-REQ-UUID-COMPARE] Receipt BEGINS with a UUID read, before any
@@ -311,6 +325,10 @@ void FingerprintDevice::drive_ring(AuthOutcome outcome) {
 
 HeartbeatState FingerprintDevice::current_heartbeat_state() {
     if (!hardware_present_) return HeartbeatState::INOPERABLE;
+    /* CHANGE-1(a) FAIL-LOUD: mock bound while a real sensor is present but
+     * unconfirmed -> INOPERABLE, never READY. The mock's stamp+occupancy would
+     * otherwise report READY and impersonate an armed device on the wire. */
+    if (!hal_confirmed_live_) return HeartbeatState::INOPERABLE;
     if (escalation_state_.has_value()) return *escalation_state_;
     auto stamp = hal_->read_roster_stamp();
     auto occupancy = hal_->read_occupancy();
@@ -330,12 +348,28 @@ HeartbeatState FingerprintDevice::emit_heartbeat() {
     } else if (state == HeartbeatState::PUSH_NEEDED) {
         publish("fingerprint_push_needed", {});
     } else {  /* INOPERABLE */
+        /* CHANGE-1(a): distinguish "mock bound, real unconfirmed" from a truly
+         * absent sensor so the wire says WHY it is inoperable. */
+        const bool unconfirmed = hardware_present_ && !hal_confirmed_live_;
         publish("fingerprint_inoperable",
-                { { "inop_code", FpValue::str("sensor_unavailable") },
+                { { "inop_code",
+                    FpValue::str(unconfirmed ? "sensor_unconfirmed"
+                                             : "sensor_unavailable") },
                   { "human_readable_inop_string",
-                    FpValue::str("fingerprint hardware not detected") } });
+                    FpValue::str(unconfirmed
+                        ? "real sensor present but HAL not confirmed live"
+                        : "fingerprint hardware not detected") } });
     }
     return state;
+}
+
+/* CHANGE-1(c) — mock->real live-rebind roster invalidation. */
+void FingerprintDevice::invalidate_roster_request_push() {
+    nvs_->bridge.clear();
+    nvs_->role_capability_table.clear();
+    nvs_->count_authentication_attempts = 0;
+    escalation_state_ = HeartbeatState::PUSH_NEEDED;
+    publish("fingerprint_push_needed", {});
 }
 
 double FingerprintDevice::heartbeat_interval() {

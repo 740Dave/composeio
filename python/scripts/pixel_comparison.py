@@ -16,7 +16,7 @@ RGB565 awareness:
 
 Usage:
     python3 scripts/pixel_comparison.py reference.png test.png [--output-dir DIR]
-    python3 scripts/pixel_comparison.py reference.png --from-docstore URL [--output-dir DIR]
+    python3 scripts/pixel_comparison.py reference.png --from-store URL [--output-dir DIR]
 """
 
 from __future__ import annotations
@@ -348,13 +348,16 @@ def main():
         epilog=textwrap.dedent("""\
             Examples:
               python3 scripts/pixel_comparison.py ref.png test.png --output-dir /tmp/cmp/
-              python3 scripts/pixel_comparison.py ref.png --from-docstore http://host:8421/api/v1/collections/captures/cyd/6891.bmp
+              python3 scripts/pixel_comparison.py ref.png --from-store http://host:8420/api/v1/blob/captures/cyd/6891.bmp
         """),
     )
     parser.add_argument("reference", help="Path to desktop Skia reference PNG")
     parser.add_argument("test", nargs="?", default=None, help="Path to CYD capture (BMP or PNG)")
-    parser.add_argument("--from-docstore", dest="docstore_url", default=None,
-                        help="Fetch CYD capture from document_store URL instead of local file")
+    # document_store is RETIRED ([SPEC:CXC-STORE]); the capture is a bus:// blob on the ONE
+    # store, e.g. http://host:8420/api/v1/blob/captures/cyd/<id>.bmp. `--from-docstore` is
+    # retained as a back-compat alias for `--from-store`.
+    parser.add_argument("--from-store", "--from-docstore", dest="docstore_url", default=None,
+                        help="Fetch the CYD capture from a store URL instead of a local file")
     parser.add_argument("--output-dir", dest="output_dir", default=None,
                         help="Directory for output files (default: same dir as test image)")
     args = parser.parse_args()

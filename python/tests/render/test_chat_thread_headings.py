@@ -179,7 +179,7 @@ def test_headless_capture_of_a_heading_bubble(tmp_path):
     w = ChatThreadWidget("t")
     w.on_bus_state("intelligence/architect/out",
                    {"from": "architect",
-                    "text": "## Deploy checklist\n\n- power-cycle gilligan\n"
+                    "text": "## Deploy checklist\n\n- power-cycle fleetnode2\n"
                             "- rerun the soak on `fleet-540`"})
     c, events = _capture_draw(w)
     out = os.environ.get("HEADING_CAPTURE_PNG") \

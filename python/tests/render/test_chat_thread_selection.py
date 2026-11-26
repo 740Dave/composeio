@@ -189,13 +189,13 @@ def test_markdown_markers_are_absent_from_the_copy():
     # the tokenizer strips ** / ` before draw, so copy is the PLAIN rendered
     # text — never the source markers
     w = ChatThreadWidget("t")
-    _reply(w, "cycle **gilligan** then `power_status`")
+    _reply(w, "cycle **fleetnode2** then `power_status`")
     c = _canvas()
     w.draw(c, Rect(0, 0, 456, 356))
     w._select_all()
     got = w._selected_text()
     assert "**" not in got and "`" not in got
-    assert "gilligan" in got and "power_status" in got
+    assert "fleetnode2" in got and "power_status" in got
 
 
 # ── clipboard (Cmd/Ctrl+C) ────────────────────────────────────────────────────

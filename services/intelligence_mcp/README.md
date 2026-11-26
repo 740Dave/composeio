@@ -9,7 +9,15 @@ Bridges MCP tool calls from Claude Code (or any MCP-capable agent) to the Compos
 ### 1. Install composeio library
 
 ```bash
-pip install -e /path/to/composeio/python
+pip install -e /path/to/composeio/python/composebus -e /path/to/composeio/python
+```
+
+`composeio` depends on the ComposeBus kernel distribution `composebus==0.1.0`, which
+lives beside it at `python/composebus`; the one command installs both.
+Non-editable equivalent:
+
+```bash
+pip install /path/to/composeio/python/composebus /path/to/composeio/python
 ```
 
 ### 2. Install dependencies
@@ -25,10 +33,10 @@ pip install -r requirements.txt
 python -m intelligence_mcp
 
 # With custom config
-python -m intelligence_mcp --host 0.0.0.0 --port 8430 --mqtt-broker 192.0.2.10
+python -m intelligence_mcp --host 0.0.0.0 --port 8430 --mqtt-broker 198.51.100.17
 
 # Or via environment variables
-MQTT_BROKER=192.0.2.10 MCP_PORT=8430 python -m intelligence_mcp
+MQTT_BROKER=198.51.100.17 MCP_PORT=8430 python -m intelligence_mcp
 ```
 
 ### 4. Docker

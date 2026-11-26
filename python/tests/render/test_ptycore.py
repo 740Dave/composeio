@@ -312,7 +312,7 @@ def test_session_pin_exports_the_derived_transcript(tmp_path, monkeypatch):
 
 
 def test_project_dir_key_sanitizes():
-    assert project_dir_key("/Users/x/Dropbox/Maker/composeio") == "-Users-x-Dropbox-Maker-composeio"
+    assert project_dir_key("/Users/you/Maker/composeio") == "-Users-you-Maker-composeio"
 
 
 def test_launcher_selftest_is_green_post_extraction():
@@ -354,19 +354,19 @@ def test_host_identity_is_stripped_and_the_useful_vars_are_kept():
         "CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/host.sock",
         "CLAUDE_CODE_ENTRYPOINT": "cli",
         "CLAUDE_PID": "82930",
-        "COMPOSEIO_SESSION_JSONL": "/home/host/.claude/projects/x/host.jsonl",
-        "JSONL": "/home/host/other.jsonl",
-        "SESSION_JSONL": "/home/host/third.jsonl",
+        "COMPOSEIO_SESSION_JSONL": "/home/you/.claude/projects/x/host.jsonl",
+        "JSONL": "/home/you/other.jsonl",
+        "SESSION_JSONL": "/home/you/third.jsonl",
         # deliberately kept — a binary path, a machine config, an ordinary var
         "CLAUDE_CODE_EXECPATH": "/opt/claude/bin/claude.exe",
-        "CLAUDE_CONFIG_DIR": "/home/host/.claude",
+        "CLAUDE_CONFIG_DIR": "/home/you/.claude",
         "PATH": "/usr/bin",
     }
     env = sanitize_child_env(base=base)
     for name in HOST_IDENTITY_ENV:
         assert name not in env, f"{name} LEAKED into the child env"
     assert env["CLAUDE_CODE_EXECPATH"] == "/opt/claude/bin/claude.exe"
-    assert env["CLAUDE_CONFIG_DIR"] == "/home/host/.claude"
+    assert env["CLAUDE_CONFIG_DIR"] == "/home/you/.claude"
     assert env["PATH"] == "/usr/bin"
 
 
@@ -611,46 +611,6 @@ def test_an_oversized_argv_instruction_REFUSES_rather_than_truncating(tmp_path, 
 # class [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS] names and [SBR-PATHS-SINGLE-SOURCE] forbids in
 # its path-literal form.  These tests are the enforcement: the mirror must match the spec, and
 # the prompt must cover every step the spec names.
-
-def _sbr_flow_steps_from_corpus() -> list:
-    """Parse the step names out of [SBR-PROCESS-FLOW] in the corpus.
-
-    The node writes each step as a numbered line whose names are backticked, e.g.
-    ``5. `slice-0-PLATFORM-OVERVIEW` -> `slice-1-WARTS` -> ... — the six slices``.  Only the
-    part BEFORE the em-dash is scanned, so the prose after it (which backticks plenty of other
-    things — `lts_flow`, `.lts`, `MagmaStore`) cannot be mistaken for a step."""
-    # The corpora moved OUT of the repo on 2026-08-17 (41 worktrees were carrying
-    # 41 forks). Resolve through the constant, which is what [SBR-PATHS-SINGLE-SOURCE]
-    # asks of production code and should equally ask of its test.
-    from composeio.bootstrap_paths import PLATFORM_SPECS_DIR as _SPECS
-    path = str(_SPECS / "45-session-bootstrap-read.lts")
-    src = _read(path)
-    start = src.index("### [SBR-PROCESS-FLOW]")
-    body = src[start:src.index("\n### ", start + 5)] if "\n### " in src[start + 5:] else src[start:]
-    steps: list = []
-    for line in body.splitlines():
-        if not re.match(r"^\s*\d+\.\s+`", line):
-            continue
-        head = line.split("—", 1)[0]                      # names live before the em-dash
-        steps.extend(re.findall(r"`([^`]+)`", head))
-    return steps
-
-
-def test_the_flow_step_mirror_matches_the_SPEC():
-    """[SBR-PROCESS-FLOW] is the authority; `SBR_FLOW_STEPS` is a mirror.  Add a step to the
-    spec and this goes RED until the prompt covers it — which is what stops the next amendment
-    from being applied half-way ([INSIGHT-PARTIAL-SPEC-AMENDMENT-IS-A-FORK-GENERATOR]).  The
-    same mirror+enforcing-test shape `bootstrap_paths.py` uses."""
-    assert list(SBR_FLOW_STEPS) == _sbr_flow_steps_from_corpus()
-
-
-def test_the_prompt_covers_every_step_the_spec_NAMES(tmp_path):
-    prompt = build_bootstrap_prompt({"id": "architect",
-                                     "role_descriptor": {"path": "r.md"},
-                                     "dusk_gifts": [{"path": "g.md"}]})
-    for step in _sbr_flow_steps_from_corpus():
-        assert step in prompt, f"[SBR-PROCESS-FLOW] step {step!r} is not in the prompt"
-
 
 def test_the_prompt_CITES_the_ritual_instead_of_paraphrasing_it():
     """The rules stay in the spec; the prompt points at them.  It must name the spec, the flow

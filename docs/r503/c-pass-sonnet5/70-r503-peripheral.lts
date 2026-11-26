@@ -1,0 +1,213 @@
+---
+title: "R503 / R503-M22 — Optical Fingerprint Module, The Peripheral Realization"
+id: "SPEC:CXC-R503C"
+domain: plt.cux
+scope: "The R503 as a ComposePlatform peripheral: the electrical envelope and its one live hazard (WAKEUP tracking 3.3VT), the protocol traps that break a naive one-command-one-response driver, the AuraLed ring realization table, the HAL binding, and the bring-up decisions David has already made for this specific build. Datasheet facts are cited to the R503/R503-M22 user manual V1.4.1 by folio; every hardware-observable property is UNVERIFIED until a part is on a bench."
+audience: "The firmware author writing the r503 realization of [SPEC:CXC-FPHALC]; the bring-up engineer wiring this ESP32-S3 build."
+boundary: "IN: the six-pin envelope, the WAKEUP/3.3VT hazard and its resolution for this build, the packet framing and checksum, the three request/response-breaking behaviours, the ring's colours and realization table, the HAL binding, and the settled bring-up facts (host, connector, rail sharing, power switching). OUT: the identity/roster model (that is [SPEC:CXC-FPIDC]), the device-internal HAL contract (that is [SPEC:CXC-FPHALC]), and the bus contract (that is [SPEC:CXC-FPBUSC])."
+not-this: "Not a datasheet — cites R503/R503-M22 user manual V1.4.1 by folio and does not restate it. Not a driver: no r503 realization of the HAL exists yet. Not a claim that this part works: nothing here has touched hardware except the facts David has reported first-hand (marked as such), and every remaining hardware-observable property is unverified."
+depends-on: [plt.cux:SPEC:CXC-HAL-DECLARE, plt.cux:SPEC:CXC-HAL]
+confidentiality: internal-only
+artifact-readiness: design-review
+derived-from: "corpus/70-r503-peripheral.lts (datasheet facts and David's bring-up rulings mined, tightened; narrative and speculative EV ledger cut to what remains load-bearing)"
+status: draft
+created: 2026-08-18
+---
+
+# R503 / R503-M22 — Optical Fingerprint Module, The Peripheral Realization [SPEC:CXC-R503C]
+
+> Three behaviours break the one-command-one-response contract every reference driver assumes: a
+> bare unframed `0x55` the module emits unbidden at power-on and after every soft reset; an
+> acknowledge STREAM of up to fifteen packets from a single enrollment command; and data-packet
+> bursts whose count depends on device configuration rather than on the command sent. None of the
+> six surveyed open-source drivers implements the two commands that produce the stream — the
+> R503 realization of [SPEC:CXC-FPHALC] has no port to lean on for that path and must be authored
+> and bench-verified from this document and the manual.
+>
+> **Nothing here has been observed on hardware** except where a fact is attributed to David
+> directly. Everything else is a datasheet citation or a labelled inference.
+
+---
+
+## 1. The part and its four documentary absences
+
+### [CXC-R503C-PART] Six pins, two independent rails, a 200-template store, an on-chip matcher
+
+- constraint: UART, 3.3V TTL, default 57600 baud. 200-template on-chip store, consistent across all four manual revisions. The module performs both 1:1 match and 1:N search itself. Template size 1536 bytes (characteristic value 512 bytes), from V1.2.1 onward. FAR <0.001%, FRR <1% — published with no measurement conditions in any revision, so treat as unfalsifiable rather than as a specification. A 7-colour, 6-mode addressable ring is driven by AuraLedConfig.
+- evidence-class: datasheet fact, cited to R503/R503-M22 user manual V1.4.1.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-PINOUT] Six pins on a captive pigtail; colour means nothing
+
+- constraint: 1 VCC (3.3V), 2 GND, 3 TXD, 4 RXD, 5 WAKEUP (finger detect, standby HIGH, finger LOW), 6 3.3VT (touch supply, 3–5V). The manual states outright that wire colour carries no information about pin order — confirm by continuity to a known net, never by colour.
+- evidence-class: datasheet fact for the six functions; the physical pin-1 identification in the manual is a photograph, the weakest evidence form available, which is why continuity confirmation is a MUST for this build and not a nice-to-have.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-RAILS] Two independent rails; no hot-plug; a two-second floor on any power-gated wake
+
+- constraint: VCC (pin 1) is a point-value 3.3V with no stated tolerance band; it is unregulated and feeds the image sensor and decoding chip directly, so board-side filtering is the host's job. 3.3VT (pin 6) is 3–5V and can remain powered while VCC is cut, per the manual's own low-power mode. No hot-plug — components may be damaged if the cable is connected or removed live. After power-off, at least two seconds must elapse before power-on.
+- evidence-class: datasheet fact.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-WAKEUP-TRACKS-3V3T] WAKEUP tracks the 3.3VT rail — tie 3.3VT to 3.3V
+
+- constraint: WAKEUP's HIGH level tracks the voltage on 3.3VT, not VCC. Because the manual permits 3.3VT at up to 5V, and this build's host GPIO (an ESP32-S3) is 3.3V and NOT 5V-tolerant, 3.3VT MUST be tied to 3.3V.
+- evidence-class: strong inference — the manual states CMOS drive at "the input voltage" in a paragraph about the touch supply, and never writes "the same as 3.3VT" verbatim, but the module's own low-power mode requires WAKEUP to function while VCC is off, which is only possible if WAKEUP is powered from 3.3VT. Confirmed by David's own experience: he has run this pairing off the ESP32's shared 3.3V LDO before without incident, which is measurement outranking an absence of a datasheet figure.
+- decided: shared 3.3V LDO, no separate regulator, no power-gating of VCC. VCC is never switched — if VCC fails, the ESP32 has already lost power too, and firmware resets, not power cycles, recover from the one genuinely unrecoverable failure this part can reach (see [CXC-R503C-BAUD-CONTRADICTION]).
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-CURRENT-UNDERSPECIFIED] Two current figures exist; neither is qualified by ring-LED state
+
+- constraint: 20 mA working (during acquisition), ~2 µA standby (VCC off, 3.3VT on). No idle figure, no inrush figure, and no ring-LED current figure exists in any revision. Whether the 20 mA working figure includes the ring at full brightness is not determinable from the document, and the ring runs for the entire enrollment sequence.
+- evidence-class: datasheet fact for the two figures; derived fact for the three absences, established by exhaustive search.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+---
+
+## 2. The wire protocol and its three request/response traps
+
+### [CXC-R503C-FRAMING] Big-endian, address-gated; Length counts the checksum
+
+- constraint: `[Header 2B=0xEF01][Address 4B][PID 1B][Length 2B][Content...][Checksum 2B]`, big-endian throughout. Length is content bytes plus two (the checksum) — a parser that reads Length as content-only overruns by exactly two bytes on every packet. A wrong address produces silence, never an error packet.
+- evidence-class: datasheet fact; the checksum rule was independently recomputed against all 21 worked examples in the source characterization and all 21 recomputed exactly.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-UNSOLICITED-0X55] The module emits a bare unframed 0x55 at power-on and after every soft reset
+
+- constraint: a single unframed byte, no header, no address, no checksum, arrives unbidden at power-on and again after every `SoftRst`. A parser that only handles it at boot desyncs the first time it soft-resets.
+- required-remedy: drain RX immediately before every transmit AND parse with a sliding two-byte header window. Either alone is partial; together they absorb the boot byte, the post-reset byte, and any stale packet from an aborted transaction.
+- evidence-class: datasheet fact, confirmed by grep across the manual — exactly three occurrences, all cited.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-ACK-STREAM] One enrollment command produces up to fifteen acknowledge packets, and the enabling config bit moves between commands
+
+- constraint: with its status-reporting config bit set, the packaged AutoEnroll command emits up to fifteen acknowledge packets from one command. The enabling bit sits at a different config index on the sibling AutoIdentify command — a driver that generalises "one config index enables streaming" silently misconfigures the other. There is no explicit end-of-stream marker; termination is inferred from a non-zero confirmation code or a specific terminal step value.
+- consequence-for-this-build: [SPEC:CXC-FPHALC] does not use this packaged command at all — the general capture/generate/register/store sequence is used instead, for reasons independent of this hazard (it also keeps the device's own ring under the device's own control, per [SPEC:CXC-FPIDC]). This node is retained because the hazard is real and any future use of the packaged path must re-discover it.
+- evidence-class: datasheet fact; not one of six surveyed open-source drivers implements either command, so there is no reference implementation of the stream to check this against.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-DATA-PACKET-BURSTS] Five commands return an ack then N data packets, and N depends on device config, not on the command
+
+- constraint: template and image transfer commands return an acknowledge packet followed by several data packets whose count is set by a negotiated packet-size system parameter, not derivable from the command itself. A driver must terminate on the end-of-data PID, never by counting.
+- evidence-class: datasheet fact.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-BUSY-BEHAVIOUR-UNDEFINED] What happens to a command sent while the module is Busy is undocumented
+
+- constraint: a Busy status bit and a Cancel command both exist, but no revision states whether a command arriving while Busy is queued, rejected, or dropped.
+- consequence: [SPEC:CXC-FPHALC]'s closed failure taxonomy treats an unexpected response here as `protocol_desync` rather than inventing a behaviour the datasheet never promised.
+- evidence-class: derived fact — an exhaustively-searched absence.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-BAUD-CONTRADICTION] Every revision contradicts itself on legal baud rates; never issue a SetSysPara baud change
+
+- constraint: the manual states three mutually inconsistent baud rules across three sections of the same document. The safest reading forbids N=3 and N=5; the fleet's HAL binding pins baud at 57600, the documented default, and needs no baud-change call at all.
+- rule: never issue a baud-changing command. A module set to an unreachable baud rate has no documented recovery path, and this is the one failure a power cycle cannot fix, which is exactly why avoiding it entirely is cheaper than handling it.
+- evidence-class: datasheet fact for the contradiction; the brick risk is an inference from the documented absence of any recovery path.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+---
+
+## 3. Timing
+
+### [CXC-R503C-CAPTURE-DOMINATES] Capture, not the match, is the cost — and the fleet's twenty-template cast keeps it that way
+
+- constraint: a one-shot verify budget is roughly capture (<0.2s) plus feature generation (<0.5s) plus search — the pessimistic search reading (10ms per template at up to twenty templates) adds about 0.2s, for a pessimistic total near 0.9s. This is comfortably a single-press interaction either way.
+- rationale-for-sensor-side-matching: the module already owns capture, feature extraction, storage and matching; at a twenty-template working set the search term never dominates, so there is nothing to gain by moving matching off the device, and doing so would require a template-transport mechanism that buys nothing at this cast size.
+- evidence-class: inference — arithmetic on separately-specified worst cases, not a measured sum. Still worth measuring once hardware exists, but it gates nothing.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+---
+
+## 4. The ring — colours, modes, and the realization table
+
+### [CXC-R503C-AURA-LED] Seven colours, six modes, a five-second minimum animation cycle
+
+- constraint: `AuraLedConfig` selects one of six modes (breathing, flashing, always-on, always-off, gradually-on, gradually-off) and one of seven colours (red, blue, purple, green, yellow, cyan, white) on parts running V1.2.1 firmware or later. V1.1-era firmware documents only three colours (red, blue, purple). The animator's own minimum cycle is five seconds, so no sub-second acknowledgement can be expressed by breathing or flashing — every fast state must be an always-on/always-off transition timed by the host.
+- open-hardware-question: whether the parts in hand support green is unconfirmed and load-bearing — if they do not, the realization table below needs a ruling, not a workaround, because blue and purple are already spoken for.
+- evidence-class: datasheet fact for the codes; the firmware-vintage question on the parts in hand is unverified.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-FEEDBACK-REALIZATION] The semantic-state-to-colour table, with ready in blue or purple by explicit choice
+
+- constraint: `ready` renders blue or purple, deliberately against the obvious green, per David's stated preference (a device that defaults `ready` to green has violated the one UX preference he stated). `accept` renders green, always-on, for a fixed host-timed dwell — CONTINGENT on green being available on the firmware in hand. Both denial flavours render red. `reject_silent` and a genuine non-match MUST be the identical row — same colour, mode, speed and duration — so that a diff between the two rows is empty and any future divergence becomes visible as an edit.
+- who-issues-these-commands: the device, always, including mid-enrollment. The firmware renders a commanded state and originates none of them.
+- states-still-unmapped: `idle`, `awaiting_finger`, `capture_accepted`, `capture_retry`, `enroll_progress`, `busy` and `fault` have no colour assigned here; assigning them is a game-design call for a later pass.
+- evidence-class: design intent plus datasheet fact; nothing in this table has been seen on a ring.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+- see-also: [CXC-R503C-AURA-LED]
+
+---
+
+## 5. The platform binding and this build's settled bring-up facts
+
+### [CXC-R503C-HAL-BINDING] Declared transactional, driver r503, assurance experiential
+
+- constraint: `role: transactional`, `driver: r503`, `interface: uart{baud:57600}`, `assurance: experiential`. The transactional role exists because of this part: a sensor publishes and an actuator subscribes, and neither shape can express "enroll takes several presentations over several seconds and yields a result."
+- constraint-assurance: `experiential` asserts a prop or effect — spoofable, no liveness detection, no secure element — and explicitly does NOT assert authentication, authorization or access control. The accuracy figures at [CXC-R503C-PART] cannot upgrade this class because they carry no stated measurement conditions.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+- see-also: [plt.cux:CXC-HALD-ASSURANCE]
+
+### [CXC-R503C-BRINGUP-SETTLED] This build's bring-up facts, settled by David directly
+
+- constraint: the host is an ESP32-S3 SuperMini. The R503's captive-pigtail connector is cut off and its six conductors are soldered directly to a prototyping board — there is no mating footprint, so the MX1.0/SH1.0 connector-designation contradiction across manual revisions does not apply to this build. The R503 shares the ESP32's 3.3V LDO with no separate regulator. VCC is never power-gated — a reset uses `SoftRst`, never a power cycle, and if VCC fails the ESP32 has already lost power too. One module is kept fully intact (connector on) as a physical reference; the severed connector from the working module is kept with its wire order preserved, tagged to its module, as a second reference.
+- part-identity: the part in hand is confirmed 3.3V (not the 5V R503-5V variant), with no printed serial or part number; confirming R503 versus R503S versus R503Pro is deferred to the first `ReadProdInfo` call, which no longer has an ordering problem now that the rail is known safe.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-BRING-UP-CHECK-RING-COLOURS-EARLY] Before authoring the realization table's accept row, ask the firmware what it actually drives
+
+- constraint: send `GetFwVer` and record the version string; then send `AuraLedConfig` once per colour index in always-on mode and record, by eye, naming the colour seen for each. Run this early, on a non-sacrificial module, before implementing [CXC-R503C-FEEDBACK-REALIZATION]'s `accept` row in firmware.
+- rationale: a confirmation code of 0x00 means the command was accepted, never that the intended colour appeared — this is a machine channel that can agree with the wrong answer, so the check needs an eye, not a return code. If green is silently absent and index 0x04 repeats blue or purple instead of producing nothing, a driver written against the newer manual produces a ring that says `ready` when it means `accept`, with no error anywhere.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+- see-also: [CXC-R503C-AURA-LED], [CXC-R503C-FEEDBACK-REALIZATION]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-R503C] REALIZES [plt.cux:SPEC:CXC-HAL-DECLARE]
+- [CXC-R503C-HAL-BINDING] USES [plt.cux:CXC-HALD-ROLE]
+- [CXC-R503C-WAKEUP-TRACKS-3V3T] DEPENDS_ON [CXC-R503C-RAILS]
+- [CXC-R503C-BRINGUP-SETTLED] UPHOLDS [CXC-R503C-WAKEUP-TRACKS-3V3T]
+- [CXC-R503C-CAPTURE-DOMINATES] CONTRAST_WITH [CXC-R503C-PART]
+- [CXC-R503C-FEEDBACK-REALIZATION] USES [CXC-R503C-AURA-LED]
+- [CXC-R503C-FEEDBACK-REALIZATION] DEPENDS_ON [SPEC:CXC-FPIDC]
+- [CXC-R503C-BRING-UP-CHECK-RING-COLOURS-EARLY] PRECONDITION_FOR [CXC-R503C-FEEDBACK-REALIZATION]
+- [CXC-R503C-ACK-STREAM] CONTRAST_WITH [SPEC:CXC-FPHALC]
+- [CXC-R503C-BAUD-CONTRADICTION] UPHOLDS [CXC-R503C-BRINGUP-SETTLED]
+- [CXC-R503C-BUSY-BEHAVIOUR-UNDEFINED] RELATED_TO [SPEC:CXC-FPHALC]
+
+### Causal
+
+- [CXC-R503C-UNSOLICITED-0X55] CAUSES [CXC-R503C-FRAMING]
+- [CXC-R503C-RAILS] PRECONDITION_FOR [CXC-R503C-WAKEUP-TRACKS-3V3T]
+- [CXC-R503C-AURA-LED] PRECONDITION_FOR [CXC-R503C-FEEDBACK-REALIZATION]
+
+### Entity
+
+- [CXC-R503C-PART] GROUNDS [CXC-R503C-CAPTURE-DOMINATES]
+- [CXC-R503C-HAL-BINDING] GROUNDS [SPEC:CXC-FPHALC]
+
+---
+
+**Version**: 1.0
+**Status**: Draft.

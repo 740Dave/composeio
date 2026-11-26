@@ -2,7 +2,7 @@
 InfoListWidget — a bus-bound, titled, multi-line TEXT PANEL.
 
 The ONE new widget for the R503 player/character/RBAC binding UI
-([SPEC:CXC-FPSVC-*] the fingerprint_storage service surface).  It is a
+([SPEC:CXC-FPSVC-*] the fingerprint_service service surface).  It is a
 GENUINE gap in the catalog, not a fork: ``label`` is single-line and never
 subscribes; ``markdown_viewer`` renders multi-line but is not a bus
 subscriber (its ``content`` is not a bindable attribute); the console list

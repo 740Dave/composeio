@@ -27,7 +27,7 @@ void wifi_init(void);
 bool wifi_is_connected(void);
 
 /**
- * Returns the current IP address as a string (e.g. "192.0.2.42").
+ * Returns the current IP address as a string (e.g. "198.51.100.18").
  * Returns "0.0.0.0" if not connected.
  */
 const char* wifi_get_ip(void);

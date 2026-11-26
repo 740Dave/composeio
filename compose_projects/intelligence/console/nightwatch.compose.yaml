@@ -1,0 +1,260 @@
+# Away Watch — the reactive "good morning" window the Architect pops up for the
+# overnight/away build-watch (David 2026-07-22 redesign: retitle to "Away Watch:
+# <start datetime>", drop the night-energy gauge + the avatar, swap the metrics to
+# Decisions/Tokens/Elapsed, add explicit start/end, a done/partial/deferred task
+# checklist, and a git-tree state line — then size the window to its content).
+#
+# Composed from existing widget primitives (label / pixel_stack) PLUS the small
+# nightwatch_checklist leaf (the one bit of drawing composition couldn't express:
+# three distinct task states).  Reactive by the same idiom as before — every value
+# binds to a `fun/nightwatch/*` namespace with a static default, so the window
+# renders correctly STANDALONE (its defaults ARE the seeded 2026-07-22 entry) and a
+# publisher can push a different watch's values live.  The defaults mirror the
+# retrospective `away_watch` row the away_watch_publisher projects.
+app:
+  id: away-watch
+  # [SPEC:CXC-RETRO §5d CXC-RETRO-ARTIFACTS-OPENABLE] the Night Watch window is a
+  # SEPARATE process; its Artifacts-tab _app/doc/open intent must escape to the
+  # doc_viewer_launcher on the shared bus, so it carries the same outbound MQTT
+  # transport the console does.  Without it (the old transports:[]) the window
+  # had NO global leg and every artifact row was inert.  Only connected with
+  # --transports (a headless PNG ignores it and renders from the seed/defaults).
+  # NOTE (glass): the window's DATA namespaces are per-window/seed-pinned and no
+  # one publishes them globally, so no live publisher clobbers the seed; the
+  # transport is used to EMIT the doc-open intent outward.
+  transports:
+    - type: mqtt
+      broker: 192.0.2.75
+      port: 1883
+# 540×636 default fits the panel edge-to-edge: title, start/end, 3 metrics, the
+# 2-TAB DETAIL PANE (Task Status / Artifacts), git state and the warm close.
+# The task checklist lives INSIDE the Task Status tab (scrolling within the tab
+# page when a watch carries more than fits); Artifacts is the other detail
+# surface.
+#
+# [SPEC:CXC-GRAPH-VIEWER] The embedded DECISIONS tab is REMOVED (David
+# 2026-08-06): decisions are no longer an in-window viz fed by a pushed
+# projection — they are explored in the standalone GRAPH VIEWER.  The
+# "N decisions made" METRIC stays (an at-a-glance count is a different surface
+# from the graph), now paired with a "View Decisions" button that publishes the
+# `_app/graph/open` intent SCOPED to this watch run's session(s).
+#
+# RESIZABLE + reflow + persisted geometry ([SPEC:CXC-RENDER]
+# [CXC-R-WINDOW-RESIZE], David 2026-07-29): the Away Watch is a Designer-family
+# helper, so it now meets the same resize parity bar as the console — SUPERSEDES
+# the 2026-07-22 "nothing growable, size to content" directive.  To reflow
+# cleanly the frame is now a flex COLUMN (was a fixed pixel_stack with absolute
+# x/y children): the metric row and start/end row are relative sub-containers,
+# the detail tab pane GROWS to consume the free height, and the footer sticks
+# below — so a resize re-lays-out with no clip, overlap, or dead gutter.  min
+# 480×560 keeps the header + one metric row + a tab of the pane legible;
+# geometry persists under `away-watch`.
+design: {title: Away Watch, target: desktop, width: 540, height: 636,
+         resizable: true, min_width: 480, min_height: 560,
+         persist_geometry: true, window_key: away-watch,
+         theme: dark, padding: 0, gap: 0}
+namespaces:
+- {name: fun/nightwatch/title,     state_engine: json}
+- {name: fun/nightwatch/started,   state_engine: json}
+- {name: fun/nightwatch/ended,     state_engine: json}
+- {name: fun/nightwatch/decisions, state_engine: json}
+- {name: fun/nightwatch/tokens,    state_engine: json}
+- {name: fun/nightwatch/elapsed,   state_engine: json}
+- {name: fun/nightwatch/gitstate,  state_engine: json}
+- {name: fun/nightwatch/tasks,     state_engine: json}
+- {name: fun/nightwatch/artifacts, state_engine: json}
+- {name: fun/nightwatch/tab,       state_engine: json}
+- {name: fun/nightwatch/greeting,  state_engine: json}
+- {name: fun/nightwatch/message,   state_engine: json}
+# [SPEC:CXC-GRAPH-VIEWER] the per-window `fun/nightwatch/decisions_graph` feed is
+# GONE with the embedded Decisions tab (nothing binds it any more, so nothing
+# seeds it — see away_watch_publisher).  What replaces it is a SCOPE, not a data
+# feed: the session id(s) THIS watch run produced decisions in, carried so the
+# "View Decisions" button can scope the Graph Viewer to just this run.
+# HONEST DEGRADATION: when the run carries no usable session id this is an EMPTY
+# list and the viewer opens UNSCOPED with a visible note — never a silent
+# whole-corpus view pretending to be this run ([CXC-GV-SCOPE]).
+- {name: fun/nightwatch/sessions, state_engine: json}
+# The outbound artifact-open intent ([DEC-DOCVIEWER-WINDOW]); scope global so it
+# rides the transport to the doc_viewer_launcher even though this window never
+# subscribes it locally.
+- {name: _app/doc/open, state_engine: json, scope: global, export: true, label: "Doc open"}
+# [SPEC:CXC-GRAPH-VIEWER] [CXC-GV-INTENTS] the outbound Graph-Viewer open intent —
+# the SAME namespace the console rail's Open publishes and the in-process launcher
+# consumes.  scope global so it rides the transport out of this separate window;
+# this window never subscribes it locally (it is a pure emit).
+- {name: _app/graph/open, state_engine: json, scope: global, export: true, label: "Graph open"}
+# A flex COLUMN that fills the window ([CXC-R-WINDOW-RESIZE]): the header,
+# start/end row, and metric row measure to their content; the detail tab pane
+# GROWS to consume the free height; the footer (git + warm close) measures to
+# its content below.  The former fixed x/y/w/h positions migrated to relative
+# sub-containers (a row for start/end, a row of three metric columns) so a
+# resize re-lays-out with no clip, overlap, or dead gutter.  The frame keeps the
+# window chrome (bg / border / rounded corner) it had as a pixel_stack.
+widgets:
+- type: stack
+  id: watch
+  direction: column
+  align: stretch
+  grow: 1
+  background: '#0A0E17'
+  border: '#1E2B3C'
+  corner_radius: 10
+  clip: true
+  padding: [22, 20, 18, 30]
+  gap: 10
+  children:
+  # ── header: "Away Watch: <start datetime>" (weekday computed, not hardcoded) ──
+  - {type: label, id: title,
+     text: {namespace: fun/nightwatch/title, default: "Away Watch: Tue, Jul 21 @ 23:50"},
+     font_size: 25, font_weight: bold, color: '#FFD479'}
+  # Neutral chrome — the prior static "the racecar kept driving" was narrative
+  # from ONE seeded entry that showed on every relaunch (content not set by the
+  # clicked watch, David 2026-07-23); the subtitle is now entry-agnostic.
+  - {type: label, id: subtitle,
+     text: "ComposeUX Architect",
+     font_size: 12, color: '#5C6E82'}
+
+  # ── explicit start / end (readable) — a relative row ─────────────
+  - type: stack
+    id: dates
+    direction: row
+    justify: space-between
+    align: start
+    children:
+    - {type: label, id: started,
+       text: {namespace: fun/nightwatch/started, default: "Started  Tue, Jul 21 @ 23:50"},
+       font_size: 12, color: '#8FA0B4'}
+    - {type: label, id: ended,
+       text: {namespace: fun/nightwatch/ended, default: "Ended  Wed, Jul 22 @ 07:42"},
+       font_size: 12, color: '#8FA0B4'}
+
+  # ── the three metrics (reactive) — Decisions · Tokens · Elapsed ──
+  # A row of three equal-width columns; each column is a number over its label.
+  - type: stack
+    id: metrics
+    direction: row
+    justify: space-between
+    align: start
+    children:
+    - type: stack
+      id: m_decisions
+      direction: column
+      grow: 1
+      children:
+      - {type: label, id: n_decisions,
+         text: {namespace: fun/nightwatch/decisions, default: "12"},
+         font_size: 37, font_weight: bold, color: '#3BE06B'}
+      - {type: label, id: l_decisions, text: "decisions made",
+         font_size: 12, color: '#66788A'}
+      # [SPEC:CXC-GRAPH-VIEWER] [CXC-GV-INTENTS] "View Decisions" — a PURE INTENT
+      # PUBLISH (control-is-a-peer): it emits `_app/graph/open` and nothing else.
+      # No direct spawn, no new mechanism — the in-process launcher consumes the
+      # intent exactly as the console rail's Open does.  The payload SCOPES the
+      # viewer to this run: `sessions` is a LIVE BINDING resolved at publish time
+      # from fun/nightwatch/sessions (the run's session id(s), possibly several);
+      # an EMPTY list opens the viewer unscoped with a visible note rather than
+      # silently showing the whole corpus as if it were this run ([CXC-GV-SCOPE]).
+      # chrome: console matches this window's own interactive language (the
+      # accent ▸ + ink label of the Artifacts rows), not the dashboard LED pill.
+      - type: emit_button
+        id: b_view_decisions
+        chrome: console
+        label: "View Decisions"
+        emits:
+        - namespace: _app/graph/open
+          value:
+            open: true
+            corpus: intelligence-console
+            sessions: {namespace: fun/nightwatch/sessions, default: []}
+            scope_label: {namespace: fun/nightwatch/title, default: ""}
+    - type: stack
+      id: m_tokens
+      direction: column
+      grow: 1
+      children:
+      - {type: label, id: n_tokens,
+         text: {namespace: fun/nightwatch/tokens, default: "23.7M"},
+         font_size: 37, font_weight: bold, color: '#7FB2FF'}
+      - {type: label, id: l_tokens, text: "tokens consumed",
+         font_size: 12, color: '#66788A'}
+    - type: stack
+      id: m_elapsed
+      direction: column
+      grow: 1
+      children:
+      - {type: label, id: n_elapsed,
+         text: {namespace: fun/nightwatch/elapsed, default: "7h 52m"},
+         font_size: 37, font_weight: bold, color: '#FFD479'}
+      - {type: label, id: l_elapsed, text: "elapsed",
+         font_size: 12, color: '#66788A'}
+
+  # ── the 2-tab detail pane (Task Status / Artifacts) ──
+  # console_tabs (the previs bar chrome on TabWidget) with a SCENE-LOCAL tab
+  # namespace so it never couples to the main console's _app/console/tab.  Each
+  # tab page's content leaf is data-driven off a fun/nightwatch/* namespace, with
+  # a static default baked here so the WINDOW renders standalone and a publisher
+  # overrides it live.  grow:1 → the pane consumes the free height between the
+  # metrics and the footer.  (The third tab, Decisions, was removed —
+  # [SPEC:CXC-GRAPH-VIEWER]; the Graph Viewer is the decision surface.)
+  - type: console_tabs
+    id: detail
+    grow: 1
+    tab_namespace: fun/nightwatch/tab
+    badge_namespace: fun/nightwatch/_nobadge
+    initial_tab: 0
+    tabs:
+    # TASK STATUS — reuses nightwatch_checklist verbatim (done/partial/deferred)
+    - label: Task Status
+      children:
+      - type: nightwatch_checklist
+        id: tasks
+        height: 258
+        namespace: fun/nightwatch/tasks
+        tasks:
+        - {label: "Config tab — remaining sections", status: done}
+        - {label: "Projects tab (group-by-type)", status: done}
+        - {label: "Memory gauge on Intelligence card", status: done}
+        - {label: "Retrospective perceive-half + dogfood", status: done}
+        - {label: "DRADIS gap analysis", status: done}
+        - {label: "Decision-ops CLI core", status: done}
+        - {label: "Drop files onto the prompt", status: deferred}
+        - {label: "Agent-registry reload", status: partial}
+    # ARTIFACTS — the watch's artifacts:[{title,path}]; a tap opens the doc via
+    # _app/doc/open (the existing doc-viewer intent).
+    - label: Artifacts
+      children:
+      - type: nightwatch_artifacts
+        id: arts
+        height: 258
+        namespace: fun/nightwatch/artifacts
+        artifacts:
+        - {title: "Build log", path: "docs/intelligence-console/BUILD-LOG-2026-07-22-overnight.md"}
+        - {title: "DRADIS gap analysis", path: "docs/composer-dradis-gap-analysis.md"}
+    # [SPEC:CXC-GRAPH-VIEWER] the DECISIONS tab was REMOVED here (David
+    # 2026-08-06).  Decisions are explored in the standalone Graph Viewer,
+    # reached from the "View Decisions" button beside the decisions metric
+    # above — one decision surface, not two.
+
+  # ── git-tree state at the watch's close — a relative row ─────────
+  - type: stack
+    id: git
+    direction: row
+    align: center
+    gap: 8
+    children:
+    - {type: label, id: h_git, text: "GIT TREE",
+       font_size: 10, color: '#5C6E82'}
+    - {type: label, id: git_state,
+       text: {namespace: fun/nightwatch/gitstate,
+              default: "13 uncommitted · 1 stash · 89 ahead of origin"},
+       font_size: 12, color: '#8FA0B4'}
+
+  # ── the warm close (reactive) ──────────────────────────
+  - {type: label, id: greeting,
+     text: {namespace: fun/nightwatch/greeting, default: "Good morning, David."},
+     font_size: 20, font_weight: bold, color: '#EAF0F7'}
+  - {type: label, id: message,
+     text: {namespace: fun/nightwatch/message,
+            default: "Six streams shipped; two staged for your glass. The tree is yours to land."},
+     font_size: 12, color: '#8FA0B4'}

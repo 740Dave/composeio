@@ -60,7 +60,7 @@ shape (huge, mutating, transactional, server-hosted graphs). Our requirements, i
 **The migration-cost anchor (applies to every candidate below).** Per the extraction plan, the
 engine's real contract is four pure functions — `find` / `node` / `traverse` / `capabilities`
 — shaped `tool(corpus, args) -> dict`, over a `MagmaStore` (a `corpus_id -> Partition` registry).
-The `.lts` **parser stays** (FactLattice, already extracted, byte-identical to Nexus's). The
+The `.lts` **parser stays** (FactLattice, already extracted, byte-identical to Haven's). The
 **content-hash freshness check stays** (it is storage-independent: hash the source files, compare).
 So a backend swap touches exactly one layer: replace the in-RAM adjacency structure + the
 hand-written BFS in `tools.py`/`store.py` with "load parsed nodes/edges into backend X, express
@@ -237,7 +237,7 @@ hurts the "ships as a self-contained OSS Python package" goal.
 **Blanket verdict for §5:** none of these should back MAGMA. If MAGMA ever outgrew the
 "embedded, one operator" model — e.g. it became a shared multi-consumer service on the bus with
 many concurrent writers and a genuine multi-tenant security need — that would reopen the question
-(and Neo4j/Memgraph would be real candidates *then*). But that is the *Nexus* problem the extraction
+(and Neo4j/Memgraph would be real candidates *then*). But that is the *Haven* problem the extraction
 plan deliberately walked away from; composeio's MAGMA-lite is single-operator by design. Server DBs
 solve problems we intentionally don't have.
 

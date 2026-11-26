@@ -398,7 +398,7 @@ PASTE_START, PASTE_END = b"\x1b[200~", b"\x1b[201~"
 # Model of the harness's sanitization, for a reader who lands here first: the harness keys a
 # session's project dir — where its transcript `.jsonl` AND its memory store live — off the
 # ABSOLUTE cwd, so `~/compose-instances/composeux-architect` ->
-# `-Users-x-compose-instances-composeux-architect`.  This is THE lever
+# `-Users-you-compose-instances-composeux-architect`.  This is THE lever
 # ([INSIGHT-CWD-IS-THE-SCOPE-LEVER]): distinct cwds -> distinct project keys; a SHARED cwd
 # collapses N instances into one key — which is deliberate for two instances of ONE ROLE
 # ([DD-FC-MEMORY-GRAIN]) and a defect for anything else.

@@ -43,9 +43,8 @@ from composeio.render.ft_text import get_engine
 from .conftest import surface_to_array
 
 REPO_ROOT = os.path.abspath(os.path.join(PY_ROOT, os.pardir))
-GOLDEN_SVG = os.path.join(
-    REPO_ROOT, "compose_projects", "bsg", "resources",
-    "screen_base_layout", "test-flowed-text.svg")
+GOLDEN_SVG = os.path.join(   # NEUTRAL fixture: same box, same nested-tspan run
+    REPO_ROOT, "python", "tests", "fixtures", "neutral", "flowed_text_golden.svg")
 
 # Box used by the synthetic fixtures below, in viewBox units == device px
 # (rendered fit="stretch" into a same-size rect so coordinates map 1:1).

@@ -488,8 +488,8 @@ def load_dsd(path: str) -> DsdDocument:
 # programme.md` PARSED, RENDERED and DELIVERED perfectly while being UNDECIDABLE.
 # Its D2 — "The Turbot images — keep, relocate, or discard?" — carried no
 # `What this is`, so the reader could not tell whether "images" meant images ON
-# skipper, DOCKER images, or something ComposeIO-specific. (They are dated OS ISOs
-# parked in skipper's asset tree; the document never said so.) Nothing refused it,
+# buildhost, DOCKER images, or something ComposeIO-specific. (They are dated OS ISOs
+# parked in buildhost's asset tree; the document never said so.) Nothing refused it,
 # because nothing was WRONG in the parser's terms. That is the class this codebase
 # keeps logging: an artefact that is well-formed and useless, with no instrument
 # that can say so. This IS that instrument.

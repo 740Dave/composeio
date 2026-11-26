@@ -2,7 +2,7 @@
  * boards/lego_dots.cpp — the lego_dots 12-channel light board (R2).
  * [CXC-ER-HAL] Output Tier 1, [CXC-HAL-ACTUATE] "lego_dots" reference.
  *
- * Hardware (~/Dropbox/Maker/pcb/lego_dots/generate_pcb.py, v1.0):
+ * Hardware (${MAKER_HOME}/pcb/lego_dots/generate_pcb.py, v1.0):
  * ESP32-C3 SuperMini; each channel is GPIO -> 150R -> BC337 base,
  * emitter to GND, collector = the low-side switch for a 12/24 V light
  * (JST-XH pin3 return, pin2 = +12V).  GPIO HIGH = transistor ON =

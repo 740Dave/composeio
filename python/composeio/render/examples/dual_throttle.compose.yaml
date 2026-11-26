@@ -109,8 +109,18 @@ hookup:
     # so the coarser quantization already does the dither suppression a
     # deadband of 2 was buying on the 0..255 scale.  A deadband of 2 here would
     # be a 2% step — a visibly notchy stick.
-    - {from: potL.wiper, to: mcu.GPIO0, publishes: throttle/left,  deadband: 1, in_min: 96, in_max: 3999}
-    - {from: potR.wiper, to: mcu.GPIO1, publishes: throttle/right, invert: true, deadband: 1, in_min: 96, in_max: 3999}
+    #
+    #   step:     OUTPUT-SCALE level quantization (config, not firmware).  Snap
+    #             the published value to the nearest multiple of `step` (here 10
+    #             -> 0,10,20,...,100) and, with the emit-on-change gate, publish
+    #             ONLY on a level change — the throttle emits coarse LEVELS
+    #             instead of flooding the bus with the full ramp, so every thrust
+    #             consumer (on-screen gauge, TM1637 tubes) updates only when the
+    #             level actually moves.  deadband (=1) is the hysteresis margin,
+    #             so ADC noise sitting on a boundary does not chatter; the rails
+    #             (0 / 100) stay exactly reachable.  step=0/absent = disabled.
+    - {from: potL.wiper, to: mcu.GPIO0, publishes: throttle/left,  deadband: 1, step: 10, in_min: 96, in_max: 3999}
+    - {from: potR.wiper, to: mcu.GPIO1, publishes: throttle/right, invert: true, deadband: 1, step: 10, in_min: 96, in_max: 3999}
     # power / ground
     - {from: potL.vcc, to: mcu.3V3}
     - {from: potL.gnd, to: mcu.GND}

@@ -19,9 +19,10 @@ from pathlib import Path
 
 from .extractor import DecisionExtractor, tail
 
-_DEFAULT_SESSION = str(
-    Path.home() / ".claude/projects/-Users-davidleeburnett/"
-    "59f1b46e-3cde-4c0f-8021-3b3e7bbe00f3.jsonl")
+#: Default: the newest session of the HOME-launched project, ~/.claude/projects/<HOME with "/" -> "-">/
+_PROJECT_DIR = Path.home() / ".claude" / "projects" / str(Path.home()).replace("/", "-")
+_DEFAULT_SESSION = str(max(_PROJECT_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime,
+                           default=_PROJECT_DIR / "session.jsonl"))
 
 
 def main(argv: list[str] | None = None) -> int:

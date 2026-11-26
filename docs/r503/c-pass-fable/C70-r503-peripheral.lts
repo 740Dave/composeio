@@ -1,0 +1,502 @@
+---
+scope: "The R503 / R503-M22 optical fingerprint module as a ComposePlatform peripheral: the electrical envelope and its hazards, the wire protocol and the three behaviours that break request/response, the timing facts, the cross-revision drift rule, the ring LED and its semantic-state realization table, the platform binding, and the pre-integration questions and empty evidence slots that gate a bench session."
+audience: "The firmware author writing the r503 driver; the architect ruling the open decisions; any Intelligence asking by query whether this peripheral has ever touched a bench."
+boundary: "IN: datasheet-derived hardware truths, cited by folio against a hash-pinned manual; the protocol traps a driver must survive; the ring realization table; the driver-survey conclusions; open decisions; pre-integration questions; the evidence ledger. OUT: the vendor-neutral identity layer (C71), the HAL contract (C72), the bus contract (C73), and the datasheet itself, which is cited and never restated."
+not-this: "Not a datasheet. Not a driver. Not a claim that anything works: no figure in this document has been observed on hardware, and every evidence slot says EMPTY."
+domain: plt.cux
+status: draft
+created: 2026-08-18
+---
+
+# R503 / R503-M22 Optical Fingerprint Module, The Realization Below The HAL [SPEC:CXC-R503]
+
+> Everything in this document lives BELOW the seam: it binds the r503 driver and the R503
+> realization of the HAL, and nothing above them. Hardware truths are preserved tightly;
+> every inference is labelled as one; every hardware-observable claim has an empty evidence
+> slot recording that no R503 has ever been on a bench in this project.
+
+---
+
+## Source and part identity
+
+### [CXC-R503-SOURCE] The primary source is pinned by hash
+
+- primary-source: R503_R503-M22_user_manual_V1.4.1_2023-09.pdf
+- primary-source-sha256: fa5d4105f6754ddf0ebcbdb5875a78106a4f147534c3c3bbc0385bc5477dfc22
+- citation-convention: p.N is the printed folio of V1.4.1; comparison revisions are V1.1, V1.2.1, V1.4, plus the R503-5V, R503S and R503Pro manuals as cross-part context.
+- rule: every datasheet claim in this document is checkable against a named byte sequence. A claim that cannot cite a folio does not belong here.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-PART] The part
+
+- interface: UART, 3.3 V TTL, default 57600 baud (p.1).
+- capacity: 200 templates, consistent across all four revisions.
+- template-size: 1536 bytes from V1.2.1 onward; V1.1 says 768. The size is announced by the HAL, never compiled in as a constant, because the parts in hand may run V1.1-era firmware ([CXC-FPHAL-CAPABILITIES-SCHEMA]).
+- on-chip-matcher: the module performs 1:1 match and 1:N search itself, which is what made sensor-side matching available ([DD-R503-MATCH-LOCALITY]).
+- accuracy-figures: FAR under 0.001 percent and FRR under 1 percent, published with no measurement conditions in any revision. Unfalsifiable; they upgrade nothing ([CXC-R503-ASSURANCE]).
+- ring: a 7-colour, 6-mode addressable ring — [CXC-R503-AURA-LED].
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-PART-IDENTITY] Which SKU is physically in hand
+
+- question-state: PARTIAL
+- hazard: four parts are sold as R503-something and listings conflate them. The R503-5V puts DC 5V on pin 1; applying this document's rail figures to it destroys the part.
+- answered-2026-08-16: David — the parts in hand are 3.3 V, so the R503-5V is excluded. No serial or part number appears on any module, so R503 versus R503S versus R503Pro is open on paper.
+- the-circularity-is-broken: knowing the rail is 3.3 V means the part can be safely powered and then ASKED what it is — ReadProdInfo 0x3C returns a 16-byte model string. The SKU stops being a precondition of bring-up and becomes its first measurement.
+- consequence: every figure in this document is provisional until [CXC-R503-EV-02] returns a model string.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Electrical envelope
+
+### [CXC-R503-PINOUT] Six pins on a captive pigtail
+
+- pins: 1 VCC (DC 3.3 V), 2 GND, 3 TXD, 4 RXD, 5 WAKEUP (standby high, finger low), 6 3.3VT (touch supply, DC 3-5 V) — p.3.
+- pin-1-evidence: identified only by a photograph. No keying drawing, no polarity mark.
+- rule: never infer pinout from wire colour. The manual disclaims it outright: the line order has nothing to do with color (p.3).
+- verify-by-continuity: [CXC-R503-EV-01] meters each contact to a known net before any power is applied.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-RAILS] Two independent rails, an unregulated input, and the power topology ruling
+
+- vcc: pin 1, DC 3.3 V, a point value with no tolerance band anywhere in any revision.
+- vt: pin 6, DC 3-5 V (V1.1 said 3-6 V; silently narrowed).
+- rails-are-independent: the manual's own low-power mode is VCC off with 3.3VT on (p.43), which is the ground of the WAKEUP inference below.
+- input-is-unregulated: power is supplied directly to the image sensor and decoding chip (p.4); ripple recommendation 50 mV peak-to-peak; board-side filtering is the host's job.
+- no-hot-plug: connecting or removing the cable live may damage the module (p.4).
+- power-cycle-dwell: after power-off, wait at least two seconds before power-on (p.4).
+- ruling-share-the-ldo: David, 2026-08-17 — slave the R503 to the ESP32's 3.3 V LDO; he has done this pairing before with no problem. No separate regulator.
+- ruling-no-power-gating: David, 2026-08-17 — no programmatic VCC switching. SoftRst 0x3D covers reset; the build is USB-powered; not gating VCC retires the two-second dwell and the missing inrush figure outright. Reopen only if a battery-powered device is specified.
+- ruling-power-optimization-later: David, 2026-08-17 — even a battery device is built first with no power optimization; optimization is a named second pass against a working build. No high-side switch, no VCC-off pattern, no duty cycling in a first build.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-WAKEUP-RAIL] WAKEUP's high level
+
+- claim: WAKEUP's high level tracks the 3.3VT rail, not VCC.
+- evidence-class: INFERENCE, not a datasheet fact. The manual says only that the touch output is CMOS and roughly the input voltage (p.3), inside a paragraph about the touch supply; and the low-power mode requires WAKEUP to work while VCC is off, which is only possible if it is powered from 3.3VT.
+- rule: tie 3.3VT to 3.3 V unless and until measured otherwise. At 3.3VT = 5 V the inference puts roughly 5 V on WAKEUP, which overdrives a non-5V-tolerant ESP32 GPIO.
+- corollary-rule: drive RXD only from a 3.3 V pin. No revision states any 5 V tolerance for any input, and no logic-level figures exist at all — no VIH, VIL, VOH, VOL, drive strength or pull-up requirement anywhere ([CXC-R503-EV-03] measures the safe case; no overdrive test is authored, because deliberately overdriving an input is a brick-risk test and none survives in this spec).
+- vendor-precedent: the vendor's own reference circuit does not wire TOUCH to a GPIO; it buffers it into a power-latch path. That circuit is drawn for the 5 V R307 and its rail must not be copied — building it as drawn puts 5 V on an R503's pin 1 (p.44).
+- tested-by: [CXC-R503-EV-03], [CXC-R503-EV-12] (the second is the negative control)
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-CURRENT] The ring LED's cost is not determinable from the document
+
+- working-current: 20 mA during acquisition (p.1).
+- standby-current: about 2 uA with VCC off and 3.3VT on (p.1, p.3).
+- absent: no idle figure, no peak or inrush figure, and no ring-LED figure of any kind, in any revision — established by search, not inference.
+- consequence: whether 20 mA includes the ring is unknown, and the ring runs for the whole enrollment ceremony. [CXC-R503-EV-04] measures the three states the manual conflates, including the ring at full white, and sizes the shared-LDO decision with data.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-CONNECTOR] The connector question was dissolved, not answered
+
+- ruling: David, 2026-08-17 — the JST connector is cut off and the six conductors are soldered direct to a prototyping board. There is no mating half, so no footprint, so the MX1.0 versus SH1.0 designation contradiction has nothing to attach to.
+- preserved-references: one module retains its connector intact, and the severed connector is kept with its wire stubs as the wire-order reference for the cut module — physical negative controls, both David's own.
+- if-a-production-board-ever-carries-a-socket: the pitch question returns unchanged (three revisions say MX1.0--6P, V1.4.1 says SH1.0--6P, and the two project sources disagree on what MX1.0 denotes). A caliper on the reference module settles it; no document can.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Wire protocol
+
+### [CXC-R503-FRAMING] The packet
+
+- shape: header 2B 0xEF01, address 4B, PID 1B, length 2B, content, checksum 2B (p.8).
+- byte-order: big-endian throughout. The statement is absent from V1.1, so a V1.1-era driver had no byte-order statement at all.
+- address-gating: default 0xFFFFFFFF; a wrong address produces SILENCE, not an error packet.
+- length-semantics: length counts the content PLUS the two checksum bytes. A parser reading it as content length overruns by exactly two bytes on every packet.
+- pid-values: 01 command, 02 data, 07 acknowledge, 08 end-of-data.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-CHECKSUM] The checksum rule, verified
+
+- rule: arithmetic sum of PID, both length bytes and all content bytes, modulo 2^16. Header and address are NOT included.
+- verification: recomputed against all 21 worked examples across the document set; all 21 recompute exactly. This is the only claim in the R503 corpus carrying a passed falsifiable test rather than a citation.
+- obligation: every packet's checksum is verified before its payload is acted on — containment invariant inv-5 in [CXC-FPHAL-CONTAINMENT-INVARIANTS]. One surveyed driver skips verification and says so in a comment.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-PACKET-256] The 256-byte packet case never worked
+
+- contradiction: the stated 256-byte maximum packet length forbids the 256-byte data payload the system parameter permits (length would be 258). Only the 128-byte case is ever worked in any revision.
+- rule: do not size a buffer or a state machine on the assumption that 256-byte data packets are legal. The caller's buffer is the binding check ([CXC-FPHAL-CONTAINMENT-INVARIANTS] inv-2).
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-OPCODES] The command set, with the corrections deployed drivers get wrong
+
+- core-set: GetImg 0x01, GenChar 0x02, Match 0x03, Search 0x04, RegModel 0x05, Store 0x06, LoadChar 0x07, UpChar 0x08, DownChar 0x09, DeletChar 0x0C, Empty 0x0D, SetSysPara 0x0E, ReadSysPara 0x0F, TempleteNum 0x1D, ReadIndexTable 0x1F, GetImageEx 0x28, Cancel 0x30, AutoEnroll 0x31, AutoIdentify 0x32, AuraLedConfig 0x35, CheckSensor 0x36, GetAlgVer 0x39, GetFwVer 0x3A, ReadProdInfo 0x3C, SoftRst 0x3D, HandShake 0x40, plus notepad and password commands.
+- correction-handshake: HandShake is 0x40. Two of six surveyed drivers ship 0x53.
+- correction-nonexistent: 0x1B HiSpeedSearch does not exist on the R503; nor do 0x33 or 0x50 through 0x53. Legacy opcodes count as out-of-spec, not coverage.
+- correction-removed: 0x17 PortControl existed in V1.1 only; whether firmware still honours it is unknown.
+- readprodinfo-length-contradiction: the ack length implies 46 data bytes while the field rows sum to 50; V1.2.1 was self-consistent at 46. A driver must be told which to expect; [CXC-R503-EV-10] counts the bytes on the wire.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-CODES] Confirmation codes, and the one the firmware uses that no table documents
+
+- documented: 35 codes in V1.4.1 (pp.9-10). Load-bearing ones: 00 complete, 01 receive error, 02 no finger, 09 no match, 1F library full, 26 timeout, 27 already exists, FC unsupported, FD hardware error, FE execution failure.
+- undocumented-in-use: 0x28 is returned by the vendor's own worked example (p.38) and appears in no revision's table. An undefined registration-logic setting is invoked in the same paragraphs and defined nowhere.
+- rule: an unlisted confirmation code is surfaced, never fatal, and never mapped onto the nearest documented one — [CXC-FPHAL-UNKNOWN-CODE-HANDLING].
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-UNSOLICITED-BYTE] The bare 0x55, at power-on and after every soft reset
+
+- behaviour: the module emits a single unframed byte 0x55 unsolicited — at power-on and again after every SoftRst 0x3D. It is the only unsolicited emission in the protocol.
+- hazard: a parser requiring the 0xEF01 header sees one byte of garbage; a fixed-frame parser is permanently phase-shifted. A driver that handles it only at boot desyncs on its first soft reset.
+- rule: drain RX immediately before every transmit AND parse with a sliding two-byte header window. Either alone is partial; no surveyed driver has both. This is containment invariant inv-4.
+- tested-by: [CXC-R503-EV-05], [CXC-R503-EV-06] (power-on capture; re-emission after SoftRst)
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-ACK-STREAM] The AutoEnroll acknowledge stream
+
+- behaviour: with its status bit set, one AutoEnroll 0x31 command emits FIFTEEN acknowledge packets, steps 0x01 through 0x0F; only the final packet's fingerID field is meaningful.
+- config-index-trap: the enabling parameter is Config3 on AutoEnroll and Config1 on AutoIdentify — a driver that generalises the index silently misconfigures the sibling command.
+- timeout-contradiction: the no-finger exit is 10 s in prose and 15 s in the flowchart, for both commands, in three revisions. The implementation takes the reading that fails later and records the other value ([CXC-FPHAL-CONTAINMENT-INVARIANTS] inv-7).
+- version-trap: V1.2.1's step codes are numerically incoherent and were fixed in V1.4; a driver written against V1.2.1's table mis-sequences on current firmware.
+- fleet-status: the packaged AutoEnroll path is NOT USED, by ruling — it mandates its own on-module LED sequence, which is unimplementable under device-owned ring ([CXC-FPID-ENROLLMENT-PATH]). The stream facts are retained because the trap survives for any future reader who reaches for the packaged command.
+- no-prior-art: not one of six surveyed open-source drivers implements AutoEnroll or AutoIdentify. The stream behaviour is untested by every available implementation.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-STREAM-BOUND] AutoIdentify's stream can be unbounded
+
+- claim: with retries configured to 0 and a finger continuously present that never matches, AutoIdentify's acknowledge stream is unbounded. The no-finger timeout does not bound the finger-present-never-matches case.
+- evidence-class: INFERENCE from the stated retry semantics; the manual illustrates only the 3-packet success case.
+- consequence: a fixed-size RX ring on a CH32V203-class MCU is sized from a measurement, not from the success case. [CXC-R503-EV-07] is the falsifier.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-DATA-BURSTS] Data-packet bursts
+
+- behaviour: UpImage, DownImage, UpChar, DownChar and ReadInfPage return an acknowledge then several data packets. The packet COUNT depends on the negotiated packet-size parameter, not on the command; a driver terminates on the 0x08 end-of-data PID or reads the configured size first.
+- driver-hazard: one surveyed driver scans a fixed buffer for 0xEF01 boundaries, which mis-splits on payload bytes that happen to be 0xEF01; another has no data-packet support at all.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-BUSY] Behaviour while Busy is undefined
+
+- what-exists: a Busy flag (system status bit 0, via ReadSysPara) and Cancel 0x30.
+- what-is-missing: what happens when a command arrives while Busy — queued, rejected or dropped — is addressed nowhere in any revision. Three different transaction layers hang off the answer.
+- tested-by: [CXC-R503-EV-08]
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-BAUD] The baud contradiction, and the rule that removes the risk
+
+- contradiction: every revision carries three mutually contradictory statements of legal baud rates — an N=1..6 table, an N in {1,2,4,6,12} enumeration, and a 9600-115200 range sentence. One widely-used driver faithfully implements the range sentence and ships seven forbidden constants.
+- brick-risk: setting a forbidden rate and power-cycling could leave the module at an unreachable baud, and no recovery path is documented anywhere. A power cycle does not recover it.
+- rule: the implementation NEVER issues a baud change. It binds the documented default of 57600 and leaves it — containment invariant inv-8. With that rule in force the risk cannot arise, and no baud-probing test is authored anywhere in this corpus.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Timing
+
+### [CXC-R503-TIMING] What is stated, what is absent, and where the cost lives
+
+- stated: boot to ready about 50 ms; image acquisition under 0.2 s; feature generation under 500 ms; touch response about 120 ms; power-cycle dwell 2 s; ring animator minimum 5 s cycle.
+- absent: no per-command latency table exists. GenChar, Match, Search, RegModel, Store, LoadChar, UpChar and DownChar have no figure; template-path timeouts are invented by the driver and must carry deadlines ([CXC-FPHAL-CONTAINMENT-INVARIANTS] inv-1).
+- capture-dominates: a one-shot verify budget is roughly GetImg + GenChar + Search, about 0.71 s optimistic and 0.9 s pessimistic at a twenty-template cast — dominated by imaging, not matching. INFERENCE: arithmetic on separately-specified worst cases, an order-of-magnitude expectation and not a budget.
+- match-time-string: the intro table's 1:N under 10 ms per fingerprint is ambiguous by a factor of 200 and is never restated. At the fleet's twenty-template cast both readings land inside a comfortable single-press interaction, so the ambiguity no longer decides any architecture; [CXC-R503-EV-09] measures it as an understanding check that gates nothing.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Cross-revision drift
+
+### [CXC-R503-REVISION-DRIFT] The changelog is materially incomplete
+
+- rule: do not use the vendor changelog to decide whether a revision matters. It records none of the physically consequential changes below.
+- drift-connector: MX1.0--6P in three revisions, SH1.0--6P in V1.4.1.
+- drift-electrical: 3.3VT range narrowed from 3-6 V to 3-5 V; the big-endian note, the dwell, and the touch figures all appear only from V1.2.1.
+- drift-sizes: template 768 to 1536 bytes, characteristic 384 to 512 (V1.1 to V1.2.1) — load-bearing because the parts in hand may run V1.1-era firmware, which is why template size is announced rather than compiled in.
+- drift-led: three ring colours in V1.1, seven from V1.2.1 — see the risk recorded at [CXC-R503-RING-REALIZATION].
+- drift-behaviour: default security level 5 in three revisions, 3 in V1.4.1; system identifier code changed; AutoEnroll and AutoIdentify are absent from V1.1 entirely.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## The ring
+
+### [CXC-R503-AURA-LED] The ring LED
+
+- command: AuraLedConfig 0x35, payload control, speed, colour index, times (p.27).
+- modes: breathing, flashing, always on, always off, gradually on, gradually off.
+- colours: SEVEN — red 0x01, blue 0x02, purple 0x03, green 0x04, yellow 0x05, cyan 0x06, white 0x07. A three-colour driver is a stale-V1.1 artifact and loses four.
+- animator-floor: minimum 5 s animation cycle. Any sub-second feedback MUST be realized as always-on and always-off transitions timed by the host, never by the module's animator. A realization reaching for breathing to signal a 300 ms accept produces a five-second smear.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-RING-REALIZATION] The semantic-state realization table
+
+- what-this-is: the R503-side realization of the semantic feedback states named at [CXC-FPID-FEEDBACK-STATES]. Colours are normative HERE and nowhere above the seam.
+- rule-ready: ready renders blue 0x02 or purple 0x03 — David's stated preference, deliberately against the obvious green. A builder defaulting ready to green has violated the one UX preference he stated.
+- rule-accept: accept renders green 0x04, always on, host-timed dwell.
+- rule-rejections: both denial flavours render red 0x01. Which flavour a device shows is the game's choice and is not decided here.
+- rule-reject-silent-duplicate-row: reject_silent and a genuine no_match are the SAME ROW — same colour, mode, speed, duration and command bytes, written as two rows with identical right-hand sides on purpose so any future divergence is visible as an edit. This is [CXC-FPID-REJECT-SILENT-RENDERING] binding on the one table it was always about.
+- risk-green-may-not-exist: David's parts may run V1.1-era firmware, and V1.1 documents only red, blue and purple. Green first appears in V1.2.1. If green is absent the accept row needs a RULING, not a workaround — every remaining option collides with ready or runs into the animator floor. [CXC-R503-EV-11] settles it in about ten seconds and is the first thing to run.
+- states-unmapped: idle, awaiting_finger, capture_accepted, capture_retry, enroll_progress, busy and fault have no colour assigned. Assigning them is a game-design call, deliberately not taken here.
+- who-issues: the DEVICE, always. The driver renders a commanded state and originates none — [CXC-FPID-RING-OWNER].
+- acceptance-human: GLASS GATE — every commanded state visibly distinct on a real ring EXCEPT the reject_silent and no_match pair, which must be visibly identical. No machine signal can stand in for this.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Platform binding
+
+### [CXC-R503-HAL-BINDING] The declaration
+
+- declaration: id bioscan, role transactional, driver r503, interface uart at 57600 baud, assurance experiential — canonical in platform spec 32 and inherited verbatim.
+- namespace-literals: contested three ways across platform specs 27 and 32 and this corpus — [DD-R503-NAMESPACE-SPELLING]. Every topic literal in C73 is provisional until that is ruled.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-DEVICE-FACES] Two faces, one artifact
+
+- runtime-face: a finger arrives, the module captures and searches, the driver reports a slot. One value, one event, no state beyond the read.
+- management-face: enrollment and template transfer — stateful, multi-step, multi-second, with a human in the middle.
+- consequence: one driver with two internally-distinct paths, not two drivers. The resumable state machine exists for the management face only.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-DRIVER-TIER] The driver is a bytecode-VM artifact with a CH32V203 floor
+
+- tier: sandboxed bytecode VM. The part needs framing, checksums, timers, kilobyte buffers, resync and a multi-second human-interactive state machine — logic, not a data descriptor.
+- floor: CH32V203. A CH32V003 cannot host it; a board intending an R503 on a V003 compiles the driver in or moves the peripheral to a capable peer.
+- resumability: enrollment cannot block the tick loop; the driver's ceremony state machine advances one step per tick.
+- current-host: the bring-up host is an ESP32-S3 SuperMini (David, 2026-08-16), far above the floor.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-ASSURANCE] The assurance class asserts a negative
+
+- class: experiential — spoofable, no liveness detection, no secure element, NOT authentication and NOT access control. The name was questioned, ruled renamed, and the ruling reversed the same day; experiential stands (David, 2026-08-17).
+- consequence: every match this part reports is theatrical. Latch fail-safe behaviour belongs to each integrating device's own declaration, as a required per-latch property with no default (David, 2026-08-17, per-hatch declaration; a mechanical release is not characterized at the software level).
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-DRIVER-SURVEY] Six drivers surveyed; none is safe to adopt as-is
+
+- best-structural-model: FPM — an explicit FSM parser, inter-byte timeouts, a self-resynchronising sliding header window, and transport failure numerically disjoint from sensor refusal.
+- the-graft: take esphome's full RX drain before every transmit; lift esphome's complete LED enums; mine R503Lib for missing opcodes. Three licences are touched at once — confirm before any code ([CXC-R503-PRE-DRIVER-BASELINE]).
+- safety-defects: R503Lib reads a wire-supplied length into a fixed stack array with no bounds check — a remote stack smash. pyfingerprint's read loop has no deadline — a silent module hangs the host forever. Both defects are the direct sources of containment invariants inv-1 and inv-2.
+- licence-hazards: pyfingerprint is D-FSL, copyleft and non-OSI; esphome's vendored component has no determinable licence in-tree.
+- conclusion: the driver cannot be a port. The stream path has no prior art anywhere and must be authored from the document and bench-verified.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Decisions
+
+### [DD-R503-MATCH-LOCALITY] Matching is sensor-side
+
+- decision: sensor-side matching. Architect's call 2026-08-15 on David's constraint of the same day, open to his dissent.
+- the-collapsing-constraint: the fleet is at most ten identities times two fingers — twenty templates per device — so the pessimistic reading of the match-time ambiguity costs 200 ms, and sensor-side wins under both readings.
+- rationale: the module owns capture, extraction, storage and matching; the leaf that can fully own the behaviour owns it, and it works with the bus down.
+- invalidating_assumption: that a deployment has one cast shared by all readers. Many readers over disjoint populations would reopen this.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [DD-R503-NAMESPACE-SPELLING] The namespace literals are contested and not settled here
+
+- decision: NOT MADE. Platform specs 27 and 32 and this corpus spell the fingerprint surface three different ways, and picking one silently would leave the corpus disagreeing with itself.
+- blocked-on: write access to the platform corpus; the amendment lands with the migration out of staging.
+- interim-rule: every topic literal in C73 is structural, not literal — a builder takes the message SHAPES as normative and the spellings as provisional.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Pre-integration questions
+
+### [CXC-R503-PRE-WAKEUP-USE] Is WAKEUP used at all
+
+- question-state: OPEN
+- question: does this build use the touch-detect pin, and if so through what conditioning? If the build polls rather than sleeps, WAKEUP is left unconnected and the whole overdrive hazard disappears at the cost of the standby mode.
+- answer: EMPTY
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-PRE-LATCH-INVENTORY] What latches will a match actuate
+
+- question-state: OPEN
+- question: which physical latches, hatches or boxes will a match actuate, what is each one's enclosed volume, and can anything living be inside one when it latches? This is a physical-safety question; each integrating device's per-latch safe-state declaration cannot be written without it.
+- answer: EMPTY
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-PRE-DRIVER-BASELINE] Which driver source is the baseline
+
+- question-state: OPEN
+- question: which surveyed driver is the structural baseline, and are the three touched licences (FPM, esphome, R503Lib) confirmed compatible with an open-source platform?
+- answer: EMPTY
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Post-integration evidence ledger
+
+### [CXC-R503-EV-INDEX] The ledger — 0 of 12 slots filled
+
+- slots-total: 12
+- slots-filled: 0
+- hardware-status: no R503 has ever been connected to anything in this project. Every slot below is EMPTY and says so; an unfilled slot carries an explicit EMPTY sentinel, never an absent key.
+- destructive-tests-removed: the prior ledger's overdrive-RXD and baud-probe slots are DELETED. Both were brick-risk tests defending rules that stand without them: never assume 5 V tolerance, and never issue a baud change. No slot below can damage a module.
+- fill-protocol: replace EMPTY with the observation, its date and its observer; leave the question and expectation untouched so prediction and outcome remain comparable.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-EV-01] Pin 1 by continuity, never by colour
+
+- question: with the connector latch facing a known direction, meter continuity from each contact and confirm the order VCC, GND, TXD, RXD, WAKEUP, 3.3VT.
+- expected: the six functions in that order, GND anchoring the count.
+- discriminates: a reversed order means the photograph was read from the wrong face and every connection is mirrored.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-02] Confirm the SKU and firmware version over the wire
+
+- question: issue ReadProdInfo 0x3C and GetFwVer 0x3A; record the model string and firmware version.
+- expected: a string identifying an R503 or R503-M22.
+- discriminates: an R503S or R503Pro string means the cross-part context applies rather than the primary source; the firmware version decides whether the V1.1 three-colour and 768-byte-template era applies.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-03] Scope WAKEUP's high level at 3.3VT = 3.3 V
+
+- question: with 3.3VT tied to 3.3 V, scope WAKEUP's high level with VCC on and off.
+- expected: a high tracking 3.3 V in both VCC states.
+- discriminates: a high tracking VCC instead falsifies the rail inference and reopens the conditioning question.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-04] Current in the three states the manual conflates
+
+- question: measure supply current idle, during acquisition, and with the ring commanded full white always-on.
+- expected: acquisition near 20 mA; the ring figure is unknown by construction.
+- discriminates: a ring figure that pushes the total past the SuperMini LDO's comfortable margin reopens the shared-rail ruling with data rather than inference.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-05] Capture the power-on 0x55
+
+- question: capture the serial line from VCC rising and record the unsolicited byte and its timing.
+- expected: a single bare 0x55 shortly after the roughly 50 ms init window.
+- discriminates: absence, framing, or a different value changes the resync design.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-06] Confirm 0x55 after SoftRst
+
+- question: issue SoftRst 0x3D and capture whether 0x55 is re-emitted.
+- expected: re-emission, per three manual statements.
+- discriminates: no re-emission would make the boot-only handling sufficient after all; the drain-plus-window remedy stands either way.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-07] Bound the AutoIdentify stream
+
+- question: with retries 0 and a never-matching finger held on the sensor, count acknowledge packets over 60 seconds.
+- expected: unbounded emission, per the inference.
+- discriminates: a bounded stream shrinks the RX ring requirement; unbounded confirms the sizing hazard. Run with a matching finger as the control proving the command runs at all.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-08] What happens to a command sent while Busy
+
+- question: start a long operation, poll Busy, send a benign read command mid-operation, and record whether it is queued, rejected or dropped.
+- expected: unknown by construction — the manual does not say.
+- discriminates: queued means a simple pipeline; rejected means a retry policy; dropped means a Busy poll before every command.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-09] Time a search at one and at twenty templates
+
+- question: measure Search latency with one resident template and with twenty.
+- expected: both readings of the match-time string predict under 200 ms at twenty.
+- discriminates: settles which reading of 1:N under 10 ms per fingerprint is true; gates nothing. First prove twenty templates are genuinely resident, or the fast result measures an empty search.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-10] Count ReadProdInfo's bytes on the wire
+
+- question: issue ReadProdInfo 0x3C and count the data bytes.
+- expected: 46 or 50 — the document contradicts itself by exactly four bytes.
+- discriminates: which parser length is correct on shipped firmware.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-11] Census the ring colours the firmware actually drives
+
+- question: command each of the seven documented colours always-on in sequence and record which render.
+- expected: seven distinct colours on V1.2.1-era firmware; possibly three on V1.1-era.
+- discriminates: whether the accept-is-green row of the realization table is implementable on the parts in hand. Ten seconds of bench time; run first.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+### [CXC-R503-EV-12] Negative control for the WAKEUP measurement
+
+- question: with the same probe and setup as EV-03, confirm the finger-detect path actually fires — present a finger and observe the WAKEUP transition.
+- expected: a clean high-to-low transition on finger contact.
+- discriminates: proves the probe and the detect path both work, so a null result on EV-03 is a finding rather than a broken harness.
+- observed: EMPTY
+- status: draft
+- part-of: [CXC-R503-EV-INDEX]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-R503-WAKEUP-RAIL] DEPENDS_ON [CXC-R503-RAILS]
+- [CXC-R503-RING-REALIZATION] DEPENDS_ON [CXC-R503-AURA-LED]
+- [CXC-R503-DRIVER-TIER] DEPENDS_ON [CXC-R503-DEVICE-FACES]
+- [DD-R503-MATCH-LOCALITY] DEPENDS_ON [CXC-R503-TIMING]
+- [CXC-R503-BAUD] RELATED_TO [CXC-R503-DRIVER-SURVEY]
+- [CXC-R503-STREAM-BOUND] RELATED_TO [CXC-R503-ACK-STREAM]
+
+### Causal
+
+- [CXC-R503-UNSOLICITED-BYTE] PRECONDITION_FOR [CXC-R503-DRIVER-SURVEY]
+- [CXC-R503-PART-IDENTITY] PRECONDITION_FOR [CXC-R503-RAILS]
+
+### Entity
+
+- [CXC-R503-WAKEUP-RAIL] TESTED_BY [CXC-R503-EV-03]
+- [CXC-R503-RING-REALIZATION] TESTED_BY [CXC-R503-EV-11]
+
+---
+
+**Version**: 1.0
+**Status**: Draft

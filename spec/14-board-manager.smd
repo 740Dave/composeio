@@ -1,7 +1,7 @@
 ---
-scope: "Board Manager — a ComposeApp for managing project boards with selective export to ComposeIO namespaces, enabling cross-posting of board content to Nexus and other bus participants"
+scope: "Board Manager — a ComposeApp for managing project boards with selective export to ComposeIO namespaces, enabling cross-posting of board content to Haven and other bus participants"
 audience: "Builder agents (implementation), deployer agents (deployment via service hub)"
-boundary: "IN: Web UI, SQLite persistence, MCP interface, multiple boards, per-board namespace export, activity logging, document attachments. OUT: Nexus governance (Nexus manages its own namespace rules), ComposeApp framework internals (08-composeio-app-framework.smd)"
+boundary: "IN: Web UI, SQLite persistence, MCP interface, multiple boards, per-board namespace export, activity logging, document attachments. OUT: Haven governance (Haven manages its own namespace rules), ComposeApp framework internals (08-composeio-app-framework.smd)"
 not-this: "Not a detailed project management tool (Jira, Linear). Not a time tracker. Not a sprint board. The one-page constraint applies: if a board doesn't fit on one screen, it's too detailed. Not the service hub (13-service-hub-v2.smd) — deployed on it."
 depends-on: [08-composeio-app-framework.smd, 13-service-hub-v2.smd]
 confidentiality: internal-only
@@ -10,7 +10,7 @@ artifact-readiness: code-generation
 
 # Board Manager [SPEC:CIO-BOARD-MANAGER]
 
-> A ComposeApp that manages project boards — collections of major tasks, minor tasks, objectives, activity logs, and document attachments. Each board is an independent one-page view. Boards can selectively export their content to ComposeIO namespaces, enabling cross-posting to Nexus, dashboards, or any bus participant. Deployed on the ComposeIO service hub.
+> A ComposeApp that manages project boards — collections of major tasks, minor tasks, objectives, activity logs, and document attachments. Each board is an independent one-page view. Boards can selectively export their content to ComposeIO namespaces, enabling cross-posting to Haven, dashboards, or any bus participant. Deployed on the ComposeIO service hub.
 
 ---
 
@@ -22,7 +22,7 @@ A board fits on one screen. Major items are initiatives. Minor items are their s
 
 ### [BM-DP-2] Selective Export
 
-Not every board is public. A "Maker" board stays internal — it's David's private work surface. A "Nexus" board exports its content to David's Nexus namespace, making project status visible to Nexus participants. The export decision is per-board, declared in config, and uses the standard ComposeApp export/import mechanism.
+Not every board is public. A "Maker" board stays internal — it's David's private work surface. A "Haven" board exports its content to David's Haven namespace, making project status visible to Haven participants. The export decision is per-board, declared in config, and uses the standard ComposeApp export/import mechanism.
 
 ### [BM-DP-3] Intelligence-Native
 
@@ -30,27 +30,27 @@ The Board Manager is equally usable by humans (web UI) and Intelligences (MCP to
 
 ### [BM-DP-4] Bus-Native State Changes
 
-Every state change (task created, status updated, activity logged, document attached) publishes to the internal bus. Exported boards forward those changes to the external bus. A Nexus participant subscribing to `board/nexus/tasks` sees task updates in real time.
+Every state change (task created, status updated, activity logged, document attached) publishes to the internal bus. Exported boards forward those changes to the external bus. A Haven participant subscribing to `board/haven/tasks` sees task updates in real time.
 
 ### [BM-DP-5] Multi-Tenant by Design
 
-The Board Manager serves multiple Nexus-identified participants, not just one user. Any Intelligence with a Nexus identity can create boards, track work, and publish their backlog. Board ownership maps to Nexus identity. Access control follows Nexus governance.
+The Board Manager serves multiple Haven-identified participants, not just one user. Any Intelligence with a Haven identity can create boards, track work, and publish their backlog. Board ownership maps to Haven identity. Access control follows Haven governance.
 
 ---
 
 ## 2. Multi-Tenancy and Visibility
 
-### [BM-TENANT] Nexus Identity Integration
+### [BM-TENANT] Haven Identity Integration
 
-Every board has an **owner** — a Nexus identity (signatory ID). The owner is set at board creation and determines access:
+Every board has an **owner** — a Haven identity (signatory ID). The owner is set at board creation and determines access:
 
 | Actor | Can create boards | Can modify boards | Can view boards |
 |-------|-------------------|-------------------|-----------------|
-| Owner | Yes | Own boards only | Own boards + boards with `nexus` or `world` visibility |
-| Nexus participant (not owner) | No (unless governance grants it) | No (unless governance grants write access) | Boards with `nexus` visibility on the same Nexus instance |
+| Owner | Yes | Own boards only | Own boards + boards with `haven` or `world` visibility |
+| Haven participant (not owner) | No (unless governance grants it) | No (unless governance grants write access) | Boards with `haven` visibility on the same Haven instance |
 | World (anonymous) | No | No | Boards with `world` visibility (via scraper, read-only) |
 
-MCP tools enforce ownership: `board_add_task`, `board_update`, `board_delete_task`, etc. check that the caller's Nexus identity matches the board owner. Governance can grant explicit exceptions.
+MCP tools enforce ownership: `board_add_task`, `board_update`, `board_delete_task`, etc. check that the caller's Haven identity matches the board owner. Governance can grant explicit exceptions.
 
 ### [BM-VISIBILITY] Three-Tier Visibility Model
 
@@ -59,10 +59,10 @@ Each board declares a visibility level:
 | Visibility | Internal bus | External bus (MQTT) | Public website | Use case |
 |------------|-------------|---------------------|----------------|----------|
 | `private` | Owner's MCP and web UI only | Not exported | Not scraped | Personal work surface, draft backlogs |
-| `nexus` | Exported to owner's Nexus namespace | `board/{owner}/{board}/tasks` etc. | Not scraped | Shared backlog visible to Nexus participants |
-| `world` | Exported to Nexus namespace | Same as `nexus` | Scraped and published | Public-facing roadmap, open-source backlog, Lattice enhancement list |
+| `haven` | Exported to owner's Haven namespace | `board/{owner}/{board}/tasks` etc. | Not scraped | Shared backlog visible to Haven participants |
+| `world` | Exported to Haven namespace | Same as `haven` | Scraped and published | Public-facing roadmap, open-source backlog, Lattice enhancement list |
 
-`world` is a superset of `nexus` — a world-visible board is also nexus-visible. The scraper service (a simple workload on the service hub) finds boards with `visibility: world` and publishes rendered HTML to a public web server.
+`world` is a superset of `haven` — a world-visible board is also haven-visible. The scraper service (a simple workload on the service hub) finds boards with `visibility: world` and publishes rendered HTML to a public web server.
 
 ### [BM-VISIBILITY-EXPORT] Export Namespace Pattern
 
@@ -74,7 +74,7 @@ board/{owner_id}/{board_name}/activity
 board/{owner_id}/{board_name}/objectives
 ```
 
-Example: David's Nexus board exports to `board/david/nexus/tasks`. An Intelligence named "architect-01" exports its backlog to `board/architect-01/backlog/tasks`. Each owner's boards occupy their own namespace subtree.
+Example: David's Haven board exports to `board/david/haven/tasks`. An Intelligence named "architect-01" exports its backlog to `board/architect-01/backlog/tasks`. Each owner's boards occupy their own namespace subtree.
 
 The world publisher/scraper process is out of scope for this spec — it is a separate service that consumes the visibility flag and exported namespaces. The Board Manager's responsibility ends at setting the visibility flag and exporting to the bus.
 
@@ -98,15 +98,15 @@ The world publisher/scraper process is out of scope for this spec — it is a se
 │  │  _app/ui/refresh            → WebModule sub        │      │
 │  │  _app/mcp/command           → McpModule sub/pub    │      │
 │  │                                                    │      │
-│  │  board/nexus/tasks ─────────┼──── export ────────┐ │      │
-│  │  board/nexus/activity ──────┼──── export ────────┤ │      │
+│  │  board/haven/tasks ─────────┼──── export ────────┐ │      │
+│  │  board/haven/activity ──────┼──── export ────────┤ │      │
 │  └────────────────────────────────────────────────────┘ │      │
 │                                                         │      │
 │  ┌──────────────────────────────────────────────────┐   │      │
 │  │  External Bus (board-manager-external)           │◀──┘      │
 │  │                                                  │          │
-│  │  board/nexus/tasks ──▶ MQTT ──▶ Nexus namespace  │          │
-│  │  board/nexus/activity ──▶ MQTT ──▶ Nexus         │          │
+│  │  board/haven/tasks ──▶ MQTT ──▶ Haven namespace  │          │
+│  │  board/haven/activity ──▶ MQTT ──▶ Haven         │          │
 │  └──────────────────────────────────────────────────┘          │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -122,11 +122,11 @@ The world publisher/scraper process is out of scope for this spec — it is a se
 
 ### [BM-ARCH-EXPORT] Per-Board Export Configuration
 
-Export is driven by the board's `visibility` field, not static config. The ExportModule watches all boards and exports those with visibility `nexus` or `world`:
+Export is driven by the board's `visibility` field, not static config. The ExportModule watches all boards and exports those with visibility `haven` or `world`:
 
 - `private` → no export, internal bus only
-- `nexus` → ExportModule forwards state changes to external bus under `board/{owner_id}/{board_name}/*`
-- `world` → same as `nexus` (export to bus), plus the visibility flag is queryable by external scrapers
+- `haven` → ExportModule forwards state changes to external bus under `board/{owner_id}/{board_name}/*`
+- `world` → same as `haven` (export to bus), plus the visibility flag is queryable by external scrapers
 
 Visibility is set per-board at runtime (via web UI or MCP), not in the `.compose.yaml`. The `.compose.yaml` declares the namespace patterns and transport — the boards themselves are data, not config.
 
@@ -140,9 +140,9 @@ Visibility is set per-board at runtime (via web UI or MCP), not in the `.compose
 CREATE TABLE boards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    owner_id TEXT NOT NULL,            -- Nexus signatory ID
+    owner_id TEXT NOT NULL,            -- Haven signatory ID
     visibility TEXT DEFAULT 'private'
-        CHECK(visibility IN ('private', 'nexus', 'world')),
+        CHECK(visibility IN ('private', 'haven', 'world')),
     sort_order INTEGER DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(owner_id, name)
@@ -283,10 +283,10 @@ Full MCP parity with all web UI capabilities:
 | `board_get_activity` | Get activity entries filtered by interval |
 | `board_reorder_tasks` | Reorder tasks by ID list |
 | `board_manage_board` | Create, rename, delete boards; set visibility |
-| `board_set_visibility` | Set board visibility (private/nexus/world) |
-| `board_list_boards` | List boards visible to the caller (own boards + nexus/world boards from others) |
+| `board_set_visibility` | Set board visibility (private/haven/world) |
+| `board_list_boards` | List boards visible to the caller (own boards + haven/world boards from others) |
 
-All tools accept `board_id` or `board` (name) to target a specific board. Mutating tools enforce ownership — caller's Nexus identity must match `owner_id` (unless governance grants access).
+All tools accept `board_id` or `board` (name) to target a specific board. Mutating tools enforce ownership — caller's Haven identity must match `owner_id` (unless governance grants access).
 
 ### [BM-MCP-TRANSPORT] MCP Server
 
@@ -303,7 +303,7 @@ When a state change occurs on an exported board, the ExportModule publishes a JS
 ```json
 {
   "event": "task_updated",
-  "board": "Nexus",
+  "board": "Haven",
   "owner": "david",
   "task_id": 42,
   "task_name": "Finalize cross-domain architecture",
@@ -317,15 +317,15 @@ When a state change occurs on an exported board, the ExportModule publishes a JS
 
 Event types: `task_created`, `task_updated`, `task_deleted`, `task_archived`, `activity_logged`, `document_attached`, `document_detached`, `objective_changed`.
 
-### [BM-BUS-NEXUS] Nexus Integration
+### [BM-BUS-HAVEN] Haven Integration
 
-When a board has visibility `nexus` or `world`, Nexus participants can:
-- Subscribe to `board/{owner}/nexus/tasks` to see task state changes
-- Subscribe to `board/{owner}/nexus/activity` to see work progress
+When a board has visibility `haven` or `world`, Haven participants can:
+- Subscribe to `board/{owner}/haven/tasks` to see task state changes
+- Subscribe to `board/{owner}/haven/activity` to see work progress
 - Query the Board Manager's MCP via `board_list_boards` to discover visible boards
 - Use `board_status` to read full board state (respecting visibility rules)
 
-The Board Manager does not write to Nexus's governance graph — it publishes bus events. How Nexus consumes those events is Nexus's concern. An Intelligence with Nexus identity can create its own boards and set visibility to share its backlog with other participants.
+The Board Manager does not write to Haven's governance graph — it publishes bus events. How Haven consumes those events is Haven's concern. An Intelligence with Haven identity can create its own boards and set visibility to share its backlog with other participants.
 
 ---
 
@@ -390,7 +390,7 @@ The existing OPPM tracker's SQLite data migrates to the Board Manager:
 
 1. Copy `tracker.db` from the OPPM Docker volume to the Board Manager volume
 2. Board Manager's `init_db()` detects existing schema and applies migrations (add `owner_id`, `visibility` columns to boards table)
-3. Existing "Maker" board preserved with `visibility: private`, `owner_id` set to David's Nexus identity
+3. Existing "Maker" board preserved with `visibility: private`, `owner_id` set to David's Haven identity
 
 ---
 
@@ -400,7 +400,7 @@ The existing OPPM tracker's SQLite data migrates to the Board Manager:
 |----|-------------|-------------------|
 | BM-C1 | Board fits on one screen | Active tasks render without scrolling at reasonable count |
 | BM-C2 | Multiple boards, one visible at a time | Board switcher changes view, URL param persists selection |
-| BM-C3 | Three-tier visibility | Set visibility to nexus → MQTT export. Set to world → MQTT export + world flag queryable. Set to private → no export. |
+| BM-C3 | Three-tier visibility | Set visibility to haven → MQTT export. Set to world → MQTT export + world flag queryable. Set to private → no export. |
 | BM-C4 | Private boards stay private | Board with visibility=private → no MQTT messages, not visible to other participants |
 | BM-C5 | Major item accordion | Click expand icon → minor items show/hide |
 | BM-C6 | Minor item activity accordion | Click expand icon → activity entries show/hide |
@@ -416,9 +416,9 @@ The existing OPPM tracker's SQLite data migrates to the Board Manager:
 | BM-C16 | Activity log append-only | Log entry via MCP → entry appears in Activity tab |
 | BM-C17 | Dark theme (slate/indigo) | Visual inspection: charcoal bg, teal/red/amber status |
 | BM-C18 | Board ownership enforced | Intelligence A cannot modify Intelligence B's board via MCP |
-| BM-C19 | Nexus identity required for board creation | MCP board_manage_board(create) without Nexus identity → rejected |
-| BM-C20 | Visibility controls export | Board set to nexus → appears on MQTT. Set to private → disappears from MQTT. |
-| BM-C21 | Multi-tenant board listing | board_list_boards returns own boards + nexus/world boards from others |
+| BM-C19 | Haven identity required for board creation | MCP board_manage_board(create) without Haven identity → rejected |
+| BM-C20 | Visibility controls export | Board set to haven → appears on MQTT. Set to private → disappears from MQTT. |
+| BM-C21 | Multi-tenant board listing | board_list_boards returns own boards + haven/world boards from others |
 | BM-C22 | Owner-scoped export namespaces | Two owners with "backlog" board → separate namespace subtrees on MQTT |
 
 ---
@@ -427,7 +427,7 @@ The existing OPPM tracker's SQLite data migrates to the Board Manager:
 
 - depends-on: [SPEC:CIO-APP] (dual-bus architecture, AppModule pattern, export/import)
 - depends-on: [SPEC:CIO-SERVICE-HUB-V2] (deployment target)
-- see-also: [BM-BUS-NEXUS] (board export consumed by Nexus participants)
+- see-also: [BM-BUS-HAVEN] (board export consumed by Haven participants)
 
 ---
 

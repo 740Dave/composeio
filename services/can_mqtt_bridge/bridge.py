@@ -1,7 +1,7 @@
 """CAN-to-MQTT Bridge — bidirectional ComposeIO transport bridge.
 
 Bridges CAN bus messages to MQTT and vice versa. Runs as a service hub
-workload on mqtt-broker.local and on pi.example.local (Waveshare 2-CH CAN HAT).
+workload on mqtt-broker.local and on display-node.local (Waveshare 2-CH CAN HAT).
 
 Requires:
   - Python stdlib socket (SocketCAN AF_CAN/CAN_RAW) — NO python-can
@@ -137,7 +137,7 @@ THE LAST HOLE, CLOSED (2026-08-13): A CAN-ORIGINATED NAME CAN NOW BE LEARNED
 Everything above learns `name -> hash` from MQTT. That closes ONE direction
 completely and leaves the other one wide open: **a namespace that has never
 appeared on MQTT cannot be learned at all.** A board publishing
-`_device/hosyond-d1afe8/heartbeat` puts 0xCC01 on the wire and nothing here
+`_device/hosyond-080739/heartbeat` puts 0xCC01 on the wire and nothing here
 could turn 0xCC01 back into that string — a CRC is not reversible — so the
 frame was correctly, loudly and permanently dropped. That is why device
 self-announcement shipped with CAN scoped OUT and why `composeio fleet` states

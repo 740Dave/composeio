@@ -33,7 +33,7 @@ ComposeUX — the rendering half — defines a widget **once** against a small C
 
 This snapshot is deliberately scoped to the platform core; some demo apps and internal tooling from the working tree are held back.
 
-> **Network config in examples is placeholdered.** Broker addresses and hostnames appear as `mqtt-broker.local` / `*.example.local` and device MACs as `AA:BB:CC:DD:EE:FF`. Point them at your own bus.
+> **Network config in examples is placeholdered.** Broker addresses and hostnames appear as `mqtt-broker.local` / `*.example.local` and device MACs as IEEE documentation addresses (`00:00:5E:00:53:xx`) and device serials as `<device-serial>`. Point them at your own bus.
 
 ## Status
 

@@ -11,7 +11,7 @@ Run modes:
   python3 bringup.py               # GUI form (needs a display)
 
 Live provisioning is GATED: the driver validates + assembles the plan and refuses to fire
-the serial install unless FLEET_BRINGUP_LIVE=1 (and ginger is powered on). This keeps the
+the serial install unless FLEET_BRINGUP_LIVE=1 (and fleetnode is powered on). This keeps the
 default path safe and headless-verifiable.
 """
 from __future__ import annotations
@@ -28,7 +28,8 @@ sys.path.insert(0, str(REPO / "python"))
 
 CONFIG = HERE / "minnow-bringup.compose.yaml"          # MAX surface (default)
 CONFIG_TURBOT = HERE / "turbot-bringup.compose.yaml"    # Turbot surface (--turbot)
-_PROFESSOR = "ssh -o ConnectTimeout=8 professor.local"
+#: The bench host is CONFIGURATION: FLEET_BENCH_HOST (neutral default benchnode.local).
+_BENCHNODE = "ssh -o ConnectTimeout=8 " + os.environ.get("FLEET_BENCH_HOST", "benchnode.local")
 
 
 def _opts(params: dict) -> dict:
@@ -48,7 +49,7 @@ def _capture_spec(args: dict, params: dict) -> None:
     try:
         from composeio.resolve import resolve_doc, put_doc
         try:
-            doc = resolve_doc(f"doc://fleet_devices/{host}")
+            doc = resolve_doc(f"bus://fleet_devices/{host}.json")
             for k in ("_id", "_created_at", "_updated_at"):
                 doc.pop(k, None)
         except Exception:
@@ -98,18 +99,18 @@ def _provision_run(args: dict, on_event) -> None:
     if os.environ.get("FLEET_BRINGUP_LIVE") != "1":
         on_event({"kind": "result", "ok": True, "blocked": True,
                   "summary": f"plan ready (gated): {plan}",
-                  "detail": "set FLEET_BRINGUP_LIVE=1 with ginger powered on to drive the serial install"})
+                  "detail": "set FLEET_BRINGUP_LIVE=1 with fleetnode powered on to drive the serial install"})
         return
 
-    # LIVE: hand the assembled params to fleetconsole on professor (drives the serial install).
+    # LIVE: hand the assembled params to fleetconsole on benchnode (drives the serial install).
     on_event({"kind": "progress", "pct": 40, "phase": "provision"})
     try:
-        # fleetconsole runs on professor; provision_run reads params as JSON on stdin.
+        # fleetconsole runs on benchnode; provision_run reads params as JSON on stdin.
         import json
         payload = json.dumps({"recipe": args.get("recipe"), "device": args.get("device"),
                               "params": params, "live": True})
         out = subprocess.run(
-            f"{_PROFESSOR} 'cd ~/fleetconsole && PYTHONPATH=src "
+            f"{_BENCHNODE} 'cd ~/fleetconsole && PYTHONPATH=src "
             f".venv/bin/python -m fleetconsole.provision_cli'",
             input=payload, shell=True, capture_output=True, text=True, timeout=1800)
         ok = out.returncode == 0
@@ -122,7 +123,7 @@ def _provision_run(args: dict, on_event) -> None:
 
 # ---- optional power control (reuses fleetpower's guarded HA primitives) -------
 # Import fleetpower's module directly so the outlet ALLOWLIST stays single-sourced
-# (ginger -> switch.switch5 lives only in fleetpower/config.yaml). No FastMCP is pulled;
+# (fleetnode -> switch.switch5 lives only in fleetpower/config.yaml). No FastMCP is pulled;
 # only the module-level HA helpers are used.
 _FP = None
 
@@ -131,7 +132,7 @@ def _fleetpower():
     global _FP
     if _FP is None:
         import importlib.util
-        fp = Path.home() / "Dropbox/Maker/fleetpower/mcp_server.py"
+        fp = Path(os.environ.get("MAKER_HOME", str(Path.home() / "maker"))) / "fleetpower/mcp_server.py"
         spec = importlib.util.spec_from_file_location("fleetpower_srv", fp)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -150,7 +151,7 @@ def _plug_entity(mod, cfg: dict, target, *, guard: bool) -> str:
     if target in (None, ""):
         raise ValueError("no plug/target specified (enter the Kasa plug #)")
     reg = mod._registered(cfg)
-    if target in reg:                                   # alias, e.g. ginger
+    if target in reg:                                   # alias, e.g. fleetnode
         return reg[target]
     s = str(target).strip()
     if s.isdigit():
@@ -210,7 +211,7 @@ def invoke_action(tool: str, args: dict, on_event) -> None:
 # When True, the pane fetches its surface FRESH from the bus (doc store) instead of the
 # local file — the DP-CIO-23 "widget bindings live in bus storage" path. Set by --from-bus.
 _FROM_BUS = False
-_SURFACE_DOC = "doc://surfaces/minnow-bringup"
+_SURFACE_DOC = "bus://surfaces/minnow-bringup.json"
 
 
 def _load_cfg():
@@ -295,7 +296,7 @@ def plan() -> int:
             bus.publish_state(name, ph[name], source="test")
     # Required + interesting overrides: a real hostname, a real $6$ hash, and (Turbot) exercise
     # the kiosk profile path so the full param set is populated.
-    bus.publish_state("bringup/hostname", ph.get("bringup/hostname", "ginger"), source="test")
+    bus.publish_state("bringup/hostname", ph.get("bringup/hostname", os.environ.get("FLEET_BRINGUP_DEFAULT_HOST", "fleetnode")), source="test")
     bus.publish_state("bringup/pw_hash", hash_password("correct horse battery staple"), source="test")
     if any(n["name"] == "bringup/session_profile" for n in cfg.get("namespaces", [])):
         bus.publish_state("bringup/session_profile", "kiosk", source="test")

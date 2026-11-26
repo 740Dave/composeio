@@ -46,11 +46,11 @@ ESP-IDF).
 | `office_fan` | `office_fan` | **TBD** | yes — 1 msg | ESP32 + fan relays, on the desk, untouched |
 | `office_hepa` | `office_hepa` | **TBD** | no | idle or offline — unknown which |
 | `dual_throttle` | `dual-throttle` | **TBD** | via `throttle/*` | ⚠ runtime id is `cio-ctrl-db1c`, **not** `dual-throttle` |
-| `dradis_console` | `qualia-6c9d0c` | `AA:BB:CC:DD:EE:FF` | yes — 50 msgs | Qualia/DRADIS, untouched |
-| `engine_thrust_panel` | `hosyond-d1afe8` | `AA:BB:CC:DD:EE:FF` | yes, over UART | live on the bench |
+| `dradis_console` | `qualia-004df8` | `00:00:5e:00:53:04` | yes — 50 msgs | Qualia/DRADIS, untouched |
+| `engine_thrust_panel` | `hosyond-080739` | `00:00:5e:00:53:01` | yes, over UART | live on the bench |
 
-Plus, from tonight and not in any `device.yaml`: `wsc6-6f4ce4` (Waveshare C6, offline,
-**owes a reflash**) and `c3can-c28020` (C3 Super Mini + ST7796S).
+Plus, from tonight and not in any `device.yaml`: `wsc6-07f199` (Waveshare C6, offline,
+**owes a reflash**) and `c3can-047dd8` (C3 Super Mini + ST7796S).
 
 ### The two problems
 
@@ -263,11 +263,11 @@ see workstream 0 for why the list below cannot yet be trusted to be complete.
 
 | device | id | transport today | state |
 |---|---|---|---|
-| Hosyond ESP32-S3 | `hosyond-d1afe8` | UART, radio down | live on the bench; config-over-bus proven cold-boot |
-| Waveshare C6 | `wsc6-6f4ce4` | offline | **owes a reflash + runtime re-verify** — build-verified only |
-| C3 Super Mini + ST7796S | `c3can-c28020` | CAN, listen-only | listen-only is a WORKAROUND for a dead transceiver, not a design |
+| Hosyond ESP32-S3 | `hosyond-080739` | UART, radio down | live on the bench; config-over-bus proven cold-boot |
+| Waveshare C6 | `wsc6-07f199` | offline | **owes a reflash + runtime re-verify** — build-verified only |
+| C3 Super Mini + ST7796S | `c3can-047dd8` | CAN, listen-only | listen-only is a WORKAROUND for a dead transceiver, not a design |
 | C3 dual-throttle | `cio-ctrl-db1c` | USB serial → Mac app | see E; ⚠ live infrastructure |
-| **Qualia / DRADIS** | `qualia-6c9d0c` | on the bus | **untouched in 24 h**; builds correctly now but still runs an older binary |
+| **Qualia / DRADIS** | `qualia-004df8` | on the bus | **untouched in 24 h**; builds correctly now but still runs an older binary |
 | **ESP32 fan relays** | `office_fan` | on the bus | **untouched**; MAC unrecorded; publishes ~1 msg/25 s |
 | **ESP32 HEPA** | `office_hepa` | unknown | **not seen on the bus** — idle or offline, unknown which |
 | CYD | — | — | build-verified only, not on the bench |
@@ -497,7 +497,7 @@ root or a DHCP broadcast address: one hardcoded entry, and the rest is learned.
 learns from. What that cannot reach is a transceiver, bit timing, arbitration, or a TWAI
 controller refusing a frame under load.
 
-**G5 is a reflash task, not an edit.** The nine hand-typed `c3can-c28020` entries stay in
+**G5 is a reflash task, not an edit.** The nine hand-typed `c3can-047dd8` entries stay in
 `composeio-can-bridge.env` until that board is flashed with `ns_announce` — removing them
 first would un-name a node that works today to prove a point about a mechanism it does not
 have. Delete them in the same change that flashes it.
@@ -533,8 +533,8 @@ and the expensive thing is not the change, it is a *second* change later.
 
 1. **Explicit priority field.** Today `ns_hash` occupies the top 16 bits, so arbitration
    priority is a pseudo-random function of the namespace *name*. `throttle/left` (0x03F6)
-   wins everything **by luck**; `_device/wsc6-6f4ce4/config` (0x8921) outranks
-   `_device/hosyond-d1afe8/config` (0xC6B6) because of a MAC suffix; `shields` (0xCC50) is
+   wins everything **by luck**; `_device/wsc6-07f199/config` (0x8921) outranks
+   `_device/hosyond-080739/config` (0xC6B6) because of a MAC suffix; `shields` (0xCC50) is
    the lowest-priority thing on the bus.
 2. **`scope` preservation** — silently lost on every CAN round trip today. The ratified
    relay semantics *require* scope; a relay that cannot see it cannot implement them.
@@ -917,7 +917,7 @@ differently at this level.
 
 **Lean RP2040 if the card is meant to absorb arbitrary timing-critical peripherals** —
 which is the whole thesis. PIO is the difference between a card that supports the
-peripherals we anticipated and one that supports the peripherals we nexus't met.
+peripherals we anticipated and one that supports the peripherals we haven't met.
 
 | # | task | status |
 |---|---|---|

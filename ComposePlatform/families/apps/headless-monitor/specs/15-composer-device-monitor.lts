@@ -15,7 +15,7 @@ domain: PLT.CUX
 
 ## [DM-1] Why: the surface should follow the device
 
-In a fleet, devices are heterogeneous and change over time — ginger loses its disk and comes back re-provisioned; a new node joins; an ESP32 exposes temperature but no power control. Hand-authoring a bespoke panel per device does not scale and goes stale the moment hardware changes. `device_monitor` makes the panel a **function of the device's live self-description**: no capability, no widget; new capability, new widget; capability gone (device dark), widget reflects absence. The author declares *intent* ("monitor ginger, using these components for these capability kinds"), not a fixed widget list.
+In a fleet, devices are heterogeneous and change over time — fleetnode loses its disk and comes back re-provisioned; a new node joins; an ESP32 exposes temperature but no power control. Hand-authoring a bespoke panel per device does not scale and goes stale the moment hardware changes. `device_monitor` makes the panel a **function of the device's live self-description**: no capability, no widget; new capability, new widget; capability gone (device dark), widget reflects absence. The author declares *intent* ("monitor fleetnode, using these components for these capability kinds"), not a fixed widget list.
 
 > test: If adding a capability to a device requires editing the surface config to see it, device_monitor has failed its purpose.
 
@@ -28,18 +28,18 @@ The load-bearing rule. `device_monitor` must not guess "`*_temp_c` looks like a 
 ```yaml
 # published by the device's adapter as discovery metadata for each namespace it owns
 capability:
-  namespace: ginger/cpu_temp_c
+  namespace: fleetnode/cpu_temp_c
   kind: temperature          # SEMANTIC role, not a value guess
   unit: celsius
   range: {min: 0, max: 100}
   writable: false            # read-only telemetry
 # a control capability:
 capability:
-  namespace: ginger/power
+  namespace: fleetnode/power
   kind: power_cycle
   writable: true
   tool: fleetpower.power_cycle   # the mcp_action this capability maps to (spec 13)
-  args_template: {target: ginger}
+  args_template: {target: fleetnode}
 ```
 
 `kind` is the semantic hinge (`temperature | percent | bytes_free | uptime | throughput | power_cycle | reboot | link_status | …`). This reuses ComposeIO's principle that **the edge closes the semantic gap** (DP): the device says *what a value means*, not just its number — so the surface (or an agent) can render it without domain heuristics. Devices too dumb to self-describe get a static adapter that advertises on their behalf (same pattern as the Phase-1 console adapter).
@@ -50,8 +50,8 @@ capability:
 
 ```yaml
 - type: device_monitor
-  device: ginger                      # namespace prefix / device id to discover
-  label: "ginger"
+  device: fleetnode                      # namespace prefix / device id to discover
+  label: "fleetnode"
   capability_map:                     # capability kind → which component to stamp (spec 14 vocabulary)
     - {match: {kind: temperature}, use: temp-gauge,    params: {label: "{{ns.label}}", ns: "{{ns.namespace}}", max: "{{ns.range.max}}"}}
     - {match: {kind: percent},     use: util-gauge,    params: {label: "{{ns.label}}", ns: "{{ns.namespace}}"}}
@@ -71,8 +71,8 @@ For each discovered capability, `device_monitor` finds the first `match`, binds 
 
 - **Join** — capability descriptor arrives → stamp its component, grid it into the container.
 - **Update** — value changes flow through the stamped component's ordinary namespace binding (nothing special; it is a normal widget once stamped).
-- **Depart / silence** — device stops heartbeating (DP discovery timeout) → the container marks itself **degraded** and its stamped widgets go *stale* (external authority, DP-CIO-19 — never a frozen-but-green lie). ginger's disk death is the canonical case: the box pinged but stopped advertising; a `device_monitor` over it would have flipped to degraded on the heartbeat gap, surfacing the fault without anyone reading a log.
-- **Re-provision** — ginger returns with a fresh card and re-advertises → the container re-composes from scratch. No config edit.
+- **Depart / silence** — device stops heartbeating (DP discovery timeout) → the container marks itself **degraded** and its stamped widgets go *stale* (external authority, DP-CIO-19 — never a frozen-but-green lie). fleetnode's disk death is the canonical case: the box pinged but stopped advertising; a `device_monitor` over it would have flipped to degraded on the heartbeat gap, surfacing the fault without anyone reading a log.
+- **Re-provision** — fleetnode returns with a fresh card and re-advertises → the container re-composes from scratch. No config edit.
 
 Ordering/idempotency: stamping is keyed by namespace, so a re-announced capability replaces rather than duplicates.
 
@@ -102,7 +102,7 @@ Because both go through spec 14's pure `_instantiate(name, params)`, a component
 
 **1. Prometheus is ComposeIO's universal southbound.** Its exporter ecosystem is integration you do not rebuild. Write **one** Prometheus→bus bridge and anything Prometheus can already scrape becomes projectable onto the backplane — you inherit its integration surface instead of writing a ComposeIO emitter per device type. Don't out-integrate Prometheus; **ride it.** It is also the **retention layer** the bus deliberately lacks.
 
-**2. The bridge is a PROJECTION, and the dividing line is cardinality × rate — not number-vs-enum.** A precise current value of a named attribute is a first-class bus citizen: `ginger/cpu_temp_c = 61.2` is tiny (a float clears DP-CIO-18 with enormous headroom) and semantic (the namespace names the meaning; the number is its value) — it is exactly what the HUD gauges already consume. What you do *not* do is mirror *every* series at *scrape frequency*, because the bus has no retention — that pumps history-shaped data through a historyless pipe. So: project the **attributes you need** at the **rate a live surface needs them**; leave the full-resolution series in Prometheus. Two modes, chosen per attribute:
+**2. The bridge is a PROJECTION, and the dividing line is cardinality × rate — not number-vs-enum.** A precise current value of a named attribute is a first-class bus citizen: `fleetnode/cpu_temp_c = 61.2` is tiny (a float clears DP-CIO-18 with enormous headroom) and semantic (the namespace names the meaning; the number is its value) — it is exactly what the HUD gauges already consume. What you do *not* do is mirror *every* series at *scrape frequency*, because the bus has no retention — that pumps history-shaped data through a historyless pipe. So: project the **attributes you need** at the **rate a live surface needs them**; leave the full-resolution series in Prometheus. Two modes, chosen per attribute:
    - **Instant-value projection** — a bridge runs a Prometheus **instant query** (`/api/v1/query`) for a selected attribute and publishes the **precise current value** to its namespace. Cadence-driven for a live gauge, or **on-demand** (an mcp_action "refresh", or `device_monitor` asking a capability for its current state). The "I need the exact current state of this attribute on the bus" path — and there is bandwidth to spare.
    - **Derived-fact projection** — a **recording/alert rule** computes a semantic fact (`disk_free/size < 0.1 → pressure`), Alertmanager fires a **webhook**, a thin adapter publishes it. The rule *is* the edge that closes the gap; event-driven, no polling on the bus side. The "tell me when it crosses / changes regime" path.
 
@@ -110,7 +110,7 @@ Because both go through spec 14's pure `_instantiate(name, params)`, a component
 
 **3. Grafana and `device_monitor` are complementary, not competing.** Grafana answers history/trend/alert; `device_monitor` answers current-state-plus-*act-now*, is agent-authored, and runs on a CYD/ESP32 where Grafana cannot. A capability can carry a `history_url` to its Grafana panel — live control here, deep history one click away.
 
-**4. Concrete win — and the fix for what killed ginger:** the soak logged JSONL to ginger's microSD for hours and wore it out. Prometheus inverts that — endpoints run `node_exporter` (metrics served **from memory**), Prometheus **scrapes centrally**, the endpoint **writes nothing to its own flash**. Full-resolution soak history lands in retained Prometheus; only current values + the semantic verdict (`soak/phase`, `soak/verdict`) ride the bus to the HUD. Strictly better than jsonl-on-SD, and it removes the wear failure mode outright.
+**4. Concrete win — and the fix for what killed fleetnode:** the soak logged JSONL to fleetnode's microSD for hours and wore it out. Prometheus inverts that — endpoints run `node_exporter` (metrics served **from memory**), Prometheus **scrapes centrally**, the endpoint **writes nothing to its own flash**. Full-resolution soak history lands in retained Prometheus; only current values + the semantic verdict (`soak/phase`, `soak/verdict`) ride the bus to the HUD. Strictly better than jsonl-on-SD, and it removes the wear failure mode outright.
 
 Net: **Prometheus as universal southbound + retention; a projection bridge (instant-value and/or derived-fact) onto the bus; ComposeUX for the live, actionable surface.** ComposeIO doesn't out-integrate Prometheus and doesn't become a TSDB; Prometheus doesn't become the bus.
 

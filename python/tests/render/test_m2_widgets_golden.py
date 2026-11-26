@@ -108,11 +108,11 @@ def _checkbox_states():
 def _text_input_states():
     c = _canvas(260, 250)
     w1 = TextInputWidget("t1", label="Board name (hostname)",
-                         placeholder="ginger")
+                         placeholder="fleetnode")
     w1.draw(c, Rect(6, 2, 248, 66))
 
     w2 = TextInputWidget("t2", label="Board name (hostname)")
-    w2.text = "professor"
+    w2.text = "benchnode"
     w2.cursor = len(w2.text)
     w2.focused = True
     w2._now = lambda: 0.25            # cursor visible
@@ -144,7 +144,7 @@ def _command_states():
 
     w3 = CommandWidget("k3", label="Health check", binding=binding)
     w3._status_key, w3._status_text = "ok", "done ✓"
-    w3._result_text = "provisioned ginger in 210s"
+    w3._result_text = "provisioned fleetnode in 210s"
     w3._result_color = (0xCC, 0xCC, 0xCC)
     w3.draw(c, Rect(6, 174, 288, 84))
     return c
@@ -173,9 +173,9 @@ def _doc_picker_rows():
     c = _canvas(300, 190)
     w = DocPickerWidget("d1", label="Saved MinnowBoards")
     w._rows = [
-        {"doc_id": "ginger", "device": "ginger", "role": "fleet unit"},
-        {"doc_id": "professor", "device": "professor", "role": "bench"},
-        {"doc_id": "gilligan", "device": "gilligan", "role": "fleet unit"},
+        {"doc_id": "fleetnode", "device": "fleetnode", "role": "fleet unit"},
+        {"doc_id": "benchnode", "device": "benchnode", "role": "bench"},
+        {"doc_id": "fleetnode2", "device": "fleetnode2", "role": "fleet unit"},
     ]
     w._status_text = "3 saved — pick one to load"
     w.draw(c, Rect(6, 4, 288, 182))

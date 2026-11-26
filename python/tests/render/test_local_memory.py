@@ -89,9 +89,9 @@ def test_bus_state_parses_hook_as_description():
     w.on_bus_state(w.namespace, [
         {"name": "rpi5 kiosk", "hook": "boots NVMe, launcher autostart",
          "path": "/x/rpi5-kiosk.md"},
-        {"name": "nexus fork", "hook": "the claude-hud fork",
-         "path": "/x/nexus.md"}])
-    assert [it["name"] for it in w._items] == ["rpi5 kiosk", "nexus fork"]
+        {"name": "haven fork", "hook": "the claude-hud fork",
+         "path": "/x/haven.md"}])
+    assert [it["name"] for it in w._items] == ["rpi5 kiosk", "haven fork"]
     # hook is folded onto the description slot the detail/rows render
     assert w._items[0]["description"] == "boots NVMe, launcher autostart"
     assert w._items[0]["loaded"] is True     # defaults true (no loaded key)
@@ -257,13 +257,13 @@ def test_publisher_parses_index_in_order_with_abs_paths():
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "MEMORY.md"), "w", encoding="utf-8") as f:
             f.write("# Memory Index\n\n"
-                    "- [Nexus fork](nexus-hud-fork.md) — David's fork\n"
+                    "- [Haven fork](haven-hud-fork.md) — David's fork\n"
                     "- [rpi5 kiosk](rpi5-kiosk.md) - boots NVMe\n"
                     "- [External](https://example.com) — skip\n")
-        for note in ("nexus-hud-fork.md", "rpi5-kiosk.md"):
+        for note in ("haven-hud-fork.md", "rpi5-kiosk.md"):
             open(os.path.join(d, note), "w").close()
         arr = pub.project(d)
-    assert [m["name"] for m in arr] == ["Nexus fork", "rpi5 kiosk"]  # index order
+    assert [m["name"] for m in arr] == ["Haven fork", "rpi5 kiosk"]  # index order
     assert arr[0]["hook"] == "David's fork"
     assert arr[1]["hook"] == "boots NVMe"
     for m in arr:

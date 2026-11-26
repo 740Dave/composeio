@@ -3,8 +3,9 @@ ComposeUX StoreBrowserWidget — the list-left NAVIGATION SHELL over a storage
 service ([SPEC:CXC-LAUNCHBAR] [CXC-DOCNAV-*] / [CXC-BUSNAV-*]).
 
 This is the shared browse widget behind BOTH the Document Storage viewer
-([CXC-DOCNAV-APP], over docstore / `doc://`) and the Bus Storage viewer
-([CXC-BUSNAV-APP], over bus_storage / `bus://assets`).  It is a NAVIGATION
+([CXC-DOCNAV-APP], over the doc catalog / `bus://<collection>/<id>.json`) and the
+Bus Storage viewer ([CXC-BUSNAV-APP], over bus_storage / `bus://assets`) — both now
+faces of the ONE unified store ([SPEC:CXC-STORE]).  It is a NAVIGATION
 SHELL, not a renderer: it lists a store's tree/entries, and on selecting a leaf
 it hands the entry to the EXISTING doc-viewer by publishing `_app/doc/open`
 ([CXC-DOCNAV-VIEW] / [CXC-BUSNAV-VIEW]).  It adds NO document-rendering path of
@@ -16,8 +17,8 @@ Reuse-by-reference (R3 / the narrow waist):
     the `projects_view`/`doc_picker` list-left rows) — NOT a new look;
   * the VIEW step is the EXISTING doc-viewer via the `_app/doc/open` intent
     the console's live-links already publish — NOT a re-implemented renderer;
-  * store I/O rides the EXISTING clients (`DocumentStoreClient`,
-    `BusStorageClient`) read-only — NOT a new REST layer.
+  * store I/O rides the EXISTING clients (`DocStore`, `BusStorageClient`)
+    read-only — NOT a new REST layer.
 
 The store I/O is abstracted behind a small `StoreAdapter` duck-type so the two
 viewers differ ONLY in their adapter (which store + address scheme), and a test
@@ -27,7 +28,7 @@ the engine update queue (the `doc_picker` idiom).
 
 VIEW resolution ([CXC-DOCNAV-VIEW] repo-scoped guard): the doc-viewer launcher
 (`compose_projects/intelligence/tools/doc_viewer_launcher.py`) refuses to open a file outside the
-repo, so a selected `doc://`/`bus://` entry is FETCHED and cached to a
+repo, so a selected `bus://` entry is FETCHED and cached to a
 repo-scoped temp (`<repo>/tmp/storeview/…`) before its path is published.
 
 Read-only ([CXC-DOCNAV-READONLY] / [CXC-BUSNAV-READONLY]): there is no write /
@@ -75,7 +76,7 @@ class StoreEntry:
     label: str
     kind: str                    # "dir" | "leaf"
     segments: Tuple[str, ...]    # location within the store
-    address: str = ""            # doc://<coll>/<id> | bus://assets/<path>
+    address: str = ""            # bus://<coll>/<id>.json | bus://assets/<path>
     hint: str = ""               # subtitle (collection / content-type / id)
 
 
@@ -111,20 +112,21 @@ def _safe_name(seg: str) -> str:
 
 
 class DocStoreAdapter:
-    """Browse docstore (`doc://<collection>/<id>`) read-only.
+    """Browse the document catalog (`bus://<collection>/<id>.json`) read-only.
 
-    Two levels: collections -> entries.  Reachability is probed via `status()`
-    so an UNREACHABLE store is distinguished from an EMPTY one (both yield no
-    rows through the swallow-and-return-None client, [CXC-DOCNAV-BROWSE]
-    preserve-and-flag)."""
+    document_store is RETIRED ([SPEC:CXC-STORE]); the catalog is now path-addressed
+    JSON blobs on the ONE store (bus_storage :8420), reached through `DocStore`.
+    Two levels: collections -> entries.  Reachability is probed via `status()` so an
+    UNREACHABLE store is distinguished from an EMPTY one (both yield no rows through
+    the swallow-and-return-None client, [CXC-DOCNAV-BROWSE] preserve-and-flag)."""
 
-    root_label = "doc://"
+    root_label = "bus://"
 
-    def __init__(self, host: str = "mqtt-broker.local", port: int = 8421,
+    def __init__(self, host: str = "mqtt-broker.local", port: int = 8420,
                  client: Any = None, cache_root: Path = _CACHE_ROOT) -> None:
         if client is None:
-            from composeio.docstore import DocumentStoreClient
-            client = DocumentStoreClient(host=host, port=port)
+            from composeio.docstore import DocStore
+            client = DocStore(host=host)
         self.client = client
         self.host = host
         self.cache_root = Path(cache_root)
@@ -138,7 +140,7 @@ class DocStoreAdapter:
     def list(self, segments: Tuple[str, ...]) -> BrowseListing:
         if not self.probe():
             return BrowseListing(available=False,
-                                 note=f"docstore unreachable ({self.host}:8421)")
+                                 note=f"store unreachable ({self.host}:8420)")
         if len(segments) == 0:
             rows = self.client.list_collections() or []
             entries: List[StoreEntry] = []
@@ -150,7 +152,7 @@ class DocStoreAdapter:
                 count = r.get("count") if isinstance(r, dict) else None
                 entries.append(StoreEntry(
                     label=str(name), kind="dir", segments=(str(name),),
-                    address=f"doc://{name}",
+                    address=f"bus://{name}",
                     hint=(f"{count} docs" if count is not None else "collection")))
             return BrowseListing(entries=sorted(entries, key=lambda e: e.label))
         coll = segments[0]
@@ -163,7 +165,7 @@ class DocStoreAdapter:
                 continue
             entries.append(StoreEntry(
                 label=str(did), kind="leaf", segments=(coll, str(did)),
-                address=f"doc://{coll}/{did}", hint=coll))
+                address=f"bus://{coll}/{did}.json", hint=coll))
         return BrowseListing(entries=sorted(entries, key=lambda e: e.label))
 
     def resolve_for_view(self, entry: StoreEntry) -> Optional[str]:

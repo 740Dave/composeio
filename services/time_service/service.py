@@ -11,7 +11,7 @@ an implementation detail, not an architectural decision. The connect is
 config-driven and lives in :mod:`.__main__` (the deploy path), which builds a
 transport from a spec via ``composeio.transport_registry.build``. This module
 names no substrate and imports no concrete Transport class, exactly like
-``fingerprint_storage/service.py``.
+``fingerprint_service/service.py``.
 
 WHAT THIS BUILD COVERS ([SPEC:CXC-TIME-SERVICE] platform core):
   * ``time/base`` at a CONFIGURABLE tick, DEFAULT 1 Hz ([CXC-TIME-BASE]),

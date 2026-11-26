@@ -42,8 +42,8 @@ GUI = 0x0400            # KMOD_LGUI (macOS Cmd) — mirrors the widget literals
 TABLE = (
     "| Unit | Status | Charge |\n"
     "|:-----|:------:|-------:|\n"
-    "| gilligan | draining | 42 |\n"
-    "| skipper | idle | 88 |\n"
+    "| fleetnode2 | draining | 42 |\n"
+    "| buildhost | idle | 88 |\n"
 )
 
 
@@ -68,8 +68,8 @@ def test_parse_basic_table_rows_cols_alignment():
     assert m.headers == ["Unit", "Status", "Charge"]
     assert m.ncols == 3
     assert m.aligns == ["left", "center", "right"]
-    assert m.rows == [["gilligan", "draining", "42"],
-                      ["skipper", "idle", "88"]]
+    assert m.rows == [["fleetnode2", "draining", "42"],
+                      ["buildhost", "idle", "88"]]
 
 
 def test_parse_tolerates_missing_outer_pipes():
@@ -140,10 +140,10 @@ def test_column_widths_fit_widest_cell():
     style = mdt.TableStyle(font_size=12.0)
     layout = mdt.measure_table(c, m, style, max_width=10_000)
     assert len(layout.col_widths) == 3
-    # column 0 holds "gilligan" (widest) — measure it bold-free and confirm the
+    # column 0 holds "fleetnode2" (widest) — measure it bold-free and confirm the
     # column is at least that wide + padding
     c.set_font(mi.FAMILY_UI, 12.0, "regular")
-    gill_w = c.measure_text("gilligan").width
+    gill_w = c.measure_text("fleetnode2").width
     assert layout.col_widths[0] >= gill_w + 2 * style.cell_pad_x - 0.5
     # header row + 2 body rows
     assert abs(layout.total_height
@@ -186,7 +186,7 @@ def test_draw_table_paints_text_and_rules():
     c.draw_text, c.draw_line = dt, dl
     mdt.draw_table(c, m, layout, 10, 10, style)
     joined = "".join(drawn)
-    for token in ("Unit", "Status", "Charge", "gilligan", "draining", "88"):
+    for token in ("Unit", "Status", "Charge", "fleetnode2", "draining", "88"):
         assert token in joined
     # a header rule (a horizontal line) was drawn
     assert any(abs(y1 - y2) < 1e-6 for x1, y1, x2, y2 in lines)
@@ -206,8 +206,8 @@ def test_record_callback_fires_per_cell_row_major():
     mdt.draw_table(c, m, layout, 10, 10, style, record=rec)
     # 3 cols x 3 rows (header + 2 body) = 9 cells, row-major
     assert [s[0] for s in seen] == ["Unit", "Status", "Charge",
-                                    "gilligan", "draining", "42",
-                                    "skipper", "idle", "88"]
+                                    "fleetnode2", "draining", "42",
+                                    "buildhost", "idle", "88"]
     # every 3rd cell (column 0) is a row start
     assert [s[1] for s in seen] == [True, False, False] * 3
     # bounds have len(text)+1 entries (the one-measurement-path invariant)
@@ -231,8 +231,8 @@ def test_cell_uses_shared_inline_markdown():
 
 def _table_cells(w):
     """The recorded _SelLine cells (drawn table cells) in draw order."""
-    texts = {"Unit", "Status", "Charge", "gilligan", "draining",
-             "42", "skipper", "idle", "88"}
+    texts = {"Unit", "Status", "Charge", "fleetnode2", "draining",
+             "42", "buildhost", "idle", "88"}
     return [sl for sl in w._sel_lines if sl.text in texts]
 
 
@@ -244,7 +244,7 @@ def test_table_message_records_selectable_cells():
     cells = _table_cells(w)
     got = {sl.text for sl in cells}
     # every cell is a selectable line — no silent non-selectable holes
-    assert {"Unit", "gilligan", "draining", "88", "skipper"} <= got
+    assert {"Unit", "fleetnode2", "draining", "88", "buildhost"} <= got
     # each cell's bounds are len(text)+1 (one measurement path)
     for sl in cells:
         assert len(sl.bounds) == len(sl.text) + 1
@@ -264,8 +264,8 @@ def test_pixel_to_char_lands_in_the_right_cell():
     xmid = (dr.bounds[0] + dr.bounds[-1]) / 2.0
     pos = w._index_at(xmid, y)
     assert pos[:2] == (dr.msg_idx, dr.line_idx)
-    # aim at column 0 on the same row -> the gilligan cell, not draining
-    gl = cells["gilligan"]
+    # aim at column 0 on the same row -> the fleetnode2 cell, not draining
+    gl = cells["fleetnode2"]
     pos0 = w._index_at((gl.bounds[0] + gl.bounds[-1]) / 2.0, y)
     assert pos0[:2] == (gl.msg_idx, gl.line_idx)
 
@@ -277,14 +277,14 @@ def test_cell_selection_copies_the_expected_substring(monkeypatch):
     _reply(w, TABLE)
     c = _canvas()
     w.draw(c, Rect(0, 0, 520, 420))
-    gl = {sl.text: sl for sl in _table_cells(w)}["gilligan"]
+    gl = {sl.text: sl for sl in _table_cells(w)}["fleetnode2"]
     # select the whole cell via a drag, then Cmd+C
     y = (gl.y_top + gl.y_bot) * 0.5
     w.on_pointer_down(gl.bounds[0], y)
     w.on_pan(gl.bounds[-1] - gl.bounds[0], 0)
-    assert w._selected_text() == "gilligan"
+    assert w._selected_text() == "fleetnode2"
     w.on_key("C", GUI)
-    assert got == ["gilligan"]
+    assert got == ["fleetnode2"]
 
 
 def test_cell_highlight_band_paints_accent_line():
@@ -292,9 +292,9 @@ def test_cell_highlight_band_paints_accent_line():
     _reply(w, TABLE)
     c = _canvas()
     w.draw(c, Rect(0, 0, 520, 420))
-    gl = {sl.text: sl for sl in _table_cells(w)}["gilligan"]
+    gl = {sl.text: sl for sl in _table_cells(w)}["fleetnode2"]
     w._sel_anchor = (gl.msg_idx, gl.line_idx, 0)
-    w._sel_focus = (gl.msg_idx, gl.line_idx, len("gilligan"))
+    w._sel_focus = (gl.msg_idx, gl.line_idx, len("fleetnode2"))
     w._sel_epoch = w._epoch()
 
     t = ct.CONSOLE.active
@@ -314,8 +314,8 @@ def test_cell_highlight_band_paints_accent_line():
     c.set_fill_color, c.fill_rect = set_fill, fill_rect
     w.draw(c, Rect(0, 0, 520, 420))
     assert bands, "a cell selection must paint the accent_line band"
-    gl2 = {sl.text: sl for sl in _table_cells(w)}["gilligan"]
-    expect_w = gl2.bounds[len("gilligan")] - gl2.bounds[0]
+    gl2 = {sl.text: sl for sl in _table_cells(w)}["fleetnode2"]
+    expect_w = gl2.bounds[len("fleetnode2")] - gl2.bounds[0]
     assert any(abs(bw - expect_w) < 0.5 for _x, bw in bands)
 
 
@@ -326,7 +326,7 @@ def test_table_and_prose_coexist_in_one_bubble():
     w.draw(c, Rect(0, 0, 520, 420))
     got = {sl.text for sl in w._sel_lines}
     assert "before" in got and "after" in got     # prose still there
-    assert "gilligan" in got                        # table cell too
+    assert "fleetnode2" in got                        # table cell too
 
 
 # ── seeded full-scene render (glass-checkable PNG) ────────────────────────────
@@ -337,7 +337,7 @@ def test_seeded_console_table_render(tmp_path):
                    {"from": "architect",
                     "text": "Pulling the fleet roster now."})
     _reply(w, "Here is the current fleet — **charge** is the gate:\n\n"
-              + TABLE + "\nRecommend cycling `gilligan` before the soak.")
+              + TABLE + "\nRecommend cycling `fleetnode2` before the soak.")
     w.on_bus_state("intelligence/architect/in",
                    {"from": "david", "text": "proceed"})
     c = _canvas(520, 420)

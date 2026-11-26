@@ -66,6 +66,24 @@ class UnknownTransportError(ValueError):
     """
 
 
+class TransportPolicyError(ValueError):
+    """A construction-time POLICY/CONFIG refusal on a syntactically-valid,
+    REACHABLE declaration — structurally the same class as
+    ``UnknownTransportError``, NOT an environment fact.
+
+    ``build()`` RE-RAISES this, never degrading it to a silent ``None``+log. The
+    None+log degrade is reserved for a KNOWN type whose BACKEND is genuinely
+    unreachable (broker down, no CAN iface, pyserial absent) — "we know what you
+    asked for, and it isn't reachable right now." A policy refusal is the OTHER
+    axis: "your config is reachable and well-formed, but we refuse it" (e.g. a
+    world-facing bind with no auth). Silently degrading such a refusal to None
+    would reintroduce the exact looks-obeyed-but-isn't defect this registry
+    exists to remove — one layer down, in the factory rather than the dispatch.
+
+    Subclass this for any construction-time refusal a factory raises; ``build()``
+    re-raises the whole family, mirroring its ``UnknownTransportError`` rule."""
+
+
 def register(type_name: str, factory: Callable[[dict, str], Any]) -> None:
     """Register `factory` for scenes declaring `type: <type_name>`."""
     _FACTORIES[str(type_name).strip().lower()] = factory
@@ -96,7 +114,11 @@ def build(spec: dict, *, app_id: str = "composeio") -> Optional[Any]:
             "silently running local-only is the defect this registry removes.")
     try:
         return factory(spec, app_id)
-    except UnknownTransportError:
+    except (UnknownTransportError, TransportPolicyError):
+        # A policy/config refusal is NOT an environment fact — re-raise it,
+        # exactly as an unknown `type:` is re-raised. Degrading it to None+log
+        # would silently bypass a deliberate, loud-by-design refusal (e.g. a
+        # world-facing bind with no auth, `UnsafeBindError`).
         raise
     except Exception as exc:                      # noqa: BLE001 — environment, not a bug
         logger.warning("transport %r unavailable (app runs local-only): %s", ttype, exc)
@@ -177,11 +199,37 @@ def _replay(spec: dict, app_id: str):
     return ReplayTransport(spec.get("capture") or spec.get("file"))
 
 
+def _ws(spec: dict, app_id: str):
+    # THE ONE LISTEN-ROLE FACTORY. Every sibling above DIALS a fabric that
+    # already exists (broker, CAN iface, serial port); `type: ws` has no fabric
+    # to dial — it OPENS A LISTEN SOCKET and each accepted browser tab becomes
+    # one bus peer ([SPEC:CXC-WS] [CXC-WS-CONNECTOR-NOT-PLUGIN]). The declared-
+    # config idiom is unchanged; only the socket's direction inverts. Imported
+    # LAZILY like the others so a missing `websockets` never breaks the rest.
+    from composeio.transport_ws import _ws as _ws_factory
+    return _ws_factory(spec, app_id)
+
+
+def _mcp(spec: dict, app_id: str):
+    # THE AGENT-FACING LISTEN-ROLE FACTORY. Sibling of `type: ws` one layer up:
+    # where `ws` makes a browser a bus peer carrying raw namespace traffic,
+    # `mcp` makes an Intelligence a bus peer carrying TOOL CALLS — ONE
+    # aggregating umbrella per ComposeServer ([SPEC:CXC-MCP]
+    # [CXC-MCP-CONNECTOR-NOT-PLUGIN]). Imported LAZILY like the others so a
+    # missing MCP SDK never breaks the rest — and, crucially, `transport_mcp`
+    # itself imports the SDK only at `start()`, so even building this factory
+    # (and `known_types()` reporting `mcp`) works with the SDK absent.
+    from composeio.transport_mcp import _mcp as _mcp_factory
+    return _mcp_factory(spec, app_id)
+
+
 register("mqtt", _mqtt)
 register("can", _can)
 register("uart", _uart)
 register("synthetic", _synthetic)
 register("replay", _replay)
+register("ws", _ws)
+register("mcp", _mcp)
 
 
 def _selftest() -> int:

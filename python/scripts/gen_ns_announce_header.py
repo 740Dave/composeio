@@ -51,14 +51,14 @@ OUT = os.path.join(REPO, "cyd", "test", "ns_announce_generated.h")
 #: six-namespace baseline board, and a duplicate (which must collapse, not
 #: repeat — an announcement is a SET).
 PAYLOAD_CASES: list[tuple[str, list[str]]] = [
-    ("single name, no separator", ["_device/hosyond-d1afe8/heartbeat"]),
+    ("single name, no separator", ["_device/hosyond-080739/heartbeat"]),
     ("the baseline board's six", [
-        "_device/hosyond-d1afe8/heartbeat",
-        "_device/hosyond-d1afe8/build",
-        "_device/hosyond-d1afe8/transport",
-        "_device/hosyond-d1afe8/scene",
-        "_device/hosyond-d1afe8/health",
-        "_device/hosyond-d1afe8/announce",
+        "_device/hosyond-080739/heartbeat",
+        "_device/hosyond-080739/build",
+        "_device/hosyond-080739/transport",
+        "_device/hosyond-080739/scene",
+        "_device/hosyond-080739/health",
+        "_device/hosyond-080739/announce",
     ]),
     ("a non-_device namespace announces too", ["throttle/left", "shields"]),
     ("duplicates collapse", ["a/b", "a/b", "c/d"]),
@@ -81,7 +81,7 @@ REFUSAL_CASES: list[tuple[str, str]] = [
 #: Names that must be ACCEPTED — the negative control for the refusals above. A
 #: validator that refused everything would pass a refusal-only corpus.
 ACCEPT_CASES = [
-    "_device/hosyond-d1afe8/heartbeat",
+    "_device/hosyond-080739/heartbeat",
     "throttle/left",
     "a",
     "_",

@@ -45,6 +45,18 @@ struct SensorSpec {
                                     /*   |val - last_emitted| >= deadband   */
     float ema_alpha = 0.0f;         /* 0 = off; else EMA on raw ADC:        */
                                     /*   a*raw + (1-a)*state (smooth glide)  */
+    /* --- OUTPUT-SCALE QUANTIZATION (config-driven) ---------------------- */
+    /* When step > 0, snap the conditioned output to the nearest multiple of
+     * `step` (in OUT-SCALE codes: 0..out_max) so a pot emits coarse LEVELS
+     * (e.g. step=10 -> 0,10,20,...) instead of the full ramp.  With the
+     * existing emit-on-change gate this makes the wire publish ONLY on a
+     * LEVEL change — cutting bus volume for every consumer.  Snapping uses
+     * boundary HYSTERESIS (margin = `deadband`) so ADC noise near a level
+     * boundary does not chatter, and RAILS (0 / out_max) escape the snap so
+     * they stay exactly reachable — see signal_conditioning.cpp RULE 4.
+     * ⛔ DEFAULT 0 = DISABLED (no quantize): every existing config that does
+     * NOT declare `step` is byte-identical in behaviour. */
+    int step = 0;                   /* 0 = off; else out-scale level size    */
     /* --- CALIBRATION / SAFETY BANDS, in RAW ADC CODES -------------------- */
     /* The INPUT half of the SAME clamped linear map the OUTPUT half already
      * runs (actuator_hal.cpp `_map_scaled`: in_min/in_max -> 0..out_max).

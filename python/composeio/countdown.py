@@ -326,13 +326,29 @@ class CountdownService:
             cd.in_namespace, "json", scope=Scope.GLOBAL,
             refresh_interval=COUNTDOWN_INTERVAL_S)
 
+    @staticmethod
+    def _claims_for(bus) -> dict:
+        """The per-bus subject->owner claim table, OWNED BY COUNTDOWN.
+
+        Created lazily on first claim rather than in the bus constructor: the
+        claim table is a countdown concern that had LEAKED into the kernel's
+        __init__ (a micro-kernel violation). It lives on the bus object (one
+        table per bus, which is the invariant the two-masters check needs) but
+        the kernel no longer knows it exists ([DEC-...-BUS-STANDUP-2026-08-23]).
+        """
+        claims = getattr(bus, "_countdown_claims", None)
+        if claims is None:
+            claims = {}
+            bus._countdown_claims = claims
+        return claims
+
     def _claim(self, subject: str) -> None:
         """One deriver per subject.  Two is the two-masters clock argument.
 
         It fails LOUDLY rather than letting `/in` jitter between two publishers'
         arithmetic — a symptom that looks like network jitter and is not.
         """
-        claims = self._bus._countdown_claims
+        claims = self._claims_for(self._bus)
         owner = claims.get(subject)
         if owner is not None and owner is not self:
             raise ValueError(
@@ -342,7 +358,7 @@ class CountdownService:
         claims[subject] = self
 
     def _release(self, subject: str) -> None:
-        claims = self._bus._countdown_claims
+        claims = self._claims_for(self._bus)
         if claims.get(subject) is self:
             del claims[subject]
 

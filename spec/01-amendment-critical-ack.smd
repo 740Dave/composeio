@@ -183,7 +183,7 @@ Total window from initial send to fault: **1250ms** (50 + 200 + 1000).
 
 - Each retry re-publishes the **complete original message** with the **same `cid`**. On CAN, the frame is byte-identical to the original. On JSON transports, `cid` is preserved and `seq` is incremented (JSON dedup uses `(src, seq)`, so a new seq prevents the broker/runtime from dropping the retry; the subscriber deduplicates on `cid` via its processed-cid cache)
 - **CAN dedup bypass**: Critical frames (`pri: critical`) bypass the bus runtime's `(src, seq)` deduplication filter entirely. Deduplication is handled at the application level by the subscriber's processed-cid cache, keyed on `(src_hash, cid)`. This is necessary because CAN critical frames carry `cid` in place of `seq` (section 4.2)
-- Retries go to all subscribers, not just the ones that nexus't acked. Subscribers that already processed the `cid` MUST NOT re-execute — they re-ack from their processed-cid cache (idempotent)
+- Retries go to all subscribers, not just the ones that haven't acked. Subscribers that already processed the `cid` MUST NOT re-execute — they re-ack from their processed-cid cache (idempotent)
 - If a partial set of acks is received (some subscribers acked, others didn't), only the non-acked subscribers contribute to the fault event
 - The publisher's ack-pending table entry is cleared when ALL expected ackers respond, OR on retry exhaustion
 

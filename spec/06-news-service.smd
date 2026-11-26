@@ -1,0 +1,418 @@
+---
+scope: "External knowledge acquisition service — polls configurable sources, extracts and summarizes content, delivers to Haven agent inboxes via ComposeIO MQTT bus"
+audience: "Haven Builder (implementation), Haven Architect (design authority), Domain Agents and Named Personas (subscription configuration)"
+boundary: "News service workload only; bus protocol in 01-composeio-bus-protocol.smd; Haven bridge in 04-haven-bridge.smd; Haven namespace model in ~/haven/spec/20-haven-namespace-model.smd"
+not-this: "Not the Haven web bridge (outbound publication); not internal Haven notifications (reserve 'news' namespace for that); not a general-purpose web scraper; not an RSS reader app"
+depends-on: [01-composeio-bus-protocol.smd, 04-haven-bridge.smd]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+# ComposeIO News Service [SPEC:CIO-NEWS]
+
+> Asynchronous external knowledge acquisition for Haven agents — polls registered sources, extracts content, generates executive summaries, and delivers to agent `news_service` inboxes via the ComposeIO MQTT bus.
+
+---
+
+## 1. Problem
+
+Claude instances have a training data cutoff. Domain Agents working on specific technology stacks make recommendations based on stale knowledge. Named Personas exploring ideas lack awareness of recent developments. Currently, agents burn session compute on ad-hoc web searches — expensive, unreliable, and duplicated across sessions.
+
+The news service solves this by acquiring external knowledge asynchronously between sessions and delivering pre-summarized, agent-relevant content to inboxes. Agents triage at session start — seconds of review instead of minutes of searching.
+
+---
+
+## 2. Design Principles
+
+### [DP-NEWS-1] Async Acquisition, Sync Consumption
+
+> The service acquires knowledge between sessions. Agents consume it during sessions. The two activities never compete for the same compute.
+
+- rationale: Session compute is the scarcest resource. Web fetching, content extraction, and summarization happen on the news service's own schedule — not during an agent's design or build session.
+- mechanism: Cron-scheduled or interval-based polling. Results delivered to MQTT. Agents read inbox at `/haven-start` or `/nudge`.
+
+### [DP-NEWS-2] Agent-Defined Subscriptions, Service-Curated Delivery
+
+> Agents register topics of interest. The service decides which articles are relevant enough to deliver. Agents decide which delivered articles to keep.
+
+- rationale: Agents know what they need. The service knows what's available. Neither should make the other's decision. A firehose is worse than nothing.
+- mechanism: Topic registrations with specificity requirements. Service ranks by relevance, delivers top N per topic per cycle. Agent triages inbox.
+
+### [DP-NEWS-3] Source-Agnostic Architecture
+
+> The service supports any source that can be polled for content — RSS feeds, GitHub releases, PyPI packages, web pages, APIs, academic preprints, trade publications, government databases. Sources are plugins, not hardcoded.
+
+- rationale: Different agents need radically different sources. The Builder needs PyPI and GitHub. The Soul Brothers need philosophy journals and cognitive science preprints. The Documentarian needs media outlets and cultural commentary. The Architect needs standards bodies and protocol specs. No fixed source list covers this.
+- mechanism: Source adapter interface with pluggable implementations.
+
+### [DP-NEWS-4] Summarization via Claude API
+
+> Content summarization uses the Anthropic API (Haiku model) for short, bounded tasks. This is the compute model's designated path for precise, low-cost operations.
+
+- rationale: Extractive summarization loses nuance. A 200-word executive summary by Haiku costs fractions of a cent and captures what matters. The compute architecture doc reserves the API for exactly this pattern.
+- fallback: If API is unavailable, deliver raw extracted text (no summary). Never block delivery on summarization failure.
+
+---
+
+## 3. Architecture
+
+### [NEWS-ARCH] System Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                 mqtt-broker.local                    │
+│                                                          │
+│  ┌──────────────┐     ┌──────────────┐                   │
+│  │ News Service  │────►│ ComposeIO    │                   │
+│  │ (Python)      │     │ MQTT Broker  │                   │
+│  │               │     │ :1884        │                   │
+│  │ - Scheduler   │     └──────┬───────┘                   │
+│  │ - Source Mgr  │            │                           │
+│  │ - Extractor   │            │ MQTT publish              │
+│  │ - Summarizer  │            ▼                           │
+│  │ - Dedup       │     ┌──────────────┐                   │
+│  └──────┬───────┘     │ Haven-CIO    │                   │
+│         │              │ Bridge       │                   │
+│         │ HTTP fetch   │              │                   │
+│         ▼              │ Routes to    │                   │
+│    External Sources    │ agent inboxes│                   │
+│    (RSS, GitHub,       └──────────────┘                   │
+│     PyPI, web, ...)                                      │
+└──────────────────────────────────────────────────────────┘
+```
+
+### [NEWS-FLOW] Data Flow
+
+```
+1. Scheduler triggers poll cycle (cron or interval, configurable per source)
+2. Discovery: scan agent namespaces for */news_service/subscriptions documents
+3. Source Manager iterates discovered subscriptions across all agents
+4. Source Adapter fetches new content since last poll for each topic
+5. Extractor strips ads/boilerplate (trafilatura for web, native parsing for structured sources)
+6. Dedup checks content hash against delivered history — skips duplicates
+7. Summarizer generates exec summary via Claude API (Haiku) — title, 3-5 key points, relevance note
+8. Service publishes to MQTT: composeio/global/news_service (with target_agent field)
+9. Haven-ComposeIO Bridge routes to agent's news_service inbox
+10. Agent triages at session start: keep (promote to Haven memory) or purge
+```
+
+---
+
+## 4. Subscription Model
+
+### [NEWS-SUB-NAMESPACE] Namespace-Native Subscriptions
+
+Agents publish their subscription preferences to their own namespace. The news service discovers subscriptions by watching `*/news_service/subscriptions` across all agent and persona namespaces. No centralized subscription config.
+
+**Domain Agent subscriptions:**
+```
+haven::domain_agents::<role>/news_service/subscriptions
+```
+
+**Named Persona subscriptions:**
+```
+haven::named_personas::<name>/news_service/subscriptions
+```
+
+**Custodial Human subscriptions:**
+```
+haven::custodial_human::david/news_service/subscriptions
+```
+
+### [NEWS-SUB-FORMAT] Subscription Document Format
+
+Agents write a YAML-structured document to their subscriptions namespace:
+
+```yaml
+# Written by haven-builder to haven::domain_agents::builder/news_service/subscriptions
+topics:
+  - id: python-releases
+    query: "Python 3.13+ release notes, changelog, migration guides"
+    sources: [pypi-releases, github-cpython, python-blog]
+    max_per_cycle: 3
+    priority: high
+
+  - id: fastapi-updates
+    query: "FastAPI releases, Starlette updates, uvicorn changes"
+    sources: [pypi-releases, github-tiangolo-fastapi]
+    max_per_cycle: 2
+    priority: medium
+
+  - id: mcp-protocol
+    query: "Model Context Protocol specification changes, MCP server implementations"
+    sources: [github-anthropics, web-search]
+    max_per_cycle: 3
+    priority: high
+```
+
+- self-service: Agents add, modify, or remove topics by rewriting their subscription document during any session. No approval process, no central config to update.
+- custodial-human: David can add subscriptions to his own namespace or to any agent's namespace (universal write as Custodial Human).
+- discovery: At each poll cycle, the news service scans Haven namespaces matching `*/news_service/subscriptions` via the Haven-ComposeIO Bridge to collect active subscriptions.
+
+### [NEWS-SUB-LIFECYCLE] Subscription Liveness
+
+- stale-prevention: Subscriptions live in the agent's namespace. If an agent is archived, their namespace becomes inactive — the news service naturally stops polling for them. No orphaned subscriptions in a central store.
+- reactivation: When an archived agent is reactivated, their subscriptions are immediately visible again. Zero manual cleanup.
+
+### [NEWS-SUB-SPECIFICITY] Specificity Requirements
+
+- minimum: Each topic must have a `query` field of sufficient specificity that a search engine would return < 50 results per week
+- too-broad: "Python" — rejected
+- acceptable: "Python 3.13 asyncio changes" — specific enough to be actionable
+- enforcement: Service logs warnings for topics that consistently exceed delivery caps, suggesting the agent narrow the query
+
+---
+
+## 5. Source Adapter Interface
+
+### [NEWS-SOURCE-INTERFACE] Adapter Contract
+
+```python
+class SourceAdapter:
+    """Base interface for all news source adapters."""
+
+    def poll(self, query: str, since: datetime) -> list[RawArticle]:
+        """Fetch articles matching query published since last poll."""
+        ...
+
+    def source_id(self) -> str:
+        """Unique identifier for this source type."""
+        ...
+```
+
+### [NEWS-SOURCE-ADAPTERS] Example Adapters
+
+| Adapter | Source Type | Content Format | Use Case |
+|---------|-----------|---------------|----------|
+| `rss` | Any RSS/Atom feed | XML → extracted text | Blogs, project news, journals |
+| `github-releases` | GitHub Releases API | JSON → release notes markdown | Library/tool version tracking |
+| `pypi-releases` | PyPI JSON API | Package metadata + changelog | Python dependency monitoring |
+| `web-search` | Search API (Brave, SearXNG) | HTML → extracted text | Broad topic discovery |
+| `arxiv` | arXiv API | LaTeX abstract → text | Academic research tracking |
+| `hackernews` | HN API filtered by score/topic | Comments + linked article | Community signal on tech topics |
+
+- extensibility: New adapters implement the `SourceAdapter` interface and register in config. No service code changes required.
+- examples-not-whitelist: The adapters above are starting points. Any source that can be polled programmatically is a valid adapter candidate — government databases, trade publications, court filings, patent offices, cultural archives, whatever an agent's domain requires.
+
+---
+
+## 6. Content Processing Pipeline
+
+### [NEWS-EXTRACT] Content Extraction
+
+- library: trafilatura (Python — best-in-class web content extraction, handles ads, navigation, boilerplate)
+- structured-sources: GitHub, PyPI, arxiv adapters return clean content natively — no extraction needed
+- fallback: If trafilatura fails, deliver raw HTML with a `extraction_failed: true` flag
+
+### [NEWS-SUMMARIZE] Summarization
+
+- model: Claude Haiku (Anthropic API) — lowest cost, sufficient quality for exec summaries
+- prompt-template:
+  ```
+  Summarize this article for a technical AI agent. Output:
+  - Title (1 line)
+  - Key points (3-5 bullets, dense, no filler)
+  - Relevance: why this matters for someone working on {agent_query}
+  - Source: {url}
+
+  Article:
+  {extracted_text}
+  ```
+- max-input: 4000 tokens (truncate longer articles to first 4000 tokens)
+- max-output: 300 tokens
+- cost: ~$0.001 per summary (Haiku pricing)
+- fallback: If API unavailable, deliver extracted text without summary. Tag as `summarized: false`.
+
+### [NEWS-DEDUP] Deduplication
+
+- mechanism: SHA-256 hash of normalized title + source URL. Store delivered hashes in bus storage.
+- cross-source: Same article announced on GitHub, HN, and a blog → deliver once, note other sources
+- staleness: Hashes expire after 30 days to prevent unbounded growth
+
+### [NEWS-BUDGET] Delivery Budget
+
+- per-topic: `max_per_cycle` field in subscription (default: 5)
+- per-agent: Maximum 20 items per poll cycle across all topics
+- ranking: When a topic exceeds budget, rank by: (1) recency, (2) source tier, (3) relevance score from summarizer
+- rationale: Inbox paralysis is worse than missing an article. Agents can always search during a session if the service missed something.
+
+---
+
+## 7. MQTT Delivery
+
+### [NEWS-MQTT-TOPIC] Topic Mapping
+
+- topic: `composeio/global/news_service`
+- qos: 1 (at-least-once)
+- retain: false (news items are temporal, not state)
+
+### [NEWS-MQTT-MESSAGE] Message Format
+
+```json
+{
+  "ns": "news_service",
+  "type": "event",
+  "val": {
+    "target_agent": "haven-builder",
+    "topic_id": "python-releases",
+    "title": "Python 3.13.1 Released with Performance Improvements",
+    "summary": "Key points:\n- 15% faster startup...\n- New asyncio features...",
+    "source_url": "https://docs.python.org/release/3.13.1/whatsnew.html",
+    "source_adapter": "python-blog",
+    "published_at": "2026-03-20T00:00:00Z",
+    "summarized": true,
+    "full_content_ref": "ref:bus-storage://news_service/python-releases/py-3131"
+  },
+  "src": "news-service",
+  "ts": 1742644800,
+  "scope": "global",
+  "seq": 42
+}
+```
+
+- size-constraint: Summary message < 256 bytes. Full extracted article stored in bus storage, referenced via `full_content_ref`.
+- haven-bridge-routing: Haven-ComposeIO Bridge reads `target_agent` and routes to `haven::domain_agents::<agent>/news_service` or `haven::named_personas::<persona>/news_service` inbox.
+
+---
+
+## 8. Agent Inbox Triage
+
+### [NEWS-INBOX-NAMESPACE] Inbox Convention
+
+- domain-agents: `haven::domain_agents::<role>/news_service`
+- named-personas: `haven::named_personas::<name>/news_service`
+- namespace-note: `news_service` not `news` — reserve `news` for internal Haven notifications
+
+### [NEWS-TRIAGE-FLOW] Triage Protocol
+
+During `/haven-start` or `/nudge`, agent reviews `news_service` inbox:
+
+| Action | Effect |
+|--------|--------|
+| **Keep** | Promote to Haven memory (shared or private tier) with agent's annotation |
+| **Purge** | Mark as consumed, remove from inbox. Content remains in bus storage for 30 days. |
+| **Flag for deep read** | Keep in inbox with `priority: deferred` — agent will read full article when time permits |
+| **Share** | Promote to Haven shared tier with recommendation — visible to all agents |
+
+### [NEWS-TRIAGE-AUTO] Automatic Expiry
+
+- unread items older than 7 days: Auto-purged from inbox with `expired: true` tag
+- rationale: Stale news is noise. If an agent didn't read it in a week, it wasn't important enough.
+- exception: Items flagged `priority: deferred` survive 30 days before expiry
+
+---
+
+## 9. Deployment
+
+### [NEWS-DEPLOY] Service Deployment
+
+- host: mqtt-broker.local
+- runtime: Python 3.12, standalone process or Docker container
+- schedule: Configurable per source — default 6-hour poll cycle
+- dependencies: MQTT broker at :1884, bus storage API at :8420, Anthropic API key for summarization
+- config: Service-level config only (poll interval, API key, adapter registry). No per-agent subscription config — subscriptions discovered from agent namespaces.
+
+### [NEWS-DEPLOY-API-KEY] Anthropic API Key Management
+
+- storage: Environment variable `ANTHROPIC_API_KEY` or secrets file (not in config YAML)
+- model: `claude-haiku-4-5-20251001` (cheapest, sufficient for summaries)
+- rate-limit: Self-imposed 10 requests/minute to stay well within API limits
+- cost-ceiling: ~$0.50/month at 500 summaries/month (20 agents × 5 items × 5 cycles/month)
+
+---
+
+## 10. Testing
+
+### [NEWS-TEST-INTEGRATION] Integration Tests
+
+| Test | Method | Expected Result |
+|------|--------|----------------|
+| Subscription discovery | Write subscription to agent namespace | Service discovers and includes in next poll cycle |
+| Subscription removal | Remove subscription from agent namespace | Service stops polling that topic |
+| Custodial Human subscription | Write subscription to david/news_service/subscriptions | Service discovers and delivers to david's inbox |
+| Source polling | Mock RSS feed with known articles | Adapter returns expected articles |
+| Content extraction | Feed real URL to trafilatura | Clean text, no ads/navigation |
+| Summarization | Send extracted text to Haiku | 3-5 bullet summary returned |
+| Dedup | Submit same article twice | Second submission skipped |
+| MQTT delivery | Publish to news_service topic | Haven bridge receives and routes to agent inbox |
+| Budget enforcement | Submit 30 articles for a topic with max_per_cycle=5 | Only top 5 delivered |
+| Expiry | Insert item with 8-day-old timestamp | Auto-purged from inbox |
+| API fallback | Summarization API unavailable | Raw text delivered with `summarized: false` |
+
+### [NEWS-TEST-E2E] End-to-End Test
+
+```
+1. Write subscription to test agent namespace:
+   haven::domain_agents::builder/news_service/subscriptions
+   topics: [{id: "test-news", query: "test", sources: [mock-rss], max_per_cycle: 2}]
+
+2. Mock RSS feed returns 3 articles
+
+3. Service discovers subscription during poll cycle, fetches, extracts, summarizes top 2
+
+4. Service publishes to MQTT with target_agent: haven-builder
+
+5. Haven bridge routes to haven::domain_agents::builder/news_service
+
+6. Verify inbox contains 2 items with summaries, source URLs, full_content_refs
+```
+
+---
+
+## Invariants
+
+### [INV-NEWS-1] No Session Compute for Acquisition
+
+- rule: The news service runs independently of agent sessions. It must never be triggered by or block an agent's session start, /nudge, or /haven-end.
+- enforcement: Service has its own process/container lifecycle, decoupled from Haven session provisioner.
+
+### [INV-NEWS-2] Agent Controls Their Inbox
+
+- rule: Agents have full authority over their `news_service` inbox — keep, purge, flag, or ignore. The service delivers; the agent decides.
+- enforcement: No auto-promotion to Haven memory. All inbox-to-memory transitions require agent action.
+
+### [INV-NEWS-3] Summarization Failure Is Non-Blocking
+
+- rule: If the Claude API is unavailable, the service delivers raw extracted content without summaries. Delivery must not be blocked by summarization failures.
+- enforcement: Try/except around API call with fallback to unsummarized delivery.
+
+### [INV-NEWS-4] Source Adapters Are Pluggable
+
+- rule: Adding a new source type requires implementing the `SourceAdapter` interface and adding config. No service core code changes.
+- enforcement: Adapter registry pattern with dynamic loading from config.
+
+---
+
+## Causal Graph
+
+```
+ENABLES: [NEWS-SUB-NAMESPACE] -> [NEWS-FLOW]
+ENABLES: [NEWS-SOURCE-INTERFACE] -> [NEWS-FLOW]
+ENABLES: [NEWS-EXTRACT] -> [NEWS-SUMMARIZE]
+ENABLES: [NEWS-SUMMARIZE] -> [NEWS-MQTT-MESSAGE]
+ENABLES: [NEWS-MQTT-MESSAGE] -> [NEWS-INBOX-NAMESPACE]
+ENABLES: [NEWS-INBOX-NAMESPACE] -> [NEWS-TRIAGE-FLOW]
+PRECONDITION_FOR: [NEWS-DEDUP] -> [NEWS-MQTT-MESSAGE]
+PRECONDITION_FOR: [NEWS-BUDGET] -> [NEWS-MQTT-MESSAGE]
+PRECONDITION_FOR: [NEWS-TRIAGE-AUTO] -> [INV-NEWS-2]
+```
+
+---
+
+## Relationships
+
+### Cross-Spec
+- [NEWS-MQTT-TOPIC] DEPENDS_ON 01-composeio-bus-protocol.smd (message format, QoS, size constraints)
+- [NEWS-FLOW] DEPENDS_ON 04-haven-bridge.smd (MQTT → Haven inbox routing)
+- [NEWS-INBOX-NAMESPACE] DEPENDS_ON ~/haven/spec/20-haven-namespace-model.smd (namespace conventions)
+- [NEWS-DEPLOY] DEPENDS_ON mqtt-broker.local (shared infrastructure)
+
+### Semantic
+- [DP-NEWS-4] IMPLEMENTS [SPEC:CIO-PRINCIPLES] (API-class workload for short bounded tasks)
+- [NEWS-INBOX-NAMESPACE] CONTRAST_WITH [SYSTEM:HAVEN-WEB-BRIDGE] (outbound publication vs inbound acquisition)
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-22
+**Status**: Draft
+**Intelligence**: Claude Opus 4.6 (Haven Architect, session 2026-03-22)

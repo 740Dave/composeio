@@ -75,4 +75,4 @@ SMD (Semantic Markdown) is valid Markdown with semantic conventions:
 - **References**: `[SOME-ID]` or `[DOCTYPE:ID]`
 - **Causal declarations**: `[A] CAUSES [B]` or `CAUSES: [A] -> [B]`
 
-See the [SMD v2 specification](../../.claude/zerocontext/00-semantic-markdown-specification-v2.smd) for the full format reference.
+See the [SMD v2 specification](${SMD_SPEC_HOME}/00-semantic-markdown-specification-v2.smd) for the full format reference.

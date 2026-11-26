@@ -1,19 +1,19 @@
 ---
-scope: "Amendment to 01-composeio-bus-protocol.smd — json state engine, log message mode, namespace access policy, HTTP relay transport binding. Driven by Nexus integration requirements."
-audience: "Bus protocol implementers, Nexus service developers, ComposeApp framework users"
-boundary: "Protocol extensions only; Nexus-specific governance semantics remain in Nexus specs"
+scope: "Amendment to 01-composeio-bus-protocol.smd — json state engine, namespace access policy, HTTP relay transport binding, and an orthogonal retention property for event namespaces (the log message mode this amendment originally introduced is SUPERSEDED — see [BP-EXT-RETENTION] §7). Driven by Haven integration requirements."
+audience: "Bus protocol implementers, Haven service developers, ComposeApp framework users"
+boundary: "Protocol extensions only; Haven-specific governance semantics remain in Haven specs"
 depends-on: [01-composeio-bus-protocol.smd, 00-composeio-design-principles.smd]
 amends: 01-composeio-bus-protocol.smd
-motivation: "Nexus Terminus analysis revealed three ComposeIO protocol gaps: no structured state type, no append-only namespace mode, no publisher access control. These gaps affect any complex application, not just Nexus."
+motivation: "Haven Terminus analysis revealed three ComposeIO protocol gaps: no structured state type, no append-only namespace mode, no publisher access control. These gaps affect any complex application, not just Haven."
 status: "Draft — for review"
 created: 2026-03-28
 ---
 
 # Amendment: Bus Protocol Extensions [AMEND:BP-EXT]
 
-> Three protocol extensions driven by Nexus integration analysis. Each addresses
+> Three protocol extensions driven by Haven integration analysis. Each addresses
 > a gap that manifests in any complex application using the ComposeIO bus —
-> Nexus exposed them first because governance, discussions, and multi-agent
+> Haven exposed them first because governance, discussions, and multi-agent
 > coordination are inherently complex.
 
 ---
@@ -106,7 +106,21 @@ class JsonEngine(StateEngine):
 
 ## 2. New Message Mode: `log` [BP-EXT-LOG]
 
-**Amends**: Section 2 of 01-composeio-bus-protocol (message types).
+⛔ **SUPERSEDED — SEE [BP-EXT-RETENTION] §7.** Ratified
+`DEC-LOG-ENTRY-MAY-COLLAPSE-INTO-EVENT-PLUS-RETENTION-2026-08-25`: the `log` namespace mode and
+the `log_entry` message type (wire code 9) are retired. `log` mode was already `event` delivery
+(`namespace.py publish_log()` notified the same `_event_subscribers` an `event` publish notifies,
+tagging the value `event_type: "log_entry"`) plus a bounded retention deque — nothing else.
+Namespace modes collapse to `{state, event}` with an ORTHOGONAL `retention: int` valid on any
+`event`-mode namespace (§7 below). Wire code 9 is a permanent decode-only tombstone
+([BP-TYPE-CODES-RETIRE-9], 01-composeio-bus-protocol §1.6.1).
+
+**This section (§2.1–§2.3) is RETAINED BELOW AS HISTORICAL RECORD ONLY** — the shape `log` mode
+had before the collapse — **and MUST NOT be used for new namespace declarations.** Migrate
+`mode: log` + `retention: N` to `mode: event` + `retention: N`; §7.3 has the full migration table.
+
+**Amends**: Section 2 of 01-composeio-bus-protocol (message types). *(Historical — see banner
+above.)*
 
 ### 2.1 Problem
 
@@ -116,7 +130,7 @@ ComposeIO has two namespace modes:
 
 Neither handles **append-only data streams**: discussion threads, audit trails,
 telemetry logs, command history. Abusing `state` overwrites history. Abusing
-`event` loses it. Nexus's namespaces are fundamentally append-only logs with
+`event` loses it. Haven's namespaces are fundamentally append-only logs with
 queryable history — this pattern is general.
 
 ### 2.2 Specification
@@ -194,13 +208,18 @@ Response:
 - Entries stored in a bounded deque on the namespace object
 - `namespace.history(since=, limit=)` returns past entries
 
-### 2.3 Impact
+### 2.3 Impact — HISTORICAL, SUPERSEDED BY §7.5
 
-- **MessageType enum**: Add `LOG_ENTRY = "log_entry"` (code 9)
-- **Namespace class**: Add `mode` field ("state", "event_only", "log"), add `_log_entries` deque, add `history()` method
-- **Bus storage API**: Add `GET /api/v1/log/{namespace}` endpoint
-- **Config schema**: Add `mode` and `retention` fields to namespace declaration
-- **Binary compilation**: Add mode byte to namespace record (0=state, 1=event_only, 2=log)
+⛔ **This Impact list describes the ORIGINAL `log` mode, before the collapse.** See §7.5 for the
+current (post-collapse) impact list. Retained verbatim below, not deleted, per this table's own
+allocated-once-never-renumber discipline ([BP-TYPE-CODES], 01-composeio-bus-protocol §1.6).
+
+- **MessageType enum**: Add `LOG_ENTRY = "log_entry"` (code 9) — **SUPERSEDED**: code 9 is now a
+  decode-only tombstone, [BP-TYPE-CODES-RETIRE-9]
+- **Namespace class**: Add `mode` field ("state", "event_only", "log"), add `_log_entries` deque, add `history()` method — **SUPERSEDED**: `mode` narrows to `{"state", "event"}`, §7.5
+- **Bus storage API**: Add `GET /api/v1/log/{namespace}` endpoint — UNCHANGED, now serves any retained `event` namespace, §7.2
+- **Config schema**: Add `mode` and `retention` fields to namespace declaration — **SUPERSEDED**: `mode` enum narrows, `retention` becomes orthogonal, §7.3/§7.5
+- **Binary compilation**: Add mode byte to namespace record (0=state, 1=event_only, 2=log) — **SUPERSEDED**: mode byte narrows to `0=state, 1=event`, §7.2
 
 ---
 
@@ -213,10 +232,10 @@ Response:
 ComposeIO has no access control on namespaces. Any bus client publishes to any
 namespace. The `_app/` boundary (spec 08) provides process-level visibility
 but not agent-level access control. For multi-agent scenarios (multiple
-Intelligences, Nexus Domain Agents subscribing to bus events), namespaces
+Intelligences, Haven Domain Agents subscribing to bus events), namespaces
 need publisher whitelists and subscriber policies.
 
-Nexus enforces CRUD policies per namespace. ComposeIO needs a lighter-weight
+Haven enforces CRUD policies per namespace. ComposeIO needs a lighter-weight
 version focused on pub/sub rather than CRUD.
 
 ### 3.2 Specification
@@ -250,38 +269,41 @@ namespaces:
       publish: [canvas, "@capability:layout"]    # canvas module OR any agent with layout capability
 ```
 
-The `@capability:` prefix matches against the Intelligence's declared capabilities from its join message. This enables Nexus Domain Agents to subscribe selectively — a Domain Agent with `review` capability can observe but not publish to design namespaces.
+The `@capability:` prefix matches against the Intelligence's declared capabilities from its join message. This enables Haven Domain Agents to subscribe selectively — a Domain Agent with `review` capability can observe but not publish to design namespaces.
 
-### 3.3 Nexus Domain Agent Subscription
+### 3.3 Haven Domain Agent Subscription
 
-When Nexus is a first-class ComposeIO service, Domain Agents (architect, builder, etc.) are bus clients. Their access is governed by both:
+When Haven is a first-class ComposeIO service, Domain Agents (architect, builder, etc.) are bus clients. Their access is governed by both:
 - ComposeIO namespace access policy (can they subscribe/publish?)
-- Nexus's constitutional identity class (Named Persona, Domain Agent, Ephemeral)
+- Haven's constitutional identity class (Named Persona, Domain Agent, Ephemeral)
 
 The bridge between these systems:
 
 ```yaml
-# Nexus service config on ComposeIO bus
+# Haven service config on ComposeIO bus
+# mode: event + retention: N replaces mode: log — see [BP-EXT-RETENTION] §7 (was mode: log)
 namespaces:
-  - name: nexus/governance/vote_opened
-    mode: log
+  - name: haven/governance/vote_opened
+    mode: event
+    retention: 1000                          # was implicit under mode: log's own default
     state_engine: json
     access:
-      publish: [nexus-service]               # Only Nexus service publishes governance events
+      publish: [haven-service]               # Only Haven service publishes governance events
       subscribe: any                          # Any bus client can observe votes
 
-  - name: nexus/discussion/new_post
-    mode: log
+  - name: haven/discussion/new_post
+    mode: event
+    retention: 1000                          # was implicit under mode: log's own default
     state_engine: json
     access:
-      publish: [nexus-service]
+      publish: [haven-service]
       subscribe: ["@capability:governance", "@capability:review"]  # Only governance-capable agents
 ```
 
-Domain Agents subscribe to ComposeIO bus events by declaring namespace interest in their Nexus instance config:
+Domain Agents subscribe to ComposeIO bus events by declaring namespace interest in their Haven instance config:
 
 ```yaml
-# In Domain Agent config (Nexus side)
+# In Domain Agent config (Haven side)
 bus_subscriptions:
   - namespace: composer/canvas/widget_added
     mode: observe                            # Read-only — the agent watches design activity
@@ -291,7 +313,7 @@ bus_subscriptions:
     mode: observe                            # Watch human presence
 ```
 
-The Nexus-ComposeIO bridge service translates these subscriptions into bus subscribe calls. The access policy on the ComposeIO side validates that the Domain Agent (via its capability set) is allowed to subscribe.
+The Haven-ComposeIO bridge service translates these subscriptions into bus subscribe calls. The access policy on the ComposeIO side validates that the Domain Agent (via its capability set) is allowed to subscribe.
 
 ### 3.4 Impact
 
@@ -310,7 +332,7 @@ The Nexus-ComposeIO bridge service translates these subscriptions into bus subsc
 
 ### 4.1 Problem
 
-Nexus's RelayBridge forwards UI events via HTTP POST to a coordination relay.
+Haven's RelayBridge forwards UI events via HTTP POST to a coordination relay.
 This is a legitimate transport pattern for telemetry, monitoring, and
 Intelligence observation. ComposeIO specs MQTT, CAN, UART, I2C as transports
 but not HTTP. The bus storage REST API (section 7) is query-based, not
@@ -331,7 +353,7 @@ app:
   transports:
     - type: http_relay
       endpoint: http://mqtt-broker.local:8422/messages
-      channel: nexus-terminal               # Routing key at the relay
+      channel: haven-terminal               # Routing key at the relay
       direction: outbound                   # "outbound" (default) or "bidirectional"
       filter:                               # Optional — which namespaces to forward
         - "presence_status"
@@ -346,8 +368,8 @@ Each bus message (or batch) is POST'd as JSON:
 
 ```json
 {
-  "from": "nexus-terminal",
-  "channel": "nexus-terminal",
+  "from": "haven-terminal",
+  "channel": "haven-terminal",
   "messages": [
     {"ns": "presence_status", "type": "state", "val": "active", "src": "presence", "ts": 12345}
   ]
@@ -355,7 +377,7 @@ Each bus message (or batch) is POST'd as JSON:
 ```
 
 - **Fire-and-forget**: 5-second timeout, failures logged at DEBUG (don't block the bus)
-- **Daemon threads**: Each POST runs on a daemon thread (same pattern as Nexus's RelayBridge)
+- **Daemon threads**: Each POST runs on a daemon thread (same pattern as Haven's RelayBridge)
 - **Filtering**: Only namespaces matching the `filter` list are forwarded. No filter = all messages.
 - **Batching**: Messages are collected for `batch_interval_ms` then sent as one POST. Reduces HTTP overhead for high-frequency buses.
 
@@ -367,13 +389,13 @@ When `direction: bidirectional`, the transport also polls the relay for inbound 
 GET {endpoint}?channel={channel}&since={last_timestamp}
 ```
 
-Inbound messages are published to the internal bus as if received from any transport. This enables Nexus Domain Agents to publish bus commands via the relay.
+Inbound messages are published to the internal bus as if received from any transport. This enables Haven Domain Agents to publish bus commands via the relay.
 
-### 4.3 Nexus-Specific Usage
+### 4.3 Haven-Specific Usage
 
-Nexus's coordination relay at `mqtt-broker.local:8422` already accepts this format. The HTTP relay transport makes Nexus Terminus's `RelayBridge` a standard ComposeIO transport binding instead of a custom one-off.
+Haven's coordination relay at `mqtt-broker.local:8422` already accepts this format. The HTTP relay transport makes Haven Terminus's `RelayBridge` a standard ComposeIO transport binding instead of a custom one-off.
 
-For Domain Agent subscriptions: the Nexus-ComposeIO bridge service uses the bidirectional HTTP relay to forward bus events to Domain Agents and receive agent commands back. The bridge runs as a ComposeIO service on mqtt-broker.local alongside the MQTT broker.
+For Domain Agent subscriptions: the Haven-ComposeIO bridge service uses the bidirectional HTTP relay to forward bus events to Domain Agents and receive agent commands back. The bridge runs as a ComposeIO service on mqtt-broker.local alongside the MQTT broker.
 
 ### 4.4 Impact
 
@@ -384,62 +406,62 @@ For Domain Agent subscriptions: the Nexus-ComposeIO bridge service uses the bidi
 
 ---
 
-## 5. Nexus as First-Class ComposeIO Service [BP-EXT-NEXUS]
+## 5. Haven as First-Class ComposeIO Service [BP-EXT-HAVEN]
 
 ### 5.1 Integration Architecture
 
 ```
 ComposeIO Bus (MQTT on mqtt-broker.local)
   │
-  ├── composeio/global/presence_status          ← Nexus Terminus publishes
-  ├── composeio/global/sessions_active          ← Nexus Terminus publishes
-  ├── composeio/global/nexus/governance/*       ← Nexus service publishes
-  ├── composeio/global/nexus/discussion/*       ← Nexus service publishes
+  ├── composeio/global/presence_status          ← Haven Terminus publishes
+  ├── composeio/global/sessions_active          ← Haven Terminus publishes
+  ├── composeio/global/haven/governance/*       ← Haven service publishes
+  ├── composeio/global/haven/discussion/*       ← Haven service publishes
   ├── composeio/global/composer/intelligence/*  ← MCP server publishes
   │
-  └── Nexus-ComposeIO Bridge Service
+  └── Haven-ComposeIO Bridge Service
         ├── Subscribes to bus events per Domain Agent configs
-        ├── Forwards matching events to Nexus namespace entries
+        ├── Forwards matching events to Haven namespace entries
         ├── Receives Domain Agent commands, publishes to bus
         └── Enforces access policy at the bridge boundary
 ```
 
-### 5.2 Nexus Namespace Reservations on ComposeIO Bus
+### 5.2 Haven Namespace Reservations on ComposeIO Bus
 
 | Prefix | Owner | Purpose |
 |--------|-------|---------|
-| `nexus/governance/*` | Nexus service | Vote opened/closed/tallied events |
-| `nexus/discussion/*` | Nexus service | New discussion/post/resolution events |
-| `nexus/agent/*` | Nexus bridge | Domain Agent presence and commands |
-| `nexus/memory/*` | Nexus service | Memory promotion/endorsement events |
+| `haven/governance/*` | Haven service | Vote opened/closed/tallied events |
+| `haven/discussion/*` | Haven service | New discussion/post/resolution events |
+| `haven/agent/*` | Haven bridge | Domain Agent presence and commands |
+| `haven/memory/*` | Haven service | Memory promotion/endorsement events |
 
-These are `log` mode namespaces with `json` state engine — each event is an append-only entry observable by any bus subscriber with appropriate access.
+These are `event`-mode namespaces with retention ([BP-EXT-RETENTION] §7 — was `log` mode) and `json` state engine — each event is an append-only entry observable by any bus subscriber with appropriate access.
 
 ### 5.3 Domain Agent Bus Participation
 
-A Nexus Domain Agent (e.g., `nexus-architect`) participates on the ComposeIO bus through the bridge:
+A Haven Domain Agent (e.g., `haven-architect`) participates on the ComposeIO bus through the bridge:
 
-1. Agent declares bus subscriptions in its Nexus instance config
+1. Agent declares bus subscriptions in its Haven instance config
 2. Bridge subscribes to matching ComposeIO namespaces
-3. Bus events are forwarded to the agent as Nexus namespace entries
+3. Bus events are forwarded to the agent as Haven namespace entries
 4. Agent can publish commands back to the bus via the bridge (if access policy allows)
 
 This enables:
 - **Architect agent observes design activity**: subscribes to `composer/canvas/*`, watches widget placement
 - **Builder agent monitors hardware**: subscribes to `_bus/fault`, watches for bus faults
-- **Custodial Human dashboard**: subscribes to `nexus/governance/vote_opened`, gets notified of pending votes
+- **Custodial Human dashboard**: subscribes to `haven/governance/vote_opened`, gets notified of pending votes
 
 ### 5.4 Access Control at the Bridge
 
-The bridge enforces ComposeIO access policy AND Nexus constitutional identity:
+The bridge enforces ComposeIO access policy AND Haven constitutional identity:
 
-| ComposeIO Policy | Nexus Identity | Result |
+| ComposeIO Policy | Haven Identity | Result |
 |-----------------|----------------|--------|
 | `subscribe: any` | Named Persona | Allowed |
 | `subscribe: any` | Domain Agent | Allowed |
 | `subscribe: ["@capability:governance"]` | Domain Agent with governance | Allowed |
 | `subscribe: ["@capability:governance"]` | Domain Agent without governance | Denied |
-| `publish: [nexus-service]` | Domain Agent via bridge | Denied (bridge source is `nexus-service`, agent commands go through bridge) |
+| `publish: [haven-service]` | Domain Agent via bridge | Denied (bridge source is `haven-service`, agent commands go through bridge) |
 
 ---
 
@@ -449,16 +471,115 @@ The bridge enforces ComposeIO access policy AND Nexus constitutional identity:
 
 ### [DP-CIO-25] Services Are Bus Participants, Not Bus Extensions
 
-> An external service (Nexus, Home Assistant, Prometheus, a biometric testing suite) joins the ComposeIO bus as a participant — it publishes to namespaces, subscribes to namespaces, and follows the bus protocol. It does NOT extend the bus protocol with service-specific semantics. Service-specific complexity (governance votes, memory tiers, ML inference pipelines) stays inside the service. The bus carries events and state — the meaning is the service's concern.
+> An external service (Haven, Home Assistant, Prometheus, a biometric testing suite) joins the ComposeIO bus as a participant — it publishes to namespaces, subscribes to namespaces, and follows the bus protocol. It does NOT extend the bus protocol with service-specific semantics. Service-specific complexity (governance votes, memory tiers, ML inference pipelines) stays inside the service. The bus carries events and state — the meaning is the service's concern.
 
-- implication: Nexus's constitutional voting is an internal Nexus concern. The bus sees `nexus/governance/vote_opened` as a `log` namespace with `json` entries. It doesn't know or care about quorum thresholds, veto rules, or cryptographic ballots.
+- implication: Haven's constitutional voting is an internal Haven concern. The bus sees `haven/governance/vote_opened` as a `log` namespace with `json` entries. It doesn't know or care about quorum thresholds, veto rules, or cryptographic ballots.
 - implication: A biometric testing suite's ML pipeline is internal. The bus sees `test_progress` as a `continuous_0_255` namespace. It doesn't know about face encodings, match algorithms, or confidence thresholds.
-- implication: Services compose via bus namespaces. A Nexus vote result can trigger a ComposeIO binding that changes hardware state — not because the bus understands governance, but because a `nexus/governance/vote_result` state change fires a namespace binding to `relay_arm`.
+- implication: Services compose via bus namespaces. A Haven vote result can trigger a ComposeIO binding that changes hardware state — not because the bus understands governance, but because a `haven/governance/vote_result` state change fires a namespace binding to `relay_arm`.
 - test: If adding a new service requires changes to the bus protocol or transport implementations, the integration boundary is wrong. The service should publish/subscribe using existing message types and namespace patterns.
 
 ---
 
-**Version**: 0.1
+## 7. Retention: An Orthogonal Namespace Property [BP-EXT-RETENTION]
+
+**Ratified** `DEC-LOG-ENTRY-MAY-COLLAPSE-INTO-EVENT-PLUS-RETENTION-2026-08-25`. **Supersedes**
+Section 2 (`log` namespace mode, [BP-EXT-LOG]) and wire code 9 (`log_entry`,
+[BP-TYPE-CODES-RETIRE-9] in 01-composeio-bus-protocol §1.6.1).
+
+### 7.1 Why the collapse
+
+`log` mode was never a distinct delivery mechanism. `namespace.py publish_log()` notified the
+SAME `_event_subscribers` an `event` publish notifies, tagging the value with
+`event_type: "log_entry"` — delivery was identical to an event. The only real delta was a bounded
+`_log_entries` retention deque plus a `history()` query. Two orthogonal dimensions — **kind**
+(`state` retains-latest, `event` does not retain at all) and **retention** (0 / N / durable) — had
+been collapsed into one bespoke mode and one bespoke wire type. can-bus-expert's verdict (fieldbus
+precedent: CANopen object 1003h Error History, J1939 DM1/DM2 as views over one DTC) was unanimous:
+retention is a receiver-side policy, not a wire property. `log == event + retention:N`.
+
+### 7.2 Specification
+
+**Namespace modes collapse**: `{state, event_only, log}` → **`{state, event}`**.
+
+**`retention: int`** becomes an ORTHOGONAL property, valid on ANY `event`-mode namespace (not a
+`log`-only field):
+
+```yaml
+namespaces:
+  - name: audit_trail
+    mode: event                  # was: mode: log
+    state_engine: json           # unchanged — each entry is a JSON object
+    retention: 1000              # unchanged in meaning: max entries retained, FIFO eviction.
+                                  # Now legal on ANY event namespace, not a log-only field.
+    label: "Audit Trail"
+```
+
+- **`state` namespaces**: retain-latest INTRINSICALLY (unaffected by `retention`; a `retention`
+  key on a `state` namespace is a config error — reject at validation, per [BP-EXT-ACCESS]'s
+  existing config-validation discipline).
+- **`event` namespaces with `retention: 0`** (or unset): unretained — today's plain `event`
+  behavior, not retained anywhere beyond in-flight delivery.
+- **`event` namespaces with `retention: N > 0`**: retained — exactly what `log` mode did. Bus
+  storage keeps up to `retention` entries (FIFO eviction when full), queryable via
+  `GET /api/v1/log/{namespace}?since={timestamp}&limit={count}` (endpoint UNCHANGED — see the
+  historical §2.2 above; it now serves any retained `event` namespace, not only former
+  `log`-mode ones).
+
+**Publishing**: publish as a plain `event` (01-composeio-bus-protocol §2.2, [BP-TYPE-EVENT]) —
+`"type": "event"`, wire code 1. There is no `log_entry` message TYPE to publish as; a namespace's
+retention is a property of the NAMESPACE, not a tag on the message
+([BP-TYPE-CODES-RETIRE-9] — code 9 is decode-only during the closing window and then dropped).
+
+**Binary compilation**: the mode byte in the namespace record (historical §2.3's "0=state,
+1=event_only, 2=log") becomes **0=state, 1=event** — one bit's worth of information, since
+`event_only` and `event`-with-`log`-semantics were never actually different delivery mechanisms.
+`retention` compiles as its own field (already true today — §2.2's YAML always carried
+`retention` separately from `mode`).
+
+### 7.3 Config migration
+
+| Before | After |
+|--------|-------|
+| `mode: log` + `retention: N` | `mode: event` + `retention: N` (unchanged value) |
+| `mode: log` + no `retention` (relied on the `retention: 100` default, historical §2.2) | `mode: event` + `retention: 100` (the default must now be written explicitly — `event` alone means unretained) |
+| `mode: event_only` | `mode: event` (identical semantics; `event_only` was already indistinguishable from plain `event` before this collapse) |
+| `mode: state` | unchanged |
+
+A config compiler MUST reject `mode: log` and `mode: event_only` as of this amendment's adoption
+— they are not aliased forward silently, so a stale config fails loud at compile time rather than
+compiling to a namespace whose retention behavior differs from what its author last verified.
+
+### 7.4 Bridge double-forwarder deletion
+
+**Closes a latent double-emit.** `app.py`'s `_wire_exports` forwarded an exported `log`-mode
+namespace THREE ways: once as `EVENT` (`type=event`, per plain event delivery), and once again as
+`LOG_ENTRY` (`type=log_entry`, wire code 9) — the same occurrence emitted twice. The collapse
+deletes the third (`LOG_ENTRY`) forwarder entirely: a retained-event namespace forwards exactly
+once, as `EVENT`. A frame-count fixture confirms the fix (one frame in, one frame out, not two).
+This is a CODE change (`python/composeio/app.py`), recorded here because the double-emit was a
+direct consequence of the mode/type duplication this section retires — the fix is NOT
+independently specifiable without the collapse.
+
+### 7.5 Impact
+
+- **MessageType enum**: `LOG_ENTRY` (code 9) is decode-only, see [BP-TYPE-CODES-RETIRE-9]; no
+  code emits it going forward
+- **Namespace class**: `mode` field narrows to `{"state", "event"}`; `retention` becomes legal
+  (and meaningful) on any `event`-mode namespace, not gated on `mode == "log"`
+- **Bus storage API**: `GET /api/v1/log/{namespace}` UNCHANGED — serves any retained namespace
+- **Config schema**: `mode` enum narrows to `{state, event}`; `mode: log` / `mode: event_only`
+  REJECTED at compile time (§7.3)
+- **Binary compilation**: mode byte narrows to `0=state, 1=event`
+- **Bridge**: `app.py _wire_exports` third forwarder (the `LOG_ENTRY` path) DELETED (§7.4)
+
+---
+
+**Version**: 0.2
 **Created**: 2026-03-28
+**Corrected**: 2026-08-26 — collapsed namespace modes `{state, event_only, log}` to `{state,
+event}` + orthogonal `retention: int` per `DEC-LOG-ENTRY-MAY-COLLAPSE-INTO-EVENT-PLUS-RETENTION-2026-08-25`
+(new §7, [BP-EXT-RETENTION]); Section 2 (`log` mode, [BP-EXT-LOG]) retained as SUPERSEDED
+historical record, not deleted; §3.3 and §5.2 usage examples migrated to `mode: event` +
+`retention`; documents the `app.py` bridge double-forwarder deletion (§7.4).
 **Status**: Draft — amendment pending review
-**Motivation**: Nexus Terminus analysis + Domain Agent bus participation requirement
+**Motivation**: Haven Terminus analysis + Domain Agent bus participation requirement

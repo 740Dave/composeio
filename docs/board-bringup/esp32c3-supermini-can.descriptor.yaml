@@ -113,7 +113,7 @@ requires:
     kind: transceiver
     status: BLOCKED
     note: "TWAI pins are LOGIC LEVEL. Wired CTX=GPIO5 -> D/TXD, CRX=GPIO6 -> R/RXD (owner-confirmed 2026-08-12; GPIO4 is connected to nothing). Two faults found and fixed — the firmware listened on GPIO4, and there was no ground between breadboard and Pi HAT. STILL BLOCKED: CANH/CANL appear open — the transceiver idles its R output cleanly recessive and never sees the bus, while the C3 now transmits into bus-off. See quirk canh-canl-open."
-  - ref: "can://pi.example.local/can0"
+  - ref: "can://display-node.local/can0"
     kind: segment
     status: present
     note: "Waveshare 2-CH CAN HAT on rpi5, 500 kbit/s, sample point 0.875, clock 8MHz, brp 1. can1 is jumpered to the same segment with its terminator OFF and is the INDEPENDENT WITNESS — never the interface the bridge uses."
@@ -125,7 +125,7 @@ requires:
     kind: firmware
     status: placeholder
     note: "no bus-hosted image today; built locally from cyd/ (-DCXC_CAN_BRINGUP=1)"
-  - ref: "docs/board-bringup/factory-images/esp32c3-supermini-c28020-factory-4mb.bin"
+  - ref: "docs/board-bringup/factory-images/esp32c3-supermini-047dd8-factory-4mb.bin"
     kind: rollback-image
     status: present
     note: "full 4MB dump taken BEFORE the first flash. NOT a vendor demo — an ESP-IDF v4.4.6 app from earlier work. Restore: esptool --port <port> write-flash 0 <file>"
@@ -142,25 +142,25 @@ verify:
       expect: "build: <date> <time> — matches the firmware just flashed"
       note: "VERIFIED 2026-08-12. Compiler-written __DATE__/__TIME__, never a hand-maintained tag (quirk no-hand-maintained-build-tag)."
     - check: serial-token
-      expect: "device id: c3can-c28020"
-      note: "VERIFIED 2026-08-12. CXC_DEVICE_PREFIX=\"c3can\" + last 3 bytes of STA MAC AA:BB:CC:DD:EE:FF."
+      expect: "device id: c3can-047dd8"
+      note: "VERIFIED 2026-08-12. CXC_DEVICE_PREFIX=\"c3can\" + last 3 bytes of STA MAC 00:00:5e:00:53:03."
     - check: twai-self-test-loopback
       expect: "PASS is evidence; FAIL is NOT — this check is asymmetric, see quirk loopback-selftest-unrepeatable"
       note: "WITHDRAWN AS PROOF 2026-08-12. It returned PASS (id 0x1600090E out and back, payload match, tx_err=0) and later FAIL (tx_err=128) for the SAME binary on the SAME board, on three pads each proven good by drive-and-read-back. An earlier report leaned on the PASS as a headline proof of the MCU-side stack; that claim is withdrawn. An unrepeatable test is not a measurement. The firmware's own verdict string now says INCONCLUSIVE rather than accusing the MCU."
     - check: bridge-names-our-hashes
-      expect: "CAN->MQTT  _device/c3can-c28020/status = 'ACTIVE' (type=state)"
+      expect: "CAN->MQTT  _device/c3can-047dd8/status = 'ACTIVE' (type=state)"
       note: "VERIFIED 2026-08-12, WITHOUT THE C3 IN THE LOOP. Arbitration id 0x162A410E computed in Python, injected on can1 by `cangen` (a tool this project did not write), named correctly by the bridge and published to MQTT. Independently validates the id derivation, CAN_BRIDGE_REGISTER and the CAN->MQTT path."
     - check: segment-undisturbed
       expect: "can0/can1 bus-errors 0, no change in error-warn/error-pass/bus-off across the session"
       note: "VERIFIED 2026-08-12. can0 held at bus-errors 0 / error-warn 2 / error-pass 2 / bus-off 0 (its pre-existing baseline) and can1 at all zeros, through several C3 bus-off episodes. RX/TX moved only by deliberate injections."
     - check: heartbeat-on-can1
-      expect: "candump can1 shows id 1600090E at 1 Hz, and the bridge publishes _device/c3can-c28020/heartbeat"
+      expect: "candump can1 shows id 1600090E at 1 Hz, and the bridge publishes _device/c3can-047dd8/heartbeat"
       note: "NOT ACHIEVED 2026-08-12 — blocked by quirk transceiver-not-reaching-gpio. Zero frames from this node have reached the segment. The expectation and the independently-derived id are recorded so the check is a one-command re-run once the wire is fixed."
     - check: throttle-left-inbound
       expect: "console logs `RX  throttle/left = <value>` as the physical lever moves"
       note: "NOT ACHIEVED 2026-08-12 — same blocker. The subscription is registered (`subscribed throttle/left (hash 0x03F6, persistent)`) and the bridge's MQTT->CAN allowlist already carries throttle/left, so no configuration change is outstanding; only the wire is."
     - check: twai-health-published
-      expect: "_device/c3can-c28020/status = ACTIVE and seven twai/* counters every 5s"
+      expect: "_device/c3can-047dd8/status = ACTIVE and seven twai/* counters every 5s"
       note: "PARTIALLY ACHIEVED 2026-08-12: the health report is produced and logged to console every 5s with all eight fields, and it is what diagnosed this board. It has not reached MQTT because no frame leaves the node."
   human: >
     NOT YET REACHED, and the remaining work is a continuity check rather than eyes on glass — see quirk
@@ -332,7 +332,7 @@ quirks:
     note: >
       /dev/cu.usbmodem11301 belonged to a different board an hour before this env was written, and during
       this session the OTHER usbmodem port changed device entirely (a Hosyond moved to wall power and a live
-      throttle controller took its place). Both C3s on this bench share the MAC prefix AA:BB:CC, so a prefix
+      throttle controller took its place). Both C3s on this bench share the MAC prefix 1C:DB:D4, so a prefix
       match is not enough. Verify the FULL USB serial number passively before every destructive operation:
       `ioreg -r -c IOUSBHostDevice -l -w0`, pairing "USB Serial Number" to "IOCalloutDevice". Native-USB
       ESP32s publish their MAC as the USB serial number. `esptool chip-id` is NOT an acceptable identity

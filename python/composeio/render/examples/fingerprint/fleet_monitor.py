@@ -37,7 +37,7 @@ DEFECT-FINGERPRINT-READY-HEARTBEAT-NEVER-UPDATES-AD0D95 (``dev/s3-fp1``
 parsed to device=``dev``). Every message this contract emits is published as
 ``f"{device_id}/{message}"`` with ``event_type == message`` (see
 ``composeio.peripherals.fingerprint.device.FingerprintDevice._publish`` and
-``fingerprint_storage.topics.device_announce``), so this monitor recovers the
+``fingerprint_service.topics.device_announce``), so this monitor recovers the
 device id by stripping the trailing ``"/" + event_type`` — a match against the
 CLOSED tail vocabulary of this contract, never a split on the first slash.
 

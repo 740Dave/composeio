@@ -33,25 +33,25 @@ actuator lives in `firmware/reactive_core/` (`relay_actuator.{h,cpp}` +
 
 ## 1. Publish each config to the bus asset store (do this BEFORE boot)
 
-The bus master asset store is `http://mqtt-broker.local:8420` (`mqtt-broker.local`).
+The bus master asset store is `http://192.0.2.75:8420` (`mqtt-broker.local`).
 
 ```sh
 # office_fan
 curl -X PUT --data-binary \
   @compose_projects/office_devices/office_fan/office_fan.compose.yaml \
-  http://mqtt-broker.local:8420/api/v1/assets/displays/office_fan.compose.yaml
+  http://192.0.2.75:8420/api/v1/assets/displays/office_fan.compose.yaml
 
 # office_hepa
 curl -X PUT --data-binary \
   @compose_projects/office_devices/office_hepa/office_hepa.compose.yaml \
-  http://mqtt-broker.local:8420/api/v1/assets/displays/office_hepa.compose.yaml
+  http://192.0.2.75:8420/api/v1/assets/displays/office_hepa.compose.yaml
 ```
 
 ## 2. Flash the firmware (physical board — architect/David runs this)
 
 `reactive_core` is the platform firmware, built from `composeio/firmware/reactive_core`.
 The board has **no native USB** — flash over an **external FTDI** (TX/RX crossed) on
-`/dev/cu.usbserial-FTZ29P6A`, in **MANUAL download mode** (tie `IO0`→`GND`, tap `EN`),
+`/dev/cu.usbserial-<device-serial>`, in **MANUAL download mode** (tie `IO0`→`GND`, tap `EN`),
 because the FTDI auto-reset is unreliable. Flash the two boards **one at a time** on
 the shared FTDI cable.
 
@@ -59,16 +59,16 @@ the shared FTDI cable.
 cd composeio/firmware/reactive_core
 
 # office_fan  (env bakes -DDISPLAY_DEVICE_ID="office_fan")
-pio run -e office_fan -t upload --upload-port /dev/cu.usbserial-FTZ29P6A
-pio device monitor --port /dev/cu.usbserial-FTZ29P6A -b 115200
+pio run -e office_fan -t upload --upload-port /dev/cu.usbserial-<device-serial>
+pio device monitor --port /dev/cu.usbserial-<device-serial> -b 115200
 
 # office_hepa (env bakes -DDISPLAY_DEVICE_ID="office_hepa")
-pio run -e office_hepa -t upload --upload-port /dev/cu.usbserial-FTZ29P6A
+pio run -e office_hepa -t upload --upload-port /dev/cu.usbserial-<device-serial>
 ```
 
 WiFi creds: drop a `firmware/reactive_core/src/wifi_config.h` (gitignored) with
 `#define WIFI_SSID/WIFI_PASS`, or pass them via `PLATFORMIO_BUILD_FLAGS`. The env
-already sets `MQTT_PORT=1883` and `BUS_STORAGE_URL=http://mqtt-broker.local:8420`.
+already sets `MQTT_PORT=1883` and `BUS_STORAGE_URL=http://192.0.2.75:8420`.
 
 ## 3. Drive it (any bus peer — human or Intelligence)
 

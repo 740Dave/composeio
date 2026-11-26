@@ -9,7 +9,7 @@ like the classic CYD (no PSRAM), so it takes the 16-scanline path, not the Hosyo
 Everything above the board seam is the CYD's, unchanged.
 
 Bring-up date: 2026-08-11. Vendor kit:
-`~/Dropbox/Data Sheets/waveshare/esp32-c6-1.47inch-lcd/` (docs + `ESP32-C6-LCD-1.47-Demo.zip`, whose
+`${DATASHEETS_HOME}/waveshare/esp32-c6-1.47inch-lcd/` (docs + `ESP32-C6-LCD-1.47-Demo.zip`, whose
 ESP-IDF demo is the authoritative pin/init source).
 
 ---
@@ -22,7 +22,7 @@ ESP-IDF demo is the authoritative pin/init source).
 | radios | Wi-Fi 6, BT 5 LE, 802.15.4 |
 | flash | 4 MB embedded; `partitions.csv` (the CYD's 4 MB layout) applies unchanged |
 | PSRAM | **none** |
-| MAC / device id | base `AA:BB:CC:DD:EE:FF` → `wsc6-6f4ce4` |
+| MAC / device id | base `00:00:5e:00:53:05` → `wsc6-07f199` |
 | port | `/dev/cu.usbmodem11301` — native USB-Serial-JTAG, no bridge chip |
 | panel | 1.47" IPS **172×320**, ST7789T, portrait, **no touch** |
 
@@ -213,7 +213,7 @@ Machine-verified on the live board (2026-08-11):
 ```
 main: Board profile: waveshare-c6-lcd147 (ESP32-C6, ST7789T 172x320, no touch)
 main: Panel: 172x320 rect
-main: Device id: wsc6-6f4ce4
+main: Device id: wsc6-07f199
 ws_c6_lcd147: ST7789T ready — 172x320 portrait, MADCTL 0x48, inversion cmd 0x21, SPI 12000000 Hz, backlight ON
 canvas_esp32: Band-rendered surface: 172x320, band=16 scanlines, buffer=5504 bytes
 canvas_esp32: Dirty quantum: 16 rows/band, 20 bands, repaint mode: band walk

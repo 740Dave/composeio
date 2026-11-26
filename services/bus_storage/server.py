@@ -92,6 +92,51 @@ CONFIG_DIR = DATA_DIR / "configs"
 ASSETS_DIR = DATA_DIR / "assets"
 WORKLOADS_DIR = DATA_DIR / "workloads"
 REGISTRY_FILE = DATA_DIR / "namespace_registry.json"
+# The UNIFIED-store blob root ([SPEC:CXC-STORE]). Doc collections absorbed from the
+# retired document_store land as `bus://<collection>/<id>.json` path-addressed blobs
+# directly under the store root, alongside `assets/` — the two services already shared
+# this one data dir ([CXC-STORE-EVIDENCE-COLOCATION]), so consolidation roots the blob
+# face at DATA_DIR rather than a private tree.
+BLOB_ROOT = DATA_DIR
+
+# --- Storage deny-list [SPEC:CXC-STORE] (David ruled 2026-09-03: deny-list) ---
+# ⛔ Applied to BOTH the generic blob route AND the asset route (PRE-SECRETS): the
+# `assets/fleet/private/` credential tree is reachable through EITHER face, so the
+# guard is a property of the storage root, not of one route. Wiring it onto the blob
+# route alone left `GET /api/v1/assets/fleet/private/velo.creds` returning real
+# credentials, unauthenticated, over the LAN — the reproduction the negative control
+# in tests/test_bus_storage_device_baseline.py now pins closed on the asset route.
+#
+# Because the generic blob route is rooted at BLOB_ROOT == DATA_DIR it structurally
+# reaches the WHOLE data dir — including two trees that have DEDICATED, narrower
+# routes and MUST NOT be reachable through the generic byte-by-path face:
+#   * `configs/`               — writable ONLY through /api/v1/config/<id>, which
+#                                maintains the `.meta.json` checksum sidecar. A
+#                                `PUT /api/v1/blob/configs/<id>.bin` would write a
+#                                device config BYPASSING that checksum.
+#   * `assets/fleet/private/`  — the fleet's private credential tree (a real
+#                                `velo.creds` lives here on the live host). The
+#                                generic blob face is unauthenticated bytes-by-path;
+#                                it must never be a second door to secrets.
+# Deny-list (David's ruling), not allow-list: any resolved blob path AT or UNDER a
+# denied prefix is refused 403 on GET/PUT/DELETE and filtered from the prefix-LIST.
+# The check runs on a path ALREADY resolved by `_resolve_contained`, so a `../`
+# escape that stays inside BLOB_ROOT but lands in a denied tree is caught here too.
+_BLOB_DENY_PREFIXES = ("configs", "assets/fleet/private")
+
+
+def _blob_denied(resolved: Path) -> bool:
+    """True if a RESOLVED blob path lies AT or UNDER any denied prefix.
+
+    `resolved` must already be an absolute, symlink-resolved path (the output of
+    `_resolve_contained`) so this compares real locations, not request strings —
+    a `../`-escape or symlink into a denied tree is caught, a name that merely
+    contains the word `configs` is not."""
+    for rel in _BLOB_DENY_PREFIXES:
+        denied = (BLOB_ROOT / rel).resolve()
+        if resolved == denied or denied in resolved.parents:
+            return True
+    return False
 
 # --- Concurrency primitives (ThreadingHTTPServer runs one thread per request) ---
 # Per-target-path locks serialize concurrent writers to the SAME path while
@@ -196,6 +241,66 @@ def _atomic_write_text(target: Path, text: str):
     _atomic_write_bytes(target, text.encode())
 
 
+# --- Server-provided content-hash on GET [SPEC:CXC-DEVICE-BASELINE] cap 3 ----------
+# [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET]. The server ALREADY computes content_hash()
+# (sha256, lowercase hex) on the write path to drive the {old->new} change event
+# (change_notify.content_hash). This capability PERSISTS that hash at PUT time in a
+# dotfile sidecar and SERVES it back on GET as `ETag` + `X-Content-Hash`, so:
+#   * there is NO recompute-on-GET — GET reads the stored value, never re-hashes;
+#   * a DEVICE NEVER COMPUTES ITS OWN sha256 — it reads the server-provided hash off
+#     the SAME response it fetched the bytes with and holds it as `held` for
+#     [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]'s string-compare self-select rule.
+# Sidecar over in-memory map: it survives a server restart (a device fetches config at
+# boot AFTER a restart) and is naturally per-path-consistent with the atomic write.
+try:
+    from change_notify import content_hash  # sibling module (server dir on sys.path[0])
+except Exception:  # pragma: no cover — server imported outside its own dir
+    import hashlib as _hashlib
+
+    def content_hash(data: bytes) -> str:  # type: ignore[misc]
+        """sha256 lowercase hex — byte-identical to change_notify.content_hash."""
+        return _hashlib.sha256(data).hexdigest()
+
+
+def _content_hash_sidecar(target: Path) -> Path:
+    """The dotfile persisting `target`'s content hash. The leading dot means
+    `_list_one_level` skips it, so a sidecar never pollutes an asset/blob listing."""
+    return target.parent / f".{target.name}.chash"
+
+
+def _store_content_hash(target: Path, data: bytes) -> str:
+    """Persist and return the sha256 of `data` at PUT time (NEVER on GET). Best-effort:
+    a sidecar write failure is logged and swallowed so it can never break the write."""
+    h = content_hash(data)
+    try:
+        _atomic_write_text(_content_hash_sidecar(target), h)
+    except OSError:
+        logger.exception("content-hash sidecar write failed for %s", target)
+    return h
+
+
+def _load_content_hash(target: Path):
+    """Read the STORED content hash for `target`, or None if none was stored (an asset
+    predating this capability). Never recomputes from content — GET does no hashing."""
+    sidecar = _content_hash_sidecar(target)
+    try:
+        if sidecar.is_file():
+            return sidecar.read_text().strip() or None
+    except OSError:
+        logger.exception("content-hash sidecar read failed for %s", target)
+    return None
+
+
+def _content_hash_headers(target: Path) -> dict:
+    """GET headers carrying the server-provided content hash, or {} when none is stored.
+    `X-Content-Hash` is the raw hex a device holds verbatim; `ETag` is the same digest
+    in HTTP's quoted form."""
+    h = _load_content_hash(target)
+    if not h:
+        return {}
+    return {"X-Content-Hash": h, "ETag": f'"{h}"'}
+
+
 def ensure_dirs():
     """Create data directories if they don't exist."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -213,6 +318,38 @@ def load_registry() -> dict:
 def save_registry(registry: dict):
     """Save namespace registry to disk (atomic)."""
     _atomic_write_text(REGISTRY_FILE, json.dumps(registry, indent=2))
+
+
+def _list_one_level(root: Path, rel: str) -> tuple[str, list[dict]]:
+    """List ONE level under `root / rel` (dirs-first, each group sorted
+    case-insensitively). THE shared listing primitive behind both the asset
+    listing and the unified-store blob listing ([CXC-STORE-CAP-LIST]) — one
+    implementation so the two faces cannot drift.
+
+    Returns `(normalised_prefix, entries)`. `rel` is request-supplied and is
+    contained through `_resolve_contained` before any directory is read. An
+    absent/empty dir (or a prefix naming a file) yields a valid EMPTY listing.
+    Dotfiles — and the `.{name}.tmp.{pid}.{tid}` temps `_atomic_write_bytes`
+    creates — are skipped.
+    """
+    base_res = _resolve_contained(root, rel)
+    norm_prefix = (rel + "/") if rel else ""
+    dirs: list[dict] = []
+    files: list[dict] = []
+    if base_res.is_dir():
+        for child in base_res.iterdir():
+            name = child.name
+            if name.startswith("."):
+                continue  # dotfiles AND `.{name}.tmp.{pid}.{tid}` temps
+            child_path = f"{rel}/{name}" if rel else name
+            if child.is_dir():
+                dirs.append({"name": name, "path": child_path, "kind": "dir"})
+            elif child.is_file():
+                files.append({"name": name, "path": child_path,
+                              "kind": "file", "size": child.stat().st_size})
+    dirs.sort(key=lambda e: e["name"].lower())
+    files.sort(key=lambda e: e["name"].lower())
+    return norm_prefix, dirs + files
 
 
 class BusStorageHandler(BaseHTTPRequestHandler):
@@ -238,11 +375,14 @@ class BusStorageHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_binary(self, data: bytes, content_type="application/octet-stream", status=200):
+    def _send_binary(self, data: bytes, content_type="application/octet-stream", status=200,
+                     headers=None):
         self._responded = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -339,6 +479,29 @@ class BusStorageHandler(BaseHTTPRequestHandler):
             elif method == "PUT":
                 return self._handle_asset_put(asset_path)
 
+        # Blob endpoints — the UNIFIED-store face ([SPEC:CXC-STORE]). Generic
+        #   bytes-by-path GET/PUT + a prefix-LIST, rooted at DATA_DIR so a doc
+        #   absorbed from the retired document_store lands as `bus://<collection>/
+        #   <id>.json` (a JSON blob at a path) and is served here. The bare
+        #   collection path lists one level under ?prefix= (ids for the
+        #   client-side query [DD-STORE-QUERY-DISPOSITION]); a non-empty <path>
+        #   is a single-blob GET/PUT. Assets keep their own route above so the
+        #   fleet-facing content-type + asset-change-notify behaviour is
+        #   preserved; `bus://assets/...` still resolves there, `bus://<other>...`
+        #   resolves here.
+        elif path == "/api/v1/blob" or path == "/api/v1/blob/":
+            if method == "GET":
+                prefix = query.get("prefix", [""])[0]
+                return self._handle_blob_list(prefix)
+        elif path.startswith("/api/v1/blob/"):
+            blob_path = path[len("/api/v1/blob/"):]
+            if method == "GET":
+                return self._handle_blob_get(blob_path)
+            elif method == "PUT":
+                return self._handle_blob_put(blob_path)
+            elif method == "DELETE":
+                return self._handle_blob_delete(blob_path)
+
         # Workload endpoints
         elif path == "/api/v1/workloads":
             if method == "GET":
@@ -430,6 +593,15 @@ class BusStorageHandler(BaseHTTPRequestHandler):
 
     def _handle_asset_get(self, asset_path: str):
         file_path = _resolve_contained(ASSETS_DIR, asset_path)
+        # PRE-SECRETS: the deny-list must guard the ASSET route too — the fleet's
+        # private credential tree (`assets/fleet/private/`) is reachable here, not
+        # only through the blob face. Without this an unauthenticated
+        # `GET /api/v1/assets/fleet/private/velo.creds` returns real secrets over the
+        # LAN. `_blob_denied` resolves DATA_DIR-relative and the asset route resolves
+        # under DATA_DIR/assets, so it correctly refuses the credential tree
+        # (`configs/` is structurally unreachable via this route — harmless).
+        if _blob_denied(file_path):
+            raise PathEscape(403, f"Asset route may not reach a protected tree: {asset_path}")
         if not file_path.exists() or not file_path.is_file():
             return self._send_error(404, f"Asset not found: {asset_path}")
         # Guess content type from extension
@@ -440,10 +612,17 @@ class BusStorageHandler(BaseHTTPRequestHandler):
             ".yaml": "text/yaml", ".yml": "text/yaml", ".bin": "application/octet-stream",
         }
         ct = content_types.get(ext, "application/octet-stream")
-        self._send_binary(file_path.read_bytes(), content_type=ct)
+        # cap 3: serve the STORED content hash (ETag / X-Content-Hash); no recompute.
+        self._send_binary(file_path.read_bytes(), content_type=ct,
+                          headers=_content_hash_headers(file_path))
 
     def _handle_asset_put(self, asset_path: str):
         file_path = _resolve_contained(ASSETS_DIR, asset_path)
+        # PRE-SECRETS: refuse a write INTO the protected tree on the asset route too
+        # (see `_handle_asset_get`) — the deny-list is a property of the storage root,
+        # not of one route.
+        if _blob_denied(file_path):
+            raise PathEscape(403, f"Asset route may not reach a protected tree: {asset_path}")
         data = self._read_body()
         with _get_path_lock(f"asset:{asset_path}"):
             # Read the PRIOR bytes INSIDE the lock, before overwriting: the old
@@ -455,6 +634,9 @@ class BusStorageHandler(BaseHTTPRequestHandler):
             # _atomic_write_bytes creates parent dirs (exist_ok) and os.replace()s
             # the target so concurrent GETs never observe a torn asset.
             _atomic_write_bytes(file_path, data)
+            # cap 3: persist the content hash at PUT so GET serves it without
+            # recomputing and the device never hashes its own bytes.
+            _store_content_hash(file_path, data)
             # ACN P-a: broadcast a retained {old->new} content-hash event, still
             # INSIDE the per-path lock so publish order matches write order. Two
             # concurrent PUTs to the SAME path serialize their writes via this lock;
@@ -495,27 +677,89 @@ class BusStorageHandler(BaseHTTPRequestHandler):
         # absolute-path escape attempt and is refused, not silently repaired.
         raw = prefix or ""
         rel = raw.strip("/") if "\x00" not in raw else raw
-        base_res = _resolve_contained(ASSETS_DIR, rel)
+        norm_prefix, entries = _list_one_level(ASSETS_DIR, rel)
+        self._send_json({"prefix": norm_prefix, "entries": entries})
 
-        norm_prefix = (rel + "/") if rel else ""
-        dirs: list[dict] = []
-        files: list[dict] = []
-        # An absent/empty dir (or a prefix that names a file) yields no children
-        # -> a valid 200 empty listing, never a 404.
-        if base_res.is_dir():
-            for child in base_res.iterdir():
-                name = child.name
-                if name.startswith("."):
-                    continue  # dotfiles AND `.{name}.tmp.{pid}.{tid}` temps
-                child_path = f"{rel}/{name}" if rel else name
-                if child.is_dir():
-                    dirs.append({"name": name, "path": child_path, "kind": "dir"})
-                elif child.is_file():
-                    files.append({"name": name, "path": child_path,
-                                  "kind": "file", "size": child.stat().st_size})
-        dirs.sort(key=lambda e: e["name"].lower())
-        files.sort(key=lambda e: e["name"].lower())
-        self._send_json({"prefix": norm_prefix, "entries": dirs + files})
+    # --- Blob Handlers (the UNIFIED-store face, [SPEC:CXC-STORE]) ---
+
+    def _handle_blob_get(self, blob_path: str):
+        """Fetch a blob by path from the store root (doc-as-blob GET)."""
+        file_path = _resolve_contained(BLOB_ROOT, blob_path)
+        if _blob_denied(file_path):
+            raise PathEscape(403, f"Blob route may not reach a protected tree: {blob_path}")
+        if not file_path.exists() or not file_path.is_file():
+            return self._send_error(404, f"Blob not found: {blob_path}")
+        ext = file_path.suffix.lower()
+        content_types = {
+            ".json": "application/json", ".yaml": "text/yaml", ".yml": "text/yaml",
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".bin": "application/octet-stream",
+        }
+        ct = content_types.get(ext, "application/octet-stream")
+        # cap 3: serve the STORED content hash (ETag / X-Content-Hash); no recompute.
+        self._send_binary(file_path.read_bytes(), content_type=ct,
+                          headers=_content_hash_headers(file_path))
+
+    def _handle_blob_put(self, blob_path: str):
+        """Store a blob by path (doc-as-blob PUT).
+
+        cap 4 ([CXC-DEVICE-BASELINE-CAP-BLOB-NOTIFY]): the blob route is the
+        [SPEC:CXC-STORE] unified-store face now serving migrated document_store docs as
+        `bus://<collection>/<id>.json` blobs. It rides the SAME `AssetChangeNotifier`
+        (by reference — NOT a second producer) the asset PUT uses, so a migrated doc
+        emits the retained {old->new} content-hash event exactly like an asset does, and
+        an identical re-PUT emits NOTHING (the notifier is content-discriminating).
+        Wired onto `_handle_blob_put` per the cap's own `what-changes`; the DELETE route
+        is deliberately NOT wired — the ratified {old->new} shape carries a real
+        new-content hash and cannot express a removal, and the asset route has no
+        delete-emit to mirror. cap 3 stores the content-hash sidecar here too."""
+        file_path = _resolve_contained(BLOB_ROOT, blob_path)
+        if _blob_denied(file_path):
+            raise PathEscape(403, f"Blob route may not reach a protected tree: {blob_path}")
+        data = self._read_body()
+        with _get_path_lock(f"blob:{blob_path}"):
+            # Old bytes read INSIDE the lock, before overwrite, so old/new stay a
+            # consistent pair ([CXC-ACN-OLDNEW]); a brand-new blob has a null `old`.
+            old_bytes = file_path.read_bytes() if file_path.is_file() else None
+            _atomic_write_bytes(file_path, data)
+            _store_content_hash(file_path, data)   # cap 3: persist hash for GET
+            _notify_asset_change(old_bytes, data)   # cap 4: {old->new}, same notifier
+        logger.info(f"Blob stored: {blob_path} ({len(data)} bytes)")
+        self._send_json({"status": "ok", "path": blob_path, "size": len(data)}, status=201)
+
+    def _handle_blob_delete(self, blob_path: str):
+        # Containment matters MOST here: without it this route is an
+        # unauthenticated arbitrary-file-REMOVAL primitive.
+        file_path = _resolve_contained(BLOB_ROOT, blob_path)
+        if _blob_denied(file_path):
+            raise PathEscape(403, f"Blob route may not reach a protected tree: {blob_path}")
+        with _get_path_lock(f"blob:{blob_path}"):
+            existed = file_path.is_file()
+            if existed:
+                file_path.unlink()
+                # cap 3: drop the orphaned content-hash sidecar with the blob.
+                _content_hash_sidecar(file_path).unlink(missing_ok=True)
+        if not existed:
+            return self._send_error(404, f"Blob not found: {blob_path}")
+        self._send_json({"status": "deleted", "path": blob_path})
+
+    def _handle_blob_list(self, prefix: str):
+        """List blobs ONE LEVEL under `prefix` (the prefix-LIST the client-side
+        query walks, [CXC-STORE-CAP-LIST]). Same contract/shape as the asset
+        listing, rooted at the store root instead of the asset subtree.
+
+        The deny-list applies to LIST too: a prefix that resolves INTO a protected
+        tree is refused 403, and any protected child (e.g. the `configs/` dir at the
+        store root) is filtered out so the blob face never even enumerates it."""
+        raw = prefix or ""
+        rel = raw.strip("/") if "\x00" not in raw else raw
+        base_res = _resolve_contained(BLOB_ROOT, rel)
+        if _blob_denied(base_res):
+            raise PathEscape(403, f"Blob route may not reach a protected tree: {rel}")
+        norm_prefix, entries = _list_one_level(BLOB_ROOT, rel)
+        entries = [e for e in entries
+                   if not _blob_denied((BLOB_ROOT / e["path"]).resolve())]
+        self._send_json({"prefix": norm_prefix, "entries": entries})
 
     # --- Workload Handlers ---
 

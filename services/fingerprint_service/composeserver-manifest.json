@@ -1,0 +1,14 @@
+{
+  "_comment": "Sample per-tenant ComposeServer plugin manifest for fingerprint_manager (the R503 enroll/cast/match/roster-push ORCHESTRATION leg, renamed from the misnomer 'fingerprint_storage' per [DEC-FINGERPRINT-MANAGER-RENAME-2026-08-26] — it is NOT storage; the blob store is the separate fingerprint_template_store leg). Consumed by composeio.composeserver_loader.load_tenant_manifest as an already-parsed dict ([SPEC:CXC-CS-LOADER], [CXC-CSL-MANIFEST-SHAPE]; the on-disk manifest FILE format itself is DEFERRED per [DD-CSL-MANIFEST-FORMAT]). The 'plugin' ref is a 'module.path:ClassName' dotted import; the plugin lives in python/ but imports the orchestration service from services/, so run with PYTHONPATH=python:services. 'config' is validated against FingerprintManagerPlugin.Config BEFORE instantiation ([CXC-CSL-CONFIG-VALIDATION]).",
+  "plugins": [
+    {
+      "plugin": "composeio.plugins.fingerprint_manager:FingerprintManagerPlugin",
+      "config": {
+        "devices": ["dev/s3-fp1"],
+        "source": "fingerprint_manager",
+        "template_store_url": null,
+        "recent_ready_capacity": 100
+      }
+    }
+  ]
+}

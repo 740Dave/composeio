@@ -100,9 +100,9 @@ def _docstore_fake(reachable=True):
 
 def _busstore_fake(reachable=True):
     tree = {
-        (): [StoreEntry("cyd-45302c.compose.yaml", "leaf",
-                        ("displays/cyd-45302c.compose.yaml",),
-                        "bus://assets/displays/cyd-45302c.compose.yaml",
+        (): [StoreEntry("cyd-00bad8.compose.yaml", "leaf",
+                        ("displays/cyd-00bad8.compose.yaml",),
+                        "bus://assets/displays/cyd-00bad8.compose.yaml",
                         "displays"),
              StoreEntry("compose_console.svg", "leaf",
                         ("icons/compose_console.svg",),
@@ -193,7 +193,7 @@ def test_busstore_lists_assets():
     w = _widget("busstore", _busstore_fake())
     w.list_now()
     assert [e.label for e in w._entries] == \
-        ["cyd-45302c.compose.yaml", "compose_console.svg"]
+        ["cyd-00bad8.compose.yaml", "compose_console.svg"]
     assert w._available is True
 
 
@@ -427,7 +427,7 @@ def test_real_bus_adapter_live_listing_is_not_degraded():
 def _degraded_widget():
     """A bus viewer over an old (no-listing-API) server + curated roots."""
     a = BusStoreAdapter(
-        roots=["displays/cyd-45302c.compose.yaml", "icons/compose_console.svg",
+        roots=["displays/cyd-00bad8.compose.yaml", "icons/compose_console.svg",
                "fonts/inter.ttf", "m31/scene.yaml"],
         client=_FakeBusClient(listing=None, version="0.1.0"))
     w = StoreBrowserWidget("browser", store="busstore", adapter=a)

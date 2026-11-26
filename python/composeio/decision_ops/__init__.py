@@ -51,13 +51,13 @@ this module; each is a real follow-up with its own owner/gate:
      that imports THIS library, the same "one core, N consumers" pattern
      `lts_lint` and `decision_extractor` already use.
 
-  2. NEXUS-MAGMA SYNC. The external Nexus "Magma" knowledge-graph service
-     (`nexus_magma_*` MCP tools) is a DIFFERENT system from the local lts-engine
+  2. HAVEN-MAGMA SYNC. The external Haven "Magma" knowledge-graph service
+     (`haven_magma_*` MCP tools) is a DIFFERENT system from the local lts-engine
      this package's MCP server refreshes on write — and it genuinely still carries
-     the magma_* naming. Keeping this `.lts` file and Nexus-Magma's index in sync
-     needs Nexus and is its own follow-up. For now, `query()`'s local `factlattice`
+     the magma_* naming. Keeping this `.lts` file and Haven-Magma's index in sync
+     needs Haven and is its own follow-up. For now, `query()`'s local `factlattice`
      parse/index is the complete answer to "does the graph already have this
-     decision" — sufficient for the anti-re-ask gate today; Nexus-Magma sync only
+     decision" — sufficient for the anti-re-ask gate today; Haven-Magma sync only
      matters once something OTHER than this repo's own tools needs to traverse the graph.
 
   3. LIVE-CUTOVER TO SOLE WRITER. The hand-append workflow (an architect editing

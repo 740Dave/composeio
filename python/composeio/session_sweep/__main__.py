@@ -19,7 +19,7 @@ from pathlib import Path
 from .sensor import SessionSweep
 
 _DEFAULT_SESSION = str(
-    Path.home() / ".claude/projects/-Users-davidleeburnett/"
+    Path.home() / ".claude/projects/-Users-you/"
     "59f1b46e-3cde-4c0f-8021-3b3e7bbe00f3.jsonl")
 
 

@@ -77,6 +77,10 @@ ControllerConfig controller_config_from_yaml(const YamlNode* root) {
                 s.invert    = w->get_bool("invert", false);
                 s.deadband  = w->get_int("deadband", 2);
                 s.ema_alpha = w->get_float("ema", 0.0f);
+                /* Output-scale level quantization: snap to multiples of `step`
+                 * and publish only on a level change.  Default 0 = disabled,
+                 * so a wire that omits it is byte-identical. [CXC-HAL-CONDITION-STEP] */
+                s.step      = w->get_int("step", 0);
                 /* Calibration / safety bands, in RAW ADC CODES — the INPUT
                  * half of the same in_min..in_max -> 0..out_max map the
                  * OUTPUT half runs.  Absent = 0/0 = no band = today's

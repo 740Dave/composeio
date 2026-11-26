@@ -7,6 +7,10 @@ app:
   id: minnow-bringup
   transports: []            # in-process; the driver publishes/serves the bus directly
 
+# The serial slot to drive is CONFIGURATION (override: COMPOSEIO_VAR_BRINGUP_DEVICE).
+variables:
+  bringup_device: fleetnode
+
 design:
   target: desktop
   title: "MinnowBoard Bring-up"
@@ -53,7 +57,7 @@ modules:
     grid_row: 0
     grid_column: 0
     widgets:
-      - {type: TextInputWidget, namespace: bringup/hostname, label: "Board name (hostname)", placeholder: "ginger", row: 0, column: 0}
+      - {type: TextInputWidget, namespace: bringup/hostname, label: "Board name (hostname)", placeholder: "fleetnode", row: 0, column: 0}
       - {type: TextInputWidget, namespace: bringup/pw_hash, label: "Password  (hashed locally — never stored or seen in plaintext)", secret: true, row: 1, column: 0}
       - {use: option-checkbox, label: "avahi  (mDNS .local discovery)",          ns: bringup/opt_avahi,     row: 2, column: 0}
       - {use: option-checkbox, label: "tailscale  (install client)",             ns: bringup/opt_tailscale, row: 3, column: 0}
@@ -73,7 +77,7 @@ modules:
           tool: fleetconsole.provision_run
           args:
             recipe: minnowboard-debian13
-            device: ginger                    # the serial slot (FTDI) to drive
+            device: $bringup_device             # the serial slot (FTDI) to drive (COMPOSEIO_VAR_BRINGUP_DEVICE)
             params:
               hostname:         "${bringup/hostname}"
               password_crypted: "${bringup/pw_hash}"
@@ -88,7 +92,7 @@ modules:
         column: 0
       - {type: RelayWidget, namespace: bringup/verdict, label: "Provision", state_engine: stop_light, row: 1, column: 0}
 
-  # Restore from a saved template — the pick list IS a document_store query over the fleet's
+  # Restore from a saved template — the pick list IS a client-side query over the fleet's
   # recovery docs. Selecting one loads its rebuild spec (incl. the saved $6$ hash) into the
   # form namespaces, so the existing Provision button re-creates that board identically.
   - name: restore

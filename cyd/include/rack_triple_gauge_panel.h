@@ -17,7 +17,7 @@
  * the exact mistake the seam exists to prevent.
  *
  * EVERY number below was read from the board's generator source
- * ~/Dropbox/Maker/pcb/rack_triple_gauge/generate_pcb.py and CONFIRMED against
+ * ${MAKER_HOME}/pcb/rack_triple_gauge/generate_pcb.py and CONFIRMED against
  * the pad->net assignments in the emitted rack_triple_gauge.kicad_pcb
  * (2026-08-14).  Where the two disagreed, the .kicad_pcb won and the
  * disagreement is recorded — see `pcb-generator-dead-routing` in the

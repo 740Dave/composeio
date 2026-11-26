@@ -45,6 +45,17 @@ char* config_fetch(size_t* out_len);
 int config_fetch_last_status(void);
 
 /**
+ * The SERVER-PROVIDED content-hash of the most recent http_fetch/config_fetch,
+ * read off the GET response header (X-Content-Hash, else ETag) —
+ * [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET].  Empty string ("") when the server did
+ * not send one (the header is not yet served, or the fetch failed).  This is
+ * how a device HOLDS a hash for the asset-change-notify self-select WITHOUT
+ * computing sha256 itself ([CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD], david-ruling:
+ * the device never computes sha256).  Valid until the next http_fetch call.
+ */
+const char* config_fetch_last_content_hash(void);
+
+/**
  * Fetch an arbitrary HTTP URL (or bus://assets/... URI) into a malloc'd
  * buffer.  Used for image assets.  Returns nullptr on failure.
  * max_len caps the download (assets beyond it are refused).

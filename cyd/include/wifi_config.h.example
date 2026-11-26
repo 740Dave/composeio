@@ -3,6 +3,17 @@
  *
  * The real wifi_config.h is gitignored: it holds network credentials and
  * must not be committed. This template documents the expected #defines.
+ *
+ * ⛔ THE COMPILED FLOOR IS THE RESCUE-ONLY DEFAULT.  These URLs are the
+ * addresses a board falls back to when it has NO retained bus-binding
+ * ([SPEC:CXC-REPOINT] / [CXC-DEVICE-BASELINE-CAP-BUS-BINDING]).  A repointed
+ * device reaches its per-device/global binding first; this floor is only what
+ * a freshly-flashed, un-bound board uses.  Post [DEC-STORAGE-MERGED-DATA-ON-
+ * BUILDHOST-2026-09-02], the STORAGE floor is BUILDHOST so a ".75-down" cutover
+ * strands nothing.  ⚠ The BROKER has NOT moved yet — it is still on .75
+ * (mqtt-broker.local); repoint MQTT_BROKER_URI only when the broker
+ * actually migrates.  Use IP addresses — mDNS (.local) does not resolve on
+ * the CYD.
  */
 
 #pragma once
@@ -10,17 +21,19 @@
 #define WIFI_SSID "YOUR_WIFI_SSID"
 #define WIFI_PASS "YOUR_WIFI_PASSWORD"
 
-/* Document store endpoint for capture push.
- * Use an IP address — mDNS (.local) resolution is not available on the CYD. */
-#define DOCUMENT_STORE_URL "http://192.0.2.x:8421"
+/* Document store endpoint for capture push — BUILDHOST (docstore :8421). */
+#define DOCUMENT_STORE_URL "http://192.0.2.21:8421"
 
-/* Bus storage endpoint — config + asset fetch ([CXC-R-BOOT]):
- * bus://assets/displays/<device_id>.compose.yaml lives here. */
-#define BUS_STORAGE_URL "http://192.0.2.x:8420"
+/* Bus storage endpoint — config + asset fetch ([CXC-R-BOOT]),
+ * bus://assets/displays/<device_id>.compose.yaml lives here.  BUILDHOST
+ * (bus_storage :8420) — the merged store, the rescue floor for this baseline. */
+#define BUS_STORAGE_URL "http://192.0.2.21:8420"
 
 /* ComposeBus MQTT broker ([SPEC:CXC-EMBED-REACTIVE] R3 reactive tier) —
- * devices ride the shared ecosystem broker on :1883. */
-#define MQTT_BROKER_URI "mqtt://192.0.2.x:1883"
+ * devices ride the shared ecosystem broker on :1883.  ⚠ STILL on .75
+ * (mqtt-broker.local); the broker has not migrated to buildhost.  Repoint
+ * only when it does. */
+#define MQTT_BROKER_URI "mqtt://192.0.2.75:1883"
 
 /* Optional fixed device identity. When NOT defined, the device is
  * "cyd-<last 3 MAC octets>" (printed at boot) — assign its config in

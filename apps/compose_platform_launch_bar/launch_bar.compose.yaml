@@ -37,8 +37,13 @@ app:
   # launched.  Broker matches the console + storage-viewer scenes.
   transports:
     - type: mqtt
-      broker: mqtt-broker.local
+      broker: 192.0.2.75
       port: 1883
+
+# Host segment of the storage-monitor topic: CONFIGURATION, not code. Launch override:
+# COMPOSEIO_VAR_STORAGE_HOST (the same env the publisher reads, services/storage_monitor/topics.py).
+variables:
+  storage_host: buildhost
 
 design:
   title: "Compose"
@@ -141,7 +146,7 @@ widgets:
 
       # -- DISK-SPACE ALERT ([DX-NARROW-WAIST] / [DX-STATE-ON-BUS]) ----------
       # The two STORAGE tiles (Document Storage + Bus Storage) show a bound
-      # status off `skipper/storage/free_bytes` — an INTEGER number of free
+      # status off `buildhost/storage/free_bytes` — an INTEGER number of free
       # bytes a peer service publishes as a retained STATE (this bar only
       # SUBSCRIBES it; the expr auto-subscribes it over the mqtt transport
       # declared above).  The POLICY lives HERE, not in the widget: the launch
@@ -156,7 +161,7 @@ widgets:
       # is indistinguishable from "not reporting" and that is the safe default.
       # The on-chip DSL has no ||/&&; bands nest as ternaries + comparisons.
       #
-      # 5 · Document Storage — navigation shell over doc:// ([CXC-DOCNAV-APP]).
+      # 5 · Document Storage — navigation shell over the doc catalog ([CXC-DOCNAV-APP]).
       - type: launch_tile
         id: tile_docstore
         target: docstore
@@ -168,9 +173,9 @@ widgets:
         width: 96
         height: 118
         icon_tint:
-          expr: "ns('skipper/storage/free_bytes') <= 0 ? '#e3e3e3' : (ns('skipper/storage/free_bytes') < 3e9 ? '#E03B3B' : (ns('skipper/storage/free_bytes') < 5e9 ? '#FF9500' : '#e3e3e3'))"
+          expr: "ns('$storage_host/storage/free_bytes') <= 0 ? '#e3e3e3' : (ns('$storage_host/storage/free_bytes') < 3e9 ? '#E03B3B' : (ns('$storage_host/storage/free_bytes') < 5e9 ? '#FF9500' : '#e3e3e3'))"
         blink:
-          expr: "ns('skipper/storage/free_bytes') <= 0 ? false : ns('skipper/storage/free_bytes') < 2e9"
+          expr: "ns('$storage_host/storage/free_bytes') <= 0 ? false : ns('$storage_host/storage/free_bytes') < 2e9"
 
       # 6 · Bus Storage — navigation shell over bus:// ([CXC-BUSNAV-APP]).
       #     Same disk-space alert as tile_docstore (see the block above).
@@ -185,9 +190,9 @@ widgets:
         width: 96
         height: 118
         icon_tint:
-          expr: "ns('skipper/storage/free_bytes') <= 0 ? '#e3e3e3' : (ns('skipper/storage/free_bytes') < 3e9 ? '#E03B3B' : (ns('skipper/storage/free_bytes') < 5e9 ? '#FF9500' : '#e3e3e3'))"
+          expr: "ns('$storage_host/storage/free_bytes') <= 0 ? '#e3e3e3' : (ns('$storage_host/storage/free_bytes') < 3e9 ? '#E03B3B' : (ns('$storage_host/storage/free_bytes') < 5e9 ? '#FF9500' : '#e3e3e3'))"
         blink:
-          expr: "ns('skipper/storage/free_bytes') <= 0 ? false : ns('skipper/storage/free_bytes') < 2e9"
+          expr: "ns('$storage_host/storage/free_bytes') <= 0 ? false : ns('$storage_host/storage/free_bytes') < 2e9"
 
       # 7 · ComposeBus — the ComposeBus / Headless Monitor
       #     (python -m composeio.composer.monitor).

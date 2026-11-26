@@ -58,6 +58,23 @@ _DS_PATH = _REPO_ROOT / "compose_projects" / "intelligence" / "console" / "data_
 
 ALIVE_WINDOW_S = 0.25
 JOIN_BUDGET_S = 2.0
+# leg 2b waits (bounded) for the async startup manifest rather than snapshotting a
+# fixed instant. A source declares AFTER its startup work, and at least one
+# (away_watch_publisher) seeds through `git status`, whose latency is BIMODAL
+# (~15ms warm, ~350ms COLD on the first git in a process). ALIVE_WINDOW_S sits
+# between the two, so a snapshot at the window RACED a cold git. WHETHER the
+# manifest reaches the redirected stream is SOB-C3's invariant; WHEN it lands is
+# not — so this budget must exceed a cold seed, comfortably.
+MANIFEST_BUDGET_S = 2.0
+# leg 2c waits (bounded) until the source first CONSULTS its stop Event — the
+# moment it reaches its parking point. Before that, a source may still be in its
+# synchronous first tick, which does real host I/O: lts_engine_status builds the
+# engine store over every registered corpus (measured 2.3-2.8s with 60 corpora),
+# daemon_watch health-GETs mqtt-broker.local (measured 5.0s when mDNS cannot
+# resolve it; urlopen's timeout does not bound the lookup). JOIN_BUDGET_S measured
+# from inside that tick timed the HOST, not stop(). This is a liveness bound on an
+# event, not the measurement, so it is generous; JOIN_BUDGET_S is unchanged.
+PARKED_BUDGET_S = 30.0
 
 
 def _load_data_sources():
@@ -191,6 +208,23 @@ def test_converted_source_blocks_and_then_stops(name, tmp_path, isolated_locks,
     err = _ThreadSafeStderr()
     monkeypatch.setattr(sys, "stderr", err)
 
+    # Instrument the source's OWN stop Event: the supervisor uses its private
+    # _stop, so only the source consults this one, and a converted source must
+    # consult it to be stoppable at all (park() waits on it; the follow_lines
+    # sources test it in their idle hook).
+    parked = threading.Event()
+    _wait, _is_set = src.stop.wait, src.stop.is_set
+
+    def _consulting_wait(timeout=None):
+        parked.set()
+        return _wait(timeout)
+
+    def _consulting_is_set():
+        parked.set()
+        return _is_set()
+
+    src.stop.wait, src.stop.is_set = _consulting_wait, _consulting_is_set
+
     sup = ds.DataSourceSupervisor([src], reclaim_poll_s=0.05)
     try:
         sup.start()
@@ -237,12 +271,34 @@ def test_converted_source_blocks_and_then_stops(name, tmp_path, isolated_locks,
         # vanished from this capture until that was fixed — which is exactly how
         # it would vanish from a console that captures its children's output,
         # taking SOB-C3's only mechanism with it.
+        #
+        # WAIT for it, bounded — do NOT reuse leg 1's ALIVE_WINDOW_S snapshot. The
+        # manifest lands only AFTER the source's startup work, and
+        # away_watch_publisher's seed shells to `git status` (~15ms warm, ~350ms
+        # COLD on the first git in a process). The 0.25s window sits between the
+        # two, so a single snapshot reddened the pre-commit gate ~1-in-4 whenever
+        # test_data_sources_supervisor.py ran first (it does not warm git) and the
+        # seed hit a cold git. SOB-C3 requires the line to REACH the stream, not to
+        # arrive by an arbitrary instant.
+        deadline = time.time() + MANIFEST_BUDGET_S
+        while "] declared:" not in err.snapshot() and time.time() < deadline:
+            time.sleep(0.02)
+        log = err.snapshot()
         assert "] declared:" in log, (
             f"{name}: no startup manifest line ([CXC-SOB-DECLARE]) reached the "
-            f"log. SOB-C3's whole mechanism is that this is readable in the boot "
-            f"log.\n--- source log ---\n{log}")
+            f"log within {MANIFEST_BUDGET_S}s. SOB-C3's whole mechanism is that "
+            f"this is readable in the boot log.\n--- source log ---\n{log}")
         assert "declared: NOTHING" not in log, (
             f"{name}: published without declaring any namespace")
+
+        # ---- leg 2c: it reached its parking point ------------------------ #
+        # Leg 3 measures stop() FROM THE PARKED STATE ([CXC-SOB-RUN-BLOCKS]), so
+        # it waits on the event, not on a wall-clock guess at when the first
+        # tick's host I/O finishes.
+        assert parked.wait(PARKED_BUDGET_S), (
+            f"{name}: never consulted its stop Event within {PARKED_BUDGET_S}s "
+            f"of start — it cannot be stopped.\n--- source log ---\n"
+            f"{err.snapshot()}")
     finally:
         # ---- leg 3: stop() releases it, promptly ------------------------- #
         t0 = time.time()

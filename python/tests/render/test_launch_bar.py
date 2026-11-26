@@ -542,7 +542,7 @@ def test_ribbon_transports_flag_connects_global_leg(monkeypatch):
             pass
         def subscribe(self, *a, **k):
             # the disk-space alert ([DX-STATE-ON-BUS]) SUBSCRIBES
-            # skipper/storage/free_bytes over the global leg, so the stub
+            # buildhost/storage/free_bytes over the global leg, so the stub
             # must accept subscriptions — a no-op is enough for this test,
             # which only asserts the global transport connected.
             pass

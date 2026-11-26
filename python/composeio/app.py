@@ -43,7 +43,7 @@ Transport configuration:
 
 Config-driven setup:
     app = ComposeApp.from_config("my_dashboard.compose.yaml",
-                                 transport="mqtt", broker="192.0.2.10")
+                                 transport="mqtt", broker="198.51.100.17")
     app.start()
 
 Programmatic setup:
@@ -62,7 +62,7 @@ Programmatic setup:
             self.publish("test_status", "idle")
 
     app = MyApp()
-    app.connect_transport("mqtt", broker="192.0.2.10")
+    app.connect_transport("mqtt", broker="198.51.100.17")
     app.start()
 """
 
@@ -305,7 +305,7 @@ class ComposeApp:
             config_path: Path to .compose.yaml or ComposeIO module YAML
             app_id: Override app ID (defaults to config's app.id or module field)
             **transport_kwargs: Passed to connect_transport() after setup.
-                Example: from_config("dash.yaml", transport="mqtt", broker="192.0.2.1")
+                Example: from_config("dash.yaml", transport="mqtt", broker="198.51.100.10")
 
         Returns:
             A configured ComposeApp instance (not yet started).
@@ -623,7 +623,7 @@ class ComposeApp:
         UART kwargs: port (str, e.g. "/dev/ttyUSB0"), baudrate (int, default 115200)
 
         Examples:
-            app.connect_transport("mqtt", broker="192.0.2.10")
+            app.connect_transport("mqtt", broker="198.51.100.17")
             app.connect_transport("uart", port="/dev/ttyUSB0", baudrate=115200)
         """
         if transport_type == "mqtt":

@@ -14,7 +14,7 @@ origin: "Design conversation 2026-07-05 (David + fleet-ops intelligence). Genera
 
 ## [OOB-1] Motivation — every single point of failure earns an observer
 
-Production infrastructure fails in the one place you can't afford: the **edge**. When a device's primary/production plane dies (bad config push, wedged box, flapping links, a cutover in flight), you lose the exact path you would use to fix it — you cannot SSH to a firewall whose network is broken. `fw1` is a single point of failure for an entire site's connectivity.
+Production infrastructure fails in the one place you can't afford: the **edge**. When a device's primary/production plane dies (bad config push, wedged box, flapping links, a cutover in flight), you lose the exact path you would use to fix it — you cannot SSH to a firewall whose network is broken. `firewall1` is a single point of failure for an entire site's connectivity.
 
 The OOB plane keeps **eyes and limited hands** on a device over a path that fails *independently* of production. It converts a failure from:
 
@@ -56,7 +56,7 @@ Two non-negotiables define the OOB plane:
 | Transport | Default? | Range | Use |
 |-----------|----------|-------|-----|
 | **CAN** | **✅ DEFAULT** | twisted pair, up to ~1 km, multi-drop | The general case — a fleet spread across a building (rack + garage + ADU + outbuildings). Differential, noise-tolerant, daisy-chained, 100+ nodes. |
-| **I2C** | short-run only | a few feet (longer needs buffers/extenders) | A **co-located, dense** set only — e.g., one MPOE rack (fw1 + servers + switch) with a single concentrator inches away. |
+| **I2C** | short-run only | a few feet (longer needs buffers/extenders) | A **co-located, dense** set only — e.g., one MPOE rack (firewall1 + servers + switch) with a single concentrator inches away. |
 | Serial (per-device console) | — | the console wire | The observer↔device link itself; inherently independent of production. |
 
 > Rationale for CAN-default: the fleet is *physically distributed*, and I2C cannot reach past a rack. Defaulting to CAN makes the common case work without extenders; I2C is a deliberate optimization for the one dense-rack case. (David's directive, 2026-07-05.)

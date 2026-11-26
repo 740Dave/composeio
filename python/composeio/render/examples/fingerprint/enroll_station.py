@@ -14,7 +14,7 @@ A NEW, DISTINCT runtime surface from both existing fingerprint surfaces:
   * the auth-MONITOR (``auth_monitor.py``) — watches ``auth_event`` (the
     match/authenticate path), never enrollment.
 
-This station drives the SAME reference apparatus (``FingerprintStorageService``
+This station drives the SAME reference apparatus (``FingerprintService``
 + ``MockFingerprintHAL`` + the HAL's own ``EnrollmentSession`` —
 [CXC-FPHAL-ENROLLMENT-SEQUENCE]) but GRANULARLY: it calls ``begin_enroll``,
 then for each of the announced ``captures_per_template`` captures it commands
@@ -51,7 +51,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from fingerprint_storage.service import FingerprintStorageService
+from fingerprint_service.service import FingerprintService
 
 from composeio.peripherals.fingerprint.device import FingerprintDevice
 from composeio.peripherals.fingerprint.hal import FeedbackState
@@ -80,7 +80,7 @@ _MESSAGE = {
 
 class EnrollmentStation:
     """Owns the SAME reference apparatus the binding UX uses
-    (``FingerprintStorageService`` + ``MockFingerprintHAL`` +
+    (``FingerprintService`` + ``MockFingerprintHAL`` +
     ``FingerprintDevice``) and drives a granular, step-scripted enrollment
     ceremony over it, publishing the live feedback state at every step."""
 
@@ -88,7 +88,7 @@ class EnrollmentStation:
                  gated_capability: str = "open_hatch") -> None:
         self.bus = bus
         self.device_id = device_id
-        self.svc = FingerprintStorageService()
+        self.svc = FingerprintService()
         self.svc.attach(bus)
         self.store = self.svc.store
         self.hal = MockFingerprintHAL()

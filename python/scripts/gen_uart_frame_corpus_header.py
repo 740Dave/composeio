@@ -113,7 +113,7 @@ CASES = [
 # Namespaces whose CRC-16/CCITT is checked directly.
 HASH_CASES = [
     "throttle/left", "throttle/right", "sys/cpu", "ftl_jump", "ftl_jump_led",
-    "_device/wsc6-6f4ce4/restart", "game/system", "a", "",
+    "_device/wsc6-07f199/restart", "game/system", "a", "",
 ]
 
 # CRC-8/MAXIM vectors, checked directly.

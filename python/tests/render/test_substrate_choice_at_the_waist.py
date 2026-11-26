@@ -188,6 +188,12 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _TRANSPORT_PKG = _REPO_ROOT / "python" / "composeio"
+# transport.py / transport_local.py / transport_contract.py (and bus.py) MOVED to the
+# composebus kernel distribution ([SPEC:CXC-COMPOSEBUS-KERNEL] §7) and are aliased back
+# as composeio.<name>; the derivation reads BOTH source trees so it sees exactly the
+# files it saw before the move.
+_KERNEL_PKG = _REPO_ROOT / "python" / "composebus" / "composebus"
+_SOURCE_PKGS = (_TRANSPORT_PKG, _KERNEL_PKG)
 
 
 # --------------------------------------------------------------------------- #
@@ -208,7 +214,7 @@ def _concrete_transport_classes() -> dict[str, str]:
         choice, it is a test double with a class statement.
     """
     classes: dict[str, str] = {}
-    for path in sorted(_TRANSPORT_PKG.glob("transport_*.py")):
+    for path in sorted(p for pkg in _SOURCE_PKGS for p in pkg.glob("transport_*.py")):
         family = path.stem[len("transport_"):]
         try:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"),
@@ -307,7 +313,7 @@ def _declarable_families() -> set[str]:
     the string "http_relay" (see `test_http_relay_is_guarded_though_unregistered`).
     """
     declarable: set[str] = set()
-    for path in sorted(_TRANSPORT_PKG.rglob("*.py")):
+    for path in sorted(p for pkg in _SOURCE_PKGS for p in pkg.rglob("*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"),
                              filename=str(path))
@@ -621,27 +627,6 @@ NOT_YET_CONVERTED: dict[str, str] = {
         "`--transport-type` (default from `COMPOSEIO_TRANSPORT_TYPE`, not from "
         "source) and pass it into the spec it already builds. No signature changes, "
         "no new dependency.",
-    "compose_projects/bsg/world/publish.py":
-        "TODO: convert — DOOR 4. The `else:` arm of an if/elif that already handles "
-        "an INJECTED `transport_spec` and a dry-run spec, so only the DEFAULT is "
-        "hardcoded. DISPOSITION: default `type:` from env/scene beside the broker it "
-        "already reads. MUST CONVERT WITH `gm_mcp/publisher.py` below: the world "
-        "publishes `dradis/*` and the GM publishes `gm/cmd/*` into the same game, "
-        "and two halves of one game disagreeing about the substrate is the "
-        "kiosk.py/scene_swap.py failure again. CAUTION, and this one is a real trap: "
-        "`source_bus._spec_key` collapses `type: mqtt` to `(broker, port)` and "
-        "ignores `client_id`, but routes every OTHER type down a full-tuple branch. "
-        "Both files rely on that asymmetry TODAY to keep dry-run publishers from "
-        "sharing one memoised bus (see their inline notes). Changing `type:` "
-        "therefore changes the memo key — re-read `_spec_key` before touching "
-        "either, and prove the dry-run selftests still build distinct buses.",
-    "compose_projects/bsg/game_hardware/gm_mcp/publisher.py":
-        "TODO: convert — DOOR 4. Byte-for-byte the same shape as `world/publish.py` "
-        "above, down to the dry-run `type: print` workaround and the pid-suffixed "
-        "`client_id` that stops the GM peer from sharing a broker id with the world "
-        "(rc=7 flap = intermittent command loss). DISPOSITION: identical, and land "
-        "the two in ONE commit — see the `_spec_key` caution on the entry above, "
-        "which applies here unchanged.",
 }
 
 # The one table the scan is compared against. Split above purely so a reader can tell
@@ -906,7 +891,12 @@ def test_the_local_tier_is_not_a_substrate():
         "AND selects on the name 'local'. If the local tier really did become "
         "declarable that is a design change; if not, the selector heuristic has "
         "widened and is about to make a false demand.")
-    assert "python/composeio/bus.py" not in _FOUND
+    # bus.py MOVED to the composebus kernel ([SPEC:CXC-COMPOSEBUS-KERNEL] §7). Assert on
+    # the path that EXISTS and is IN SCOPE, or this line passes vacuously.
+    bus_rel = "python/composebus/composebus/bus.py"
+    assert (_REPO_ROOT / bus_rel).is_file(), f"{bus_rel} moved again — repoint this assertion"
+    assert _in_scope(bus_rel), f"{bus_rel} fell out of the scan's scope"
+    assert bus_rel not in _FOUND
 
 
 def test_http_relay_is_guarded_though_the_registry_never_heard_of_it():
@@ -1150,30 +1140,6 @@ def test_scope_rules_exclude_tests_and_nothing_else():
     assert _in_scope("simulator/app.py")
     assert _in_scope("services/wake_word/detector.py")
     assert _in_scope("python/composeio/transport_registry.py")
-
-
-def test_the_bsg_project_is_governed_like_every_other_consumer():
-    """The 2026-08-13 regression, carried forward as a standing assertion.
-
-    The sibling guard excluded `compose_projects/bsg/` on a LICENSING rationale doing
-    ARCHITECTURAL duty, and a test pinned `not _in_scope(...)` — the guard requiring
-    its own blind spot. This file has no tree-exclusion mechanism at all, and this
-    assertion is what makes that visible rather than merely true.
-
-    BSG's two publishers were converted off door 2 on 2026-08-13 and reach the bus
-    through a `{"type": "mqtt", ...}` spec instead — which is exactly the move door 4
-    was opened to describe, and which read as CLEAN for the few hours this guard had
-    only three doors. It does not any more: both files are in the door-4 backlog
-    below, dispositioned. That transition is the argument for closing door 4 before
-    porting anything, made by a real conversion rather than a hypothetical one.
-    """
-    assert _in_scope("compose_projects/bsg/world/publish.py")
-    assert _in_scope("compose_projects/bsg/game_hardware/gm_mcp/publisher.py")
-    # ...and BEING in scope must actually mean being SEEN. Both are door-4 hits now;
-    # if a future edit makes them invisible, this says so instead of going quiet.
-    for rel in ("compose_projects/bsg/world/publish.py",
-                "compose_projects/bsg/game_hardware/gm_mcp/publisher.py"):
-        assert rel in _FOUND, f"{rel} vanished from the scan — re-triage it"
 
 
 def test_a_hand_run_driver_is_in_scope_wherever_it_lives():

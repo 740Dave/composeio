@@ -16,7 +16,7 @@ we'll have mysterious delays in how different devices react."*
 
 ComposeBus is a pub/sub bus. Messages are `(namespace, value, type, scope,
 source)`. Namespaces are strings — `throttle/left`, `shields`,
-`_device/hosyond-d1afe8/config`. The primary substrate is MQTT over IP; UART
+`_device/hosyond-080739/config`. The primary substrate is MQTT over IP; UART
 and CAN are alternate substrates so that a microcontroller with **no IP
 address** can participate. That is the point of the whole exercise: an MCU
 slaved over CAN or UART is a first-class bus participant.
@@ -111,16 +111,16 @@ sorted, which is the actual current arbitration order:
 0x159F  _app/console/bbox
 0x2A97  dradis/bodies
 0x6B92  _device/relay-000000/config
-0x8921  _device/wsc6-6f4ce4/config
+0x8921  _device/wsc6-07f199/config
 0x9FC4  alert_status
-0xC6B6  _device/hosyond-d1afe8/config
+0xC6B6  _device/hosyond-080739/config
 0xCC50  shields
 ```
 
 - Throttle wins everything **by luck** — its two names happen to hash lowest.
   Renaming the signal would silently re-rank it.
-- `_device/wsc6-6f4ce4/config` (0x8921) outranks
-  `_device/hosyond-d1afe8/config` (0xC6B6). Two transfers of **identical role
+- `_device/wsc6-07f199/config` (0x8921) outranks
+  `_device/hosyond-080739/config` (0xC6B6). Two transfers of **identical role
   and urgency** get different bus priority because of a MAC suffix.
 - `shields` (0xCC50) is the lowest-priority thing sampled — a combat-critical
   value loses arbitration to console bounding boxes.

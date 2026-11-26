@@ -1,7 +1,7 @@
 # ComposeUX — Quickstart: launching the app + monitoring
 
 A short field guide for building and watching ComposeUX widgets. Every command below is
-copy-paste and verified from the repo root (`~/Dropbox/Maker/composeio`). `composeio` is installed
+copy-paste and verified from the repo root (`${COMPOSEIO_HOME}`). `composeio` is installed
 (editable), so `python3 -m composeio...` works from the repo root with scene paths relative to
 wherever you run it.
 
@@ -70,7 +70,7 @@ A "scene" is a `.compose.yaml`. Run it live in an SDL window:
 # live window (no bus — uses the scene's `initial:` seed values)
 python3 -m composeio.render.engine.runtime <scene>.compose.yaml
 
-# live window + connect the ComposeBus (mqtt-broker.local:1883) so bindings show REAL data
+# live window + connect the ComposeBus (192.0.2.75:1883) so bindings show REAL data
 python3 -m composeio.render.engine.runtime <scene>.compose.yaml --transports
 
 # borderless fullscreen (RPi/kiosk)
@@ -123,7 +123,7 @@ def on_m(c,u,m):
     except Exception: v = m.payload.decode(errors='replace')
     print(f'{m.topic:48} {v}')
 cl = mqtt.Client(); cl.on_connect=on_c; cl.on_message=on_m
-cl.connect('mqtt-broker.local', 1883, 30); cl.loop_forever()
+cl.connect('192.0.2.75', 1883, 30); cl.loop_forever()
 PY
 ```
 
@@ -144,7 +144,7 @@ Narrow it by changing the filter, e.g. `composeio/global/self/#`.
 ```bash
 python3 - <<'PY'
 import paho.mqtt.client as mqtt, json, time
-c = mqtt.Client(); c.connect('mqtt-broker.local',1883,10); c.loop_start()
+c = mqtt.Client(); c.connect('192.0.2.75',1883,10); c.loop_start()
 env = {"ns":"demo/value","type":"state","val":73,"src":"you","scope":"global","seq":1,"ts":time.time()}
 c.publish('composeio/global/demo/value', json.dumps(env), qos=1); time.sleep(0.5)
 print('published demo/value = 73')
@@ -200,7 +200,7 @@ Rules of thumb:
 ## 5. The one gotcha
 
 Run from the **repo root** with a scene path relative to it. `--transports` needs the ComposeBus
-reachable (`mqtt-broker.local:1883`); without it the scene renders its `initial:` seeds only. If a live
+reachable (`192.0.2.75:1883`); without it the scene renders its `initial:` seeds only. If a live
 scene looks laggy while iterating, that's expected on heavy scenes — the engine now does
 dirty-region rendering, so input is sub-frame; a full first paint of a large scene is the cost.
 

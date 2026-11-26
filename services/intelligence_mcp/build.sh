@@ -14,6 +14,12 @@ rm -rf "$SCRIPT_DIR/composeio_lib"
 mkdir -p "$SCRIPT_DIR/composeio_lib"
 cp -r "$COMPOSEIO_LIB/composeio" "$SCRIPT_DIR/composeio_lib/composeio"
 cp "$COMPOSEIO_LIB/pyproject.toml" "$SCRIPT_DIR/composeio_lib/"
+# composeio depends on the ComposeBus kernel distribution (composebus==0.1.0,
+# [SPEC:CXC-COMPOSEBUS-KERNEL] §7); ship it beside composeio so the Dockerfile's
+# single pip command resolves both locally.
+mkdir -p "$SCRIPT_DIR/composeio_lib/composebus"
+cp -r "$COMPOSEIO_LIB/composebus/composebus" "$SCRIPT_DIR/composeio_lib/composebus/composebus"
+cp "$COMPOSEIO_LIB/composebus/pyproject.toml" "$COMPOSEIO_LIB/composebus/README.md" "$COMPOSEIO_LIB/composebus/LICENSE" "$SCRIPT_DIR/composeio_lib/composebus/"
 
 echo "==> Building Docker image..."
 docker build -t composeio-intelligence-mcp:latest "$SCRIPT_DIR"

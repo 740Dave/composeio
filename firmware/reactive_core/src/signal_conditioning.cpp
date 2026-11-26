@@ -2,6 +2,55 @@
 
 #include "signal_conditioning.h"
 
+/* RULE 4 — LEVEL QUANTIZATION with boundary HYSTERESIS. [CXC-HAL-CONDITION-STEP]
+ * When step > 0, snap the conditioned value (already 0..out_max) to the nearest
+ * multiple of `step`, so a pot emits a handful of coarse LEVELS (10, 20, ...)
+ * instead of the full ramp.  Combined with the EXISTING emit-on-change gate
+ * below, this means the wire publishes ONLY when the level changes — cutting bus
+ * volume and improving responsiveness for every thrust consumer (the on-screen
+ * gauge, the TM1637 tubes, ...).  step == 0 DISABLES it: passthrough, so every
+ * config that does not declare `step` is byte-identical in behaviour.
+ *
+ * ⛔ RAILS ESCAPE THE SNAP AND THE HYSTERESIS — [CXC-HAL-CONDITION-RAILS].
+ * 0 and out_max are SEMANTIC ("the lever is against the stop") and MUST stay
+ * EXACTLY reachable, even when out_max is not a multiple of step (255 % 10).
+ * A value AT a rail is forced to the rail regardless of the current level —
+ * the same rail-escape the deadband uses.  Without this, snapping-plus-
+ * hysteresis would strand the top rail: for out_max=255 the nearest interior
+ * level is 250, and the rail's own preimage (255) can never clear a
+ * `last==250 + step/2 + margin` up-threshold.
+ *
+ * HYSTERESIS — the nearest-level boundary sits at k*step + step/2, and ADC
+ * noise straddling a boundary chatters between two levels.  So a move must
+ * cross the CURRENT level's boundary by `margin` before the level changes.
+ * `margin` reuses `deadband` (the per-sensor noise knob, in output-scale
+ * codes) and is clamped below step/2 so the window can never swallow a whole
+ * level.  The snap target is recomputed from `val`, so a fast lever still
+ * jumps multiple levels at once. */
+static int quantize_level(int val, int step, int out_max,
+                          bool have_last, int last_val, int margin) {
+    if (step <= 0) return val;               /* disabled: passthrough      */
+    if (val <= 0) return 0;                  /* bottom rail, EXACT          */
+    if (val >= out_max) return out_max;      /* top rail, EXACT             */
+
+    int n = ((val + step / 2) / step) * step;   /* nearest level           */
+    if (n < 0) n = 0;
+    if (n > out_max) n = out_max;
+
+    if (!have_last) return n;                /* no prior level: just snap   */
+    if (n == last_val) return last_val;      /* same level: hold            */
+
+    if (margin < 0) margin = 0;
+    if (margin > step / 2) margin = step / 2;   /* never swallow a level    */
+
+    if (n > last_val) {
+        /* moving UP: cross the current level's upper boundary + margin */
+        return (val >= last_val + step / 2 + margin) ? n : last_val;
+    }
+    /* moving DOWN: cross the current level's lower boundary - margin */
+    return (val <= last_val - step / 2 - margin) ? n : last_val;
+}
+
 ConditionResult condition_sample(const SensorSpec& s, int raw, ConditionState& st) {
     const int full = s.adc_max > 0 ? s.adc_max : 4095;
 
@@ -72,6 +121,16 @@ ConditionResult condition_sample(const SensorSpec& s, int raw, ConditionState& s
     if (val > s.out_max) val = s.out_max;
 
     const int db = s.deadband > 0 ? s.deadband : 1;
+
+    /* RULE 4 — quantize to coarse LEVELS with hysteresis (see quantize_level).
+     * Runs AFTER the band/scale and BEFORE the emit gate, so the gate compares
+     * quantized levels: within a level `val` is constant (delta 0 < db ->
+     * suppressed), and a level change is >= step (>= db -> emitted).  That is
+     * the "publish only on a level change" behaviour.  `db` is reused as the
+     * hysteresis margin.  step == 0 leaves `val` untouched. */
+    if (s.step > 0)
+        val = quantize_level(val, s.step, s.out_max,
+                             st.have_last, st.last_val, db);
 
     /* RULE 2 — A QUIET-BUS OPTIMIZATION MAY NEVER STRAND A RAIL.
      * The deadband suppresses |delta| < db.  Sitting at out_max-1 with

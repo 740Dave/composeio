@@ -1,13 +1,13 @@
 """FingerprintCastingBinder — in-process controller behind the binding UI.
 
 It is the ComposerCore-shaped glue between the render scene and the
-``fingerprint_storage`` service:
+``fingerprint_service`` service:
 
   scene widgets  --(fp/cmd/* state)-->  BINDER  --(store mutation)-->  SERVICE
        ^                                   |
        +----------(fp/view/* state)--------+
 
-The binder OWNS a :class:`FingerprintStorageService` (which owns the superset
+The binder OWNS a :class:`FingerprintService` (which owns the superset
 :class:`SupersetStore`) plus an in-process REFERENCE device (the same
 ``FingerprintDevice`` + ``MockFingerprintHAL`` the service integration test
 drives), so:
@@ -33,8 +33,8 @@ import uuid as _uuid
 from typing import Any, Callable
 
 # service surface (PYTHONPATH must include ``services``)
-from fingerprint_storage import topics
-from fingerprint_storage.service import FingerprintStorageService
+from fingerprint_service import topics
+from fingerprint_service.service import FingerprintService
 
 # the reference device layer — reused unchanged
 from composeio.peripherals.fingerprint.device import FingerprintDevice
@@ -147,7 +147,7 @@ class FingerprintCastingBinder:
         # ENROLL-COMPLETE-READBACK-A4128F]); template_store_put (below) is the
         # reference DEVICE's PUT seam — a test injects the SAME in-memory fake
         # store to both so an enroll round-trips without a live HTTP server.
-        self.svc = FingerprintStorageService(template_resolver=template_resolver)
+        self.svc = FingerprintService(template_resolver=template_resolver)
         self.svc.attach(bus)
         self.store = self.svc.store
         # a captured copy of the last roster push, for the receipt panel

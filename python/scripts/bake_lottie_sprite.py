@@ -17,7 +17,7 @@ the [CXC-R-C18] degradation: same authored asset, pre-rendered for the
 constrained tier.
 
 Usage:
-    cd ~/Dropbox/Maker/composeio/python
+    cd ${COMPOSEIO_HOME}/python
     python scripts/bake_lottie_sprite.py \
         composeio/render/examples/assets/dradis_lottie.json \
         --name dradis-cyd --size 80 --frames 8 --bg 101318 [--push]
@@ -99,7 +99,7 @@ def main() -> None:
     ap.add_argument("--bg", default="101318", help="hex RRGGBB baked background")
     ap.add_argument("--out", default="/tmp/sprite_bake")
     ap.add_argument("--push", action="store_true")
-    ap.add_argument("--bus-url", default="http://mqtt-broker.local:8420")
+    ap.add_argument("--bus-url", default=os.environ.get("COMPOSEIO_STORAGE_URL", "http://mqtt-broker.local:8420"))
     args = ap.parse_args()
 
     bg = tuple(int(args.bg[i:i + 2], 16) for i in (0, 2, 4))

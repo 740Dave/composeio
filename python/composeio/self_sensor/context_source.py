@@ -5,7 +5,7 @@ This is the NARROW WAIST ([DX-NARROW-WAIST], reuse-by-reference-never-fork) that
 harness monitor (``compose_projects/intelligence/launcher/monitor.py`` via ``build_context_reader``) AND the
 console publisher (``compose_projects/intelligence/publisher/self_publisher.py``) read the Intelligence's context
 level through. Before this module the two readers were FORKED with DIFFERENT source priorities —
-the console read nexus-hud's fresh context-cache while the monitor read ONLY the staleness-prone
+the console read haven-hud's fresh context-cache while the monitor read ONLY the staleness-prone
 statusline state file — so the console gauge and the 65/80/90/95 threshold crossings could (and
 did, 2026-07-26) perceive DIFFERENT levels. The console displayed a lagging figure AND, worse,
 the monitor's crossing check ran against a FROZEN state file, so the 95% pencils-down guidance
@@ -14,7 +14,7 @@ could fire late (or never) while the true context sailed past. See [CXC-IC-MONIT
 SOURCE PRECEDENCE — the FRESHEST AUTHORITATIVE source wins (by timestamp), never a fixed order,
 because "less than 100% accurate 100% of the time" is not acceptable for the fuel gauge:
 
-  * hud-cache  — nexus-hud's per-session context-cache snapshot. nexus-hud reads Claude Code's
+  * hud-cache  — haven-hud's per-session context-cache snapshot. haven-hud reads Claude Code's
                  native ``used_percentage`` every ~300ms and PERSISTS it (throttled) to disk,
                  INDEPENDENT of whether the CLI redraws. AUTHORITATIVE and typically the freshest.
                  ``source="hud-cache"``.
@@ -27,7 +27,7 @@ because "less than 100% accurate 100% of the time" is not acceptable for the fue
                  used ONLY when NO authoritative source is available. ``source="jsonl-estimate"``.
 
 ``read_context`` compares the two authoritative sources by their embedded timestamp and returns
-the NEWER one, so a stale hud-cache (nexus-hud not running) never wins over a fresh statusline
+the NEWER one, so a stale hud-cache (haven-hud not running) never wins over a fresh statusline
 file and vice-versa. The JSONL estimate is used only when neither authoritative source exists.
 
 Every reading is normalized to::
@@ -47,7 +47,7 @@ import time
 from typing import Optional
 
 
-# ── hud-cache (nexus-hud's per-session context snapshot — the freshest authoritative figure) ──
+# ── hud-cache (haven-hud's per-session context snapshot — the freshest authoritative figure) ──
 def _claude_config_dir() -> str:
     cfg = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
     if cfg:
@@ -56,15 +56,15 @@ def _claude_config_dir() -> str:
 
 
 def hud_cache_path(jsonl_path: str) -> str:
-    """The nexus-hud context-cache file for this session: keyed by sha256(abspath(transcript))
-    (matching Node's ``path.resolve``), under <claude-config>/plugins/nexus-hud/context-cache/.
+    """The haven-hud context-cache file for this session: keyed by sha256(abspath(transcript))
+    (matching Node's ``path.resolve``), under <claude-config>/plugins/haven-hud/context-cache/.
     Single-sourced here so the monitor and the publisher can NEVER fork the path scheme."""
     h = hashlib.sha256(os.path.abspath(jsonl_path).encode("utf-8")).hexdigest()
-    return os.path.join(_claude_config_dir(), "plugins", "nexus-hud", "context-cache", f"{h}.json")
+    return os.path.join(_claude_config_dir(), "plugins", "haven-hud", "context-cache", f"{h}.json")
 
 
 def read_hud_cache(jsonl_path: Optional[str]) -> Optional[dict]:
-    """The AUTHORITATIVE reading from nexus-hud's snapshot, or None when absent/malformed. Every
+    """The AUTHORITATIVE reading from haven-hud's snapshot, or None when absent/malformed. Every
     field is guarded (this couples to hud's private cache format) so a bad read degrades to None."""
     if not jsonl_path:
         return None

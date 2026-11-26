@@ -15,7 +15,7 @@
  * Panel:  1.47" 172x320 IPS, ST7789T over SPI.  NO TOUCH.
  *
  * Sources (transcribed from the vendor kit, not guessed):
- *   ~/Dropbox/Data Sheets/waveshare/esp32-c6-1.47inch-lcd/
+ *   ${DATASHEETS_HOME}/waveshare/esp32-c6-1.47inch-lcd/
  *     ESP32-C6-LCD-1.47-Demo.zip -> ESP-IDF/ESP32-C6-LCD-1.47-Test/
  *       main/LCD_Driver/ST7789.h                 (pins, clock, geometry)
  *       main/LCD_Driver/Vernon_ST7789T/…c        (the init byte table)

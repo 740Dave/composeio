@@ -11,7 +11,7 @@ Everything *above* the board seam — `main.cpp`, the canvas, the scene builder,
 server — is the CYD's, **unchanged**. A new board is a new profile, not a new rasterizer.
 
 Bring-up date: 2026-08-11. Vendor kit:
-`~/Dropbox/Data Sheets/hoysond/2.8inch_IPS_ESP32-S3_ILI9341V_ES3C28P_ES3N28P_V1.0/`
+`${DATASHEETS_HOME}/hoysond/2.8inch_IPS_ESP32-S3_ILI9341V_ES3C28P_ES3N28P_V1.0/`
 
 ---
 
@@ -22,7 +22,7 @@ Bring-up date: 2026-08-11. Vendor kit:
 | chip | ESP32-S3 (QFN56) rev v0.2, dual core + LP, 240 MHz, Xtensa LX7 |
 | flash | 16 MB quad, 3.3 V per eFuse, `dio` mode |
 | PSRAM | 8 MB **octal** @ 80 MHz — AP vendor, generation 3, 64 Mbit die (read off the live chip) |
-| MAC / device id | `AA:BB:CC:DD:EE:FF` → `hosyond-d1afe8` |
+| MAC / device id | `00:00:5e:00:53:01` → `hosyond-080739` |
 | port | `/dev/cu.usbmodem31101` — native USB (VID `0x303a` / PID `0x1001`) |
 | panel | 2.8" IPS 240×320, ILI9341V, portrait |
 | touch | FT6336G capacitive, I²C `0x38`, chip id `0x64` |
@@ -205,7 +205,7 @@ falls back to 16 and *everything still works*, which is exactly what makes it da
 
 **This is not confined to this board.** `src/config_fetch.cpp` gated its device-id prefix on
 `#ifdef QUALIA_DISPLAY`, a define supplied only as a `build_flag` — so this board's first boot announced
-itself as `cyd-d1afe8` and 404'd fetching `displays/cyd-d1afe8.compose.yaml`. The prefix is now
+itself as `cyd-080739` and 404'd fetching `displays/cyd-080739.compose.yaml`. The prefix is now
 `CXC_DEVICE_PREFIX`, set as a CMake definition, with the old `QUALIA_DISPLAY` fallback preserved verbatim
 so no existing board's identity shifts. **`env:qualia_display` is worth auditing separately** — it passes
 `-DQUALIA_DISPLAY` and `-DREACTIVE_TRANSFORM_ATTRS` the same dropped way.
@@ -275,7 +275,7 @@ Machine-verified on the live board (2026-08-11):
 ```
 main: Board profile: hosyond-s3 (ES3C28P, ILI9341V 240x320 IPS, FT6336G touch)
 main: Panel: 240x320 rect
-main: Device id: hosyond-d1afe8
+main: Device id: hosyond-080739
 hosyond_s3: ILI9341V ready — 240x320 portrait, MADCTL 0x08, inversion cmd 0x21, SPI 40000000 Hz, backlight ON
 canvas_esp32: band buffer (153600 bytes) placed in PSRAM
 canvas_esp32: Band-rendered surface: 240x320, band=320 scanlines, buffer=153600 bytes
@@ -334,7 +334,7 @@ Two consequences to internalise before touching it:
    *bytes* and the *framebuffer*, never the glass. `[CXC-BOARD-HW-SELF-CONFIRMING]` gets sharper
    here, not softer.
 2. **It is still fully reachable — over the bus.** `restart`, `transport` and `config_source`
-   all work, and the board publishes `_device/hosyond-d1afe8/status`. What is lost is pixel
+   all work, and the board publishes `_device/hosyond-080739/status`. What is lost is pixel
    evidence, not telemetry.
 
 ### Talking to it
@@ -343,12 +343,12 @@ The Mac-side head is the UART bridge, which must be running for the board to get
 
 ```
 PYTHONPATH=python nohup python3 -m services.uart_mqtt_bridge.bridge \
-  --port /dev/cu.usbserial-FTZ29P6A --broker mqtt-broker.local \
+  --port /dev/cu.usbserial-<device-serial> --broker 192.0.2.75 \
   --ns throttle/left --ns throttle/right \
-  --ns _device/hosyond-d1afe8/config_source \
-  --ns _device/hosyond-d1afe8/transport \
-  --ns _device/hosyond-d1afe8/restart --ns _device/restart \
-  --config-device hosyond-d1afe8 --bus-storage http://mqtt-broker.local:8420 &
+  --ns _device/hosyond-080739/config_source \
+  --ns _device/hosyond-080739/transport \
+  --ns _device/hosyond-080739/restart --ns _device/restart \
+  --config-device hosyond-080739 --bus-storage http://192.0.2.75:8420 &
 ```
 
 With the bridge down the board announces `NO CONFIG: asked N time(s)...` on its splash and backs
@@ -360,8 +360,8 @@ Two commands over the bus, no reflash and no cable — this is the whole point o
 answer (`_device/<id>/config_source` is settable over the *current* link):
 
 ```
-publish _device/hosyond-d1afe8/config_source = "http"     # radio back up, HTTP config, capture.bmp
-publish _device/hosyond-d1afe8/restart       = 1
+publish _device/hosyond-080739/config_source = "http"     # radio back up, HTTP config, capture.bmp
+publish _device/hosyond-080739/restart       = 1
 ```
 
 Set `= "bus"` to convert it back. `= "cached"` boots it from the NVS copy with **no network and

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """carousel kiosk — the HOST ROUTER / supervisor for the ComposePlatform
 carousel launcher ([SPEC:CXC-PRIM-CAROUSEL]).  The bus-native replacement for
-the CTk kiosk ``app.py`` on pi.example.local.
+the CTk kiosk ``app.py`` on display-node.local.
 
 The carousel widget ONLY *publishes* launch intents (`_app/<target>/open` =
 "open" on a center-tap); it never spawns.  THIS process is the missing half —
@@ -58,7 +58,7 @@ from typing import Callable, Dict, List, Optional
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, os.pardir, os.pardir))
 
-DEFAULT_BROKER = "mqtt-broker.local"    # == mqtt-broker.local, the bus master
+DEFAULT_BROKER = os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local")    # == mqtt-broker.local, the bus master
 DEFAULT_PORT = 1883
 
 # target -> scene FILE (relative to this dir).  A target with NO entry here is

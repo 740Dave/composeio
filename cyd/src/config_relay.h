@@ -74,11 +74,26 @@ void config_relay_from_downstream(uint16_t ns_hash, BusMessageType type,
                                   uint8_t scope_bits, const uint8_t* value,
                                   size_t len, void* ud);
 
+/* [CXC-DEVICE-BASELINE-RELAY-MEMBRANE] THE SCOPE MEMBRANE.  True iff a frame at
+ * this wire scope MAY cross the relay ([CXC-VISION-SCOPE-MEMBRANE], David
+ * 2026-08-10: "a relay must respect scope on the PUBLISH path exactly as it
+ * does on the subscribe path, or a naive forward-everything relay leaks local
+ * chatter onto the shared bus").  LOCAL (wire code 0) is confined to its own
+ * segment and NEVER crosses, in either direction; global/remote/auto cross.
+ * Pure, host-tested with negative controls.  Scope codes: canonical
+ * python/composeio/transport_can.py _SCOPE_CODES (local=0,global=1,remote=2,
+ * auto=3), which BP-CAN-ID v2 (dd7e049) puts on the wire. */
+bool config_relay_scope_crosses(uint8_t scope_bits);
+
 /* Counters for the periodic banner — a relay that is silently doing nothing
  * looks exactly like a relay that is working. */
 uint32_t config_relay_down_frames(void);
 uint32_t config_relay_up_frames(void);
 uint32_t config_relay_ttl_expiries(void);
 uint32_t config_relay_drops(void);
+/* Frames the scope membrane BLOCKED from crossing (local-scoped) — a normal,
+ * expected count, not an error; reported in the banner so a membrane that is
+ * confining traffic is visible rather than looking like a dead relay. */
+uint32_t config_relay_membrane_blocked(void);
 
 #endif /* CONFIG_RELAY_H */

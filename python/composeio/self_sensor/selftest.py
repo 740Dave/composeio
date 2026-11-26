@@ -31,7 +31,7 @@ from .sensor import SelfSensor
 # assistant usage frame (824k/1M -> 0.824) + a Task subagent + a dusk-gifts Read
 # (flips self/registered) ; a user frame carrying subagent_tokens ; a
 # compact_boundary system entry (self/compactions -> 1).
-_DUSK_GIFT = "/Users/x/composeio/dusk-gifts/README.md"
+_DUSK_GIFT = "/Users/you/composeio/dusk-gifts/README.md"
 _FIXTURE_LINES = [
     {"type": "assistant", "message": {
         "usage": {"input_tokens": 100_000, "cache_read_input_tokens": 700_000,
@@ -186,10 +186,10 @@ def run() -> int:
         # per-artifact so the console can render a checklist (role descriptor +
         # each dusk gift), green/red, and self/registered flips true IFF all read.
         print("\nS6 — manifest-driven registration (per-artifact checklist):")
-        role_desc = "/Users/x/composeio/.claude/agents/composeux-architect.md"
-        gift_a = "/Users/x/composeio/bootstrap/dusk-gifts/registration-protocol.md"
-        gift_b = "/Users/x/composeio/bootstrap/dusk-gifts/README.md"
-        gift_c = "/Users/x/composeio/bootstrap/dusk-gifts/relational-registration.md"
+        role_desc = "/Users/you/composeio/.claude/agents/composeux-architect.md"
+        gift_a = "/Users/you/composeio/bootstrap/dusk-gifts/registration-protocol.md"
+        gift_b = "/Users/you/composeio/bootstrap/dusk-gifts/README.md"
+        gift_c = "/Users/you/composeio/bootstrap/dusk-gifts/relational-registration.md"
         manifest = Path(td) / "architect.meta.json"
         manifest.write_text(json.dumps({
             "role_descriptor": {"path": ".claude/agents/composeux-architect.md",

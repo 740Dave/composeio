@@ -4,7 +4,7 @@ broker, no network).
     PYTHONPATH=python:services python3 -m pytest services/storage_monitor/tests -v
 
 Pins the FROZEN contract a peer render build (the launch bar) depends on EXACTLY:
-  * the namespace is ``skipper/storage/free_bytes``;
+  * the namespace is ``buildhost/storage/free_bytes``;
   * the payload is a bare INT number of free bytes;
   * it is published as a RETAINED STATE (so a late joiner reads it at once);
   * default cadence 30 s, configurable;
@@ -36,9 +36,9 @@ def _fixed_measure(_path: str) -> int:
 # --------------------------------------------------------------------------- #
 # the frozen contract: namespace + payload shape
 # --------------------------------------------------------------------------- #
-def test_the_namespace_is_exactly_skipper_storage_free_bytes():
+def test_the_namespace_is_exactly_buildhost_storage_free_bytes():
     """The peer render build binds this literal — pin the spelling."""
-    assert topics.FREE_BYTES == "skipper/storage/free_bytes"
+    assert topics.FREE_BYTES == "buildhost/storage/free_bytes"
 
 
 def test_publishes_free_bytes_as_a_bare_int_for_the_configured_path():
@@ -111,7 +111,7 @@ def test_interval_defaults_to_thirty_seconds_and_is_configurable():
 
 
 def test_the_monitored_path_is_configurable():
-    """David flagged skipper's drive is SMALL and a spinny disk may be added on a
+    """David flagged buildhost's drive is SMALL and a spinny disk may be added on a
     different mount — the path is re-pointable without a code change."""
     svc = StorageMonitor(path="/mnt/spinny", measure=_fixed_measure)
     assert svc.path == "/mnt/spinny"

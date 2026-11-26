@@ -1,15 +1,15 @@
 ---
 scope: "The ComposeBus PEER/RELAY primitive — a first-class, pull-initiated segment-crossing + transport-bridge that lets two ComposeBus instances (or a physical device bus) exchange bus state across a network, transport, or trust seam WITHOUT weakening isolation. One shape; the network-segment relay, the MQTT<->CANbus bridge, and the browser MQTT-over-WS edge are all instances of it."
-audience: "ComposeBus / transport implementers building the peer/sync channel and the CAN bridge; the ComposePlatform Architect; the network-architect who writes the fw1/Tailscale ACLs; QA authors wiring the two-broker + mock-CAN harnesses."
-boundary: "IN: the logical peer/relay primitive, its load-bearing invariants (pull-initiated, critical-ack-across-hop, subscription-scoped mirror, tolerate-link-down), the unified Transport-emitter contract (one interface, three knobs, thin-to-fat spectrum), and the two build slices (A: core relay + network-segment edge over Tailscale; B: MQTT<->CANbus bridge edge). OUT: the fw1/OPNsense rule text and Tailscale ACL policy (network-architect owns; this spec names the port/tag contract only); the wire format of BusMessage ([SPEC:CIO-BUS-PROTOCOL]); the capture/replay file format ([AMEND:BP-CAPTURE-REPLAY]); the critical-ack wire protocol ([AMEND:BP-ACK]) — this spec REUSES those, it does not restate them."
-not-this: "Not a new replication/consensus engine — it reuses capture-replay-across-a-link semantics, not Raft/CRDT. Not MQTT-specific — MQTT<->MQTT is one binding of three. Not a push-into-the-isolated-zone design: the isolated/edge peer is ALWAYS the initiator. Not a bespoke Nexus bridge — 04-nexus-bridge becomes a CONSUMER of this primitive, not a fork of it. Not two forked emitters and not one monolith — ONE Transport contract with declared knobs spans egress and bridge."
+audience: "ComposeBus / transport implementers building the peer/sync channel and the CAN bridge; the ComposePlatform Architect; the network-architect who writes the firewall1/Tailscale ACLs; QA authors wiring the two-broker + mock-CAN harnesses."
+boundary: "IN: the logical peer/relay primitive, its load-bearing invariants (pull-initiated, critical-ack-across-hop, subscription-scoped mirror, tolerate-link-down), the unified Transport-emitter contract (one interface, three knobs, thin-to-fat spectrum), and the two build slices (A: core relay + network-segment edge over Tailscale; B: MQTT<->CANbus bridge edge). OUT: the firewall1/OPNsense rule text and Tailscale ACL policy (network-architect owns; this spec names the port/tag contract only); the wire format of BusMessage ([SPEC:CIO-BUS-PROTOCOL]); the capture/replay file format ([AMEND:BP-CAPTURE-REPLAY]); the critical-ack wire protocol ([AMEND:BP-ACK]) — this spec REUSES those, it does not restate them."
+not-this: "Not a new replication/consensus engine — it reuses capture-replay-across-a-link semantics, not Raft/CRDT. Not MQTT-specific — MQTT<->MQTT is one binding of three. Not a push-into-the-isolated-zone design: the isolated/edge peer is ALWAYS the initiator. Not a bespoke Haven bridge — 04-haven-bridge becomes a CONSUMER of this primitive, not a fork of it. Not two forked emitters and not one monolith — ONE Transport contract with declared knobs spans egress and bridge."
 depends-on: [SPEC:CIO-BUS-PROTOCOL, SPEC:CIO-APP, AMEND:BP-CAPTURE-REPLAY, AMEND:BP-ACK, SPEC:CXC-PATSUB]
 domain: PLT.CIO
 confidentiality: internal-only
 artifact-readiness: system-design
 forward-authored: true
-origin: "Design handoff docs/bus-peer-relay-across-segments.md (provisionIO / network-architect, 2026-07-20). Home-network segmentation (fw1/OPNsense on the VeloCloud 540); Nexus lands on VLAN35 (default-deny inbound, Tailscale-only) while the bus moves to VLAN30 (Servers). §8 amendment added 2026-07-25 per [DEC-BUS-PEER-UNIFIED-TRANSPORT-CONTRACT] (design DISCUSSION)."
-slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration; self-contained. On migration this lands as ComposePlatform/layers/composeio/specs/NN-composebus-peer-relay.lts (sibling to 01-composeio-bus-protocol and 21-composebus-pattern-subscription). Slot-in actions: (1) register prefix `BPR-` and doc-id root `CIO-BUS-PEER` in ux_composer/specs/99-composeio-profile.yaml; (2) refactor 04-nexus-bridge ([SPEC:NEXUS-BRIDGE]) to CONSUME this primitive (subscribe to a local peer) rather than subscribe to mqtt-broker:1884 directly. Until (1), S007 unregistered-prefix warnings on BPR-* nodes are EXPECTED and are the tracked cost of forward-authoring."
+origin: "Design handoff docs/bus-peer-relay-across-segments.md (provisionIO / network-architect, 2026-07-20). Home-network segmentation (firewall1/OPNsense on the VeloCloud 540); Haven lands on VLAN35 (default-deny inbound, Tailscale-only) while the bus moves to VLAN30 (Servers). §8 amendment added 2026-07-25 per [DEC-BUS-PEER-UNIFIED-TRANSPORT-CONTRACT] (design DISCUSSION)."
+slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration; self-contained. On migration this lands as ComposePlatform/layers/composeio/specs/NN-composebus-peer-relay.lts (sibling to 01-composeio-bus-protocol and 21-composebus-pattern-subscription). Slot-in actions: (1) register prefix `BPR-` and doc-id root `CIO-BUS-PEER` in ux_composer/specs/99-composeio-profile.yaml; (2) refactor 04-haven-bridge ([SPEC:HAVEN-BRIDGE]) to CONSUME this primitive (subscribe to a local peer) rather than subscribe to mqtt-broker:1884 directly. Until (1), S007 unregistered-prefix warnings on BPR-* nodes are EXPECTED and are the tracked cost of forward-authoring."
 ---
 # ComposeBus Peer/Relay Primitive [SPEC:CIO-BUS-PEER]
 
@@ -22,7 +22,7 @@ slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration
 ### [BPR-INTENT] The peer/relay is a CORE ComposeBus primitive, not a one-off
 
 - definition: a ComposeBus PEER is a process that participates in a local bus AND syncs a scoped slice of bus state with a remote bus (or a physical device bus) across a seam — a network segment, a transport boundary, or a trust boundary — carrying reads and writes both ways over a single edge-initiated session.
-- key-insight: the segment-crossing case (Nexus on an isolated VLAN reaching the bus) is ONE instance of a general pattern. Specifying it as a bespoke Nexus feature would fork the same shape three times. It is specified once here; each seam is a binding.
+- key-insight: the segment-crossing case (Haven on an isolated VLAN reaching the bus) is ONE instance of a general pattern. Specifying it as a bespoke Haven feature would fork the same shape three times. It is specified once here; each seam is a binding.
 - rationale: this is the decomposed bus-peer model the stack exists to enable ([DX-COLLAPSE-TRANSPORT] in `design-excellence-composeplatform` — collapse the TRANSPORT, never the SEAM). The segment boundary becomes a clean sync seam, not an obstacle.
 - status: draft (net-new; zero peer/replication/incremental-sync surface exists in `python/composeio/` today — `transport_http_relay.py` is a fire-and-forget outbound POST relay to `:8422`, not a bus peer).
 - part-of: [SPEC:CIO-BUS-PEER]
@@ -50,7 +50,7 @@ slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration
 - rationale: firewalls gate on WHO initiates, not which way data flows. One outbound allow lets the edge both read and write with zero inbound holes; a push design needs an inbound listener inside the wall — the one thing default-deny-inbound forbids.
 - default: transport is Tailscale wherever a network boundary is crossed (WireGuard-encrypted, ACL-scoped, no LAN pinhole). The LAN-pinhole-with-one-outbound-rule is the fallback when the overlay is deliberately kept out of the data path.
 - test (machine): in the two-segment harness ([BPR-A-SEGMENT]), assert the relay process in the edge namespace opens NO listening socket for the peer/sync channel (`ss -ltn` in the edge netns shows zero listener on the sync port); the master-side cannot initiate — a connection attempt master->edge is refused/dropped.
-- verify-glass: the network-architect confirms the fw1 ruleset for the edge zone contains exactly one stateful outbound allow (or nothing on the LAN when over Tailscale) and zero inbound rule — a human reads the rendered per-VLAN matrix and signs off.
+- verify-glass: the network-architect confirms the firewall1 ruleset for the edge zone contains exactly one stateful outbound allow (or nothing on the LAN when over Tailscale) and zero inbound rule — a human reads the rendered per-VLAN matrix and signs off.
 - part-of: [SPEC:CIO-BUS-PEER]
 
 #### [SCEN-BPR-PULL-NO-INBOUND] Edge peer accepts no inbound connection
@@ -96,7 +96,7 @@ slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration
 
 ### [BPR-AUTH] Authenticate independent of network trust; Tailscale where a boundary is crossed
 
-- requirement: the two sides are different trust zones; the peer MUST authenticate and encrypt at a layer that does NOT rely on network trust. Where a network boundary is crossed, the sync MUST run over Tailscale (WireGuard-encrypted, scoped by a Tailscale ACL, e.g. `tag:nexus -> tag:bus`) so no LAN pinhole exists. A LAN pinhole is a fallback that requires an explicit app-layer auth handshake.
+- requirement: the two sides are different trust zones; the peer MUST authenticate and encrypt at a layer that does NOT rely on network trust. Where a network boundary is crossed, the sync MUST run over Tailscale (WireGuard-encrypted, scoped by a Tailscale ACL, e.g. `tag:haven -> tag:bus`) so no LAN pinhole exists. A LAN pinhole is a fallback that requires an explicit app-layer auth handshake.
 - default: transport = Tailscale; ACL scope = a dedicated tag pair (edge tag -> bus tag) enumerating exactly the one sync endpoint. No public endpoint by default (Funnel/reverse-proxy exposure is out of scope and, if ever needed for an off-tailnet browser edge, is a separately-hardened case).
 - boundary/error: a peer whose identity is not in the ACL tag scope MUST be rejected at connect with NO partial sync and NO mirror creation.
 - open-decision: the exact peer-handshake/auth mechanism over Tailscale is NOT resolved here — see [DD-BPR-AUTH].
@@ -105,7 +105,7 @@ slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration
 ### [BPR-ONE-CHANNEL] Collapse the multi-port surface into ONE multiplexed peer/sync channel
 
 - requirement: the peer MUST multiplex read, write, mirror-sync, asset/doc fetch, and coordination messaging over a SINGLE edge-initiated channel. Today's cross-boundary surface is four ports (MQTT `:1884`, `bus_storage` `:8420`, `document_store` `:8421`, `coordination_relay` `:8422`); the peer MUST collapse these to one multiplexed sync channel so the firewall rule / Tailscale ACL stays narrow (one endpoint, not four).
-- default: one channel; when over Tailscale there is no LAN port at all (the tailnet address + one ACL scope). When the LAN-pinhole fallback is used, a single configurable sync port — the concrete port number is a network-side deployment value the network-architect fixes in the fw1 rule (this spec fixes the ONE-port contract, not the number).
+- default: one channel; when over Tailscale there is no LAN port at all (the tailnet address + one ACL scope). When the LAN-pinhole fallback is used, a single configurable sync port — the concrete port number is a network-side deployment value the network-architect fixes in the firewall1 rule (this spec fixes the ONE-port contract, not the number).
 - boundary/error: multiplexed substreams MUST be independently backpressured so a large `doc://` body fetch cannot starve critical-message forwarding on the shared channel.
 - open-decision: whether this channel REPLACES `coordination_relay` outright or WRAPS it is NOT resolved here — see [DD-BPR-RELAY-WRAP].
 - part-of: [SPEC:CIO-BUS-PEER]
@@ -168,15 +168,15 @@ slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration
 
 ### [BPR-A-SEGMENT] Network-segment edge — two ComposeBus segments over Tailscale
 
-- requirement: bind the core relay to the driving case — an edge ComposeBus on an isolated segment (Nexus/VLAN35) syncing with a master ComposeBus on the Servers segment (VLAN30) over Tailscale, with the edge as sole initiator ([BPR-PULL]) and auth independent of network trust ([BPR-AUTH]).
-- default: transport Tailscale, ACL `tag:nexus -> tag:bus`; no LAN pinhole. Reconnect/backoff per [BPR-LINK-DOWN].
+- requirement: bind the core relay to the driving case — an edge ComposeBus on an isolated segment (Haven/VLAN35) syncing with a master ComposeBus on the Servers segment (VLAN30) over Tailscale, with the edge as sole initiator ([BPR-PULL]) and auth independent of network trust ([BPR-AUTH]).
+- default: transport Tailscale, ACL `tag:haven -> tag:bus`; no LAN pinhole. Reconnect/backoff per [BPR-LINK-DOWN].
 - test (machine): a CI harness of two brokers in two network namespaces with a simulated boundary (only the edge->master path permitted); assert full read/write, zero inbound-to-edge, and sever/restore convergence — all without hardware.
-- verify-glass: the network-architect signs off that the rendered fw1/Tailscale matrix for VLAN35 shows zero inbound LAN rule and one scoped outbound/tailnet path (human gate on the isolation posture).
+- verify-glass: the network-architect signs off that the rendered firewall1/Tailscale matrix for VLAN35 shows zero inbound LAN rule and one scoped outbound/tailnet path (human gate on the isolation posture).
 - part-of: [SPEC:CIO-BUS-PEER]
 
 #### [SCEN-BPR-A-SEGMENT-ISOLATED] Edge reads and writes while accepting no inbound LAN connection
 - when: the edge ComposeBus (isolated zone) syncs with the master ComposeBus over Tailscale and the isolated zone is under default-deny-inbound
-- then: the edge both reads from and writes to the master bus, while the isolated zone accepts no inbound LAN connection (fw1 shows only an outbound allow, or nothing on the LAN when over Tailscale)
+- then: the edge both reads from and writes to the master bus, while the isolated zone accepts no inbound LAN connection (firewall1 shows only an outbound allow, or nothing on the LAN when over Tailscale)
 
 ### [BPR-A-TEST] Slice A test substrate — two brokers + a relay process, no hardware
 
@@ -193,7 +193,7 @@ slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration
 
 ## 5. SLICE B — MQTT<->CANbus bridge edge (SPEC NOW, BUILD NEXT; tested on mock/virtual CAN)
 
-> Slice B is a CONSUMER of the Slice A core: the CAN bridge is a peer whose far side speaks CAN. `04-nexus-bridge` ([SPEC:NEXUS-BRIDGE]) likewise becomes a consumer of the core, not a bespoke bridge. Physical CAN hardware comes later; the acceptance target here is a mock/virtual CAN interface — see [DD-BPR-MOCK-CAN] for the unresolved choice of which.
+> Slice B is a CONSUMER of the Slice A core: the CAN bridge is a peer whose far side speaks CAN. `04-haven-bridge` ([SPEC:HAVEN-BRIDGE]) likewise becomes a consumer of the core, not a bespoke bridge. Physical CAN hardware comes later; the acceptance target here is a mock/virtual CAN interface — see [DD-BPR-MOCK-CAN] for the unresolved choice of which.
 
 ### [BPR-B-CANMAP] CAN-ID <-> namespace mapping
 
@@ -247,7 +247,7 @@ slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration
 
 | ID | Requirement | Machine criterion | Glass / integration gate |
 |----|-------------|-------------------|--------------------------|
-| BPR-C1 | Pull-initiated only | edge netns opens no peer/sync listener; master->edge connect refused | network-architect signs zero-inbound fw1 matrix |
+| BPR-C1 | Pull-initiated only | edge netns opens no peer/sync listener; master->edge connect refused | network-architect signs zero-inbound firewall1 matrix |
 | BPR-C2 | Critical propagate-or-degrade | dropped-hop test: ack-or-fault; silent-clear count = 0 | severed-link reviewer sees ack-or-fault on origin |
 | BPR-C3 | Subscription-scoped mirror + lazy fetch | only subscribed namespaces mirrored; body fetched once then cached; absent -> `unresolved` | — |
 | BPR-C4 | Tolerate link-down + converge | sever/restore: apps functional on cache; zero lost critical-acks | reviewer observes edge stays live during outage |
@@ -276,7 +276,7 @@ slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration
 ### [DD-BPR-RELAY-WRAP] Does the multiplexed channel REPLACE coordination_relay outright or WRAP it
 - decision: OPEN — not selected.
 - status: open
-- rationale: `coordination_relay` (`:8422`, `transport_http_relay.py`) is one of the four ports [BPR-ONE-CHANNEL] collapses. Whether to retire it and route Architect/Builder coordination through the peer channel, or keep it and wrap it as a multiplexed substream, affects migration risk and existing Nexus-coordination consumers.
+- rationale: `coordination_relay` (`:8422`, `transport_http_relay.py`) is one of the four ports [BPR-ONE-CHANNEL] collapses. Whether to retire it and route Architect/Builder coordination through the peer channel, or keep it and wrap it as a multiplexed substream, affects migration risk and existing Haven-coordination consumers.
 - status-note: this spec mandates the ONE-channel contract; it does not mandate the disposition of the existing relay. [BPR-TRANSPORT-CONTRACT] narrows the framing: `coordination_relay`'s coordination role is a bridge-configured peer and its telemetry role is an egress-configured thin adaptor — so the disposition is per-ROLE, not per-process, which is new context for this decision.
 - alternatives: (a) REPLACE — coordination rides the peer channel as a substream; retire `:8422`; cleanest end-state, higher migration risk. (b) WRAP — keep `HttpRelayTransport` behind the peer as an internal substream; lower risk, carries the old surface longer.
 - invalidating_assumption: that no external consumer depends on `:8422`'s HTTP shape directly. If a non-ComposeBus consumer POSTs to `:8422`, REPLACE breaks it and WRAP is forced.
@@ -363,7 +363,7 @@ slot-in: "FORWARD-AUTHORED in LTS, decoupled from the pending SMD->LTS migration
 [SPEC:CIO-BUS-PEER] USES [AMEND:BP-CAPTURE-REPLAY]
 [SPEC:CIO-BUS-PEER] UPHOLDS [AMEND:BP-ACK]
 [SPEC:CIO-BUS-PEER] USES [SPEC:CXC-PATSUB]
-[SPEC:NEXUS-BRIDGE] DEPENDS_ON [SPEC:CIO-BUS-PEER]
+[SPEC:HAVEN-BRIDGE] DEPENDS_ON [SPEC:CIO-BUS-PEER]
 [BPR-A-SEGMENT] REALIZES [BPR-SHAPE]
 [BPR-B-CANMAP] REALIZES [BPR-SHAPE]
 [BPR-CRITICAL-ACK] UPHOLDS [AMEND:BP-ACK]

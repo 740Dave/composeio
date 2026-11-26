@@ -9,6 +9,14 @@ description = "Software-Defined I/O for Hardware Projects"
 requires-python = ">=3.10"
 dependencies = [
     "pyyaml>=6.0",
+    # composeio.plugin / composeserver build the plugin CONTRACT on pydantic
+    # models; undeclared, a fresh `pip install -e .` cannot import them
+    # (Phase-0 gap, fixed here alongside the D1/D2 liveness work).
+    "pydantic>=2.0",
+    # The ComposeBus kernel moved to its own distribution, python/composebus
+    # ([SPEC:CXC-COMPOSEBUS-KERNEL] §7); composeio aliases its modules. Install
+    # both locally in ONE command: `pip install ./python/composebus ./python`.
+    "composebus==0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -16,11 +24,31 @@ mqtt = ["paho-mqtt>=1.6.0"]
 audio = ["miniaudio>=1.60"]
 nfc = ["smbus2>=0.4.0"]
 media = ["av>=10.0"]
+# ws: the LISTEN-role WS connector ([SPEC:CXC-WS]). Optional + lazily imported
+# in transport_ws.py, so its absence never breaks the DIAL transports — only a
+# declared `type: ws` needs it.
+ws = ["websockets>=12.0"]
+# mcp: the agent-facing MCP umbrella connector ([SPEC:CXC-MCP]). Optional +
+# lazily imported in transport_mcp.py (the SDK is touched only at `start()`), so
+# its absence never breaks the other transport factories — only a declared
+# `type: mcp` that actually SERVES needs it. streamable-HTTP is the v1 wire;
+# `start()` stands up a REAL uvicorn/Starlette listen socket
+# ([CXC-MCP-CONNECTOR-INTERFACE]), so those two are named explicitly here even
+# though `mcp` already pulls them in transitively — this extra is the
+# documented contract for what "serving" actually needs.
+mcp = ["mcp>=1.0.0", "starlette>=0.40", "uvicorn>=0.30"]
 dev = ["pytest>=7.0", "pytest-cov"]
-all = ["paho-mqtt>=1.6.0", "miniaudio>=1.60", "smbus2>=0.4.0", "av>=10.0", "pytest>=7.0", "pytest-cov"]
+all = ["paho-mqtt>=1.6.0", "miniaudio>=1.60", "smbus2>=0.4.0", "av>=10.0", "websockets>=12.0", "mcp>=1.0.0", "starlette>=0.40", "uvicorn>=0.30", "pytest>=7.0", "pytest-cov"]
 
 [project.scripts]
 composeio = "composeio.cli:main"
+
+# Explicit packages: python/ holds TWO top-level trees (composeio, and the
+# composebus distribution directory), so flat-layout auto-discovery refuses
+# ("Multiple top-level packages discovered"). composeio ships composeio* only.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["composeio*"]
 
 [tool.pytest.ini_options]
 testpaths = ["../tests"]

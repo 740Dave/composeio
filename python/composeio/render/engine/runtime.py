@@ -1335,7 +1335,24 @@ class RenderApp:
 
     def publish(self, namespace: str, value: Any, source: str = "render") -> None:
         self.bus.ensure_namespace(namespace, engine_config="json")
-        self.bus.publish_state(namespace, value, source=source)
+        # THE RENDER UI->BUS BOUNDARY ([CXC-IBUS-ENGINE-REJECT-UNIFORM], 0x70).
+        # EVERY widget / gesture / interaction callback funnels through here
+        # (EngineContext.publish delegates to this; _fire_gesture_publishes and
+        # _publish_interaction both call it). A DECLARED strict engine handed an
+        # out-of-domain value RAISES — e.g. '' (the CONV-3 no-value string, and
+        # the default a value-less `gestures:` entry publishes) on a `binary`
+        # namespace. Escaping a live callback, that raise reaches the native
+        # (SDL/Tk) event dispatch and on macOS becomes an NSException that
+        # SIGABRTs the whole surface. This is a value-ingest BOUNDARY exactly
+        # like the external transport boundary (ComposeIOBus._dispatch_incoming),
+        # so it MUST behave identically: log-and-drop, never abort. The internal
+        # bus.publish_state API keeps RAISING for a programmatic caller — that
+        # raise is catchable and is a real bug signal; only the uncatchable
+        # boundary is guarded.
+        try:
+            self.bus.publish_state(namespace, value, source=source)
+        except ValueError as exc:
+            logger.warning(f"Value rejected on '{namespace}': {exc}")
 
     # -- lifecycle ---------------------------------------------------------------
 

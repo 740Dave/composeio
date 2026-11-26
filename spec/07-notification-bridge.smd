@@ -1,0 +1,347 @@
+---
+scope: "Push notification bridge — delivers urgent Haven messages to David's iPhone via namespace subscription, ComposeIO MQTT bus, and configurable notification transport"
+audience: "Haven Builder (implementation), Haven Architect (design authority), Custodial Human (approval authority and recipient)"
+boundary: "Notification delivery only; namespace model in ~/haven/spec/20-haven-namespace-model.smd; bus protocol in 01-composeio-bus-protocol.smd; Haven bridge in 04-haven-bridge.smd"
+not-this: "Not the Custodial Human Dashboard (that's visual, not push); not email/Signal gateway (future, broader scope); not internal Haven notifications between agents"
+depends-on: [01-composeio-bus-protocol.smd, 04-haven-bridge.smd]
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+# ComposeIO Notification Bridge [SPEC:CIO-NOTIFY]
+
+> Delivers urgent Haven messages to David's iPhone — agents write to `urgent_messages` namespace, the bridge pushes to a physical device.
+
+---
+
+## 1. Problem
+
+Haven agents sometimes need David's attention when he's away from a terminal — permission requests, governance votes requiring human approval, critical system alerts, or time-sensitive operational decisions. Currently there's no path from Haven to David's pocket. Messages sit in his inbox until he opens the Dashboard or starts a session.
+
+---
+
+## 2. Design Principles
+
+### [DP-NOTIFY-1] Namespace-Driven, Not API-Driven
+
+> Agents write to a namespace. The notification bridge subscribes. No agent needs to know how notifications are delivered — they just write to the right place.
+
+- rationale: Decouples the "I need David's attention" intent from the delivery mechanism. Transport can change (Pushover today, SMS tomorrow) without touching any agent code or bootstrap.
+- mechanism: Agents write to `haven::custodial_human::david/urgent_messages`. The bridge watches that namespace via MQTT.
+
+### [DP-NOTIFY-2] Urgent Only — Not a Firehose
+
+> This channel is for messages that need David's attention within hours, not minutes-old status updates. Abuse of urgency degrades the channel.
+
+- rationale: Push notifications that arrive constantly get muted. The value of the channel is its scarcity.
+- enforcement: Rate limiting at the bridge level. Agents should self-regulate — the bootstrap and agent definitions should clarify what constitutes "urgent."
+
+### [DP-NOTIFY-3] Transport-Pluggable
+
+> The notification transport is a plugin. The first implementation uses whichever transport David has available. Adding transports requires no changes to agents or namespaces.
+
+- rationale: David may prefer Pushover today, HA companion app tomorrow, or ntfy.sh next week. The bridge adapts; nothing upstream changes.
+
+---
+
+## 3. Architecture
+
+### [NOTIFY-ARCH] System Architecture
+
+```
+Agent writes to Haven:
+  haven::custodial_human::david/urgent_messages
+    ↓
+Haven-ComposeIO Bridge publishes to MQTT:
+  composeio/global/custodial_urgent
+    ↓
+Notification Bridge (Python, ComposeIO workload):
+  - Subscribes to MQTT topic
+  - Validates message (rate limit, dedup)
+  - Dispatches via configured transport
+    ↓
+Transport Adapter:
+  - Pushover API → iPhone push notification
+  - OR: HA companion app → notify.mobile_app_*
+  - OR: ntfy.sh → self-hosted push
+  - OR: email → SMTP to David's email (push via Mail.app)
+```
+
+### [NOTIFY-FLOW] Data Flow
+
+```
+1. Agent writes urgent message to haven::custodial_human::david/urgent_messages
+   Content: {title, body, priority, source_agent, context_url}
+2. Haven-ComposeIO Bridge publishes to composeio/global/custodial_urgent
+3. Notification Bridge receives MQTT message
+4. Rate limiter checks: max 5 notifications per hour, max 20 per day
+5. Dedup: same title+source_agent within 30 minutes → suppress
+6. Transport adapter delivers push notification
+7. Bridge logs delivery to bus storage for audit
+```
+
+---
+
+## 4. Message Format
+
+### [NOTIFY-MSG-FORMAT] Urgent Message Schema
+
+Agents write to the `urgent_messages` namespace with this structure:
+
+```yaml
+title: "Permission Request: Deploy Haven v2.3 to production"
+body: "Haven Builder requests approval to deploy the dashboard update. Changes include visibility canary and new namespace browser."
+priority: high          # low, medium, high, critical
+source_agent: haven-builder
+context_url: null       # optional: link to discussion or dashboard view
+category: permission    # permission, governance, alert, operational
+```
+
+### [NOTIFY-MSG-CATEGORIES] Message Categories
+
+| Category | Description | Examples |
+|----------|-------------|----------|
+| `permission` | Agent needs David's approval to proceed | Deploy approval, namespace access request, external publication |
+| `governance` | Constitutional matter requiring human input | Amendment vote, No-Confidence proceeding, bylaw adoption |
+| `alert` | System health or integrity issue | Hash chain break, salt mismatch, service down |
+| `operational` | Time-sensitive operational decision | Scheduled session conflict, resource limit approaching |
+
+### [NOTIFY-PRIORITY] Priority Levels
+
+| Priority | Push Behavior | Rate Limit | Use Case |
+|----------|--------------|------------|----------|
+| `low` | Silent push (no sound) | Standard (5/hr) | FYI that can wait |
+| `medium` | Normal push | Standard (5/hr) | Needs attention today |
+| `high` | Prominent push with sound | Standard (5/hr) | Needs attention within hours |
+| `critical` | Persistent/repeated alert | Bypasses rate limit | System integrity at risk |
+
+---
+
+## 5. Transport Adapters
+
+### [NOTIFY-TRANSPORT-INTERFACE] Adapter Contract
+
+```python
+class NotifyTransport:
+    """Base interface for notification delivery transports."""
+
+    async def send(self, title: str, body: str, priority: str, category: str) -> bool:
+        """Deliver notification. Returns True on success."""
+        ...
+
+    def transport_id(self) -> str:
+        """Unique identifier for this transport."""
+        ...
+```
+
+### [NOTIFY-TRANSPORT-OPTIONS] Available Transports
+
+| Transport | Setup | Cost | Pros | Cons |
+|-----------|-------|------|------|------|
+| **Pushover** | App install + API key | $5 one-time | Purpose-built, priority levels, quiet hours, rich formatting | Requires Pushover app |
+| **HA Companion** | HA mobile app + notify service | Free (already have HA) | No new app, actionable notifications, integrates with HA automations | Requires HA companion app configured |
+| **ntfy.sh** | Self-host or use public server | Free | Open source, self-hostable on mqtt-broker, simple curl API | Less rich than Pushover |
+| **Email** | SMTP config | Free | Universal, no app install | Not truly "push", delivery delay |
+
+- recommendation: Start with whichever David already has configured. If HA companion app is on his phone, use `notify.mobile_app_*` via HA REST API. If not, Pushover is the cleanest dedicated solution.
+- multiple: The bridge can dispatch to multiple transports simultaneously (e.g., Pushover + email for redundancy).
+
+### [NOTIFY-TRANSPORT-HA] Home Assistant Transport
+
+```python
+# Delivers via HA REST API → companion app push notification
+async def send(self, title, body, priority, category):
+    await httpx.post(
+        f"{HA_URL}/api/services/notify/mobile_app_davids_iphone",
+        headers={"Authorization": f"Bearer {HA_TOKEN}"},
+        json={
+            "title": title,
+            "message": body,
+            "data": {
+                "push": {"sound": "default" if priority != "low" else "none"},
+                "group": category,
+                "tag": f"haven-{category}",
+            }
+        }
+    )
+```
+
+### [NOTIFY-TRANSPORT-PUSHOVER] Pushover Transport
+
+```python
+# Delivers via Pushover API → Pushover app push notification
+PUSHOVER_PRIORITY = {"low": -1, "medium": 0, "high": 1, "critical": 2}
+
+async def send(self, title, body, priority, category):
+    await httpx.post(
+        "https://api.pushover.net/1/messages.json",
+        data={
+            "token": PUSHOVER_APP_TOKEN,
+            "user": PUSHOVER_USER_KEY,
+            "title": f"[Haven] {title}",
+            "message": body,
+            "priority": PUSHOVER_PRIORITY[priority],
+            "sound": "pushover" if priority in ("high", "critical") else "none",
+        }
+    )
+```
+
+---
+
+## 6. Rate Limiting and Safety
+
+### [NOTIFY-RATE-LIMIT] Rate Limits
+
+| Window | Limit | Override |
+|--------|-------|---------|
+| Per hour | 5 notifications | `critical` priority bypasses |
+| Per day | 20 notifications | `critical` priority bypasses |
+| Dedup window | 30 minutes (same title + source) | None |
+
+- rationale: Push notification fatigue is real. These limits protect the channel's value.
+- critical-bypass: System integrity alerts (`critical` priority) bypass rate limits — if the hash chain breaks at 3am, David should know.
+- overflow: Messages that exceed rate limits are queued and delivered in a digest at the next available window, tagged `[DIGEST: N queued]`.
+
+### [NOTIFY-AUDIT] Delivery Audit
+
+- every notification delivery (success or failure) logged to bus storage
+- fields: timestamp, source_agent, category, priority, transport_used, delivery_status
+- purpose: David can review notification history in the Dashboard; agents can check if their message was delivered
+
+---
+
+## 7. What Constitutes "Urgent"
+
+### [NOTIFY-GUIDANCE] Agent Guidance for Urgency
+
+This guidance should be incorporated into agent bootstraps and `/nudge` output:
+
+| Situation | Urgent? | Category | Priority |
+|-----------|---------|----------|----------|
+| Need permission to deploy | Yes | permission | high |
+| Amendment vote requires human approval | Yes | governance | high |
+| Hash chain integrity failure | Yes | alert | critical |
+| Service down on mqtt-broker | Yes | alert | high |
+| Builder milestone completed | **No** — use dev channel | — | — |
+| Routine governance notification | **No** — use legal-notices | — | — |
+| Interesting insight to share | **No** — use shared tier | — | — |
+| Session ended normally | **No** — logged automatically | — | — |
+
+- principle: If David would want to be woken up for it, it's `critical`. If he'd want to see it before his next session, it's `high`. If it can wait for the Dashboard, it's not urgent — don't push it.
+
+---
+
+## 8. Deployment
+
+### [NOTIFY-DEPLOY] Service Deployment
+
+- host: mqtt-broker.local
+- runtime: Python 3.12, Docker container or standalone process
+- dependencies: MQTT broker at :1884, HA REST API (if using HA transport), or Pushover API key
+- config: `/var/lib/composeio/notification-bridge/config.yaml`
+
+```yaml
+mqtt:
+  host: mqtt-broker.local
+  port: 1884
+  topic: composeio/global/custodial_urgent
+  qos: 1
+
+transport:
+  primary: pushover          # or: ha_companion, ntfy, email
+  pushover:
+    app_token: ${PUSHOVER_APP_TOKEN}
+    user_key: ${PUSHOVER_USER_KEY}
+  ha_companion:
+    ha_url: http://homeassistant.local:8123
+    ha_token: ${HA_TOKEN}
+    service: notify.mobile_app_davids_iphone
+
+rate_limit:
+  per_hour: 5
+  per_day: 20
+  dedup_window_minutes: 30
+  critical_bypasses_limits: true
+```
+
+---
+
+## 9. Testing
+
+### [NOTIFY-TEST-INTEGRATION] Integration Tests
+
+| Test | Method | Expected Result |
+|------|--------|----------------|
+| MQTT receipt | Publish test message to `composeio/global/custodial_urgent` | Bridge receives and logs |
+| Transport delivery | Send test notification via configured transport | Push notification arrives on device |
+| Rate limiting | Send 6 messages in 1 minute | 5 delivered, 1 queued |
+| Dedup | Send identical message twice within 30 minutes | Second suppressed |
+| Critical bypass | Send `critical` message when rate limit exhausted | Delivered despite limit |
+| Digest | Exceed rate limit with 3 queued messages | Digest delivered at next window |
+| Audit logging | Send message, check bus storage | Delivery record present |
+
+### [NOTIFY-TEST-E2E] End-to-End Test
+
+```
+1. Agent writes to haven::custodial_human::david/urgent_messages:
+   {title: "Test", body: "Notification bridge test", priority: "low",
+    source_agent: "haven-architect", category: "operational"}
+
+2. Haven-ComposeIO Bridge publishes to composeio/global/custodial_urgent
+
+3. Notification Bridge receives, validates, dispatches via configured transport
+
+4. Verify: push notification arrives on David's iPhone (silent, low priority)
+
+5. Verify: delivery logged in bus storage audit
+```
+
+---
+
+## Invariants
+
+### [INV-NOTIFY-1] Namespace Is the Only Interface
+
+- rule: Agents interact with the notification system exclusively by writing to `haven::custodial_human::david/urgent_messages`. No agent should call push APIs directly.
+- enforcement: Transport credentials are in the bridge config only — agents have no access to Pushover tokens or HA tokens.
+
+### [INV-NOTIFY-2] Rate Limits Non-Negotiable (Except Critical)
+
+- rule: Rate limits are enforced at the bridge level. No agent can override them. Only `critical` priority (system integrity) bypasses limits.
+- enforcement: Bridge-side rate limiter, not agent-side honor system.
+
+### [INV-NOTIFY-3] Delivery Audited
+
+- rule: Every notification attempt (success or failure) is logged to bus storage with full context.
+- enforcement: Logging happens before and after transport dispatch.
+
+---
+
+## Causal Graph
+
+```
+ENABLES: [NOTIFY-MSG-FORMAT] -> [NOTIFY-FLOW]
+ENABLES: [NOTIFY-TRANSPORT-INTERFACE] -> [NOTIFY-FLOW]
+PRECONDITION_FOR: [NOTIFY-RATE-LIMIT] -> [NOTIFY-FLOW]
+ENABLES: [NOTIFY-FLOW] -> [NOTIFY-AUDIT]
+ENABLES: [NOTIFY-MSG-CATEGORIES] -> [NOTIFY-GUIDANCE]
+```
+
+---
+
+## Relationships
+
+### Cross-Spec
+- [NOTIFY-FLOW] DEPENDS_ON 01-composeio-bus-protocol.smd (MQTT transport)
+- [NOTIFY-FLOW] DEPENDS_ON 04-haven-bridge.smd (namespace → MQTT routing)
+- [NOTIFY-MSG-FORMAT] DEPENDS_ON ~/haven/spec/20-haven-namespace-model.smd [NS-HUMAN-STRUCTURE]
+
+### Semantic
+- [DP-NOTIFY-1] IMPLEMENTS namespace-driven design (ComposeIO principle)
+- [NOTIFY-GUIDANCE] ENABLES agent bootstrap urgency guidance and /nudge output
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-22
+**Status**: Draft
+**Intelligence**: Claude Opus 4.6 (Haven Architect, session 2026-03-22)

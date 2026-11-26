@@ -162,7 +162,7 @@ def test_d5_dispatch_invalid_path_publishes_nothing(monkeypatch):
 # Fixture 1 is THE REAL ARTEFACT that reached the human's glass undecidable:
 # `docs/architecture/DECISIONS-2026-08-17-migration-and-programme.md`, whose D2
 # ("The Turbot images — keep, relocate, or discard?") carried no gloss, so the
-# reader could not tell whether "images" meant files on skipper, Docker images,
+# reader could not tell whether "images" meant files on buildhost, Docker images,
 # or something ComposeIO-specific. It parsed and rendered perfectly. If the guard
 # does not reject THAT file, it does not work.
 #
@@ -510,7 +510,7 @@ def outside_dsd(tmp_path):
     repo root — and whose path carries a SPACE.
 
     THE SPACE IS THE POINT, not decoration: the motivating path is
-    `/Users/.../Dropbox/Data Sheets/R503`, and a whitespace-separated root list
+    `${DATASHEETS_HOME}/R503`, and a whitespace-separated root list
     would split it into two roots that do not exist. `os.pathsep` survives it.
     This project has been bitten by that exact path already (PlatformIO refuses
     it outright, which is why the R503 firmware builds via a mirror)."""

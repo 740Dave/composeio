@@ -58,13 +58,13 @@ REPO_ROOT = Path(os.environ.get("COMPOSEIO_ROOT")
 
 # EXTRA DSD roots, `os.pathsep`-separated, in the shape of COMPOSEIO_ROOT above.
 # `os.pathsep` and not whitespace ON PURPOSE: the motivating path contains a
-# space (`/Users/.../Dropbox/Data Sheets/R503`), and a space-separated list would
+# space (`${DATASHEETS_HOME}/R503`), and a space-separated list would
 # split it into two roots that do not exist.  See `configured_dsd_roots`.
 DSD_ROOTS_ENV = "COMPOSEIO_DSD_ROOTS"
 
 # ---- D5: send_dsd_for_human_review -----------------------------------------
 INTENT_NS = "_app/dsd/open"
-DEFAULT_MQTT = "mqtt://mqtt-broker.local:1883"
+DEFAULT_MQTT = os.environ.get("COMPOSEBUS_MQTT", "mqtt://mqtt-broker.local:1883")
 
 # ---- D6: minted-node conventions -------------------------------------------
 # The read-only lock marker: an auto-minted node is a permanent record of what
@@ -121,9 +121,9 @@ def configured_dsd_roots(raw: Optional[str] = None):
         machine, so honouring it would make `resolve_dsd` a no-op while still
         LOOKING like a guard — the exact failure mode the request named.
 
-    `~` is expanded first (an operator writes `~/Dropbox/...`), and the
+    `~` is expanded first (an operator writes `~/...`), and the
     separator is `os.pathsep` — NOT whitespace — because the motivating path
-    contains a space (`/Users/.../Dropbox/Data Sheets/R503`).
+    contains a space (`${DATASHEETS_HOME}/R503`).
 
     REJECTIONS ARE RETURNED, NOT SWALLOWED.  A silently-dropped root would
     present as "not a repo file" for a path the operator believes they admitted,

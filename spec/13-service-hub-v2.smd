@@ -47,7 +47,7 @@ artifact-readiness: code-generation
 │  │  (existing)          │  │  (new)                       │  │
 │  │                      │  │                              │  │
 │  │  currency_converter  │  │  board_manager (Docker)      │  │
-│  │  png_to_jpg          │  │  nexus_terminus (Docker)     │  │
+│  │  png_to_jpg          │  │  haven_terminus (Docker)     │  │
 │  │  exchange_rate_feed  │  │  biometric_tester (Docker)   │  │
 │  │                      │  │                              │  │
 │  │  [Python subprocess] │  │  [Docker container]          │  │
@@ -85,7 +85,7 @@ artifact-readiness: code-generation
 | Internal modules | None (single entry point) | AppModule classes (app manages) |
 | Persistence | Workload manages its own files | Docker volumes declared in config |
 | Port binding | None (bus-only communication) | Declared in config (web UI, MCP, etc.) |
-| Examples | Currency converter, PNG resizer, exchange rate feed | Board Manager, Nexus Terminus, BSG game |
+| Examples | Currency converter, PNG resizer, exchange rate feed | Board Manager, Haven Terminus, BSG game |
 
 ### [SH-ARCH-DECISION] When to Use Which Tier
 
@@ -128,14 +128,14 @@ namespaces:
   - name: _app/board/activity
     state_engine: json
     # Private — activity log
-  - name: board/nexus/tasks
+  - name: board/haven/tasks
     state_engine: json
     export: true
-    label: "Nexus Board Tasks"
-  - name: board/nexus/activity
+    label: "Haven Board Tasks"
+  - name: board/haven/activity
     state_engine: json
     export: true
-    label: "Nexus Board Activity"
+    label: "Haven Board Activity"
 ```
 
 ### [SH-DEPLOY-FLOW] Deployment Flow
@@ -218,7 +218,7 @@ Returns full hub status — both workloads and ComposeApps.
       "ports": ["8889:8889"],
       "health": "healthy",
       "restart_count": 0,
-      "exported_namespaces": ["board/nexus/tasks", "board/nexus/activity"]
+      "exported_namespaces": ["board/haven/tasks", "board/haven/activity"]
     }
   }
 }
@@ -298,8 +298,8 @@ WantedBy=multi-user.target
 │   │   ├── board_manager.compose.yaml
 │   │   ├── Dockerfile
 │   │   └── board_manager.py
-│   └── nexus-terminus/
-│       ├── nexus-terminus.compose.yaml
+│   └── haven-terminus/
+│       ├── haven-terminus.compose.yaml
 │       ├── Dockerfile
 │       └── ...
 └── venvs/                  # Python venvs for workloads

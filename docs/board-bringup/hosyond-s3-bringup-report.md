@@ -1,7 +1,7 @@
 # Bring-up report — Hosyond ESP32-S3 2.8" IPS (ES3C28P)
 
 **Date:** 2026-08-11 · **Branch:** `bringup/hosyond-s3` (committed, **not pushed**)
-**Device:** `hosyond-d1afe8` · `AA:BB:CC:DD:EE:FF` · `192.0.2.36` · `/dev/cu.usbmodem31101`
+**Device:** `hosyond-080739` · `00:00:5e:00:53:01` · `192.0.2.36` · `/dev/cu.usbmodem31101`
 **Firmware:** build `Aug 11 2026 21:47:47`, IDF 5.5.2
 
 Per `[CXC-BRINGUP]`, the verdict is **two-tier and the second tier is not optional**. Machine signals
@@ -86,7 +86,7 @@ passes.
 
 **2. The same trap had already claimed the device-id prefix.** `config_fetch.cpp` gated its prefix on
 `#ifdef QUALIA_DISPLAY`, supplied only as a `build_flag` — so this board's first boot announced itself as
-`cyd-d1afe8` and 404'd fetching `displays/cyd-d1afe8.compose.yaml`. Now `CXC_DEVICE_PREFIX`, set in CMake,
+`cyd-080739` and 404'd fetching `displays/cyd-080739.compose.yaml`. Now `CXC_DEVICE_PREFIX`, set in CMake,
 with the `QUALIA_DISPLAY` fallback preserved verbatim so no existing board's identity shifts.
 
 > **Follow-up owed, outside this board's scope:** `env:qualia_display` passes `-DQUALIA_DISPLAY` and
@@ -135,7 +135,7 @@ The board is a working ComposeUX display tier: it boots, fetches its scene from 
 and takes touch. Next steps are ordinary work, not bring-up:
 
 - Give it its own scene — it currently falls back to `displays/default.compose.yaml` because
-  `displays/hosyond-d1afe8.compose.yaml` does not exist yet.
+  `displays/hosyond-080739.compose.yaml` does not exist yet.
 - **Audit `env:qualia_display` for the dropped-`build_flags` class** (§ "Two silent-failure classes").
   That board may be mis-built today; it was not on the bench and I did not touch it.
 - Revisit dirty-repaint granularity if the reactive tier feels sluggish — the full-frame tier coarsened it

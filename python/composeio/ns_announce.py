@@ -10,7 +10,7 @@ THE HOLE THIS FILLS
 ``hash -> name``) from every namespace it observes on MQTT.  That closes one
 direction completely and leaves the other one wide open: **a namespace that has
 never appeared on MQTT cannot be learned at all.**  A CAN node publishing
-``_device/hosyond-d1afe8/heartbeat`` puts 0xCC01 on the wire and nothing
+``_device/hosyond-080739/heartbeat`` puts 0xCC01 on the wire and nothing
 anywhere can turn 0xCC01 back into that string, because a CRC is not
 reversible.  The bridge drops the frame — correctly, loudly, and permanently.
 
@@ -627,8 +627,8 @@ def _selftest() -> int:                                   # pragma: no cover
 
     check(namespace_hash(NS_ANNOUNCE) == 0x31AE, "(1) well-known hash moved")
 
-    names = ["_device/hosyond-d1afe8/heartbeat", "_device/hosyond-d1afe8/build",
-             "_device/hosyond-d1afe8/health"]
+    names = ["_device/hosyond-080739/heartbeat", "_device/hosyond-080739/build",
+             "_device/hosyond-080739/health"]
     frames = announcement_frames(names)
     check(all(len(f) <= 8 for f in frames), "(2) a frame exceeded 8 bytes")
 

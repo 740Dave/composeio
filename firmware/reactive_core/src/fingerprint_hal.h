@@ -74,16 +74,24 @@ enum class FeedbackState {
  * command_feedback fails with UNSUPPORTED. */
 enum class FeedbackChannel : uint32_t { AURA_LED = 1u << 0 };
 
-/* --- [CXC-FPHAL-CAPABILITIES-SCHEMA] five required fields, no defaults ---
+/* --- [CXC-FPHAL-CAPABILITIES-SCHEMA] six required fields, no defaults ---
  * max_templates_per_person was REMOVED (2026-08-18): the sensor has no
  * person concept, so a per-person limit is service-side game policy
- * ([CXC-FPID-ONE-OR-TWO-TEMPLATES]), never a device capability. */
+ * ([CXC-FPID-ONE-OR-TWO-TEMPLATES]), never a device capability.
+ * feedback_profile was ADDED (2026-08-22): a stable string NAMING the
+ * command_feedback realization a backend implements — the mock's canonical
+ * three-colour table is "canonical", the R503's two-channel Aura mapping is
+ * "r503-2ch".  It lets a consumer of the announce distinguish which physical
+ * feedback vocabulary a device speaks WITHOUT reading the vendor out of the
+ * HAL, which knows only hop 1.  It is the SIXTH required field, and it is the
+ * one enrichment this contract took in this pass. */
 struct Capabilities {
     int slot_count = 0;
     bool supports_readback = false;
     uint32_t feedback_channels = 0;   /* bitmask of FeedbackChannel; 0 == none */
     int captures_per_template = 0;
     int template_size_bytes = 0;
+    std::string feedback_profile;     /* NAMES the command_feedback realization */
 
     bool has_feedback_channel(FeedbackChannel c) const {
         return (feedback_channels & static_cast<uint32_t>(c)) != 0;
@@ -95,7 +103,8 @@ struct Capabilities {
                supports_readback == o.supports_readback &&
                feedback_channels == o.feedback_channels &&
                captures_per_template == o.captures_per_template &&
-               template_size_bytes == o.template_size_bytes;
+               template_size_bytes == o.template_size_bytes &&
+               feedback_profile == o.feedback_profile;
     }
 };
 

@@ -289,22 +289,23 @@ def test_coordination_relay():
                      lambda i: _req("GET", f"{base}/health"))
 
 
-def test_document_store():
+def test_bus_storage_blob():
+    """The UNIFIED-store doc-as-blob face ([SPEC:CXC-STORE]) under concurrency —
+    the regression value the retired document_store concurrency test carried, moved
+    onto the surviving store's `bus://<collection>/<id>.json` blob route."""
     port = _free_port()
-    db = os.path.join(tempfile.mkdtemp(prefix="doc_"), "docstore.db")
-    script = HERE / "document_store" / "server.py"
-    env = {"COMPOSEIO_DOCSTORE_HOST": HOST, "COMPOSEIO_DOCSTORE_PORT": str(port),
-           "COMPOSEIO_DOCSTORE_DB": db}
-    with Service("document_store", script, env, port):
+    data = tempfile.mkdtemp(prefix="blob_")
+    script = HERE / "bus_storage" / "server.py"
+    env = {"COMPOSEIO_HOST": HOST, "COMPOSEIO_PORT": str(port), "COMPOSEIO_DATA_DIR": data}
+    with Service("bus_storage", script, env, port):
         base = f"http://{HOST}:{port}"
 
-        # --- concurrent writers to DIFFERENT docs + a concurrent reader ---
+        # --- concurrent writers to DIFFERENT doc-blobs + a concurrent reader ---
         N = 40
 
         def writer(i):
-            p = f"{base}/api/v1/collections/things/doc_{i}"
-            st, b = _req("PUT", p, body=json.dumps({"n": i, "v": i * 10}).encode(),
-                         headers={"Content-Type": "application/json"})
+            p = f"{base}/api/v1/blob/things/doc_{i}.json"
+            st, b = _req("PUT", p, body=json.dumps({"n": i, "v": i * 10}).encode())
             assert st == 201
         errors = []
 
@@ -312,7 +313,7 @@ def test_document_store():
             for _ in range(50):
                 try:
                     _req("GET", f"{base}/api/v1/status")
-                    _req("GET", f"{base}/api/v1/collections")
+                    _req("GET", f"{base}/api/v1/blob?prefix=things/")
                 except Exception as e:  # noqa
                     errors.append(repr(e))
         t0 = time.time()
@@ -322,33 +323,31 @@ def test_document_store():
             list(ex.map(writer, range(N)))
         rt.join()
         elapsed = time.time() - t0
-        assert not errors, f"document_store: reader errors (cross-thread sqlite?): {errors[:3]}"
-        # verify every doc landed and is readable + correct
+        assert not errors, f"bus_storage blob: reader errors: {errors[:3]}"
+        # verify every doc-blob landed and is readable + correct
         for i in range(N):
-            st, b = _req("GET", f"{base}/api/v1/collections/things/doc_{i}")
+            st, b = _req("GET", f"{base}/api/v1/blob/things/doc_{i}.json")
             d = json.loads(b)
             assert st == 200 and d["n"] == i and d["v"] == i * 10, f"doc_{i} corrupt: {d}"
-        print(f"  [document_store] {N} concurrent writers (distinct docs) + reader, "
-              f"all docs correct, no cross-thread errors in {elapsed:.2f}s -> PASS")
+        print(f"  [bus_storage/blob] {N} concurrent writers (distinct blobs) + reader, "
+              f"all correct in {elapsed:.2f}s -> PASS")
 
-        # --- query semantics still intact ---
-        st, b = _req("POST", f"{base}/api/v1/collections/things/query",
-                     body=json.dumps({"where": {"n": {">=": 38}}}).encode(),
-                     headers={"Content-Type": "application/json"})
-        res = json.loads(b)
-        assert res["count"] == 2, f"query count {res['count']} != 2"
-        # compact query form field=val@result
-        st, b = _req("POST", f"{base}/api/v1/collections/things/query",
-                     body=json.dumps({"compact": "n=5@v"}).encode(),
-                     headers={"Content-Type": "application/json"})
-        assert json.loads(b)["result"] == "50", f"compact query wrong: {b}"
-        print("  [document_store] query + compact (field=val@result) semantics intact -> PASS")
+        # --- prefix-LIST returns every id, and the negative control still refuses ../ ---
+        st, b = _req("GET", f"{base}/api/v1/blob?prefix=things/")
+        names = {e["name"] for e in json.loads(b)["entries"]}
+        assert st == 200 and names == {f"doc_{i}.json" for i in range(N)}, \
+            f"blob LIST mismatch: {len(names)} entries"
+        try:
+            _req("GET", f"{base}/api/v1/blob/../etc/passwd")
+            raise AssertionError("traversal not refused on blob route")
+        except HttpError as e:
+            assert e.status == 403, f"traversal returned {e.status}, expected 403"
+        print("  [bus_storage/blob] prefix-LIST complete + ../ refused (403) -> PASS")
 
         # --- wedged request proof ---
-        wedge = (b"PUT /api/v1/collections/things/wedge HTTP/1.1\r\n"
-                 b"Host: x\r\nContent-Type: application/json\r\n"
-                 b"Content-Length: 100000000\r\n\r\n")
-        _wedged_test("document_store", port, wedge,
+        wedge = (b"PUT /api/v1/blob/things/wedge.json HTTP/1.1\r\n"
+                 b"Host: x\r\nContent-Length: 100000000\r\n\r\n")
+        _wedged_test("bus_storage", port, wedge,
                      lambda i: _req("GET", f"{base}/api/v1/status"))
 
 
@@ -442,7 +441,7 @@ def test_service_hub():
 
 def main():
     print("=== ComposeIO concurrency regression tests ===")
-    for fn in (test_bus_storage, test_coordination_relay, test_document_store,
+    for fn in (test_bus_storage, test_bus_storage_blob, test_coordination_relay,
                test_service_hub):
         print(f"\n-- {fn.__name__} --")
         fn()

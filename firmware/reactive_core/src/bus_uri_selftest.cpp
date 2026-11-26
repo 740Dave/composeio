@@ -55,8 +55,8 @@ static void test_uri_split(void) {
     CHECK(p == 1883, "bare host -> default port");
 
     /* a path after host must not be mistaken for a port */
-    bus_uri_host_port("mqtt://192.0.2.9/foo:5", h, sizeof(h), &p, 1883);
-    CHECK(strcmp(h, "192.0.2.9") == 0, "path host");
+    bus_uri_host_port("mqtt://198.51.100.12/foo:5", h, sizeof(h), &p, 1883);
+    CHECK(strcmp(h, "198.51.100.12") == 0, "path host");
     CHECK(p == 1883, "path colon is NOT a port");
 
     /* empty / null -> host cleared, default port (no crash) */

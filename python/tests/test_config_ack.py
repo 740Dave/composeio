@@ -104,7 +104,7 @@ def test_the_string_ack_is_actually_DROPPED_by_the_can_transport(caplog):
     old_value = encode_value("ok %04x %u" % (0xBEEF, SCENE_LEN))   # 13 bytes
     assert len(old_value) == 13
     with caplog.at_level(logging.WARNING):
-        leaf.send(BusMessage(namespace=config_namespace("hosyond-d1afe8"),
+        leaf.send(BusMessage(namespace=config_namespace("hosyond-080739"),
                              type=MessageType.ACK, value=old_value,
                              scope="global"))
     assert bus.sent == [], "the 13-byte ACK should have been DROPPED"
@@ -154,7 +154,7 @@ def test_the_ack_survives_the_real_can_frame_path_and_fits():
     leaf = CANTransport(channel="ack-fit", backend="loopback", node_id=2)
     head.start()
     leaf.start()
-    ns = config_namespace("hosyond-d1afe8")
+    ns = config_namespace("hosyond-080739")
     seen: list[BusMessage] = []
     head.subscribe(ns, seen.append)
 
@@ -365,14 +365,14 @@ def test_the_head_reports_a_failed_transfer_over_a_real_can_loopback(caplog):
 # --------------------------------------------------------------------------- #
 
 def test_to_json_raises_a_NAMED_error_that_names_the_field():
-    msg = BusMessage(namespace="_device/hosyond-d1afe8/config",
+    msg = BusMessage(namespace="_device/hosyond-080739/config",
                      type=MessageType.CONFIG_PUSH,
                      value=b"\x00\x01" + bytes(6))
     with pytest.raises(UnserialisableValue) as exc:
         msg.to_json()
     text = str(exc.value)
     assert "'val'" in text, "the error must NAME the field"
-    assert "_device/hosyond-d1afe8/config" in text
+    assert "_device/hosyond-080739/config" in text
     assert "config_push" in text
     assert "bus://" in text, "it must say what to do instead"
 

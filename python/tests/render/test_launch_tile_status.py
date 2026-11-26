@@ -9,7 +9,7 @@ Two things under test, at two scopes:
     a pure function of the logical clock.  A tile that declares neither is
     byte-for-byte its old self.
   * the SCENE holds the POLICY — the two storage tiles bind tint+blink off
-    `skipper/storage/free_bytes` with the thresholds IN THE EXPR, and an
+    `buildhost/storage/free_bytes` with the thresholds IN THE EXPR, and an
     absent/unset value (reads 0.0) must NOT false-alarm.
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ from composeio.render.widgets.launch_tile import (_BLINK_PERIOD_S,
                                                   LaunchTileWidget)
 
 SCENE = _REPO_ROOT / "apps/compose_platform_launch_bar" / "launch_bar.compose.yaml"
-NS = "skipper/storage/free_bytes"
+NS = "buildhost/storage/free_bytes"
 
 # The band table the SCENE encodes ([DX-STATE-ON-BUS] policy-in-the-expr).
 # (free_bytes, tint_hex_or_None_meaning_normal, blinks)

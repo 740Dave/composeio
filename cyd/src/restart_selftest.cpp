@@ -47,7 +47,7 @@ static void seams_clear(void) {
 
 /* now_ms comfortably past the 3000 ms boot-guard window. */
 static const uint32_t kPastGuard = 10000;
-static const char* kDevId = "qualia-6c9d0c";
+static const char* kDevId = "qualia-004df8";
 
 /* Fresh handler for each case. */
 static void arm(void) {
@@ -80,11 +80,11 @@ int main(void) {
         const char* ns[4] = {nullptr, nullptr, nullptr, nullptr};
         size_t n = restart_namespaces(ns, 4);
         CHECK(n == 2, "restart_namespaces returns 2");
-        CHECK(n == 2 && strcmp(ns[0], "_device/qualia-6c9d0c/restart") == 0,
+        CHECK(n == 2 && strcmp(ns[0], "_device/qualia-004df8/restart") == 0,
               "per-device namespace = _device/<id>/restart");
         CHECK(n == 2 && strcmp(ns[1], "_device/restart") == 0,
               "broadcast namespace = _device/restart");
-        CHECK(restart_is_restart_ns("_device/qualia-6c9d0c/restart"),
+        CHECK(restart_is_restart_ns("_device/qualia-004df8/restart"),
               "per-device ns recognized");
         CHECK(restart_is_restart_ns("_device/restart"),
               "broadcast ns recognized");
@@ -97,7 +97,7 @@ int main(void) {
     /* --- C15/C16: truthy forms restart + ack, past the boot guard ---- */
     struct TruthyCase { const char* label; int kind; double num; bool b;
                         const char* str; const char* ns; };
-    const char* PER = "_device/qualia-6c9d0c/restart";
+    const char* PER = "_device/qualia-004df8/restart";
     const char* BC = "_device/restart";
     TruthyCase truthy[] = {
         {"bool true",            BOOL, 0, true,  nullptr,             PER},
@@ -118,7 +118,7 @@ int main(void) {
         CHECK(s_reboot_calls == 1, m);
         snprintf(m, sizeof(m), "truthy '%s' -> ack published", c.label);
         CHECK(s_publish_calls == 1 &&
-              strcmp(s_last_pub_ns, "_device/qualia-6c9d0c/status") == 0 &&
+              strcmp(s_last_pub_ns, "_device/qualia-004df8/status") == 0 &&
               strcmp(s_last_pub_val, "restarting") == 0, m);
     }
 

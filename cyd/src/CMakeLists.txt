@@ -357,6 +357,8 @@ if(CXC_C3_ST7796)
     idf_component_register(
         SRCS
             "main.cpp"
+            "asset_reload.cpp"       # [CXC-DEVICE-BASELINE] cap 1: change-notify consumer
+            "asset_reload_bus.cpp"   # [CXC-DEVICE-BASELINE] cap 1: header-based self-select glue
             "boards/esp32c3_st7796.cpp"
             "canvas_esp32.cpp"
             "led.cpp"
@@ -467,7 +469,7 @@ if(CXC_C3_ST7796)
     # Verify in .pio/build/esp32_c3_st7796/compile_commands.json, WITH a
     # negative control — the bare cache var must appear in ZERO TUs.
     target_compile_definitions(${COMPONENT_LIB} PUBLIC
-        # Board identity -> device_id() == "c3lcd-c28020".  Without it the
+        # Board identity -> device_id() == "c3lcd-047dd8".  Without it the
         # board answers to "cyd-<mac3>", 404s its own scene and silently
         # falls back to another board's dashboard.  Keep it SHORT:
         # device_id()'s buffer is char[16].
@@ -499,7 +501,7 @@ if(CXC_C3_ST7796)
         # It is announced at ERROR level on every boot in plain words, every
         # publish through the transport is REFUSED rather than dropped, and
         # it is reversible over the bus without a reflash:
-        #     _device/c3lcd-c28020/transport = "can listen=0"
+        #     _device/c3lcd-047dd8/transport = "can listen=0"
         # DELETE THIS LINE once the replacement transceivers are soldered.
         CXC_CAN_LISTEN_ONLY=1
 
@@ -602,6 +604,8 @@ if(QUALIA_DISPLAY)
     idf_component_register(
         SRCS
             "qualia_main.cpp"
+            "asset_reload.cpp"       # [CXC-DEVICE-BASELINE] cap 1: change-notify consumer
+            "asset_reload_bus.cpp"   # [CXC-DEVICE-BASELINE] cap 1: header-based self-select glue
             "canvas_qualia.cpp"
             "boards/qualia_rgb666.cpp"
             "capture_http_fb.cpp"
@@ -765,7 +769,7 @@ if(QUALIA_DISPLAY)
     #   QUALIA_DISPLAY          -> device_id() prefix "qualia-<mac3>"
     #                              (config_fetch.cpp).  Without it the
     #                              board boots as "cyd-<mac3>", 404s
-    #                              displays/qualia-6c9d0c.compose.yaml and
+    #                              displays/qualia-004df8.compose.yaml and
     #                              silently falls back to the CYD
     #                              dashboard in displays/default.
     #   REACTIVE_TRANSFORM_ATTRS-> the framebuffer tier's bindable attrs:
@@ -797,6 +801,8 @@ if(HOSYOND_S3)
     idf_component_register(
         SRCS
             "main.cpp"
+            "asset_reload.cpp"       # [CXC-DEVICE-BASELINE] cap 1: change-notify consumer
+            "asset_reload_bus.cpp"   # [CXC-DEVICE-BASELINE] cap 1: header-based self-select glue
             "boards/hosyond_s3.cpp"
             "touch_ft6336.cpp"
             "canvas_esp32.cpp"
@@ -930,7 +936,7 @@ if(HOSYOND_S3)
     # Board identity prefix -> device_id() == "hosyond-<last3 STA MAC hex>".
     # Without this the board answers to "cyd-<mac3>" and can never own a
     # per-device scene config (observed on the first live boot, which
-    # 404'd on displays/cyd-d1afe8.compose.yaml).  Same reasoning as
+    # 404'd on displays/cyd-080739.compose.yaml).  Same reasoning as
     # above: a CMake definition, never a platformio.ini build_flag.
     # Keep it short — device_id()'s buffer is char[16].
     target_compile_definitions(${COMPONENT_LIB} PUBLIC CXC_DEVICE_PREFIX="hosyond")
@@ -968,6 +974,8 @@ if(WAVESHARE_C6)
     idf_component_register(
         SRCS
             "main.cpp"
+            "asset_reload.cpp"       # [CXC-DEVICE-BASELINE] cap 1: change-notify consumer
+            "asset_reload_bus.cpp"   # [CXC-DEVICE-BASELINE] cap 1: header-based self-select glue
             "boards/waveshare_c6_lcd147.cpp"
             "canvas_esp32.cpp"
             "led.cpp"
@@ -1110,6 +1118,8 @@ endif()
 idf_component_register(
     SRCS
         "main.cpp"
+        "asset_reload.cpp"       # [CXC-DEVICE-BASELINE] cap 1: change-notify consumer
+        "asset_reload_bus.cpp"   # [CXC-DEVICE-BASELINE] cap 1: header-based self-select glue
         "ili9341.cpp"
         "canvas_esp32.cpp"
         "led.cpp"

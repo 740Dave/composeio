@@ -27,12 +27,13 @@ Targets are the same ones ``kiosk.py`` subscribes: launcher, bsg, fiat, power.
 Publishing `power` will trigger the guarded poweroff on the Pi — do not.
 """
 from __future__ import annotations
+import os
 
 import argparse
 import sys
 import time
 
-DEFAULT_BROKER = "mqtt-broker.local"   # == mqtt-broker.local, the bus master
+DEFAULT_BROKER = os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local")   # == mqtt-broker.local, the bus master
 DEFAULT_PORT = 1883
 
 

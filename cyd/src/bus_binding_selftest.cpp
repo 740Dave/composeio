@@ -44,14 +44,14 @@ static BusBinding mk(const char* name, const char* mqtt, const char* store,
     return b;
 }
 
-/* Canonical maker / skipper / nexus test bindings. */
+/* Canonical maker / buildhost / haven test bindings. */
 static BusBinding maker() {
     return mk("maker", "mqtt://192.0.2.90:1883",
               "http://192.0.2.90:8420", "http://192.0.2.90:8421");
 }
-static BusBinding skipper() {
-    return mk("skipper", "mqtt://192.0.2.10:1883",
-              "http://192.0.2.10:8420", "http://192.0.2.10:8421");
+static BusBinding buildhost() {
+    return mk("buildhost", "mqtt://198.51.100.19:1883",
+              "http://198.51.100.19:8420", "http://198.51.100.19:8421");
 }
 static BusBinding compiled_floor() {
     return mk("rescue", "mqtt://mqtt-broker.local:1883",
@@ -76,7 +76,7 @@ static void test_parse_serialize(void) {
     CHECK(!r.confirm_clamped, "120 not clamped");
 
     /* partial update: store only, omission = unchanged */
-    BindParseResult p = binding_parse("bus=maker store=http://192.0.2.9:8420");
+    BindParseResult p = binding_parse("bus=maker store=http://198.51.100.12:8420");
     CHECK(p.status == BindParse::Ok, "partial (store-only) parses Ok");
     CHECK(p.has_store && !p.has_mqtt && !p.has_docs,
           "only store present; mqtt/docs absent (=unchanged)");
@@ -118,7 +118,7 @@ static void test_parse_serialize(void) {
     CHECK(binding_clamp_confirm(120, &cl) == 120 && !cl, "confirm=120 as-is");
 
     /* canonical + fingerprint: same bus -> same number; drift -> different */
-    BusBinding m1 = maker(), m2 = maker(), sk = skipper();
+    BusBinding m1 = maker(), m2 = maker(), sk = buildhost();
     CHECK(binding_fingerprint(&m1) == binding_fingerprint(&m2),
           "identical binding -> identical fingerprint");
     CHECK(binding_fingerprint(&m1) != binding_fingerprint(&sk),
@@ -131,9 +131,9 @@ static void test_parse_serialize(void) {
           "canonical is <mqtt>|<store>|<docs>");
 
     /* merge: present overwrites, absent inherits */
-    BusBinding merged = binding_merge(&m1, &p); /* p = store-only http://192.0.2.9 */
+    BusBinding merged = binding_merge(&m1, &p); /* p = store-only http://198.51.100.12 */
     CHECK(strcmp(merged.mqtt, m1.mqtt) == 0, "merge keeps unchanged mqtt");
-    CHECK(strcmp(merged.store, "http://192.0.2.9:8420") == 0,
+    CHECK(strcmp(merged.store, "http://198.51.100.12:8420") == 0,
           "merge overwrites store");
     CHECK(strcmp(merged.docs, m1.docs) == 0, "merge keeps unchanged docs");
 }
@@ -144,7 +144,7 @@ static void test_precedence(void) {
     BusBinding floor = compiled_floor();
 
     BindTierView pd, gl;
-    BusBinding mk_b = maker(), sk_b = skipper();
+    BusBinding mk_b = maker(), sk_b = buildhost();
 
     /* per-device confirmed wins over global confirmed */
     pd = { BindState::Confirmed, mk_b };
@@ -209,7 +209,7 @@ static void test_absorbing(void) {
           "same addresses, different name -> NoOp (not a binding change)");
 
     /* POSITIVE control: a genuinely different value arms exactly one trial */
-    BusBinding sk = skipper();
+    BusBinding sk = buildhost();
     a = binding_arm_trial(&r, &sk, ack, sizeof(ack));
     CHECK(a == BindArm::Armed, "differing value ARMS a trial");
     CHECK(r.state == BindState::Trial && r.seq == 1, "armed: state trial, seq++");
@@ -226,14 +226,14 @@ static void test_commit_confirmed(void) {
     r.state = BindState::Confirmed;
     char ack[96];
 
-    /* arm a trial to skipper */
-    BusBinding sk = skipper();
+    /* arm a trial to buildhost */
+    BusBinding sk = buildhost();
     binding_arm_trial(&r, &sk, ack, sizeof(ack));
     CHECK(r.state == BindState::Trial, "armed trial");
 
     /* SINGLE-TRIAL: a second change while trialling is REFUSED, prev intact */
-    BusBinding other = mk("other", "mqtt://192.0.2.9:1883",
-                          "http://192.0.2.9:8420", "http://192.0.2.9:8421");
+    BusBinding other = mk("other", "mqtt://198.51.100.15:1883",
+                          "http://198.51.100.15:8420", "http://198.51.100.15:8421");
     BusBinding prev_before = r.prev;
     BindArm a = binding_arm_trial(&r, &other, ack, sizeof(ack));
     CHECK(a == BindArm::RefusedTrial, "2nd change during trial REFUSED");
@@ -255,7 +255,7 @@ static void test_commit_confirmed(void) {
     binding_revert(&r, "broker-no-connack");
     CHECK(r.state == BindState::Confirmed, "revert -> confirmed");
     CHECK(binding_addresses_equal(&r.cur, &sk),
-          "reverted cur = the last known-good (skipper)");
+          "reverted cur = the last known-good (buildhost)");
     CHECK(strcmp(r.why, "broker-no-connack") == 0,
           "revert reason recorded (survives reboot via NVS why)");
     CHECK(r.reverts == 1, "one revert counted");
@@ -270,7 +270,7 @@ static void test_bounce(void) {
     r.state = BindState::Confirmed;
     char ack[96];
 
-    BusBinding sk = skipper();
+    BusBinding sk = buildhost();
     uint16_t skfp = binding_fingerprint(&sk);
 
     for (int i = 0; i < 3; i++) {
@@ -289,8 +289,8 @@ static void test_bounce(void) {
     /* NEGATIVE control: a DIFFERENT good target is still accepted while
      * the latch stands (a latch that blocks everything is the stranding it
      * was built to prevent). */
-    BusBinding good = mk("nexus", "mqtt://192.0.2.1:1883",
-                         "http://192.0.2.1:8420", "http://192.0.2.1:8421");
+    BusBinding good = mk("haven", "mqtt://198.51.100.14:1883",
+                         "http://198.51.100.14:8420", "http://198.51.100.14:8421");
     a = binding_arm_trial(&r, &good, ack, sizeof(ack));
     CHECK(a == BindArm::Armed, "a DIFFERENT target is accepted despite the latch");
 
@@ -306,7 +306,7 @@ static void test_bounce(void) {
 
     /* POSITIVE control: the once-latched target can now be re-armed — the
      * proof the clear is real and not merely a zeroed field.  skfp differs
-     * from nexus's current binding, so it arms a fresh trial. */
+     * from haven's current binding, so it arms a fresh trial. */
     BindArm retry = binding_arm_trial(&r, &sk, ack, sizeof(ack));
     CHECK(retry == BindArm::Armed,
           "the once-latched target is retryable after the latch clears");

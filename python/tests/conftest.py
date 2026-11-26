@@ -84,6 +84,46 @@ _REPO_ROOT = os.path.dirname(_PY_ROOT)               # <repo>
 if _PY_ROOT not in sys.path:
     sys.path.insert(0, _PY_ROOT)
 
+
+# ⛔ MONOREPO RESOLUTION OF THE SIBLING DISTRIBUTIONS — for this process AND its children.
+# python/ holds two distribution DIRECTORIES beside composeio: python/composebus/ and
+# python/compose_plugins/, each wrapping its real package one level down. With python/ on
+# sys.path (every `cd python && pytest tests`, including scripts/pre-commit-tests.sh), the bare
+# outer directory satisfies `import compose_plugins` as an EMPTY namespace package, so collection
+# fails with "No module named 'compose_plugins.conformance'". composeio._seat_composebus repairs
+# composebus in-process only, and only once composeio is imported — but test_composeserver_plugins
+# imports compose_plugins FIRST, and the plug-in runner and probe spawn
+# `python -m compose_plugins._child|_probe` children that never import composeio at all.
+# Same rule as _seat_composebus: an INSTALLED distribution always wins; otherwise the sibling
+# root is APPENDED to sys.path (a regular package beats a namespace portion at any position,
+# and appending never shadows a name python/ already provides) and to PYTHONPATH, which every
+# subprocess child inherits. Removal condition: both distributions installed in the dev env.
+def _seat_sibling_distributions() -> None:
+    import importlib
+    import importlib.util
+
+    for dist in ("composebus", "compose_plugins"):
+        loaded = sys.modules.get(dist)
+        if loaded is not None and getattr(loaded, "__file__", None):
+            continue
+        try:
+            spec = importlib.util.find_spec(dist)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is not None and spec.origin is not None:
+            continue
+        root = os.path.join(_PY_ROOT, dist)
+        if root not in sys.path:
+            sys.path.append(root)
+        parts = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+        if root not in parts:
+            os.environ["PYTHONPATH"] = os.pathsep.join(parts + [root])
+        sys.modules.pop(dist, None)
+    importlib.invalidate_caches()
+
+
+_seat_sibling_distributions()
+
 #: The one marker name.  Named once, here; the test files spell it, this file enforces it.
 MARKER = "requires_repo_mcp_config"
 

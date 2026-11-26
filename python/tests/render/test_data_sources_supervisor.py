@@ -141,6 +141,39 @@ def test_crash_is_isolated(ds):
     sup.stop()
 
 
+def test_supervisor_start_leaves_no_daemon_thread_behind(ds):
+    """[ISOLATION GUARD] A supervisor that is start()ed MUST be stop()ed — no
+    daemon thread may outlive its owner.
+
+    This is the class-guard for a DETERMINISTIC test-isolation defect (mislabelled a
+    "flake"): the module's own `_selftest` crash-isolation check started a supervisor
+    whose sibling returned IMMEDIATELY. A clean return is read by `_guarded` as
+    "yielded my singleton" and starts a reclaim RETRY LOOP, and `_selftest` never
+    called stop(), so a `ds:fine` daemon thread outlived it for the life of the
+    process — waking every reclaim_poll_s to write "~ fine yielded its singleton"
+    into whatever `sys.stderr` had since become. In the pre-commit collection order
+    that stray write (and the git-status startup window it perturbed) landed in
+    `test_sources_run_blocks.py`'s monkeypatched stderr and reddened the gate for
+    every committer, who then reached for SKIP_PRECOMMIT_TESTS/--no-verify.
+
+    Runs the module's OWN `_selftest` (the leaker) and asserts it adds no surviving
+    `ds:` daemon thread — so ANY future supervisor that forgets its stop() (in
+    `_selftest` or the source set) fails HERE, in isolation, instead of reddening an
+    unrelated file two modules away. FAILS before the fix (ds:fine survives), passes
+    after."""
+    before = {t.ident for t in threading.enumerate()}
+    assert ds._selftest() == 0, "_selftest itself must pass"
+    # A leaked reclaim thread parks in `_stop.wait(reclaim_poll_s)`; it is
+    # enumerable immediately, no settle needed.
+    leaked = sorted(t.name for t in threading.enumerate()
+                    if t.ident not in before and t.name.startswith("ds:"))
+    assert leaked == [], (
+        f"start()ed supervisor(s) leaked daemon thread(s) {leaked} that outlived "
+        f"_selftest — an un-stopped supervisor's reclaim loop writes into another "
+        f"test's stderr in the pre-commit collection order. Every start() needs a "
+        f"stop() ([DEC-INPROCESS-SOURCES]).")
+
+
 def test_crash_dies_alone_no_restart(ds):
     """A source that RAISES must NOT be restart-looped — a crash dies alone (the
     isolation boundary), distinct from a clean RETURN which reclaims. Guards the
@@ -247,12 +280,12 @@ def _make_projects_root(tmp_path, own_id, *, sibling_id=None):
     """A ~/.claude/projects-shaped tree: own transcript in one slug, an optional
     sibling in ANOTHER slug (so a bare newest-wins/listdir would be ambiguous)."""
     root = tmp_path / "projects"
-    own_slug = root / "-Users-x-proj"
+    own_slug = root / "-Users-you-proj"
     own_slug.mkdir(parents=True)
     own = own_slug / f"{own_id}.jsonl"
     own.write_text('{"type":"assistant"}\n')
     if sibling_id:
-        sib_slug = root / "-Users-x-other"
+        sib_slug = root / "-Users-you-other"
         sib_slug.mkdir(parents=True)
         (sib_slug / f"{sibling_id}.jsonl").write_text('{"type":"assistant"}\n')
     return root, own

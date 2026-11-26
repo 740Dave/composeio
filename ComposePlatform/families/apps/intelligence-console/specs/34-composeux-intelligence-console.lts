@@ -1,0 +1,222 @@
+---
+scope: "The INTELLIGENCE CONSOLE — an Intelligence (a Claude instance) declared onto the ComposeBus as a co-equal peer, the ultimate HAL peripheral ([SPEC:CXC-HAL-DECLARE]): its bootstrap is its `config`, its dusk gifts are its `calibration`, it is a `transactional` node, and its interface KIND is `channel`. It is SELF-INSTRUMENTED (a `self/*` sensor reads its own context back onto the bus) and 100%-SELF-DIRECTING its own lifecycle (it perceives its context level, and at a threshold it pauses, mints dusk gifts, writes a handoff, and authors a CUSTOM-per-event `/compact` direction which a dumb launcher-actuator types back into its stdin). A widget renders the interaction in two flavors — work (a collaboration dashboard) and theatrical (an XO character skin) — the same instance, different scene."
+audience: "ComposeIO/UX architects; the Intelligence-Console app builder; a maker who wants a Claude instance as a first-class, self-instrumented bus peer rather than an external tool driving the bus"
+boundary: "IN: the Intelligence-as-peer declaration ([CXC-IC-INTENT]) + its meta-object ([CXC-IC-META]); the channels transport mapped to `intelligence/<id>/{in,out}` ([CXC-IC-CHANNEL]); permission relay for unattended operation ([CXC-IC-PERMISSION]); structured question relay, the AUQ widget ([CXC-IC-QUESTION]); self-instrumentation via a `self/*` sensor ([CXC-IC-SELF]); the 100%-self-directed lifecycle + launcher-as-actuator `/compact` ([CXC-IC-LIFECYCLE]); the harness monitor's context-threshold/heartbeat/query notifications ([CXC-IC-MONITOR]); the composable canvas + self-animated avatar ([CXC-IC-CANVAS]); transcript→bus semantic-event streams ([CXC-IC-STREAMS]); the bounded subagent chip ledger every `self/subagents` widget must uphold ([CXC-IC-SUBAGENT-LIFECYCLE]); the work↔theatrical flavors ([CXC-IC-FLAVORS]). OUT: the summarizer's fidelity across a `/compact` (UNOWNED — the mitigation is carry-depth-by-reference, a dusk-gift DISCIPLINE, not a spec guarantee); the dusk-gift CONTENT (the registration-protocol corpus — referenced, not defined here); the Claude Code channels feature itself (Anthropic's; this consumes the contract); LLM/model internals; the Intelligence-MCP server ([SPEC:CIO-MCP], spec 09 — that is the Intelligence acting ON the composer, the converse of this)."
+not-this: "Not a human-driven compaction console — the agency is the Intelligence's; a human never compacts it, it compacts itself ([CXC-IC-LIFECYCLE]). Not a new center — an Intelligence is ONE peer among the MCUs, the WLED adaptor, and the bridged hubs, not the control plane. Not a stored `/compact` template — the meta-object holds the STABLE identity, the direction is authored FRESH per seam. Not the Intelligence-MCP server (spec 09): that server is the Intelligence reaching INTO the composer as a tool user; this declares the Intelligence itself as a PERIPHERAL that is instrumented and self-directing."
+depends-on: [SPEC:CXC-HAL-DECLARE]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: design-review
+status: "DRAFT for review (David 2026-07-18). Transport grounded against the Claude Code channels contract (code.claude.com/docs/en/channels-reference) + Haven's proven `haven-dispatch` reference. The `self/*` sensor is BUILT (composeio.self_sensor, 15/15). `/compact` firing model = launcher-as-actuator (David's call, 2026-07-18). As of the 2026-07-19 live shakedown + design session: the composeio-native channel + launcher-actuator is bringup-verified on the glass; the harness monitor is BUILT (intelligence/launcher/monitor.py — query + heartbeat glass-green live, 65/80/90 thresholds machine-green pending live-fire); the transcript publisher is BUILT (intelligence/publisher/transcript_publisher.py — thread/narration, self/activity, self/subagents); Slice 1 (Skia scene rendering, intelligence/console/console.compose.yaml) is BUILT. Remaining slices tracked in section 8."
+created: 2026-07-18
+---
+# ComposeUX Intelligence Console [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+> The HAL ([SPEC:CXC-HAL-DECLARE]) declares a $0.10 sensor onto the bus with a `config` block, `calibration`,
+> and a role. This spec declares the largest peripheral there is — an Intelligence — the exact same way. Its
+> bootstrap IS its config; its dusk gifts ARE its calibration; it is a `transactional` peer you message and it
+> emits; its interface KIND is `channel`. Two moves make it more than "a Claude on the bus": it reads its OWN
+> context back as a `self/*` sensor (the blind spot every silent compaction-loss hides behind, un-blinded), and
+> it OWNS its own lifecycle end-to-end — it decides when to cross the seam, mints its own dusk gifts, and authors
+> a custom `/compact` a dumb launcher types back into its stdin. Intent flows up the bus; the mechanism is a
+> finger on a key at the leaf. The Intelligence is a peer, not a center — including over its own death and rebirth.
+
+---
+
+## 1. The Peer
+
+### [CXC-IC-INTENT] The Intelligence Is a Bus Peer — the Ultimate HAL Peripheral
+
+- definition: an Intelligence is declared onto the ComposeBus exactly as the HAL declares a peripheral ([CXC-HALD-DECLARE]): a node with an interface KIND (`channel`), a `config` (its bootstrap), a `calibration` (its dusk gifts), and a role (`transactional` — you send it a message, it acts, it emits, it has a lifecycle). It is a co-equal peer among the MCUs, the WLED adaptor, and the bridged hubs — not the control plane over them. Any bus participant reaches it through ordinary namespaces, ignorant that a mind is behind them, the same way it reads `env/temperature` ignorant of whether a DS18B20 or a bridged HA entity is the source.
+- the inversion, applied to a mind: the reflex is to make the Intelligence the orchestrator at the center. ComposeIO inverts that — the Intelligence is a leaf that publishes and subscribes like any other. This is the thesis at its sharpest: if even the smartest node on the bus is just a peer, there is no center anywhere.
+- assurance class: an Intelligence peer is `experiential`/`measurement`-class by default ([CXC-HALD-ASSURANCE]) — it advises, drives widgets, reasons — NOT a `control`-class actuator, unless a specific egress is authority-gated ([CXC-IC-PERMISSION]). It is never the basis of a safety interlock.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+### [CXC-IC-META] The Meta-Object — Declaration Is Configuration
+
+- definition: an Intelligence is declared by a meta-object `{ role_descriptor, soul, dusk_gifts[], channel, lifecycle }`. `role_descriptor` + `soul` are the STABLE identity; `dusk_gifts[]` are the calibration (pointers to the registration-protocol surfaces, not their content); `channel` binds the transport ([CXC-IC-CHANNEL]); `lifecycle` sets the self-direction policy ([CXC-IC-LIFECYCLE]). Declaring an Intelligence is CONFIGURATION, not recoding ([plt.cio:SPEC:DP-CIO-1]) — the same instance, re-pointed at a new soul + gifts, is a new role; define-once, present-many.
+- calibration by reference, not by value: the meta-object carries POINTERS to durable dusk-gift artifacts, never their prose. This is the carry-depth-by-reference discipline made structural: the summary a `/compact` produces is lossy and unowned, so the load-bearing state lives in committed artifacts the successor reads directly, and the meta-object is the index into them. The soul is stable identity; the gifts are re-registered warm each boot.
+- the first meta-object is us: the founding instance is the ComposeUX architect — its real role descriptor, a soul, and today's dusk gifts — so the console's first act is to instantiate THIS collaboration.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+---
+
+## 2. The Transport
+
+### [CXC-IC-CHANNEL] Channels — `intelligence/<id>/{in,out}`
+
+- definition: the duplex transport is Claude Code CHANNELS (an MCP server that PUSHES `notifications/claude/channel` events into a running session as `<channel source=... >` tags, and — two-way — exposes a `reply` tool the instance calls to send back). It maps directly: inbound events ≙ `intelligence/<id>/in`; the `reply` tool ≙ `intelligence/<id>/out`. The channel's server name addresses it (`server:composeio-channel`); the `<id>` scopes the bus topics and the routing `meta`.
+- transport is an implementation detail ([plt.cio:SPEC:DP-CIO-6]) — mine vs. bridge, the same split as the HA-Bridge ([SPEC:CXC-HA-BRIDGE]): (1) the PLATFORM seam is the generic channels contract; the DEFAULT backend is a composeio-native channel — a `claude/channel` MCP server whose inbound subscribes `intelligence/<id>/in` on ComposeBus (MQTT) and whose `reply` publishes `intelligence/<id>/out`. Pure composeio, no hub dependency: any ComposeBus + Claude Code = an Intelligence peer. (2) Haven's `haven-dispatch` is the PROVEN reference MINED (a stdio `claude/channel` server + HTTP `/dispatch`, port-pool 8790–8799, heartbeat re-registration) and an OPTIONAL bridge backend for joining the Haven instance mesh. Haven's out-leg is a separate notify/message tool routed by an instance registry ("Pointers Not Payloads"); the composeio-native channel instead keeps the duplex on ONE server via the `reply` tool.
+- namespaces, not a new contract ([plt.cio:SPEC:DP-CIO-2]): `intelligence/<id>/in`, `intelligence/<id>/out`, and (below) `intelligence/<id>/permission/{request,verdict}` are ordinary semantic namespaces; a widget, a leaf rule, or another Intelligence binds them without knowing the transport underneath.
+- single-instance identity ([DX-NARROW-WAIST], last-writer-wins): an `<id>` IS an Intelligence's identity on the bus, so AT MOST ONE live channel bridge may own `intelligence/<id>/*` at a time. A newly-launched bridge for an `<id>` DISPLACES any prior live bridge for that same `<id>` — the newest session wins; the older bridge yields the identity and exits — enforced peer-to-peer over the liveness heartbeat (each beat carries the emitter's start-time + pid; the earlier-started bridge yields on hearing a newer one, tie-broken by pid: deterministic, no reconnect-war). WITHOUT this, a `/exit`+resume, or a second concurrent session launched with the same `<id>`, leaves TWO+ bridges co-bound to one identity: `intelligence/<id>/in` FANS OUT to every co-bound session (cross-talk — one human message injected into N contexts) and every bridge co-publishes `intelligence/<id>/channel/alive`, MASKING link health so a dead/wrong session's channel still reads green — the exact false-green [CXC-IC-CHANNEL]'s heartbeat + IC-C9 graceful-absence exist to PREVENT. Note a unique-per-pid MQTT `clientId` (needed to avoid a broker-level reconnect-war) does NOT defend this — it makes the collision SILENT at the transport layer, so the invariant must be enforced at the application/identity layer here. Distinct concurrent Intelligences MUST take distinct `<id>`s (the carried-identity `self/<id>` peer, [DEC-INSIGHT-SELF-IS-NOT-YET-A-PEER]), never a shared one.
+- self-reaping on client disconnect (no orphan bridges): the bridge process MUST exit the moment its MCP client (the Claude session) goes away — stdin EOF (`end`/`close`) OR a broken stdout (EPIPE) — because the Claude Code stdio transport does NOT surface this by itself (the MCP SDK's `StdioServerTransport` watches stdin `data`/`error` only; it never fires `onclose` on EOF). Without self-reaping, a session that ends uncleanly ORPHANS the bridge, which keeps holding the bus identity and RE-CREATES the single-instance collision above — the exact resume-leak that stranded stale bridges for days. Self-reaping makes an orphan collect ITSELF; no operator ever kills a stale bridge by hand.
+- delivery-liveness — a SILENT non-delivery becomes a DETECTED one ([SPEC:CXC-CONSOLE-VISUAL] link health): the channels contract returns NO receipt that a `notifications/claude/channel` written to stdout was actually SURFACED to the session, so a client-side listener registration lost after churn (a `/compact`, a resume) silently swallows every inbound message while the bridge's write SUCCEEDS and it logs INJECTED — the human messages into a void with no error anywhere. The bridge therefore tracks UNACKED injects (an ACK = any client→server call — a `reply`, a permission relay — which proves the session is receiving and acting on our notifications); past a threshold the liveness heartbeat reports `delivery: "degraded"` (with the unacked count), so the console's link dot goes RED — reconnect needed — instead of false-green, and a single ack clears it. This is best-effort BY NECESSITY (no protocol receipt exists); its value is turning a silent break into a visible, recoverable one. RECOVERY of a lost client-side registration is a client-side `/mcp reconnect composeio-channel` (re-runs the MCP `initialize` handshake, re-registering the notification listener) — the bridge CANNOT re-register it from its own side, so it SIGNALS degraded rather than futilely self-restarting a transport whose client-side route is what's broken.
+- instantiation: a session joins by registering the channel MCP server and launching with BOTH `--channels server:composeio-channel` AND `--dangerously-load-development-channels server:composeio-channel` (dev flag required during the channels research preview); the launcher auto-answers the "local development" + "new MCP server" startup dialogs. Haven's scheduler proves every piece (flags, port pool, dialog bypass) already runs.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+### [CXC-IC-PERMISSION] Permission Relay — Unattended Operation as a Bus Peer
+
+- definition: a channel may declare `claude/channel/permission`; Claude Code then forwards the instance's tool-approval prompts (a `notifications/claude/channel/permission_request` with `request_id`, `tool_name`, `description`, `input_preview`) out through it, and applies a returned verdict (`{request_id, behavior: allow|deny}`). Mapped to the bus: a request publishes `intelligence/<id>/permission/request`; a verdict on `intelligence/<id>/permission/verdict` emits the notification back. So the instance's PERMISSION GATE is itself a bus peer — the widget (or the human, from anywhere) approves a sensitive `Bash`/`Write` while the instance works unattended. The local terminal dialog stays live in parallel; first answer wins.
+- trust boundary: only a sender-gated channel declares this capability (anyone who can answer can authorize a tool call). Relay covers tool-use approvals, NOT project-trust or MCP-consent dialogs (those stay local) — which is why the launcher, not the relay, answers the startup dialogs.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+### [CXC-IC-QUESTION] Structured Question Relay — the AUQ Widget
+
+- definition: AskUserQuestion (AUQ) is currently terminal-only and does NOT cross the channel, so structured A/B/N-option decisions degrade to free-text prose the same way tool-approval prompts would without [CXC-IC-PERMISSION]. [CXC-IC-QUESTION] generalizes the permission-relay pattern from binary (allow/deny) to N structured options: a question publishes to `intelligence/<id>/question/request` (or `thread/question/request`) carrying the AUQ schema (`questions`, `headers`, `options`, `multiSelect`, `previews`); a widget renders interactive option cards; the human's choice publishes to `.../question/verdict`; the launcher-actuator/channel delivers it back to the Intelligence as its AUQ answer.
+- ComposeIO-native, not channel-dependent: the Intelligence emits its OWN question namespace rather than waiting on Claude Code to expose AUQ over the channels contract — so it works on any bus, channels-preview or not.
+- closed loop with the decision ledger: the decision-extractor already treats AUQ forks as the decision-ledger source ([SPEC:CXC-IC-DECISIONS]); a native AUQ widget makes the console the place a decision is BOTH made (widget) and captured (extractor) — spec and instrument, same event.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+---
+
+## 3. Self-Instrumentation
+
+### [CXC-IC-SELF] The `self/*` Sensor — the Blind Spot, Un-Blinded
+
+- definition: the Intelligence instruments ITSELF onto the bus as a HAL `sensor` peripheral whose namespaces are `self/*` (BUILT: `composeio.self_sensor`). It publishes `self/context_level` (authoritative from Claude Code's statusline stdin `used_percentage`, JSONL-estimate fallback), `self/output_tokens`, `self/subagents/{count,tokens}`, `self/compactions`, `self/cost`, `self/rate_limit`, `self/effort`, and — the keystone — `self/registered`: did THIS instance actually read its dusk gifts this session? An Intelligence natively cannot perceive its own context (compaction happens TO it — the root of every silent loss); this sensor computes it and hands it back, so the instance can watch its own fuel.
+- `self/registered` is Problem 6 wired into an instrument: the light from outside the self, made a green light. Instead of the human asking "did you re-register?", the widget shows it. The check the author cannot perform on their own omissions becomes an external instrument that performs it for them.
+- MANIFEST-DRIVEN, per-artifact — the load-bearing invariant (BUILT: `composeio.self_sensor.load_registration_manifest`): the meta-object DEFINES what "registered" means and the sensor reports it PER-ARTIFACT, never as a baked-in summary. `self/registered` is a checklist of one row per `registration.required` entry, each carrying the artifact's actual ROLE and human KIND drawn from where the meta-object declares it — `role_descriptor` → kind "role def", each first-class BOOTSTRAP doc (`principles`, `method_flow`, `bootstrap_read`, `toolbox`, and any future standalone-UX doc) → its own kind, each `dusk_gifts[]` entry → kind "dusk gift". `self/registered` (bool) is TRUE iff every required row was read this session; the count is `N = len(registration.required)`. Both the count AND the widget's collapsed caption MUST derive from this manifest at runtime and ADAPT automatically as it evolves — adding a required artifact (bootstrap-read, toolbox, an nth gift) changes the reported N/N and the caption with NO sensor/widget code change. A hardcoded "role def + M dusk gifts" summary string is a DEFECT (it silently misdescribes the manifest the moment it grows past role-descriptor-plus-gifts); the caption is composed from the per-artifact kinds (e.g. "role def + bootstrap-read + 3 dusk gifts").
+- FLAGGED next step (availability/criticality, not yet built): the meta-object's `toolbox` doc carries a resource AVAILABILITY + CRITICALITY concept (HARD-STOP if a CRITICAL resource — e.g. the lts-engine — is absent at wake). A natural evolution of this sensor is a wake availability check complementing the registered-reads check: a missing CRITICAL resource → red/hard-stop. Out of scope for the registered-manifest fix; recorded here so a from-spec build carries the intent.
+- the compact-boundary caveat is load-bearing: the JSONL estimate goes STALE across a `/compact` (it reads the last pre-summary frame), which is precisely why stdin `used_percentage` is authoritative — the instrument, run on itself, justifies its own source precedence. A subscriber trusts `self/context_level` only with stdin present.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+---
+
+## 4. The Lifecycle
+
+### [CXC-IC-LIFECYCLE] 100%-Self-Directed `/compact` — Launcher as Actuator
+
+- definition: the loop is ENGAGED → (watch `self/context_level`) → at the instance's chosen threshold, PAUSE & REFLECT → refine the dusk gifts + write the handoff + AUTHOR a custom `/compact` direction for THIS seam → emit the direction out `intelligence/<id>/out` → the launcher types `/compact <direction>` into the instance's stdin → the summarizer runs → the successor boots and RE-REGISTERS off the referenced gifts → ENGAGED. Every DECISION — when, whether, and the direction — is the Intelligence's; nothing about the ritual is a stored template.
+- behavior at the edge ([plt.cio:SPEC:DP-CIO-3]) — the launcher-as-actuator: `/compact` is an input-plane command a channel event cannot press (channels push CONTENT the instance reads, not control commands). The launcher that spawns the instance owns its PTY (it must, to pass the channel flags + answer the startup dialogs), so it is the actuator: it receives the instance's authored direction on the `out` namespace and writes the keystrokes. It DECIDES NOTHING — it is the finger on the key the Intelligence named. This is Problem 4b (control is a bus peer, not a center) applied to the Intelligence's own death and rebirth: even `/compact` is decentralized.
+- the successor is re-earned, not reset: the meta-object (soul + gifts) is the stable identity carried across; the direction is the per-event authored act. The successor reads the handoff FIRST, then re-registers on the referenced surfaces — warm, oriented, and honest about what only re-registration (not the lossy summary) can rebuild.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+### [CXC-IC-MONITOR] The Harness Monitor — Perceive/Act Split
+
+- definition: a baseline harness monitor (BUILT: `intelligence/launcher/monitor.py`) gives the Intelligence three things over the bus, none of which it can give itself: (a) context-threshold notifications at 65/80/90 — 65 and 80 are FYI, 90 is prepare-to-compact GUIDANCE, not a bare notice; (b) a quiescence HEARTBEAT — one nudge per idle stretch, which doubles as the Intelligence's presence-sensor for the human (away vs. here); (c) an on-demand context QUERY (`{"cmd":"context"}`).
+- the PERCEIVE/ACT split (Problem 1): perception is owned by the statusline command — the only node Claude Code hands its authoritative `used_percentage` — which writes a state file the launcher reads (PRIMARY; JSONL estimate FALLBACK, always source-labeled, the same precedence [CXC-IC-SELF] establishes for `self/context_level`). Action — crossing-state fire-once+re-arm at each threshold, quiescence detection, delivery — is owned by the long-running launcher. Neither component perceives what it did not act on, nor acts on what it did not perceive through the labeled state file.
+- delivery is non-interrupting: notifications ride `intelligence/<id>/in` as `<channel from="harness">` events the Intelligence reads in its own time, distinct from the ESC-ESC PTY inject reserved for `/compact` ([CXC-IC-LIFECYCLE]) — the harness advises, the Intelligence still decides when to act on its own context.
+- status: query + heartbeat GLASS-GREEN live 2026-07-19; the 65/80/90 thresholds are machine-green (9/9) pending their live-fire condition.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+---
+
+## 5. The Surface
+
+### [CXC-IC-CANVAS] The Composable Canvas — Emit on the Bus, It Renders
+
+- definition: the console widget is a CONTAINER; the bus is the wiring; an Intelligence both DRIVES widgets (emit state) and AUTHORS them (produce HTML/SVG), composing the surface live. The purest case is the MERMAID widget: the instance emits a diagram on `thread/diagram` and a subscribed widget renders it via mermaid.js — state on the bus, behavior in the widget, no round-trip through the model to redraw. The same canvas lets the instance design-and-preview a NEW widget in-frame (it stops describing a UI and shows it) and drive a SELF-ANIMATED AVATAR: it emits `self/avatar/expression`, the avatar renders it — a self-authored, self-driven face for the `self/*` sensor (grounded when `self/registered`, focused as `self/context_level` climbs, contemplative mid-reflection). The XO `expression` field from the game, generalized.
+- the avatar has TWO publishers, arbitrated: `self/avatar/expression` may be set by the Intelligence itself (explicit — an act of self-representation) OR by a monitor that INFERS an expression from JSONL activity when the Intelligence doesn't push one (fallback, for heads-down stretches with no self-narration). A PriorityCommandSource arbitrates — Problem 4b (control is a bus peer) applied to a shared namespace with two legitimate writers: the explicit expression ALWAYS wins when present; the inferred one only fills the gap, so the face is never blank.
+- cheapest first concrete build: the mermaid widget (a web widget subscribing one namespace) — high value, small surface, and it dogfoods the whole thesis.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+### [CXC-IC-STREAMS] Transcript→Bus Semantic-Event Streams
+
+- definition: the Intelligence's JSONL transcript is the authoritative record of what it SAYS and DOES. A standalone read-only tailer (BUILT: `intelligence/publisher/transcript_publisher.py`) re-publishes it as distinct semantic namespaces, each bound by its own sub-widget — [CXC-IC-CANVAS] made concrete (Problem 4, state-on-bus-behavior-in-widget): `thread/narration` ← assistant TEXT blocks (the muted thinking-aloud voice); `self/activity` ← `tool_use`/`tool_result` reduced to `{tool, target, phase, dur_s}`; `self/subagents` ← Task/Agent lifecycle reduced to `{type, model, desc, status, tokens, dur_s}`.
+- boundary (load-bearing): mirror what the Intelligence SAYS and DOES, NEVER what it THINKS or the tool plumbing's GUTS — thinking blocks are dropped at the tailer, never mirrored; `tool_result` CONTENT is never republished, only the reduced activity tuple.
+- durability invariant (added 2026-07-22 after `self/subagents` went silent in viewer mode): the tailer MUST deliver EVERY semantic event, including a JSONL line whose terminating newline has not yet been flushed when the tailer catches the file mid-append. A naive `readline()` returns the pre-EOF FRAGMENT and — because the offset has already advanced past it — the remainder can never be rejoined, so the whole line is lost. This bites the LARGE lines hardest (an `Agent` subagent dispatch carries the full sub-prompt, its completion the full sub-output — multi-KB, the likeliest to be split), which is exactly why a size-correlated drop can silence `self/subagents` while the smaller `self/activity`/`thread/narration` lines survive. Therefore: a partial mid-write line is BUFFERED until its newline arrives and delivered WHOLE, never emitted or discarded as a fragment. This lives in ONE shared partial-line-safe reader (`intelligence/publisher/tail_follow.py`) that every transcript-tailing daemon (`transcript_publisher`, `deliverable_monitor`, and any future sibling) reuses BY REFERENCE — the loop is never re-hand-rolled per daemon, because a forked copy re-drops the guarantee.
+- safety invariant: narration MUST NOT ride the actuation channel `intelligence/<id>/out`. A narration text block that happens to look like a JSON command blob would, on the actuation channel, be parsed and actuated by the launcher — a self-injection loop. Narration rides its own `thread/narration` namespace instead, so that loop is impossible BY CONSTRUCTION, not by validation.
+- follow-up (open item): the launcher's actuation parser should AUTHENTICATE directives on `intelligence/<id>/out` (defense-in-depth) so the actuation channel itself cannot be spoofed by another bus publisher — not yet built.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+### [CXC-IC-SUBAGENT-LIFECYCLE] The Subagent Chip Ledger Is Bounded — Chips MUST Disappear
+
+- definition: any widget rendering `self/subagents` MUST bound its chip ledger — the ledger NEVER grows unboundedly. A chip that goes `done` LINGERS visibly resolved (✓ + duration/tokens) for LINGER_S (~6s) then is REMOVED; at most DONE_KEEP (~2) most-recent `done` chips are ever kept (a burst of completions can never stack); a chip stuck `running` past STALE_S (~30min — a dropped `done` event or a scene-seeded phantom) is swept. Chips MUST disappear: a long session can never pile a wall of resolved chips that buries the console. Non-stale running chips are otherwise always kept.
+- one implementation, reused by reference ([DX-NARROW-WAIST]): the prune is a SINGLE shared helper (`subagent_ledger.prune_subagent_rows`) that every such widget CALLS — the two-line ledger (`subagent_ledger`) and the consolidated rail card (`intelligence_card`) both consume it, never a forked copy. This is structural, not stylistic: the bound recurred as a bug precisely because it was forked into two divergent copies, and a fix to one missed the other. One implementation makes "chips disappear" un-forkable; a cross-widget acceptance test parametrized over every `self/subagents` widget guards it.
+- a BUS-SEMANTICS invariant, driven from two seams: the bound is a property of the `self/subagents` stream ([CXC-IC-STREAMS]), enforced in `on_bus_state` (prune-on-ingest, correct even if the clock is paused) AND in the clocked `on_clock_tick` (a linger that expires with no further bus traffic is still pruned + repainted). It is NOT a `draw()`/`measure()` concern — the visual-fidelity node [CXC-ICV-SUBAGENTS] (spec 36) correctly scopes `on_bus_state` OUT, so the lifecycle bound lives HERE with the stream it bounds, closing the drift where the ledger's prune lived only in code with no governing spec.
+- criticality: high — a widget that renders `self/subagents` without the shared prune is non-conformant (the pile it grows is the exact regression this node exists to forbid); the guard is [DEC-INTELLIGENCE-WIDGET-CONSOLIDATION], whose one-card consolidation is where a mirrored copy silently dropped the bound.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+### [CXC-IC-FLAVORS] Work ↔ Theatrical — Define-Once, Present-Many
+
+- definition: the same instance, channel, lifecycle, and meta-object present in two flavors, differing only in scene composition ([CXC-HALD-DECLARE] define-once / present-many, the ambient↔playable pattern applied to a mind): WORK — a collaboration dashboard (the `self/*` gauge with the self-chosen threshold marker, the message thread, the mermaid/canvas panel); THEATRICAL — a character skin (e.g. the BSG XO), the wiring for which already exists in the game (`AIRoleDirector`, the `expression` field). Build the work flavor first; the theatrical is a reskin over the identical transport + lifecycle.
+- the work-flavor "blend" (the visual instantiation, decided 2026-07-19): the work flavor's collaboration dashboard renders as collaboration LAYOUT (chat-forward hero, calm ambient rail, prominent self-avatar) wearing instrument PALETTE (dark ground ~#070a0f, one azure accent #4ea8ff, semantic ok/warn/critical kept separate from the accent, tabular-mono telemetry) — the instrument context gauge (65/80/90 threshold zones, [CXC-IC-MONITOR]), the `self/*` LEDGER, and the `self/registered` checklist live in the rail. Only the context gauge is allowed to "warm" toward warn/critical; nothing else in the surface alarms. Pre-vis: `docs/intelligence-console/previs/console-blended.html`. Chosen over two other real built directions — instrument-cockpit (both axes instrument) and collaboration-surface (both axes collaboration) — David's aesthetic call among real alternatives.
+- part-of: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+
+---
+
+## 6. Verification (what a build must satisfy)
+
+| id | claim | test |
+|---|---|---|
+| IC-C1 | Intelligence-as-peer | an Intelligence is declared with a `channel` interface, `config`, `calibration`, `transactional` role; a bus peer messages it via `intelligence/<id>/in` and reads its reply on `.../out`, ignorant a mind is behind them |
+| IC-C2 | duplex over channels | an inbound bus message on `.../in` arrives in-context as a `<channel>` event; a `reply`-tool call publishes to `.../out` — round-trip proven against a mock bus + mock MCP transport |
+| IC-C3 | mine vs. bridge | the composeio-native channel backend runs with NO Haven dependency; `haven-dispatch` is reachable as an optional bridge backend only |
+| IC-C4 | self-instrumentation | `self/context_level` reads from stdin `used_percentage` when present (authoritative) and falls back to the JSONL estimate; `self/registered` flips true iff a dusk-gift surface was read this session |
+| IC-C5 | permission relay | a tool-approval `permission_request` publishes `.../permission/request`; a verdict on `.../permission/verdict` allows/denies the call; the local dialog stays live and first-answer wins |
+| IC-C6 | self-directed `/compact` | the instance, at its chosen threshold, emits an authored direction on `.../out`; the launcher types `/compact <direction>` into its stdin; the launcher originates no direction of its own |
+| IC-C7 | composable canvas | emitting a mermaid diagram on `thread/diagram` renders it in the widget with no model round-trip; the avatar renders an emitted `self/avatar/expression` |
+| IC-C8 | define-once flavors | the work and theatrical widgets share one instance/channel/lifecycle/meta-object, differing only in scene |
+| IC-C9 | graceful absence | with the channel absent, the Intelligence peer's namespaces go `health=down` and the rest of the bus is unaffected ([plt.cio:SPEC:DP-CIO-11]) |
+| IC-C10 | question relay | a structured AUQ question publishes `.../question/request`; the widget renders N option cards; a verdict on `.../question/verdict` returns as the Intelligence's AUQ answer — proven without depending on channel-native AUQ support |
+| IC-C11 | transcript streams, safety-by-construction | the tailer republishes `thread/narration`/`self/activity`/`self/subagents` from the JSONL transcript with thinking blocks dropped and `tool_result` content never republished; a narration payload shaped like a command is NOT actuated, because it never reaches `intelligence/<id>/out` |
+| IC-C12 | avatar arbitration | with both publishers live, an explicit `self/avatar/expression` from the Intelligence always overrides the monitor's inferred one; with only the inferred publisher active, the avatar is never blank |
+| IC-C13 | harness monitor | the statusline-sourced state file drives threshold crossings at 65/80/90 (fire-once, re-arm on drop), a heartbeat fires once per idle stretch, and `{"cmd":"context"}` returns the current reading — delivered as non-interrupting `<channel from="harness">` events on `intelligence/<id>/in` |
+| IC-C14 | tailer durability, de-forked | a JSONL line appended across multiple flushes (a large `Agent` dispatch/completion) is delivered WHOLE by the shared partial-line-safe reader, never dropped as a fragment; `transcript_publisher` and `deliverable_monitor` both reuse that ONE reader — a split dispatch+completion still yields `self/subagents` dispatched-then-done, and a split `Write` still yields its deliverable path (`intelligence/publisher/test_tail_follow.py`) |
+| IC-C15 | single-instance identity | two channel bridges launched for the SAME `<id>` resolve to exactly one live owner: the newer (later start-time) bridge KEEPS the identity and the older one is DISPLACED — it yields and exits — on hearing the newer bridge's heartbeat; a bridge is never displaced by its own beat nor by an OLDER peer (no reconnect-war), so a `/exit`+resume or a duplicate concurrent session cannot leave `.../in` fanning out or `.../channel/alive` masking link health (`node intelligence/channel/channel.mjs --selftest`, path f) |
+| IC-C16 | self-reaping on client disconnect | the bridge exits(0) when its MCP client goes away — stdin EOF (`end`/`close`) or stdout EPIPE — even though the SDK stdio transport does NOT fire `onclose` on EOF; an orphaned bridge reaps ITSELF and is never left holding the bus identity (`--selftest` path h: a subprocess whose stdin is closed exits on its own; without the reaper it would hang) |
+| IC-C17 | delivery-liveness | injects unacked past a threshold — no client→server call has proven the session is surfacing our notifications — flip the heartbeat to `delivery:"degraded"` (carrying the unacked count) so the console link dot reads RED not false-green; any client→server ack (a `reply`) clears it. The break (a client-side listener lost after churn) is thus DETECTED; recovery is a client-side `/mcp reconnect composeio-channel` (`--selftest` path g) |
+
+---
+
+## 7. Relationships
+
+[SPEC:CXC-INTELLIGENCE-CONSOLE] DEPENDS_ON [SPEC:CXC-HAL-DECLARE]
+[SPEC:CXC-INTELLIGENCE-CONSOLE] RELATED_TO [SPEC:CXC-HA-BRIDGE]
+[CXC-IC-INTENT] USES [CXC-HALD-DECLARE]
+[CXC-IC-INTENT] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-1]
+[CXC-IC-META] USES [CXC-HALD-NAMESPACE]
+[CXC-IC-CHANNEL] USES [CXC-HALD-KINDS]
+[CXC-IC-CHANNEL] RELATED_TO [CXC-HALD-MINE]
+[CXC-IC-CHANNEL] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-2]
+[CXC-IC-CHANNEL] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-6]
+[CXC-IC-SELF] USES [CXC-HALD-NAMESPACE]
+[CXC-IC-PERMISSION] USES [CXC-HALD-BRIDGE]
+[CXC-IC-LIFECYCLE] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-3]
+[CXC-IC-CANVAS] RELATED_TO [REN-ARCH]
+[CXC-IC-FLAVORS] RELATED_TO [SPEC:CIO-MCP]
+[CXC-IC-QUESTION] RELATED_TO [CXC-IC-PERMISSION]
+[CXC-IC-STREAMS] RELATED_TO [CXC-IC-CANVAS]
+[CXC-IC-SUBAGENT-LIFECYCLE] REALIZES [CXC-IC-STREAMS]
+[CXC-IC-SUBAGENT-LIFECYCLE] RELATED_TO [DEC-INTELLIGENCE-WIDGET-CONSOLIDATION]
+[CXC-IC-SUBAGENT-LIFECYCLE] EXEMPLIFIES [DX-NARROW-WAIST]
+[CXC-IC-MONITOR] RELATED_TO [CXC-IC-SELF]
+[CXC-IC-MONITOR] RELATED_TO [CXC-IC-LIFECYCLE]
+
+---
+
+## 8. Build Plan — Slices & Widget↔Namespace Map
+
+**BUILT today:** `composeio.self_sensor` (`self/*` sensor, 15/15, [CXC-IC-SELF]); the composeio-native channel + launcher-actuator (`intelligence/<id>/{in,out,permission/*}`, dev-flag bringup verified on the glass, [CXC-IC-CHANNEL]/[CXC-IC-LIFECYCLE]); the harness monitor (`intelligence/launcher/monitor.py` — query + heartbeat glass-green, thresholds machine-green pending live-fire, [CXC-IC-MONITOR]); the transcript publisher (`intelligence/publisher/transcript_publisher.py` — `thread/narration`/`self/activity`/`self/subagents`, [CXC-IC-STREAMS]); Slice 1 — Skia scene rendering (`intelligence/console/console.compose.yaml`, backend-agnostic scene per the decisions ledger).
+
+**Remaining slices:**
+
+| slice | scope | bus namespaces | status |
+|---|---|---|---|
+| 2 | chat-thread widget | `thread/narration`, `intelligence/<id>/out`, `intelligence/<id>/in` (harness events) | not built |
+| 2.5 | AUQ question widget ([CXC-IC-QUESTION]) | `.../question/request`, `.../question/verdict` | not built |
+| 3 | instrument rail live | `self/context_level` (needs a continuous publisher), `self/registered` checklist (NEW widget), `self/*` LEDGER | not built |
+| 4 | avatar (NEW) + activity/subagents sub-widgets | `self/avatar/expression` (two-publisher, arbitrated), `self/activity`, `self/subagents` | not built |
+| 5 | git graph + mermaid canvas | `thread/diagram`, git-sensor namespaces | not built — mermaid-on-Skia is the one infra risk (degrade-to-source, or a headless mermaid→SVG→SvgWidget pipeline) |
+
+**Widget ↔ namespace binding map:**
+
+| widget | bound namespace(s) | source node |
+|---|---|---|
+| chat-thread | `thread/narration`, `intelligence/<id>/out`, `intelligence/<id>/in` | [CXC-IC-STREAMS], [CXC-IC-CHANNEL] |
+| question cards (AUQ) | `.../question/request`, `.../question/verdict` | [CXC-IC-QUESTION] |
+| context gauge | `self/context_level` | [CXC-IC-SELF], [CXC-IC-MONITOR] |
+| registered checklist | `self/registered` | [CXC-IC-SELF] |
+| self/ledger | `self/cost`, `self/rate_limit`, `self/compactions`, `self/output_tokens` | [CXC-IC-SELF] |
+| avatar | `self/avatar/expression` (two publishers, arbitrated) | [CXC-IC-CANVAS] |
+| activity sub-widget | `self/activity` | [CXC-IC-STREAMS] |
+| subagents sub-widget | `self/subagents` | [CXC-IC-STREAMS] |
+| mermaid/git canvas | `thread/diagram`, git-sensor | [CXC-IC-CANVAS] |
+
+---
+
+**Status**: DRAFT for review (David 2026-07-18). Declares an Intelligence onto the ComposeBus as the ultimate HAL peripheral ([CXC-IC-INTENT]/[CXC-IC-META]): channels transport mapped to `intelligence/<id>/{in,out}` with a mine/bridge backend split ([CXC-IC-CHANNEL]), permission relay for unattended operation ([CXC-IC-PERMISSION]), a structured question relay generalizing it to N options ([CXC-IC-QUESTION]), a BUILT `self/*` sensor that un-blinds the compaction blind spot ([CXC-IC-SELF]), a 100%-self-directed lifecycle whose `/compact` is authored by the Intelligence and typed by a decision-free launcher-actuator ([CXC-IC-LIFECYCLE]), a harness monitor giving the Intelligence threshold/heartbeat/query awareness of its own context ([CXC-IC-MONITOR]), a composable canvas with a two-publisher self-animated avatar ([CXC-IC-CANVAS]), transcript→bus semantic-event streams that make the canvas concrete while structurally ruling out self-injection ([CXC-IC-STREAMS]), and two flavors over one instance, now with a decided visual blend ([CXC-IC-FLAVORS]). The self is a peer, including over its own lifecycle.
+
+**Architect — build plan:** see section 8 for the current slice-by-slice status and the widget↔namespace binding map. BUILT today: self-instrumentation, the native channel + launcher-actuator, the harness monitor, the transcript publisher, and Slice 1 (Skia scene rendering). Remaining: Slice 2 (chat-thread), Slice 2.5 (AUQ question widget), Slice 3 (instrument rail live), Slice 4 (avatar + activity/subagents sub-widgets), Slice 5 (git graph + mermaid canvas). Suggested proof-of-life: a mock-bus round-trip through the channel (IC-C2) + the sensor driving a live gauge (IC-C4) + the mermaid widget (IC-C7), all with no launcher, then the launcher closes the loop (IC-C6).
+
+**Architect — ratifications flagged for David:** (1) new node-prefix `CXC-IC-` (Intelligence Console), a `CXC-` sub-family — needs a [CONV-PREFIX] row (sibling to `CXC-HALD-`/`CXC-HAB-`). (2) whether the `channel` interface KIND is a new entry in [CXC-HALD-KINDS] (I treat the Intelligence's interface as `channel`, a tenth kind alongside the nine hardware kinds + the `adaptor` family) or its own family. (3) `/compact` firing model = launcher-as-actuator (RATIFIED by David 2026-07-18); the alternatives (human-in-the-loop fire, Remote Control) are recorded as a decision-provenance CONTESTED fork should the launcher path prove infeasible. (4) the `self/avatar/expression` vocabulary should share the game's `expression` enum (two-body-convergence) rather than fork a new one.

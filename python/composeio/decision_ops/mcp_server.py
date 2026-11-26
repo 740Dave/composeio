@@ -60,8 +60,24 @@ SERVER_INFO = {"name": "composeio-decision-ops", "version": "0.1.0"}
 # vanished/retired root == sha256(b"") ([LEC-READ-PATH-VANISHED-ROOT]).
 _EMPTY_SHA = "sha256:" + hashlib.sha256(b"").hexdigest()  # e3b0c442...b855
 
+
+def is_vanished_root(res: dict) -> bool:
+    """True when an lts-engine read is terminal-stale because the served ROOT is gone.
+
+    The engine has signalled this two ways, and both must be read:
+      * live_hash == sha256("") — the content re-hash of a root that reads as empty (the
+        original [LEC-READ-PATH-VANISHED-ROOT] signature);
+      * reason == "root-set-changed" with live_hash None — since engine 85c5834 (2026-10-28)
+        `Partition.freshness()` checks the registered root SET before any content hash, so a
+        vanished root now reports that documented reason and never reaches the re-hash.
+    Reading only the first signature silently dropped the accurate remedy for every
+    vanished root after that engine change."""
+    if not res.get("stale"):
+        return False
+    return res.get("live_hash") == _EMPTY_SHA or res.get("reason") == "root-set-changed"
+
 _COMPOSEIO_ROOT = os.environ.get(
-    "COMPOSEIO_ROOT", "/Users/davidleeburnett/Dropbox/Maker/composeio")
+    "COMPOSEIO_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 # The domain profile now lives with the platform-specs corpus; resolve its
 # repo-relative location from the single source of truth (bootstrap_paths).
 from composeio.bootstrap_paths import COMPOSEIO_PROFILE_REL as _DEFAULT_PROFILE_REL
@@ -436,21 +452,21 @@ class DecisionOpsMcp:
 
     def _heal_vanished_root(self, res: dict, graph: Optional[str], cid: Optional[str],
                             tool: str, args: dict) -> dict:
-        """[LEC-READ-PATH-VANISHED-ROOT]: a terminal-stale read whose live_hash == sha256("")
-        with a non-empty index_hash means the served partition's ROOT vanished (a moved/renamed
+        """[LEC-READ-PATH-VANISHED-ROOT]: a terminal-stale read on a vanished root (see
+        `is_vanished_root`: live_hash == sha256(""), or reason root-set-changed) means the served partition's ROOT vanished (a moved/renamed
         corpus, or a cached view built from a since-retired path) — NOT an empty corpus. Try ONE
         rebuild from the CURRENTLY-configured path (self-heal without a manual restart); if it is
         still terminal-stale, attach the ACCURATE decision-ops remedy instead of the engine's
         misleading `factlattice_engine.build` hint (which cannot fix an in-process view whose root
         BINDING is wrong)."""
-        if not (graph and res.get("stale") and res.get("live_hash") == _EMPTY_SHA):
+        if not (graph and is_vanished_root(res)):
             return res
         # (1) self-heal: if the configured file is present + non-empty, drop the stale cached
         # view and rebuild from the live path, then re-query.
         if os.path.isfile(graph) and os.path.getsize(graph) > 0:
             self.refresher.refresh(graph)
             res = self.refresher.query(corpus_id=cid, graph_path=graph, tool=tool, **args)
-            if not (res.get("stale") and res.get("live_hash") == _EMPTY_SHA):
+            if not is_vanished_root(res):
                 return res
         # (2) still terminal-stale (or the configured path itself is gone): accurate remedy.
         return {**res, "remedy": (

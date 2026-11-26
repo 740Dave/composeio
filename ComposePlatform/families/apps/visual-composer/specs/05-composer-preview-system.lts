@@ -55,7 +55,7 @@ The preview module is a **bridge**: it subscribes to the internal bus for layout
 | CTk | Real CTkFrame widgets | Embedded in preview panel | Desktop UX design |
 | LVGL | `LVGLCanvas` with cffi LVGL rendering | Pixel-accurate framebuffer | Embedded UX (CYD, ESP32 display) |
 | Split | CTk left, LVGL right | Side-by-side comparison | Cross-platform validation |
-| Schema | `zb_widgets.schema` → `CTkRenderer` or `LVGLRenderer` | Schema-driven rendering | Declarative widget designs |
+| Schema | `other_widgets.schema` → `CTkRenderer` or `LVGLRenderer` | Schema-driven rendering | Declarative widget designs |
 | Detached | CTk or LVGL in separate `CTkToplevel` | Pop-out window | Full-screen testing, multi-monitor |
 
 Builder selects mode via preview toolbar. Default: CTk.
@@ -95,7 +95,7 @@ for module_def in design.modules:
 
 ### [CXC-PREV-CTK-THEME] Theme Application
 
-- default: ZB dark theme (`zb_widgets.theme.apply_zb_defaults()`)
+- default: OtherProject dark theme (`other_widgets.theme.apply_other_defaults()`)
 - surfaces: Module frames use `theme.SURFACE_ELEVATED`. Preview container uses `theme.SURFACE_PRIMARY`.
 - override: Builder can select theme variant in preview toolbar. Theme changes do not affect the design — they affect preview rendering only.
 
@@ -105,11 +105,11 @@ for module_def in design.modules:
 
 ### [CXC-PREV-LVGL-CANVAS] LVGLCanvas Integration
 
-The LVGL renderer uses `zb_widgets.lvgl.LVGLCanvas` — a CTkFrame that hosts an LVGL framebuffer:
+The LVGL renderer uses `other_widgets.lvgl.LVGLCanvas` — a CTkFrame that hosts an LVGL framebuffer:
 
 1. Create `LVGLCanvas(preview_panel, width=target_w, height=target_h)`.
 2. Get LVGL screen: `screen = canvas.get_screen()`.
-3. For each widget in the design, render using `LVGLRenderer` from `zb_widgets.renderers.lvgl`.
+3. For each widget in the design, render using `LVGLRenderer` from `other_widgets.renderers.lvgl`.
 4. Start render loop: `canvas.start()` (30fps tick + timer handler).
 
 ### [CXC-PREV-LVGL-RESOLUTION] Target Resolution
@@ -331,8 +331,8 @@ A debugging tool for manually setting namespace values:
 
 For LVGL-targeted designs, the preview includes a C code export panel:
 
-1. Design state → `zb_widgets.schema.Screen` object.
-2. Screen → `zb_widgets.export.c_export.CExporter` → C source code.
+1. Design state → `other_widgets.schema.Screen` object.
+2. Screen → `other_widgets.export.c_export.CExporter` → C source code.
 3. Preview shows first 20 lines of generated `.c` file with syntax highlighting.
 4. "Export Full" button writes `.c` + `.h` files to disk.
 
@@ -361,10 +361,10 @@ This closes the loop from visual design → LVGL preview → deployable C code f
 - [CXC-PREV-HOTRELOAD] ENABLES rapid design iteration
 
 ### Semantic
-- [CXC-PREV-LVGL] DEPENDS_ON `zb_widgets.lvgl.LVGLCanvas`
-- [CXC-PREV-LVGL] DEPENDS_ON `zb_widgets.renderers.lvgl.LVGLRenderer`
-- [CXC-PREV-CTK] DEPENDS_ON `zb_widgets.renderers.ctk.CTkRenderer`
-- [CXC-PREV-CEXPORT] DEPENDS_ON `zb_widgets.export.c_export.CExporter`
+- [CXC-PREV-LVGL] DEPENDS_ON `other_widgets.lvgl.LVGLCanvas`
+- [CXC-PREV-LVGL] DEPENDS_ON `other_widgets.renderers.lvgl.LVGLRenderer`
+- [CXC-PREV-CTK] DEPENDS_ON `other_widgets.renderers.ctk.CTkRenderer`
+- [CXC-PREV-CEXPORT] DEPENDS_ON `other_widgets.export.c_export.CExporter`
 - [CXC-PREV-HITL-SCOPE] RELATED_TO [DP-CIO-5] — scope model
 - [CXC-PREV-SIM-TIMER] RELATED_TO [DP-CIO-10] — declarative bindings drive simulation
 

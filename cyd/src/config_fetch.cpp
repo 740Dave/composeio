@@ -26,6 +26,29 @@ static constexpr size_t kMaxAssetBytes = 160 * 1024;
 static int s_last_http_status = 0;
 int config_fetch_last_status(void) { return s_last_http_status; }
 
+/* The SERVER-PROVIDED content-hash of the last http_fetch, read off the GET
+ * response header ([CXC-DEVICE-BASELINE-CAP-HASH-ON-GET]).  Empty when the
+ * server sent none — the device NEVER computes it (david-ruling). */
+static char s_last_content_hash[65] = "";
+const char* config_fetch_last_content_hash(void) { return s_last_content_hash; }
+
+/* Copy a header value into s_last_content_hash, stripping surrounding quotes
+ * (ETag values are quoted) and any weak-validator `W/` prefix.  Lower-cased so
+ * the exact-string self-select matches change_notify.py's lowercase hex. */
+static void store_content_hash(const char* v) {
+    s_last_content_hash[0] = '\0';
+    if (!v) return;
+    if (v[0] == 'W' && v[1] == '/') v += 2;      /* weak ETag prefix */
+    size_t o = 0;
+    for (const char* p = v; *p && o + 1 < sizeof(s_last_content_hash); p++) {
+        if (*p == '"') continue;                 /* strip quotes */
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        s_last_content_hash[o++] = c;
+    }
+    s_last_content_hash[o] = '\0';
+}
+
 /* ------------------------------------------------------------------ */
 /* Device identity                                                     */
 /* ------------------------------------------------------------------ */
@@ -91,6 +114,7 @@ char* http_fetch(const char* uri, size_t* out_len, size_t max_len) {
 
     char* buf = nullptr;
     s_last_http_status = 0;   /* 0 until a response code is actually read */
+    s_last_content_hash[0] = '\0';   /* [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET] */
     do {
         if (esp_http_client_open(client, 0) != ESP_OK) {
             ESP_LOGW(TAG, "GET %s: open failed", uri);
@@ -102,6 +126,18 @@ char* http_fetch(const char* uri, size_t* out_len, size_t max_len) {
         if (status != 200) {
             ESP_LOGW(TAG, "GET %s -> HTTP %d", uri, status);
             break;
+        }
+        /* [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET] capture the server-provided
+         * content-hash (X-Content-Hash, else ETag) before the body is read —
+         * this is the hash the device HOLDS for asset-change self-select,
+         * without ever hashing the bytes itself.  Absent header -> stays "". */
+        char* hv = nullptr;
+        if (esp_http_client_get_header(client, "X-Content-Hash", &hv) == ESP_OK
+            && hv && hv[0]) {
+            store_content_hash(hv);
+        } else if (esp_http_client_get_header(client, "ETag", &hv) == ESP_OK
+                   && hv && hv[0]) {
+            store_content_hash(hv);
         }
         size_t cap = (clen > 0) ? (size_t)clen : 8192;
         if (cap > max_len) {

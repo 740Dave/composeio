@@ -32,15 +32,15 @@ still carrying its factory image, or sourced from the vendor kit.
 
 Dumps in about a minute at the default baud (contrast the Hosyond's 16 MB / ~25 min).
 
-## esp32c3-supermini-c28020
+## esp32c3-supermini-047dd8
 
 | | |
 |---|---|
-| file | `esp32c3-supermini-c28020-factory-4mb.bin` |
+| file | `esp32c3-supermini-047dd8-factory-4mb.bin` |
 | size | 4,194,304 bytes (full 4 MB flash) |
 | sha256 | `13961a23051013f7143caacc868bae02cb2becdd8a5f81ac638878dbb4b56905` |
 | dumped | 2026-08-12, before the first ComposeIO flash (`[env:esp32_c3_can_bringup]`) |
-| board | ESP32-C3 Super Mini, chip rev v0.4, QFN32, embedded 4 MB XMC flash, 40 MHz crystal, MAC `AA:BB:CC:DD:EE:FF` |
+| board | ESP32-C3 Super Mini, chip rev v0.4, QFN32, embedded 4 MB XMC flash, 40 MHz crystal, MAC `00:00:5e:00:53:03` |
 | contents | some prior ESP-IDF **v4.4.6** app (`3572900934`) — NOT a vendor demo. This board had already been used. |
 | verified | bootloader magic `0xE9` @ `0x0`, partition-table magic `0xAA50` @ `0x8000`, app magic `0xE9` @ `0x10000` |
 
