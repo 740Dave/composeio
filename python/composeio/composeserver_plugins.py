@@ -135,6 +135,9 @@ class ComposeIOPluginHost(Host):
         return ConsentDecision("refused", op or "composeio:no-operator")
 
     def validate_section(self, section: Any) -> "list[Refusal]":
+        # architect reading 9 (r24): null counts as empty. [CXC-PC-HOST-SECTIONS]
+        # rule 6 says ComposeIO's section "is empty or {}"; a JSON null section is
+        # read as empty and accepted, the same as {} (QA A1, ruled by the architect).
         if section in ({}, None):
             return []
         return [Refusal("", f"{section!r}: the composeio section holds nothing in "

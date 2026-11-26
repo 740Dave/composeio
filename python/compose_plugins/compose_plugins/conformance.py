@@ -300,6 +300,13 @@ def s8(r: Run) -> None:
 def s9(r: Run) -> None:
     t = r.main
     path = Path(t.manager.record(DOMAIN)["path"])
+    # positive precondition (QA N3): the tombstone check below is only a
+    # measurement if the retained greeting EXISTED before uninstall; without
+    # this, a plug-in that never published its STATE would pass step 9
+    before = t.bus.get_state(GREETING)
+    r.observe("retained greeting before uninstall", repr(before))
+    check(before is not None, "no retained greeting before uninstall: the tombstone "
+          "check would prove nothing")
     t.manager.uninstall(DOMAIN)
     r.observe("state", t.manager.state(DOMAIN))
     r.observe("retained greeting after uninstall (tombstone)", repr(t.bus.get_state(GREETING)))

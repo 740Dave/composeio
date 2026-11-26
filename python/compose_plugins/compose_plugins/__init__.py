@@ -12,4 +12,4 @@ Manager (``web``), and the conformance script (``conformance``) with its
 hello-world fixtures. See README.md.
 """
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
