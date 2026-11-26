@@ -186,7 +186,20 @@ def build_full_tree(repo, revision, root):
     if p.returncode != 0:
         raise CouldNotRun(f"git archive {revision}: {p.stderr.decode(errors='replace').strip()}")
     with tarfile.open(tar) as t:
-        t.extractall(root, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+        for m in t.getmembers():
+            rel = pathlib.PurePosixPath(m.name)
+            if rel.is_absolute() or ".." in rel.parts:
+                raise CouldNotRun(f"git archive {revision}: unsafe member name {m.name!r}")
+            dst = root.joinpath(*rel.parts)
+            if m.isdir():
+                dst.mkdir(parents=True, exist_ok=True)
+            elif m.issym() or m.islnk():
+                # a link ships as its target STRING (an absolute target is itself a disclosure): write it as text, never follow it
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_text(m.linkname + "\n", encoding="utf-8", errors="surrogateescape")
+            elif m.isfile():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(t.extractfile(m).read())
     if (root / EXCLUDE).exists():
         (root / EXCLUDE).rename(root / "PUBLISH-EXCLUDE.scanned")
     return [x for x in git(repo, "ls-tree", "-r", "-z", "--name-only", revision).split("\0") if x]
