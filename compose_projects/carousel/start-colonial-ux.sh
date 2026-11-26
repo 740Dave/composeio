@@ -53,6 +53,8 @@ RESTART=""
 # The 2-up IS the colonial console (bsg_app stacks cic_top + cic_bottom, each mounting
 # std-helm-heading -> engine_thrust). run_compose re-exports engine.runtime's main.
 BSG_SCENE="${COMPOSEIO_BSG_SCENE:-compose_projects/carousel/bsg_app.compose.yaml}"
+# A quoted `~` reaches us unexpanded; expand it as kiosk.py's expanduser does.
+case "$BSG_SCENE" in "~") BSG_SCENE="$HOME" ;; "~/"*) BSG_SCENE="${HOME}/${BSG_SCENE#\~/}" ;; esac
 ROSTER=(
   "colonial-2up|composeio.render.run_compose|$BSG_SCENE"
   "colonial-clock|composeio.render.engine.runtime|python/composeio/render/examples/colonial_clock.compose.yaml"

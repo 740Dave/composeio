@@ -149,7 +149,9 @@ class CommandWidget(Widget):
             # A tool whose target is not configured ran NOTHING: that is neither a
             # pass nor a failure, so it must not paint red (a fake red is as false
             # as a fake green).  It shows as "not configured", amber.
-            unconfigured = bool(ev.get("not_configured")) and not ok
+            # Only a real True counts: a string such as "false" is truthy in
+            # Python and must not turn a failure amber.
+            unconfigured = ev.get("not_configured") is True and not ok
             summary = ev.get("summary") or self.tool
             state = ("not_configured" if unconfigured else
                      "blocked" if blocked else ("ok" if ok else "fail"))

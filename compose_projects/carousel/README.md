@@ -91,7 +91,7 @@ compose_projects/carousel/deploy_rpi5.sh --restart-only   # safe scene-swap only
 - **What ships is DECLARED** in [`deploy.manifest`](deploy.manifest): the
   verified runtime closure of the running scenes — `python/` (render engine +
   the bundled CIC OFFLINE-fallback chrome/EXT/menu), `compose_projects/carousel/`
-  (both scenes + icon PNGs + `kiosk.py`), and `fonts/`. The manifest also lists
+  (both scenes + icon PNGs + `kiosk.py`), and `compose_resources/fonts/`. The manifest also lists
   what is deliberately OMITTED (game sfx/content/code the kiosk never loads, and
   now the CIC art authoring sources) so the omission is a decision.
 - **CIC art is served from the BUS STORE, not deployed.** The colonial_console
@@ -215,7 +215,7 @@ children from `--repo-root` if unset):
 [autostart]
 carousel = sh -c 'cd $HOME/maker/composeio && \
   PYTHONPATH=$HOME/maker/composeio/python \
-  COMPOSEIO_FONT_DIR=$HOME/maker/composeio/fonts \
+  COMPOSEIO_FONT_DIR=$HOME/maker/composeio/compose_resources/fonts \
   $HOME/maker/composeio/.venv/bin/python3 \
   compose_projects/carousel/kiosk.py --broker mqtt-broker.local'
 ```

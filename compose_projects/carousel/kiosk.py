@@ -212,7 +212,8 @@ class SceneRunner:
             env["PYTHONPATH"] = py + (os.pathsep + existing if existing else "")
         env.setdefault("COMPOSEIO_REPO_ROOT", self.repo_root)
         env.setdefault("COMPOSEIO_FONT_DIR",
-                       os.path.join(self.repo_root, "fonts"))
+                       os.path.join(self.repo_root, "compose_resources",
+                                    "fonts"))
         env.setdefault("COMPOSEUX_MQTT_BROKER", self.broker)
         return env
 

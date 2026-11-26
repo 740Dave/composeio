@@ -56,6 +56,8 @@ RPI_DIR="${RPI_DIR:-maker/composeio}"          # relative to the ssh login home
 BROKER="${BROKER:-mqtt-broker.local}"
 BSG_NOT_INSTALLED="BSG overlay not installed"
 BSG_SCENE="${COMPOSEIO_BSG_SCENE:-compose_projects/carousel/bsg_app.compose.yaml}"
+# A quoted `~` reaches us unexpanded; expand it as kiosk.py's expanduser does.
+case "$BSG_SCENE" in "~") BSG_SCENE="$HOME" ;; "~/"*) BSG_SCENE="${HOME}/${BSG_SCENE#\~/}" ;; esac
 case "$BSG_SCENE" in
     /*) BSG_SCENE_ABS="$BSG_SCENE" ;;
     *)  BSG_SCENE_ABS="${REPO_ROOT}/${BSG_SCENE}" ;;
@@ -165,7 +167,7 @@ backup() {
     log "backup existing hand-edited trees → ~/maker/backups/composeio-${ts}.tar.gz"
     ssh "$RPI_HOST" "mkdir -p ~/maker/backups && \
         tar czf ~/maker/backups/composeio-${ts}.tar.gz \
-            -C ~/${RPI_DIR} compose_projects fonts 2>/dev/null && \
+            -C ~/${RPI_DIR} compose_projects compose_resources/fonts 2>/dev/null && \
         ls -1t ~/maker/backups/composeio-*.tar.gz | tail -n +$((BACKUP_KEEP+1)) \
             | xargs -r rm -f" \
         || warn "backup step reported an issue (continuing)"

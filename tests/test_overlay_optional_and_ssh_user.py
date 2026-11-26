@@ -298,3 +298,69 @@ def test_soak_tunnel_login_defaults_to_the_invoking_user(monkeypatch):
     assert hud._FLEETNODE.endswith("-p 22222 deployer@localhost")
     hud, _ = _hud(monkeypatch, "_hud_user_override", FLEET_SOAK_SSH_USER="ops")
     assert hud._FLEETNODE.endswith("-p 22222 ops@localhost")
+
+
+# --- review follow-ups (P2-1, P2-2, P3) ----------------------------------------------------------------
+def test_deploy_plan_passes_preflight_on_this_checkout_with_the_overlay_absent(tmp_path):
+    """The REAL manifest of this checkout, not a fixture: every entry must exist in a public clone, so
+    `--plan` gets past preflight. (`fonts/` used to be listed; it moved to compose_resources/fonts/.)"""
+    r = _plan(CAROUSEL / "deploy_rpi5.sh", USER="deployer",
+              COMPOSEIO_BSG_SCENE=str(tmp_path / "absent.compose.yaml"))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "manifest path missing locally" not in out
+    assert NOT_INSTALLED in out
+    assert "plan complete" in out
+
+
+def test_kiosk_font_dir_default_is_a_shipped_directory():
+    kiosk = _load("compose_projects/carousel/kiosk.py", "_kiosk_fonts")
+    env = kiosk.SceneRunner(spawn=lambda s, e: None)._child_env()
+    font_dir = pathlib.Path(env["COMPOSEIO_FONT_DIR"])
+    if "COMPOSEIO_FONT_DIR" not in os.environ:
+        assert (font_dir / "IBMPlexSans-Regular.ttf").is_file()
+        rel = font_dir.relative_to(REPO).as_posix() + "/"
+        manifest = (CAROUSEL / "deploy.manifest").read_text().splitlines()
+        assert rel in manifest
+
+
+def test_publish_exclude_refuses_the_bsg_scene():
+    entries = [ln.split("#", 1)[0].strip()
+               for ln in (REPO / "PUBLISH-EXCLUDE").read_text().splitlines()]
+    assert "compose_projects/carousel/bsg_app.compose.yaml" in entries
+
+
+def test_quoted_tilde_in_bsg_scene_matches_kiosk_in_both_scripts(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    (home / "ov").mkdir(parents=True)
+    (home / "ov" / "bsg_app.compose.yaml").write_text("app: {id: stub}\n")
+    quoted = "~/ov/bsg_app.compose.yaml"                   # as a quoted export leaves it
+    monkeypatch.setenv("HOME", str(home))                  # expanduser reads HOME
+    kiosk = _load("compose_projects/carousel/kiosk.py", "_kiosk_tilde")
+    assert kiosk.bsg_installed(env={"COMPOSEIO_BSG_SCENE": quoted})
+    # deploy_rpi5.sh: the scene is found (outside the fixture repo, so not shipped, but not "absent")
+    r = _plan(_fixture_repo(tmp_path, with_bsg=False), USER="deployer", HOME=str(home),
+              COMPOSEIO_BSG_SCENE=quoted)
+    assert r.returncode == 0, r.stderr
+    assert NOT_INSTALLED not in r.stdout + r.stderr
+    assert str(home / "ov" / "bsg_app.compose.yaml") in r.stdout + r.stderr
+    # start-colonial-ux.sh: the 2-up launches with the expanded path
+    bindir, record = _fake_python(tmp_path)
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", NO_CLOCK="1", HOME=str(home),
+               LOG_DIR=str(tmp_path / "logs"), COMPOSEIO_BSG_SCENE=quoted)
+    r = subprocess.run(["bash", str(CAROUSEL / "start-colonial-ux.sh")], env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert NOT_INSTALLED not in r.stdout
+    assert str(home / "ov" / "bsg_app.compose.yaml") in record.read_text()
+
+
+def test_command_widget_not_configured_needs_a_real_true():
+    from composeio.render.widgets.command import CommandWidget
+    w = CommandWidget("fw", label="540 status", binding={
+        "type": "mcp_action", "tool": "fleet540.fw_status", "result_namespace": "velo540_action"})
+    published = []
+    w.publish = lambda ns, v: published.append((ns, v))
+    w._apply_event({"kind": "result", "ok": False, "not_configured": "false", "summary": "down"})
+    assert w._status_text == "failed ✗"
+    assert published == [("velo540_action", "red")]
