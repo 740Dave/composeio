@@ -199,8 +199,13 @@ def main(argv: "list[str] | None" = None) -> int:
 # --------------------------------------------------------------------------- #
 # The conformance target ([CXC-PC-CONFORMANCE-SCRIPT]): one ComposeServer
 # tenant, one host instance at the requested isolation level.
+# r24: ``foreign_host`` is "gnomon" (NC4's positive control writes its unknown
+# key in hosts.gnomon), and there is NO ``host_section`` hook, so the runner
+# writes ComposeIO's own section as ``{}`` ([CXC-PC-HOST-SECTIONS] rule 6).
 # --------------------------------------------------------------------------- #
 class ConformanceTarget:
+    foreign_host = "gnomon"
+
     def __init__(self, isolation: str, workdir: "str | Path"):
         from composeio.composeserver import ComposeServer
         self.server = ComposeServer()

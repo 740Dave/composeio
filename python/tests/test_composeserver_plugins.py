@@ -267,6 +267,19 @@ def test_conformance_passes_on_composeserver(tmp_path, level):
     text = out.getvalue()
     print(text[-400:])
     assert rc == 0, text
+    # spec 95 r24: foreign_host "gnomon", and no host_section, so every manifest
+    # the runner installs carries hosts.composeio == {}
+    assert f"isolation={level} contract=0.1 foreign_host=gnomon " in text
+    written = [ln for ln in text.splitlines() if "observed hosts.composeio written" in ln]
+    assert written and all(ln.endswith(": {}") for ln in written), written
+    assert "unknown key in hosts.gnomon -> state: installed" in text
+
+
+def test_composeio_conformance_target_r24_members():
+    """[CXC-PC-CONFORMANCE-SCRIPT] r24: ComposeIO's target provides
+    foreign_host = "gnomon" and NO host_section (its section stays {})."""
+    assert CP.ConformanceTarget.foreign_host == "gnomon"
+    assert not hasattr(CP.ConformanceTarget, "host_section")
 
 
 # ---- r18 composeio-health-tick ---------------------------------------------- #

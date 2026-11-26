@@ -2,7 +2,7 @@
 
 The shared plug-in contract library of `[SPEC:CXC-PLUGIN-CONTRACT]` (contract
 0.1): the layer a plug-in is INSTALLED and CONSENTED to, for ComposeIO's
-ComposeServer and for Gnomon. One runtime dependency: `composebus==0.1.0`.
+ComposeServer and for Gnomon. One runtime dependency: `composebus==0.1.2`.
 
 **0.1.0.dev0 is the FIRST WAVE and is incomplete on purpose.** Built:
 

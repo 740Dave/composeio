@@ -9,6 +9,19 @@ The host is given as a factory ``module:callable(isolation, workdir)`` that
 returns a target with ``.manager`` (PluginManager), ``.bus`` (the bus the
 plug-ins run on), ``.host``, ``.isolation``, ``.operator`` and ``.close()``.
 
+Two more target members (spec 95 r24, [CXC-PC-CONFORMANCE-SCRIPT]):
+
+* ``foreign_host: str`` (REQUIRED, ``foreign-host``): another host's name, used
+  by NC4's paired positive control, which puts an unknown key inside
+  ``hosts.<foreign_host>``. The runner refuses before step 1 when it is absent
+  ("foreign_host missing"), equal to ``target.host.name``, or breaks
+  [CXC-PC-HOST-SECTIONS] ``host-name-rule``.
+* ``host_section(fixture: str) -> dict`` (OPTIONAL, ``host-section-hook``):
+  this host's own section VALUE for one of :data:`FIXTURE_IDS`. The runner
+  writes it at ``hosts.<target.host.name>`` of every manifest it hands to the
+  host, before consent, so the consented ``manifest_sha256`` covers it. A
+  target without the hook gets ``{}`` there.
+
     python -m compose_plugins.conformance \
         --target composeio.composeserver_plugins:conformance_target --isolation subprocess
 """
@@ -29,9 +42,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .errors import ManifestRefused, ManifestShaMismatch
+from .errors import HostNameRefused, ManifestRefused, ManifestShaMismatch
 from .fixtures import package_dir
 from .lifecycle import ConsentDenied
+from .manifest import check_host_name
 from .derive import DriftRefused
 from .version import HOST_CONTRACT
 
@@ -54,6 +68,47 @@ class Fail(AssertionError):
     pass
 
 
+#: the script's own fixture ids, the only values ``host_section`` is called with
+#: ([CXC-PC-CONFORMANCE-SCRIPT] ``host-section-hook``, spec 95 r24)
+FIXTURE_IDS = ("hello-world-v1", "hello-world-v2",
+               "NC1", "NC2", "NC3", "NC4", "NC5", "NC6", "NC7", "NC8")
+
+
+class ConformanceRefused(Exception):
+    """The runner refuses to run at all, before step 1 (r24 ``foreign-host``)."""
+
+
+def check_foreign_host(target) -> str:
+    """[CXC-PC-CONFORMANCE-SCRIPT] ``foreign-host`` (r24): every host's target
+    MUST name another, valid host. Returns it, or raises
+    :class:`ConformanceRefused` with "foreign_host missing" or a message
+    naming the value."""
+    if not hasattr(target, "foreign_host"):
+        raise ConformanceRefused("foreign_host missing")
+    value = target.foreign_host
+    try:
+        check_host_name(value)
+    except HostNameRefused:
+        raise ConformanceRefused(
+            f"foreign_host {value!r} REFUSED: it breaks [CXC-PC-HOST-SECTIONS] "
+            f"host-name-rule (^[a-z][a-z0-9_]*$, never 'bus', 'code' or "
+            f"'permission')") from None
+    if value == target.host.name:
+        raise ConformanceRefused(
+            f"foreign_host {value!r} REFUSED: it equals this host's own name "
+            f"(target.host.name {target.host.name!r}); it must name ANOTHER host")
+    return value
+
+
+def host_section(target, fixture: str) -> Any:
+    """[CXC-PC-CONFORMANCE-SCRIPT] ``host-section-hook`` (r24): the target's own
+    section for ``fixture``, or ``{}`` when the target provides no hook."""
+    if fixture not in FIXTURE_IDS:   # a runner bug, never a host's
+        raise ValueError(f"unknown conformance fixture id {fixture!r}")
+    hook = getattr(target, "host_section", None)
+    return {} if hook is None else hook(fixture)
+
+
 def check(cond: bool, what: str) -> None:
     if not cond:
         raise Fail(what)
@@ -64,6 +119,11 @@ class Run:
         self.factory, self.isolation, self.workdir, self.out = factory, isolation, workdir, out
         self.n = 0
         self.main = self.new_target()
+        try:
+            self.foreign_host = check_foreign_host(self.main)
+        except ConformanceRefused:
+            self.main.close()
+            raise
 
     def new_target(self):
         self.n += 1
@@ -74,16 +134,25 @@ class Run:
     def observe(self, key: str, value: Any) -> None:
         print(f"    observed {key}: {value}", file=self.out)
 
-    def copy_fixture(self, version: str, edit: "Callable[[dict], None] | None" = None) -> Path:
+    def fixture(self, t, version: str, fixture: str,
+                edit: "Callable[[dict], None] | None" = None) -> Path:
+        """A copy of hello-world ``version`` for target ``t``, the ONE path by
+        which the script hands a package to the host. (r24 host-section-hook)
+        ``hosts.<t.host.name>`` is set to ``host_section(t, fixture)`` (``{}``
+        without the hook) BEFORE ``edit`` and before consent, so the consented
+        ``manifest_sha256`` covers the section."""
         self.n += 1
         dst = self.workdir / f"pkg-{self.n}-{version}"
         shutil.copytree(package_dir(version), dst,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        mp = dst / "manifest.json"
+        data = json.loads(mp.read_text())
+        section = host_section(t, fixture)
+        data["hosts"][t.host.name] = section
+        self.observe(f"hosts.{t.host.name} written for fixture {fixture}", json.dumps(section))
         if edit is not None:
-            mp = dst / "manifest.json"
-            data = json.loads(mp.read_text())
             edit(data)
-            mp.write_text(json.dumps(data, indent=2) + "\n")
+        mp.write_text(json.dumps(data, indent=2) + "\n")
         return dst
 
     def install(self, t, source) -> Any:
@@ -135,10 +204,11 @@ def s1(r: Run) -> None:
     t = r.main
     check(t.host.name in json.loads((package_dir("v1") / "manifest.json").read_text())["hosts"],
           f"fixture does not declare host {t.host.name!r} (not applicable)")
-    p = t.manager.prepare_install(package_dir("v1"))
+    src = r.fixture(t, "v1", "hello-world-v1")
+    p = t.manager.prepare_install(src)
     r.observe("consent screen", "\n      " + p.content.text().replace("\n", "\n      "))
     check(f"runs as: {r.isolation}" in p.content.text(), "consent screen lacks runs as")
-    t.manager.install(package_dir("v1"), consented_sha256=p.manifest_sha256,
+    t.manager.install(src, consented_sha256=p.manifest_sha256,
                       operator=t.operator, accepted=True)
     rec = t.manager.record(DOMAIN)
     r.observe("state", rec["state"])
@@ -181,12 +251,13 @@ def s5(r: Run) -> None:
 
 def s6(r: Run) -> None:
     t = r.main
-    p = t.manager.prepare_upgrade(package_dir("v2"))
+    src = r.fixture(t, "v2", "hello-world-v2")
+    p = t.manager.prepare_upgrade(src)
     r.observe("re-consent widens", p.content.widens)
     r.observe("re-consent ADDED", list(p.content.added))
     r.observe("re-consent highlighted lines", [ln.text() for ln in p.content.lines if ln.added])
     check(p.content.widens and list(p.content.added) == V2_ADDED, "re-consent not as specified")
-    t.manager.upgrade(package_dir("v2"), consented_sha256=p.manifest_sha256,
+    t.manager.upgrade(src, consented_sha256=p.manifest_sha256,
                       operator=t.operator, accepted=True)
     rec = t.manager.record(DOMAIN)
     r.observe("version", rec["version"])
@@ -314,7 +385,7 @@ def l1_refuses_non_unix(r: Run) -> None:
 def c1_child_crash(r: Run) -> None:
     t = r.new_target()
     try:
-        r.install(t, package_dir("v1"))
+        r.install(t, r.fixture(t, "v1", "hello-world-v1"))
         t.manager.enable(DOMAIN)
         settle(t, lambda s: s == "running")
         pid = t.manager.running(DOMAIN).pid
@@ -352,7 +423,7 @@ def _nothing_installed(r: Run, t) -> None:
 
 @_fresh
 def nc1(r: Run, t) -> None:
-    src = r.copy_fixture("v1")
+    src = r.fixture(t, "v1", "NC1")
     p = t.manager.prepare_install(src)
     mp = src / "manifest.json"
     raw = bytearray(mp.read_bytes())
@@ -374,7 +445,8 @@ def nc1(r: Run, t) -> None:
 
 @_fresh
 def nc2(r: Run, t) -> None:
-    src = r.copy_fixture("v1", lambda d: d["config_schema"]["properties"].pop("greeting"))
+    src = r.fixture(t, "v1", "NC2",
+                    lambda d: d["config_schema"]["properties"].pop("greeting"))
     r.install(t, src)
     try:
         t.manager.enable(DOMAIN)
@@ -388,8 +460,8 @@ def nc2(r: Run, t) -> None:
     check(t.manager.state(DOMAIN) == "installed", "not left installed")
 
 
-def _refused_at_install(r: Run, t, edit, must: "list[str]") -> None:
-    src = r.copy_fixture("v1", edit)
+def _refused_at_install(r: Run, t, fixture: str, edit, must: "list[str]") -> None:
+    src = r.fixture(t, "v1", fixture, edit)
     try:
         t.manager.prepare_install(src)
     except ManifestRefused as exc:
@@ -404,21 +476,31 @@ def _refused_at_install(r: Run, t, edit, must: "list[str]") -> None:
 
 @_fresh
 def nc3(r: Run, t) -> None:
-    _refused_at_install(r, t, lambda d: d.update(contract="0.2"), ["0.2", HOST_CONTRACT])
+    _refused_at_install(r, t, "NC3", lambda d: d.update(contract="0.2"),
+                        ["0.2", HOST_CONTRACT])
 
 
 @_fresh
 def nc4(r: Run, t) -> None:
-    _refused_at_install(r, t, lambda d: d.update(permisions=["bus"]), ["permisions"])
-    src = r.copy_fixture("v1", lambda d: d["hosts"]["gnomon"].update(permisions="gnomon's"))
+    _refused_at_install(r, t, "NC4", lambda d: d.update(permisions=["bus"]), ["permisions"])
+    # paired positive (r24): the unknown key goes in ANOTHER host's section,
+    # hosts.<foreign_host>, never a literal hosts.gnomon and never this host's own
+    fh = r.foreign_host
+    src = r.fixture(t, "v1", "NC4", lambda d: d["hosts"].setdefault(fh, {}).update(
+        permisions=f"{fh}'s"))
+    written = json.loads((src / "manifest.json").read_text())["hosts"]
+    r.observe(f"paired positive: hosts.{fh} / hosts.{t.host.name}",
+              f"{json.dumps(written[fh])} / {json.dumps(written[t.host.name])}")
+    check("permisions" in written[fh] and "permisions" not in written[t.host.name],
+          f"unknown key not placed in hosts.{fh} alone")
     r.install(t, src)
-    r.observe("paired positive: unknown key in hosts.gnomon -> state", t.manager.state(DOMAIN))
+    r.observe(f"paired positive: unknown key in hosts.{fh} -> state", t.manager.state(DOMAIN))
     check(t.manager.state(DOMAIN) == "installed", "other host's section not ignored")
 
 
 @_fresh
 def nc5(r: Run, t) -> None:
-    r.install(t, package_dir("v1"))
+    r.install(t, r.fixture(t, "v1", "NC5"))
     t.manager.configure(DOMAIN, {"greeting": 42})
     before = t.manager.instantiations
     status = t.manager.enable(DOMAIN)
@@ -432,12 +514,13 @@ def nc5(r: Run, t) -> None:
 
 @_fresh
 def nc6(r: Run, t) -> None:
-    r.install(t, package_dir("v1"))
+    r.install(t, r.fixture(t, "v1", "NC6"))
     t.manager.configure(DOMAIN, {"greeting": "keep me"})
     t.manager.enable(DOMAIN)
-    p = t.manager.prepare_upgrade(package_dir("v2"))
+    v2 = r.fixture(t, "v2", "NC6")
+    p = t.manager.prepare_upgrade(v2)
     try:
-        t.manager.upgrade(package_dir("v2"), consented_sha256=p.manifest_sha256,
+        t.manager.upgrade(v2, consented_sha256=p.manifest_sha256,
                           operator=t.operator, accepted=False)
     except ConsentDenied as exc:
         r.observe("refusal", exc)
@@ -461,7 +544,7 @@ def nc7(r: Run, t) -> None:
         _NET_WATCH[0] = True
         try:
             name = pin.split("==")[0]
-            _refused_at_install(r, t, lambda d, p=pin: d.update(requirements=[p]),
+            _refused_at_install(r, t, "NC7", lambda d, p=pin: d.update(requirements=[p]),
                                 [repr(name), "the HOST provides"])
         finally:
             _NET_WATCH[0] = False
@@ -487,7 +570,7 @@ NC8_VARIANTS = (
 @_fresh
 def nc8(r: Run, t) -> None:
     for perms, field in NC8_VARIANTS:
-        src = r.copy_fixture("v1", lambda d, p=perms: d.update(permissions=p))
+        src = r.fixture(t, "v1", "NC8", lambda d, p=perms: d.update(permissions=p))
         try:
             t.manager.prepare_install(src)
         except ManifestRefused as exc:
@@ -498,14 +581,15 @@ def nc8(r: Run, t) -> None:
         _nothing_installed(r, t)
         r.observe("consent records", t.manager.consent.records())
         check(t.manager.consent.records() == [], "a consent record was written")
-    r.install(t, package_dir("v1"))
+    r.install(t, r.fixture(t, "v1", "NC8"))
     r.observe("paired positive: hello-world (no permissions) -> state", t.manager.state(DOMAIN))
     check(t.manager.state(DOMAIN) == "installed", "hello-world's own manifest did not install")
 
 
 @_fresh
 def nc_r15(r: Run, t) -> None:
-    _refused_at_install(r, t, lambda d: d.update(requirements=["requests==2.32.3"]),
+    _refused_at_install(r, t, "hello-world-v1",
+                        lambda d: d.update(requirements=["requests==2.32.3"]),
                         ["'requests==2.32.3'", "requirements are not installed in contract "
                          "v0.1: installing a pin also installs its transitive dependencies, "
                          "which are code you never consented to, and needs a package index; "
@@ -514,7 +598,7 @@ def nc_r15(r: Run, t) -> None:
 
 @_fresh
 def h1_degraded(r: Run, t) -> None:
-    r.install(t, package_dir("v1"))
+    r.install(t, r.fixture(t, "v1", "hello-world-v1"))
     t.manager.configure(DOMAIN, {"greeting": ""})
     t.manager.enable(DOMAIN)
     status = settle(t, lambda s: s.startswith("degraded"))
@@ -566,9 +650,13 @@ def run(factory: Callable, isolation: str, out=None, workdir: "Path | None" = No
     run._hooked = True  # type: ignore[attr-defined]
     workdir = Path(workdir or tempfile.mkdtemp(prefix="cp-conformance-"))
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    r = Run(factory, isolation, workdir, out)
+    try:
+        r = Run(factory, isolation, workdir, out)
+    except ConformanceRefused as exc:
+        print(f"compose_plugins conformance: REFUSED before step 1: {exc}", file=out)
+        return 2
     print(f"compose_plugins conformance: host={r.main.host.name} isolation={isolation} "
-          f"contract={HOST_CONTRACT} started={started}", file=out)
+          f"contract={HOST_CONTRACT} foreign_host={r.foreign_host} started={started}", file=out)
     results: "list[tuple[Step, str]]" = []
     try:
         for step in STEPS:

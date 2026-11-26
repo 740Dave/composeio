@@ -33,6 +33,8 @@ class StubHost(Host):
 
 
 class Target:
+    foreign_host = "gnomon"   # r24 foreign-host: REQUIRED of every target
+
     def __init__(self, isolation, workdir):
         self.host = StubHost(workdir, isolation)
         self.manager = PluginManager(self.host)
