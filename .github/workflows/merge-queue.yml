@@ -1,0 +1,159 @@
+# merge-queue: the only route to main once the ruleset requires its status. The shape is FactLattice's (a `queue` label on a
+# pull_request_target event, the suite re-run on the PR head, a commit status `merge-queue/tested` that the ruleset requires),
+# with ONE change: the private-term scan runs here, on a self-hosted runner on the maintainer's machine, because that runner
+# is where the private vocabulary lives. It never goes into a GitHub secret, a hosted runner or a log.
+#
+# DELIBERATE DIFFERENCES FROM FACTLATTICE'S QUEUE (not a port of its driver):
+#   1. No sweep driver. One run tests one PR. The merge itself is GitHub's: the ruleset requires `merge-queue/tested` and
+#      "branches up to date", so the head tested here IS the tree that lands, and auto-merge (or a person) merges it.
+#      A PR that is behind main is refused here with "update the branch", never tested against a stale base.
+#   2. The leakcheck job runs on [self-hosted, macOS, composeio-private-vocab] and RUNS NO PR CODE: it checks out main (this
+#      file's own branch, so the guard that judges a PR is main's copy, never the PR's), fetches the PR head as git objects
+#      from the public remote without a token, and reads it as data (tools/leakcheck.py diff). The runner provides the
+#      vocabulary directory in its environment as COMPOSEIO_LEAKCHECK_PRIVATE; when it is unset or empty the guard refuses,
+#      so the job is red, never green over no rules.
+#   3. PR code runs only in the `suite` job, on a hosted runner, with a read-only token that is not persisted.
+#
+# KNOWN LIMITS. A same-repository PR's own workflow can post a status named `merge-queue/tested` (FactLattice's limit too);
+# pinning the required status to the GitHub Actions app in the ruleset narrows it. The PR that introduces this file cannot be
+# queued through it (main has no leak tools yet): it lands by hand, and the ruleset is applied after it.
+name: merge-queue
+
+on:
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to test
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: merge-queue-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: plan
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'queue'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      number: ${{ steps.pr.outputs.number }}
+      head: ${{ steps.pr.outputs.head }}
+      base: ${{ steps.pr.outputs.base }}
+    steps:
+      - id: pr
+        name: read the PR (open, into the default branch, not from a fork)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          gh api "repos/$REPO/pulls/$NUMBER" > pr.json
+          python3 - <<'PY'
+          import json, os, sys
+          pr = json.load(open("pr.json"))
+          bad = []
+          if pr["state"] != "open": bad.append("not open")
+          if pr["base"]["ref"] != os.environ["DEFAULT"]: bad.append("base is not the default branch")
+          if (pr["head"]["repo"] or {}).get("full_name") != os.environ["REPO"]: bad.append("head is on a fork")
+          if bad:
+              print("merge-queue: refused:", "; ".join(bad)); sys.exit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"number={pr['number']}\nhead={pr['head']['sha']}\nbase={pr['base']['sha']}\n")
+          with open("pr-text.txt", "w") as fh:
+              fh.write((pr.get("title") or "") + "\n\n" + (pr.get("body") or "") + "\n")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pr-text
+          path: pr-text.txt
+          retention-days: 1
+
+  suite:
+    name: suite
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.head }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: negative control (synthetic vocabulary)
+        run: python3 -I tests/leakcheck/negative_control.py --synthetic
+      - name: gitleaks over the tree and the PR's commits
+        env:
+          BASE_REF: ${{ needs.plan.outputs.base }}
+        run: python3 -I tools/ci_gitleaks.py --require-history
+      - name: composebus installs alone and its tests pass
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./python/composebus pytest
+          cd python/composebus && "$RUNNER_TEMP/venv/bin/python" -m pytest -q -p no:cacheprovider tests
+
+  leakcheck:
+    name: leakcheck
+    needs: plan
+    runs-on: [self-hosted, macOS, composeio-private-vocab]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pr-text
+          path: ${{ runner.temp }}/pr
+      - name: fetch the PR head as objects (no token; it is never checked out or run)
+        env:
+          NUMBER: ${{ needs.plan.outputs.number }}
+          HEAD: ${{ needs.plan.outputs.head }}
+          REPO: ${{ github.repository }}
+        run: |
+          git fetch --no-tags --quiet "https://github.com/$REPO.git" "+refs/pull/$NUMBER/head:refs/leakcheck/head"
+          test "$(git rev-parse refs/leakcheck/head)" = "$HEAD" || { echo "merge-queue: the PR head moved since planning; re-queue"; exit 1; }
+          git merge-base --is-ancestor HEAD "$HEAD" || { echo "merge-queue: the PR is behind main: update the branch, then re-queue"; exit 1; }
+      - name: private-term scan of what the PR adds, its commit messages, and its title and body
+        env:
+          HEAD_SHA: ${{ needs.plan.outputs.head }}
+        run: python3 -I tools/leakcheck.py diff --base HEAD --head "$HEAD_SHA" --pr-text "$RUNNER_TEMP/pr/pr-text.txt" --private-dir "${COMPOSEIO_LEAKCHECK_PRIVATE:-$RUNNER_TEMP/no-private-vocabulary}"
+      - name: negative control with the real vocabulary (every rule must still fire)
+        run: python3 -I tests/leakcheck/negative_control.py --private-dir "${COMPOSEIO_LEAKCHECK_PRIVATE:-$RUNNER_TEMP/no-private-vocabulary}"
+
+  tested:
+    name: tested
+    needs: [plan, suite, leakcheck]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: post merge-queue/tested on the tested head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ needs.plan.outputs.head }}
+          SUITE: ${{ needs.suite.result }}
+          LEAK: ${{ needs.leakcheck.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$SUITE" = success ] && [ "$LEAK" = success ]; then state=success; else state=failure; fi
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context=merge-queue/tested \
+            -f description="suite: $SUITE; leakcheck: $LEAK" -f target_url="$RUN_URL"
+          test "$state" = success

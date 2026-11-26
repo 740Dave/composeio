@@ -1,0 +1,61 @@
+# ci: the PR checks on GitHub-hosted runners. No job here holds a write permission, a secret, or the private vocabulary.
+#
+#   checks    the leak check's own mechanism: compile the tools, then the negative control with a SYNTHETIC vocabulary (made-up
+#             terms), so a PR that breaks a gate (a mute rule, a dropped commit-message scan, a PUBLISH-EXCLUDE that skips instead
+#             of refusing, gitleaks not firing on a planted key) is red here, before any person or the queue looks at it.
+#   gitleaks  secrets only: tools/ci_gitleaks.py (pinned gitleaks 8.30.1, sha256-checked), the tree AND the PR's commits
+#             (BASE_REF..HEAD, `-m`), ignoring any gitleaks config or `gitleaks:allow` the PR supplies. Exit 2 (cannot run) is red.
+#   smoke     the composebus package installs on its own and its tests pass.
+#
+# The private-term scan with the REAL vocabulary runs only in merge-queue.yml, on the self-hosted runner that holds it.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: compile the leak-check tools
+        run: python3 -m py_compile tools/ci_gitleaks.py tools/disclosure_guard.py tools/leakcheck.py tests/leakcheck/negative_control.py
+      - name: negative control (synthetic vocabulary; every planted case must give its expected verdict)
+        run: python3 -I tests/leakcheck/negative_control.py --synthetic
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: gitleaks over the tree and the PR's commits
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: python3 -I tools/ci_gitleaks.py --require-history
+
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: install composebus alone and run its tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./python/composebus pytest
+          cd python/composebus && "$RUNNER_TEMP/venv/bin/python" -m pytest -q -p no:cacheprovider tests
