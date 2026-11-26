@@ -48,7 +48,7 @@ A pushed change:
 
 The disclosure guard can also load generic neutrality rules: agent ids and corpus ids, read from
 `FACTLATTICE_NEUTRALITY_TERMS`. **They are not used for ComposeIO**, because HoP's selection allows agent role names
-in text. The selection is recorded as `zd-dsd-answers DEC-DSD-1A21679CF61-D1`. Quoted verbatim, except for one
+in text. The selection is recorded as decision `DEC-DSD-1A21679CF61-D1`. Quoted verbatim, except for one
 company name, which the vocabulary blocks and which is shown here as `[the ZB company]`:
 
 > "Block secrets, private host names and IP addresses, absolute home, Dropbox and drive paths, [the ZB company] names,
