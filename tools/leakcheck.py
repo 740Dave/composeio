@@ -114,7 +114,7 @@ def write_at(root, rel, lines):
 def build_diff_tree(repo, base, head, root, pr_text):
     """-> (added paths, commit count). Fills `root` with what the range adds (see the module docstring)."""
     mb = git(repo, "merge-base", base, head).strip()
-    names = git(repo, "diff", "--name-status", "-z", "-M", "--diff-filter=ACMR", mb, head)
+    names = git(repo, "diff", "--name-status", "-z", "-M", "--diff-filter=ACMRT", mb, head)
     parts = [p for p in names.split("\0") if p]
     added_paths, i = [], 0
     while i < len(parts):
@@ -125,7 +125,7 @@ def build_diff_tree(repo, base, head, root, pr_text):
         else:
             added_paths.append(parts[i + 1])
             i += 2
-    numstat = git(repo, "diff", "--numstat", "-z", "-M", "--diff-filter=ACMR", mb, head)
+    numstat = git(repo, "diff", "--numstat", "-z", "-M", "--diff-filter=ACMRT", mb, head)
     binary = set()
     toks = [t for t in numstat.split("\0")]
     j = 0
@@ -144,7 +144,7 @@ def build_diff_tree(repo, base, head, root, pr_text):
         if fields[0] == "-" and fields[1] == "-":
             binary.add(path)
     diff = git(repo, "-c", "core.quotePath=false", "diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-textconv", "-M",
-               "--diff-filter=ACMR", "--src-prefix=a/", "--dst-prefix=b/", mb, head)
+               "--diff-filter=ACMRT", "--src-prefix=a/", "--dst-prefix=b/", mb, head)
     per_file, path, n = {}, None, 0
     for raw in diff.splitlines():
         if raw.startswith("+++ "):

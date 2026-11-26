@@ -31,6 +31,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 TOOLS = REPO / "tools"
 CASES = HERE / "fixtures" / "cases.tsv"
+BUILTIN_HOME_TARGET = "/Users/jdoe/checkout"  # matches the guard's builtin absolute-home-path rule (its own control names this path)
 SYNTHETIC_VOCAB = (
     "# synthetic vocabulary for the hosted negative control: made-up terms, no real ones\n"
     "\\bexample-private-host\\.invalid\\b\texample-private-host.invalid\tsynthetic private host\tsynthetic-host\n"
@@ -178,6 +179,17 @@ def main(argv=None):
     rc, res, f, _out = leakcheck(repo, base, pdir, work, "prtext", pr_text=f"PR title\n\nbody naming {probe}\n")
     hit = [x for x in f if x["path"].endswith("pr-text.txt")]
     case("red-pr-text", rc == 1 and res == "red" and hit, f"exit {rc}, {res}, {len(hit)} finding(s) in pr-text.txt")
+
+    repo, base = new_repo(work, "typechange")
+    commit(repo, {"docs/link": "a clean line\n"}, "add a file")
+    base = g(repo, "rev-parse", "HEAD")
+    (repo / "docs" / "link").unlink()
+    os.symlink(BUILTIN_HOME_TARGET, repo / "docs" / "link")
+    g(repo, "add", "docs/link")
+    commit(repo, {}, "replace the file with a link")
+    rc, res, f, _out = leakcheck(repo, base, pdir, work, "typechange")
+    hit = [x for x in f if x["path"] == "docs/link"]
+    case("red-typechange-symlink", rc == 1 and res == "red" and hit, f"exit {rc}, {res}, {len(hit)} finding(s) at the type-changed path")
 
     repo, base = new_repo(work, "excluded")
     commit(repo, {"held/clean.txt": "a clean line\n"}, "a clean message")
