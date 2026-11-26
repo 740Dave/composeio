@@ -88,13 +88,14 @@ class ManifestShaMismatch(PluginContractRefusal):
 
 class HostNameRefused(PluginContractRefusal):
     """A host's OWN name breaks [CXC-PC-HOST-SECTIONS] host-name-rule (r10):
-    it must match ^[a-z][a-z0-9_]*$ and is never ``bus`` or ``code``."""
+    it must match ^[a-z][a-z0-9_]*$ and is never ``bus``, ``code`` or
+    ``permission`` (``permission`` since r21, with the permission grant forms)."""
 
     def __init__(self, name: object):
         self.name = name
         super().__init__(f"host name {name!r} REFUSED: a host name matches "
-                         f"^[a-z][a-z0-9_]*$ and is never 'bus' or 'code' (the "
-                         f"prefixes of the built-in grant forms)")
+                         f"^[a-z][a-z0-9_]*$ and is never 'bus', 'code' or "
+                         f"'permission' (the prefixes of the built-in grant forms)")
 
 
 class ConsentRefused(PluginContractRefusal):

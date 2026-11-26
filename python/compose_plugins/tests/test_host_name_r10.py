@@ -139,3 +139,18 @@ def test_r10_positive_control_own_name():
     ConsentRecord(domain="hello_world", version="1.0.0", manifest_sha256="c" * 64,
                   granted=(), decided_by="op", decided_at="2026-11-26T02:00:00Z",
                   host="gnomon", decision="granted")
+
+
+@pytest.mark.parametrize("name", ["bus", "code", "permission", "Bad-Name"])
+def test_r21_host_name_refusal_message_names_every_reserved_name(name):
+    """The refusal TEXT states the whole rule, not only the r10 half: every
+    reserved name (read from the rule's own list, so the message cannot drift
+    from it again) appears in the message."""
+    from compose_plugins.manifest import RESERVED_HOST_NAMES, check_host_name
+    with pytest.raises(HostNameRefused) as ei:
+        check_host_name(name)
+    text = str(ei.value)
+    assert repr(name) in text
+    assert RESERVED_HOST_NAMES == ("bus", "code", "permission")
+    for reserved in RESERVED_HOST_NAMES:
+        assert repr(reserved) in text, (reserved, text)
