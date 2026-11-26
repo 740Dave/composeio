@@ -161,11 +161,16 @@ jobs:
           NUMBER: ${{ needs.plan.outputs.number }}
           REPO: ${{ github.repository }}
           SCANNED: ${{ needs.leakcheck.outputs.pr_text_sha256 }}
+        # Three answers, never two: `true` the text re-read now is the text scanned last; `false` it changed (or could
+        # not be re-read); `not-scanned` the leakcheck job stopped before its scan finished, so there is nothing to
+        # compare and no claim about the text is made. (Run 45816157425 printed "changed" for a PR nobody edited,
+        # because a refused leakcheck job writes no digest.)
         run: |
+          if [ -z "$SCANNED" ]; then
+            echo "merge-queue: no PR text digest from the leakcheck job: it stopped before scanning (see its log)"; echo "same=not-scanned" >> "$GITHUB_OUTPUT"; exit 0; fi
           now="$(python3 -I tools/queue_leakcheck.py --print-digest --pr "$NUMBER" --repo "$REPO")" || now=unreadable
-          if [ -n "$SCANNED" ] && [ "$now" = "$SCANNED" ]; then echo "same=true" >> "$GITHUB_OUTPUT"; else
-            echo "merge-queue: the PR title or body changed after the scan (or could not be read): re-queue"; echo "same=false" >> "$GITHUB_OUTPUT"; fi
-
+          if [ "$now" = "$SCANNED" ]; then echo "same=true" >> "$GITHUB_OUTPUT"; else
+            echo "merge-queue: the PR title or body changed after the scan (or could not be read: $now): re-queue"; echo "same=false" >> "$GITHUB_OUTPUT"; fi
       - name: post merge-queue/tested on the tested head
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
