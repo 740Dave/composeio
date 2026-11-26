@@ -36,7 +36,7 @@ and may I touch it?" is a **lookup, not a re-derivation**.
 | FTDI `<device-serial>` | *(unknown)* | — | **UNIDENTIFIED far end** | FTDI USB↔serial bridge (adapter serial, not a MAC) | **yes** | ⛔ **NEEDS DAVID'S EYES — do not probe or flash.** Opening the port asserts DTR/RTS and may reset the far end. Flagged unknown since 2026-08-15; still unknown. | CANV2-SWEEP `[CANV2-UNPROVEN]`; bench scan 2026-09-11 |
 
 ## Conventions
-- **`device_id = <board>-<last-3-MAC-hex>`** (e.g. MAC `…C2:80:20` → `c3lcd-**c28020**`). This is the
+- **`device_id = <board>-<last-3-MAC-hex>`** (e.g. MAC `…00:53:03` → `c3lcd-**005303**`). This is the
   fleet's existing naming rule (`cyd.descriptor.yaml`: `device_id = cyd-<last3 STA MAC hex>`), so the
   MAC is already the identity anchor — this table is the full-MAC → identity index over it.
 - **Board type → bring-up detail** lives in the per-board `*.descriptor.yaml` in this directory; this

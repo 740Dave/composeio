@@ -80,8 +80,8 @@ Backups, 4.0 MB each, in the session scratch directory:
 
 ```
 /private/tmp/claude-501/-Users-you-composeio/\
-e1a82ba7-0c99-4f14-a7c9-4e7c40b1d0fc/scratchpad/flash_backup/board_1cdbd4c091f4.bin
-…/scratchpad/flash_backup/board_dc1ed56f4ce4_C6.bin
+e1a82ba7-0c99-4f14-a7c9-4e7c40b1d0fc/scratchpad/flash_backup/board_00005e005302.bin
+…/scratchpad/flash_backup/board_00005e005305_C6.bin
 ```
 
 To restore (confirm the port maps to that MAC first — the `SER=` field in
@@ -89,7 +89,7 @@ To restore (confirm the port maps to that MAC first — the `SER=` field in
 
 ```bash
 esptool.py --chip esp32c3 --port /dev/cu.usbmodemXXXX --no-stub \
-  write_flash 0x0 .../flash_backup/board_1cdbd4c091f4.bin
+  write_flash 0x0 .../flash_backup/board_00005e005302.bin
 ```
 
 **ASK DAVID whether he wants it restored.** He may prefer to keep the bench firmware on it
@@ -688,7 +688,7 @@ pio device monitor -p /dev/cu.usbmodemXXXX -b 115200
 
 ```
 ID fw=can_filter_bench ver=1.0.0 stamp=a0669cb3 built=Aug_10_2026_15:15:24
-ID chip=esp32c3 rev=4 cores=1 mac=1cdbd4c091f4 idf=4.4.6
+ID chip=esp32c3 rev=4 cores=1 mac=00005e005302 idf=4.4.6
 ID tx_gpio=3 rx_gpio=10 trig_gpio=1 role=idle cdc=1
 END ID
 ```

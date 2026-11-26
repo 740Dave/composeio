@@ -93,7 +93,7 @@ Detected flash size: 4MB
 
 ```
 ID fw=can_filter_bench ver=1.0.0 stamp=c8c58d8b built=Aug_10_2026_16:23:08
-ID chip=esp32c3 rev=4 cores=1 mac=1cdbd4c28020 idf=4.4.6
+ID chip=esp32c3 rev=4 cores=1 mac=00005e005303 idf=4.4.6
 ID tx_gpio=3 rx_gpio=10 trig_gpio=1 role=idle cdc=1
 END ID
 ```
@@ -116,7 +116,7 @@ Track B outcome is inferred anywhere in this document.**
 | Check | Result |
 |---|---|
 | Jumper fitted between TWAI TX GPIO and TWAI RX GPIO | **NO — as configured.** A jumper is fitted, but between **GPIO2 and GPIO10**, while the firmware's `TWAI_TX_GPIO` is **3**. Confirmed bidirectionally with a DC continuity probe (§10). E1 was therefore run with TWAI TX retargeted to **GPIO2** at runtime (`PINS 2 10`) so the peripheral used the pads the wire is actually on |
-| `ID` reports `chip=esp32c3` | **Yes** — `ID chip=esp32c3 rev=4 cores=1 mac=1cdbd4c28020 idf=4.4.6` |
+| `ID` reports `chip=esp32c3` | **Yes** — `ID chip=esp32c3 rev=4 cores=1 mac=00005e005303 idf=4.4.6` |
 | Effective pin map for every result below | `tx_gpio=2 rx_gpio=10`, echoed on every `OK INIT` and on the added `STAT pins` line |
 
 > **Does running TWAI TX on GPIO2 instead of GPIO3 affect any result here?** **No.** The
@@ -774,7 +774,7 @@ sent to the board; `L|` is a line the board emitted.
 L< ID
 L| # > ID
 L| ID fw=can_filter_bench ver=1.0.0 stamp=c8c58d8b built=Aug_10_2026_16:23:08
-L| ID chip=esp32c3 rev=4 cores=1 mac=1cdbd4c28020 idf=4.4.6
+L| ID chip=esp32c3 rev=4 cores=1 mac=00005e005303 idf=4.4.6
 L| ID tx_gpio=2 rx_gpio=10 trig_gpio=1 role=loop cdc=1
 L| END ID
 L< DEINIT
