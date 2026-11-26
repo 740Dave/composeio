@@ -1,0 +1,16 @@
+# The negative-control fixture of the leak check. Each row is one planted case and the verdict it MUST produce.
+# negative_control.py runs every row against a scratch repository it builds, and exits non-zero when a case's verdict differs,
+# when this file names a case the runner does not know, or when the runner knows a case this file does not name.
+# The planted strings are made at run time (each rule's own control string, a freshly generated fake key), never stored here:
+# a committed hit would turn this repository's own scans red, and the real controls live only in the private vocabulary.
+#
+# case	plant	expect
+red-every-rule	every loaded rule's control string, one per line, in an added file	red: a finding for EVERY loaded rule name
+red-commit-message	a control string in a commit message only	red: a finding in _leakcheck_pr/commit-messages.txt
+red-pr-text	a control string in the PR title/body only	red: a finding in _leakcheck_pr/pr-text.txt
+red-excluded-path	a clean file added under a PUBLISH-EXCLUDE prefix	red: publish-exclude-path
+refused-no-vocabulary	the red-every-rule range, scanned with an empty private dir	refused: the guard fails closed
+green-clean	a clean added file using the placeholder mqtt-broker.local and a clean message	green, exit 0
+gitleaks-red-tree	a generated fake Anthropic-shaped key in an added file, tree scan only	gitleaks exit 1
+gitleaks-red-history	the same key added in one commit and removed in the next, so the tree is clean	gitleaks exit 1 (the history scan catches what the tree no longer holds)
+gitleaks-green	the green-clean range	gitleaks exit 0
