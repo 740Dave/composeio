@@ -9,6 +9,8 @@ The root conftest's glass/hermetic policies are not copied: they gate
 display and out-of-repo-board tests, and this subset holds neither.
 """
 
+__import__("os").environ["COMPOSEIO_OVERLAY_ENV"] = "none"  # no test reads a developer's live host overlay ([CXC-SCL-SCRUB-OVERLAY-PARITY])
+
 import pytest
 
 from composebus.bus import ComposeIOBus

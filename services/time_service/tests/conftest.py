@@ -14,6 +14,8 @@ already agree.
 """
 from __future__ import annotations
 
+__import__("os").environ["COMPOSEIO_OVERLAY_ENV"] = "none"  # no test reads a developer's live host overlay ([CXC-SCL-SCRUB-OVERLAY-PARITY])
+
 import sys
 from pathlib import Path
 

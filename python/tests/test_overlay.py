@@ -12,6 +12,7 @@ COMPOSEIO_OVERLAY_ENV=none, so nothing here ever reads a developer's own overlay
 from __future__ import annotations
 
 import os
+import re
 import pathlib
 import subprocess
 import sys
@@ -413,3 +414,39 @@ def test_memory_open_dir_matches_the_publisher_rule(monkeypatch, tmp_path):
     spec.loader.exec_module(mp)
     from composeio.render.widgets import agents_skills as a
     assert a.AgentsSkillsWidget("m", mode="memory").open_dir == mp.resolve_dir()
+
+
+# --------------------------------------------------------------------------- every conftest
+
+_GUARD = re.compile(r'environ\["COMPOSEIO_OVERLAY_ENV"\]\s*=\s*"none"')
+
+
+def _all_conftests():
+    skip = {"node_modules", ".git", ".venv", "venv", "__pycache__", "build", "dist"}
+    for p in sorted(REPO.rglob("conftest.py")):
+        rel = p.relative_to(REPO)
+        if not any(part in skip or part.startswith(".") for part in rel.parts[:-1]):
+            yield p
+
+
+def test_conftest_discovery_is_not_vacuous():
+    found = {str(p.relative_to(REPO)) for p in _all_conftests()}
+    assert {"python/tests/conftest.py", "tests/conftest.py", "compose_projects/conftest.py"} <= found
+    assert len(found) >= 10
+
+
+@pytest.mark.parametrize("conftest", list(_all_conftests()), ids=lambda p: str(p.relative_to(REPO)))
+def test_every_conftest_turns_the_overlay_off_before_composeio(conftest):
+    """No test anywhere may read a developer's live overlay: every conftest forces
+    COMPOSEIO_OVERLAY_ENV=none, and does so before it imports composeio itself."""
+    lines = conftest.read_text().splitlines()
+    guard = [i for i, l in enumerate(lines) if _GUARD.search(l) and not l.lstrip().startswith("#")]
+    assert guard, f"{conftest.relative_to(REPO)} lacks the overlay-off guard"
+    # real import statements only (ast), anywhere in the file: prose in a docstring that
+    # happens to start with "from composeio" is not an import
+    import ast
+    imports = [node.lineno - 1 for node in ast.walk(ast.parse("\n".join(lines)))
+               if (isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "composeio")
+               or (isinstance(node, ast.Import) and any(a.name.split(".")[0] == "composeio"
+                                                        for a in node.names))]
+    assert not imports or guard[0] < min(imports)
