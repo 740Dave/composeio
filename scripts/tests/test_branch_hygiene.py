@@ -214,7 +214,7 @@ def _schema2():
 def _schema1():
     # The pre-0.80 bare-array shape, as the reporter has always read it.
     return [
-        {"branch": "main", "path": "/home/example/src/demo-repo", "main_state": "is_main",
+        {"branch": "main", "path": "/srv/demo-repo", "main_state": "is_main",
          "working_tree": {"modified": True, "untracked": False}},
         {"branch": "squashed", "main_state": "integrated"},
         {"branch": "ancestor", "main_state": "empty"},
@@ -275,7 +275,7 @@ def test_worktree_rows_old_list_shape(monkeypatch):
     _stub_wt(monkeypatch, _schema1())
     rows, note = bh._worktree_paths_via_wt()
     assert note is None
-    assert rows == [("/home/example/src/demo-repo", "main", True)]
+    assert rows == [("/srv/demo-repo", "main", True)]
 
 
 def test_worktree_rows_new_envelope_shape(monkeypatch):
@@ -283,7 +283,7 @@ def test_worktree_rows_new_envelope_shape(monkeypatch):
     rows, note = bh._worktree_paths_via_wt()
     assert note is None
     # only the worktree row has a path; branch-only rows are skipped; it is clean
-    assert rows == [("/home/example/src/demo-repo", "main", False)]
+    assert rows == [("/srv/demo-repo", "main", False)]
 
 
 def test_worktree_rows_unknown_shape_falls_back_with_note(monkeypatch):
