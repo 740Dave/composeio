@@ -13,6 +13,9 @@
 #      vocabulary directory in its environment as COMPOSEIO_LEAKCHECK_PRIVATE; when it is unset or empty the guard refuses,
 #      so the job is red, never green over no rules.
 #   3. PR code runs only in the `suite` job, on a hosted runner, with a read-only token that is not persisted.
+#      The suite does not run gitleaks: the PR's own copy of a check never decides the result. MAIN's copies of gitleaks
+#      and of the disclosure guard run in the leakcheck job (tools/queue_leakcheck.py), and `merge-queue/tested` is
+#      success only if they pass and the suite passes.
 #
 # RUNNER PRECONDITIONS (docs/leakcheck/RUNNER.md): the runner is registered only after tools/runner_preconditions.py passes
 # (interaction limit collaborators_only, fork-PR workflow approval for all outside contributors), the job re-checks them
@@ -73,14 +76,7 @@ jobs:
               print("merge-queue: refused:", "; ".join(bad)); sys.exit(1)
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"number={pr['number']}\nhead={pr['head']['sha']}\nbase={pr['base']['sha']}\n")
-          with open("pr-text.txt", "w") as fh:
-              fh.write((pr.get("title") or "") + "\n\n" + (pr.get("body") or "") + "\n")
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: pr-text
-          path: pr-text.txt
-          retention-days: 1
 
   suite:
     name: suite
@@ -97,10 +93,6 @@ jobs:
           fetch-depth: 0
       - name: negative control (synthetic vocabulary)
         run: python3 -I tests/leakcheck/negative_control.py --synthetic
-      - name: gitleaks over the tree and the PR's commits
-        env:
-          BASE_REF: ${{ needs.plan.outputs.base }}
-        run: python3 -I tools/ci_gitleaks.py --require-history
       - name: composebus installs alone and its tests pass
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
@@ -126,29 +118,21 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: pr-text
-          path: ${{ runner.temp }}/pr
-      - name: runner preconditions (interaction limit, fork-PR approval); unmet -> no scan
-        env:
-          REPO: ${{ github.repository }}
-        run: python3 -I tools/runner_preconditions.py --repo "$REPO"
-      - name: fetch the PR head as objects (no token; it is never checked out or run)
+      - name: fetch the PR head as objects (no token; it is never run)
         env:
           NUMBER: ${{ needs.plan.outputs.number }}
-          HEAD: ${{ needs.plan.outputs.head }}
+          HEAD_SHA: ${{ needs.plan.outputs.head }}
           REPO: ${{ github.repository }}
         run: |
           git fetch --no-tags --quiet "https://github.com/$REPO.git" "+refs/pull/$NUMBER/head:refs/leakcheck/head"
-          test "$(git rev-parse refs/leakcheck/head)" = "$HEAD" || { echo "merge-queue: the PR head moved since planning; re-queue"; exit 1; }
-          git merge-base --is-ancestor HEAD "$HEAD" || { echo "merge-queue: the PR is behind main: update the branch, then re-queue"; exit 1; }
-      - name: private-term scan of what the PR adds, its commit messages, and its title and body
+          test "$(git rev-parse refs/leakcheck/head)" = "$HEAD_SHA" || { echo "merge-queue: the PR head moved since planning; re-queue"; exit 1; }
+      - id: scan
+        name: main's copies of every check (preconditions first, then term scan, gitleaks, negative control; tools/queue_leakcheck.py)
         env:
+          NUMBER: ${{ needs.plan.outputs.number }}
           HEAD_SHA: ${{ needs.plan.outputs.head }}
-        run: python3 -I tools/leakcheck.py diff --base HEAD --head "$HEAD_SHA" --pr-text "$RUNNER_TEMP/pr/pr-text.txt" --private-dir "${COMPOSEIO_LEAKCHECK_PRIVATE:-$RUNNER_TEMP/no-private-vocabulary}"
-      - name: negative control with the real vocabulary (every rule must still fire)
-        run: python3 -I tests/leakcheck/negative_control.py --private-dir "${COMPOSEIO_LEAKCHECK_PRIVATE:-$RUNNER_TEMP/no-private-vocabulary}"
+          REPO: ${{ github.repository }}
+        run: python3 -I tools/queue_leakcheck.py --head "$HEAD_SHA" --pr "$NUMBER" --repo "$REPO"
 
   tested:
     name: tested
@@ -170,5 +154,5 @@ jobs:
         run: |
           if [ "$SUITE" = success ] && [ "$LEAK" = success ]; then state=success; else state=failure; fi
           gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context=merge-queue/tested \
-            -f description="suite: $SUITE; leakcheck: $LEAK" -f target_url="$RUN_URL"
+            -f description="suite: $SUITE; leakcheck (main's checks): $LEAK" -f target_url="$RUN_URL"
           test "$state" = success
