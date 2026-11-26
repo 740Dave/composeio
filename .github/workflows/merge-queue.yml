@@ -15,7 +15,8 @@
 #   3. PR code runs only in the `suite` job, on a hosted runner, with a read-only token that is not persisted.
 #      The suite does not run gitleaks: the PR's own copy of a check never decides the result. MAIN's copies of gitleaks
 #      and of the disclosure guard run in the leakcheck job (tools/queue_leakcheck.py), and `merge-queue/tested` is
-#      success only if they pass and the suite passes.
+#      success only if they pass, the suite passes, and the PR title and body re-read just before posting are the
+#      text the leakcheck job scanned last.
 #
 # RUNNER PRECONDITIONS (docs/leakcheck/RUNNER.md): the runner is registered only after tools/runner_preconditions.py passes
 # (interaction limit collaborators_only, fork-PR workflow approval for all outside contributors), the job re-checks them
@@ -132,7 +133,9 @@ jobs:
           NUMBER: ${{ needs.plan.outputs.number }}
           HEAD_SHA: ${{ needs.plan.outputs.head }}
           REPO: ${{ github.repository }}
-        run: python3 -I tools/queue_leakcheck.py --head "$HEAD_SHA" --pr "$NUMBER" --repo "$REPO"
+        run: python3 -I tools/queue_leakcheck.py --head "$HEAD_SHA" --pr "$NUMBER" --repo "$REPO" --output "$GITHUB_OUTPUT"
+    outputs:
+      pr_text_sha256: ${{ steps.scan.outputs.pr_text_sha256 }}
 
   tested:
     name: tested
@@ -141,8 +144,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       statuses: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - id: text
+        name: re-read the PR title and body now; they must be the text the leakcheck job scanned last
+        env:
+          NUMBER: ${{ needs.plan.outputs.number }}
+          REPO: ${{ github.repository }}
+          SCANNED: ${{ needs.leakcheck.outputs.pr_text_sha256 }}
+        run: |
+          now="$(python3 -I tools/queue_leakcheck.py --print-digest --pr "$NUMBER" --repo "$REPO")" || now=unreadable
+          if [ -n "$SCANNED" ] && [ "$now" = "$SCANNED" ]; then echo "same=true" >> "$GITHUB_OUTPUT"; else
+            echo "merge-queue: the PR title or body changed after the scan (or could not be read): re-queue"; echo "same=false" >> "$GITHUB_OUTPUT"; fi
       - name: post merge-queue/tested on the tested head
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -150,9 +168,10 @@ jobs:
           HEAD_SHA: ${{ needs.plan.outputs.head }}
           SUITE: ${{ needs.suite.result }}
           LEAK: ${{ needs.leakcheck.result }}
+          TEXT_SAME: ${{ steps.text.outputs.same }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ "$SUITE" = success ] && [ "$LEAK" = success ]; then state=success; else state=failure; fi
+          if [ "$SUITE" = success ] && [ "$LEAK" = success ] && [ "$TEXT_SAME" = true ]; then state=success; else state=failure; fi
           gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context=merge-queue/tested \
-            -f description="suite: $SUITE; leakcheck (main's checks): $LEAK" -f target_url="$RUN_URL"
+            -f description="suite: $SUITE; leakcheck (main's checks): $LEAK; PR text unchanged: $TEXT_SAME" -f target_url="$RUN_URL"
           test "$state" = success

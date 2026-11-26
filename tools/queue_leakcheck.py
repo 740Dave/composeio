@@ -13,6 +13,8 @@ edits tools/ci_gitleaks.py, tools/leakcheck.py, the guard or the negative contro
   4. tools/leakcheck.py diff over main..head, with that text and the private vocabulary;
   5. tools/ci_gitleaks.py (main's copy) over a detached worktree of the head and the history main..head;
   6. tests/leakcheck/negative_control.py with the private vocabulary (every rule must still fire);
+  7. the title and body are read AGAIN and, if they changed, scanned again; the sha256 of the text last scanned is written
+     to --output as `pr_text_sha256`, so the job that posts `merge-queue/tested` can refuse when the text it re-reads then differs.
 """
 from __future__ import annotations
 
@@ -61,6 +63,8 @@ def digest(text):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--head")
+    ap.add_argument("--print-digest", action="store_true",
+                    help="only print the sha256 of the PR text as read now (the status job's re-read; needs --pr and --repo, or --pr-text)")
     ap.add_argument("--pr")
     ap.add_argument("--repo")
     ap.add_argument("--pr-text", help="a file holding the PR title and body (local probes only; the workflow reads the API)")
@@ -70,6 +74,14 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if not a.pr_text and not (a.pr and a.repo):
         ap.error("--pr and --repo, or --pr-text, are required")
+    if a.print_digest:
+        try:
+            t = pathlib.Path(a.pr_text).read_text(encoding="utf-8") if a.pr_text else pr_text_from_api(a.repo, a.pr)
+        except (OSError, urllib.error.URLError, ValueError) as e:
+            say(f"COULD NOT RUN: cannot read the PR text ({type(e).__name__})")
+            return 2
+        print(digest(t))
+        return 0
     if not a.head:
         ap.error("--head is required")
     pdir = a.private_dir or os.environ.get("COMPOSEIO_LEAKCHECK_PRIVATE") or str(pathlib.Path(tempfile.gettempdir()) / "no-private-vocabulary")
@@ -119,10 +131,24 @@ def main(argv=None):
     results["negative control (main's copy)"] = run(sys.executable, "-I", MAIN / "tests" / "leakcheck" / "negative_control.py",
                                                     "--private-dir", pdir)
 
+    try:
+        again = read_text()
+    except (OSError, urllib.error.URLError, ValueError) as e:
+        say(f"COULD NOT RUN: cannot re-read the PR text ({type(e).__name__})")
+        return 2
+    if again != text:
+        say("the PR title or body changed during the run: scanning the new text")
+        tfile.write_text(again, encoding="utf-8")
+        results["leakcheck diff, re-read PR text"] = run(sys.executable, "-I", TOOLS / "leakcheck.py", "diff", "--repo", MAIN, "--base", base,
+                                                         "--head", a.head, "--pr-text", tfile, "--private-dir", pdir)
+    if a.output:
+        with open(a.output, "a") as fh:
+            fh.write(f"pr_text_sha256={digest(again)}\n")
+
     bad = {k: v for k, v in results.items() if v != 0}
     for k, v in results.items():
         say(f"{'ok  ' if v == 0 else 'FAIL'}  {k}: exit {v}")
-    say(f"RESULT: {'GREEN' if not bad else 'RED'} ({len(results) - len(bad)}/{len(results)} passed); pr_text_sha256={digest(text)[:16]}")
+    say(f"RESULT: {'GREEN' if not bad else 'RED'} ({len(results) - len(bad)}/{len(results)} passed); pr_text_sha256={digest(again)[:16]}")
     return 0 if not bad else (2 if 2 in bad.values() and 1 not in bad.values() else 1)
 
 
