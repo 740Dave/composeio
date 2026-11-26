@@ -518,7 +518,10 @@ def test_ribbon_scene_declares_mqtt_transport():
         "ribbon scene declares no mqtt transport -> RenderApp with --transports "
         "connects no global leg -> every tile publish is dropped, no button "
         "launches ([CXC-LB-RIBBON-BUS-BOUND])")
-    assert mqtt[0].get("broker") and int(mqtt[0].get("port", 0)) > 0
+    # The scene names NO broker host: the host's COMPOSEIO_MQTT_BROKER governs, via the
+    # transport_registry fallback ([DP-CIO-6], [CXC-SCL-SCRUB-OVERLAY-PARITY]). A literal
+    # here is a value no environment can reach.
+    assert "broker" not in mqtt[0] and int(mqtt[0].get("port", 0)) > 0
 
 
 def test_ribbon_transports_flag_connects_global_leg(monkeypatch):
