@@ -195,3 +195,41 @@ def test_seq_is_advisory_not_unique_under_concurrency(fanned_out):
     assert len(seqs) == N_THREADS * M_MESSAGES
     assert all(0 <= s < 65536 for s in seqs), "seq must stay in the uint16 domain"
     # No uniqueness assertion, deliberately: see the docstring.
+
+
+def test_self_echo_memory_under_forced_contention():
+    """The fixture above caught a REAL loss only ~1 run in 20: `_remember_emitted`
+    evicted from a shared dict with no lock, so two publishers deleted the same
+    oldest key (KeyError) or one iterated while another inserted (RuntimeError),
+    and the exception left publish_state BEFORE connector.send, losing the
+    message. A 1 us GIL switch interval makes that interleaving near-certain
+    (measured unfixed: ~800 of 10 000 publishes raised, every run), so this test
+    is red on the old code every time instead of once in twenty.
+    """
+    sink = RecordingTransport()
+    bus = ComposeIOBus(bus_id="echo-contention", global_transport=sink)
+    for i in range(N_THREADS):
+        bus.register_namespace(f"probe/t{i}", "json", scope=Scope.GLOBAL)
+    bus.start()
+    errors: list[BaseException] = []
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        def publisher(i: int):
+            for m in range(M_MESSAGES):
+                try:
+                    bus.publish_state(f"probe/t{i}", {"t": i, "m": m}, source=f"probe-{i}")
+                except BaseException as exc:     # noqa: BLE001 — the assertion
+                    errors.append(exc)
+        threads = [threading.Thread(target=publisher, args=(i,), daemon=True) for i in range(N_THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=120)
+    finally:
+        sys.setswitchinterval(old)
+        bus.stop()
+    got = [m for m in sink.messages if m.namespace.startswith("probe/")]
+    assert errors == [], f"{len(errors)} publishes raised, e.g. {errors[:2]}"
+    assert len(got) == N_THREADS * M_MESSAGES
+    assert len(bus._emitted_fingerprints) <= bus.SELF_ECHO_MEMORY

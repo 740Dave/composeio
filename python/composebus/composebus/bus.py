@@ -13,6 +13,7 @@ DP-CIO-17: Infrastructure namespaces (_bus/*)
 
 from __future__ import annotations
 import json
+import threading
 import time
 import logging
 from typing import Any, Callable
@@ -193,6 +194,13 @@ class ComposeIOBus:
         # transport, most-recent last, used as an ordered set (insertion order
         # is a dict guarantee since 3.7).  See `_remember_emitted`.
         self._emitted_fingerprints: dict[str, None] = {}
+        # Guards _emitted_fingerprints. publish_* is called from many threads
+        # at once (the console's ~20 source threads; SOB-C8) and the incoming
+        # dispatch runs on the transport's thread. Unguarded, two publishers
+        # evicting together both `del` the same oldest key (KeyError) or one
+        # iterates while another inserts (RuntimeError), and either raises out
+        # of publish_state BEFORE connector.send: the message is lost.
+        self._emitted_lock = threading.Lock()
 
         # --- THE PERIODIC INFRASTRUCTURE NAMESPACES  [D4] ------------------
         # Registered HERE, at construction, rather than at the send site: a
@@ -296,10 +304,12 @@ class ComposeIOBus:
 
     def _remember_emitted(self, message: BusMessage):
         """Record an envelope this bus is handing to an EXTERNAL transport."""
-        fps = self._emitted_fingerprints
-        fps[self._echo_fingerprint(message)] = None
-        while len(fps) > self.SELF_ECHO_MEMORY:
-            del fps[next(iter(fps))]
+        fp = self._echo_fingerprint(message)
+        with self._emitted_lock:
+            fps = self._emitted_fingerprints
+            fps[fp] = None
+            while len(fps) > self.SELF_ECHO_MEMORY:
+                del fps[next(iter(fps))]
 
     def _is_own_echo(self, message: BusMessage) -> bool:
         """True if *message* is this bus's own emission coming back.
@@ -309,8 +319,9 @@ class ComposeIOBus:
         different defect with a different fix, [CXC-IC-SINGLETON]) still gets
         through and stays visible rather than being silently absorbed here.
         """
-        return self._emitted_fingerprints.pop(
-            self._echo_fingerprint(message), _MISSING) is not _MISSING
+        fp = self._echo_fingerprint(message)
+        with self._emitted_lock:
+            return self._emitted_fingerprints.pop(fp, _MISSING) is not _MISSING
 
     # --- Connectors: MULTI-ATTACH per scope-class ------------------------- #
     #
