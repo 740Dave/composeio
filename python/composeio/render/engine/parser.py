@@ -436,7 +436,7 @@ def build_leaf(spec: dict, comp: Composition) -> Widget:
             wid, store=str(spec.get("store", "docstore")),
             open_namespace=str(spec.get("open_namespace") or _SB_OPEN),
             title=str(spec.get("title", "")),
-            host=str(spec.get("host", "mqtt-broker.local")),
+            host=(str(spec["host"]) if spec.get("host") else None),  # None: the process storage URL (H1)
             port=int(spec.get("port", 0) or 0),
             roots=[str(r) for r in roots] if isinstance(roots, list) else None,
             default_path=str(spec.get("default_path", "")))

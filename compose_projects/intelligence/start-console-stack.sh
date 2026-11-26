@@ -55,6 +55,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROJECTS_ROOT="$REPO_ROOT/compose_projects"
 cd "$REPO_ROOT"
+[ -f "$REPO_ROOT/scripts/lib/overlay-env.sh" ] && . "$REPO_ROOT/scripts/lib/overlay-env.sh"  # host overlay, before our defaults ([CXC-SCL-SCRUB-OVERLAY-PARITY])
 
 MQTT="${MQTT:-mqtt://mqtt-broker.local:1883}"
 LOG_DIR="${LOG_DIR:-/tmp/composeio-daemons}"

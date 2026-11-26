@@ -20,7 +20,7 @@ app:
   # `initial:` seeds). With --transports the gauge + thread bind LIVE from the ComposeBus.
   transports:
     - type: mqtt
-      broker: 192.0.2.75
+      # no broker: here: the host's COMPOSEIO_MQTT_BROKER governs ([DP-CIO-6], [CXC-SCL-SCRUB-OVERLAY-PARITY])
       port: 1883
 
 design:
@@ -1304,26 +1304,15 @@ namespaces:
   # (file-load-for-body — bodies are NOT transmitted).  PLURAL `memories`:
   # self/architect/memory is ALREADY the automemory-FOOTPRINT gauge
   # ([DEC-MEMORY-BLOAT-MONITOR]); the LIST rides `memories` to avoid clobbering it.
-  # The `initial:` seed is a snapshot of the real index so a headless render + a
-  # late subscriber both show real rows before the daemon's first publish.
+  # NO `initial:` seed: a seed is a snapshot of one user's private index, wrong for
+  # every other user ([CXC-SCL-SCRUB-OVERLAY-PARITY], P2b L5). Rows arrive with the
+  # publisher's first retained publish.
   - name: self/architect/memories
     state_engine: json
     export: true
     scope: global
     label: "Local Memory"
-    initial:
-      - {name: "Haven V1 constitution engagement", hook: "Fable's review docs + hashes + standing promise to re-verify note hash for the P; announcement prep at havenprime.ai", path: ~/.claude/projects/-Users-you/memory/haven-v1-constitution-engagement.md}
-      - {name: "haven-hud fork", hook: "David's fork of claude-hud for fleet view + Haven service integration", path: ~/.claude/projects/-Users-you/memory/haven-hud-fork.md}
-      - {name: "Context from transcript", hook: "read any instance's context level from its session JSONL", path: ~/.claude/projects/-Users-you/memory/context-tokens-from-transcript.md}
-      - {name: "rpi5 kiosk", hook: "display-node.local Maker kiosk: boots NVMe, Maker launcher autostart, HDMI-A-1 rotated 270, winshadows disabled", path: ~/.claude/projects/-Users-you/memory/rpi5-kiosk.md}
-      - {name: "fleetnode2 DNS", hook: "DNS role SUPERSEDED → firewall1/OPNsense Unbound per NETWORK_DESIGN_v1; fleetnode2 name moved to a MinnowBoard MAX at .41 (fleet unit, not a resolver)", path: ~/.claude/projects/-Users-you/memory/fleetnode2-dns.md}
-      - {name: "benchnode MinnowBoard", hook: "192.0.2.50, MinnowBoard MAX (Atom E3825) Debian 13 on 250GB mSATA SSD; serial needs 250ms/char pacing", path: ~/.claude/projects/-Users-you/memory/benchnode-minnowboard.md}
-      - {name: "Minnow fleet & network project", hook: "active: MinnowBoard fleet provisioning + home-network segmentation redesign; key docs + current state (blocked on switch inventory)", path: ~/.claude/projects/-Users-you/memory/minnow-fleet-network-project.md}
-      - {name: "provisionIO project", hook: "fleet-provisioning package (Maker + private GitHub 740Dave/provisionIO); tenets (AUQ=surface-gap, deviation=provisioner-gap) + configurator roadmap", path: ~/.claude/projects/-Users-you/memory/provisionio-project.md}
-      - {name: "Autonomy directive", hook: "don't ask permission-to-proceed, just dive in; David's often out of office; permissions in settings.local.json", path: ~/.claude/projects/-Users-you/memory/autonomy-directive.md}
-      - {name: "Externalize how-to to API surface", hook: "pin operational knowledge to tool docstrings/self-describing recipes, not memory; design for zero-memory open-source reuse", path: ~/.claude/projects/-Users-you/memory/externalize-howto-to-api-surface.md}
-      - {name: "DSD for decision materials", hook: "David wants reviews/approvals/decisions as DSDs via the decision-support-doc skill, not ad-hoc artifacts", path: ~/.claude/projects/-Users-you/memory/dsd-for-decision-materials.md}
-      - {name: "Dispatch file agents in worktrees", hook: "file-mutating build agents get isolation:worktree; never run git ops in a checkout an agent is using", path: ~/.claude/projects/-Users-you/memory/dispatch-file-agents-in-worktrees.md}
+    initial: []   # no seed: the memory_publisher's retained publish supplies the rows
 
 widgets:
   # ════ HEADER ([CXC-ICV-CHROME]): brandmark · titles/sub-line (title area takes the row) ════
@@ -1949,8 +1938,8 @@ widgets:
               # machinery: mode: memory subscribes self/architect/memories (the
               # MEMORY.md index projection, {name, hook, path}); a row tap swaps the
               # read-only markdown_viewer detail, which LOADS the note's .md by path
-              # (file-load-for-body).  open_dir is the instance memory dir for the
-              # (Open) reveal label; the memory_publisher derives the live dir.
+              # (file-load-for-body).  No open_dir: the widget works the memory dir
+              # out at runtime from HOME, by the memory_publisher's own rule.
               - label: Local Memory
                 children:
                   - type: agents_skills
@@ -1958,6 +1947,5 @@ widgets:
                     mode: memory
                     namespace: self/architect/memories
                     title: Local Memory
-                    open_dir: ~/.claude/projects/-Users-you/memory
                     width: 974
                     height: 1524

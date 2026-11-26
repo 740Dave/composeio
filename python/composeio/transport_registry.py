@@ -159,9 +159,13 @@ def _mqtt(spec: dict, app_id: str):
     if spec.get("username"):
         kwargs["username"] = spec.get("username")
         kwargs["password"] = spec.get("password")
+    # [DP-CIO-6] A scene does not name the transport's host. An absent `broker:`
+    # falls back to the host's COMPOSEIO_MQTT_BROKER (supplied by the overlay,
+    # [CXC-SCL-SCRUB-OVERLAY-PARITY]), then to the neutral local default. Read at
+    # build time, not import, so the env in force when the scene starts governs.
     return MQTTTransport(
-        broker=spec.get("broker", "localhost"),
-        port=int(spec.get("port", 1883)),
+        broker=spec.get("broker") or os.environ.get("COMPOSEIO_MQTT_BROKER") or "localhost",
+        port=int(spec.get("port") or os.environ.get("COMPOSEIO_MQTT_PORT") or 1883),
         client_id=f"{spec.get('client_id', app_id)}-{os.getpid()}",
         **kwargs)
 

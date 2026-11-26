@@ -67,9 +67,25 @@ DEFAULT_OPEN_NS = "_app/fs/open"
 DEFAULT_AGENT_DIR = ".claude/agents"
 DEFAULT_SKILL_DIR = ".claude/skills"
 # Memory files live in the instance's Claude project dir (~/.claude/projects/
-# <slug>/memory), OUTSIDE the repo — so open_dir is INJECTED by the scene/parser
-# (the publisher derives it per-instance); no repo-relative default exists.
+# <slug>/memory), OUTSIDE the repo. A scene MAY inject open_dir; otherwise it is
+# worked out at RUNTIME by default_memory_dir() — never declared as a literal,
+# which named one user's home in a public scene (P2b L5). DEFAULT_MEMORY_DIR stays
+# "" as the parser's "not declared" value.
 DEFAULT_MEMORY_DIR = ""
+
+
+def default_memory_dir() -> str:
+    """The memory dir by the publisher's rule (memory_publisher.resolve_dir), plus the
+    console's project override: $COMPOSEIO_MEMORY_DIR > $MEMORY_MONITOR_DIR >
+    $COMPOSEIO_CLAUDE_PROJECT_DIR/memory > ~/.claude/projects/<HOME slug>/memory."""
+    explicit = os.environ.get("COMPOSEIO_MEMORY_DIR") or os.environ.get("MEMORY_MONITOR_DIR")
+    if explicit:
+        return os.path.expanduser(explicit)
+    proj = os.environ.get("COMPOSEIO_CLAUDE_PROJECT_DIR")
+    if proj:
+        return os.path.join(os.path.expanduser(proj), "memory")
+    home = os.path.expanduser("~")
+    return os.path.join(home, ".claude", "projects", home.replace(os.sep, "-"), "memory")
 
 NAV_W = 300.0          # the left list column width
 NAV_GAP = 18.0
@@ -105,8 +121,9 @@ class AgentsSkillsWidget(Container):
         _sel_default = {"skills": DEFAULT_SKILL_SELECT,
                         "memory": DEFAULT_MEMORY_SELECT}\
             .get(self.mode, DEFAULT_AGENT_SELECT)
-        _dir_default = {"skills": DEFAULT_SKILL_DIR, "memory": DEFAULT_MEMORY_DIR}\
-            .get(self.mode, DEFAULT_AGENT_DIR)
+        _dir_default = {"skills": DEFAULT_SKILL_DIR}.get(self.mode, DEFAULT_AGENT_DIR)
+        if self.mode == "memory" and not open_dir:
+            _dir_default = default_memory_dir()
         self.namespace = str(namespace or _ns_default)
         self.select_namespace = str(select_namespace or _sel_default)
         self.open_namespace = str(open_namespace or DEFAULT_OPEN_NS)

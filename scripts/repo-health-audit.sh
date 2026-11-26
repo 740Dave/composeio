@@ -28,6 +28,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT" || { echo "repo-health-audit: cannot cd to repo root $REPO_ROOT" >&2; exit 2; }
+[ -f "$REPO_ROOT/scripts/lib/overlay-env.sh" ] && . "$REPO_ROOT/scripts/lib/overlay-env.sh"  # host overlay, before our defaults ([CXC-SCL-SCRUB-OVERLAY-PARITY])
 
 # wt may live under ~/.cargo/bin, off a launchd agent's minimal PATH.
 export PATH="$PATH:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin"

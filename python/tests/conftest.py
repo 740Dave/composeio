@@ -45,6 +45,13 @@ import sys
 
 import pytest
 
+# ⛔ NO HOST OVERLAY IN TESTS ([CXC-SCL-SCRUB-OVERLAY-PARITY]). `import composeio` fills unset names
+# from a developer's live overlay (composeio/_overlay.py); tests assert the PUBLIC neutral defaults,
+# so the overlay is forced off here, before anything imports composeio, and for every child process
+# (they inherit os.environ). Forced, not setdefault: an outer COMPOSEIO_OVERLAY_ENV naming a real
+# file would otherwise leak live values into the suite. test_overlay.py passes explicit paths.
+os.environ["COMPOSEIO_OVERLAY_ENV"] = "none"
+
 # ⛔ THE GLASS POLICY — headless by DEFAULT, glass by ANNOUNCED OPT-IN.
 # The render suite is where scenes actually rasterize, so this is the seam that
 # matters most: without it, a bare `pytest python/tests` opened real windows on

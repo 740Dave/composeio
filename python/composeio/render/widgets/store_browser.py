@@ -111,6 +111,15 @@ def _safe_name(seg: str) -> str:
     return "".join(keep)[:80] or "_"
 
 
+def _host_of(url: str) -> str:
+    """`host` of an http URL, for the unreachable note only ("" when unparseable)."""
+    from urllib.parse import urlparse
+    try:
+        return urlparse(url).hostname or ""
+    except ValueError:
+        return ""
+
+
 class DocStoreAdapter:
     """Browse the document catalog (`bus://<collection>/<id>.json`) read-only.
 
@@ -122,13 +131,17 @@ class DocStoreAdapter:
 
     root_label = "bus://"
 
-    def __init__(self, host: str = "mqtt-broker.local", port: int = 8420,
+    # host=None (the default) means "this process's storage URL" (COMPOSEIO_STORAGE_URL via
+    # composeio.resolve). A hard-coded default host here repointed the WHOLE process's
+    # storage URL on construction, because DocStore(host=...) rewrites the resolve global
+    # (H1, [CXC-SCL-SCRUB-OVERLAY-PARITY]). Only a scene's explicit `host:` names a host.
+    def __init__(self, host: Optional[str] = None, port: int = 8420,
                  client: Any = None, cache_root: Path = _CACHE_ROOT) -> None:
         if client is None:
             from composeio.docstore import DocStore
-            client = DocStore(host=host)
+            client = DocStore(host=host) if host else DocStore()
         self.client = client
-        self.host = host
+        self.host = host or _host_of(getattr(client, "base_url", ""))
         self.cache_root = Path(cache_root)
 
     def probe(self) -> bool:
@@ -200,14 +213,19 @@ class BusStoreAdapter:
 
     root_label = "bus://assets"
 
-    def __init__(self, host: str = "mqtt-broker.local", port: int = 8420,
+    def __init__(self, host: Optional[str] = None, port: int = 8420,
                  client: Any = None, roots: Optional[List[str]] = None,
                  cache_root: Path = _CACHE_ROOT) -> None:
         if client is None:
             from composeio.storage import BusStorageClient
-            client = BusStorageClient(base_url=f"http://{host}:{port}")
+            if host:
+                base_url = f"http://{host}:{port}"
+            else:  # no host named: the process's storage URL, as DocStoreAdapter
+                from composeio import resolve as _resolve
+                base_url = _resolve.BUS_STORAGE_URL
+            client = BusStorageClient(base_url=base_url)
         self.client = client
-        self.host = host
+        self.host = host or _host_of(getattr(client, "base_url", ""))
         self.roots = list(roots or [])
         self.cache_root = Path(cache_root)
         # last version string the server reported, so the no-listing-API note
@@ -328,7 +346,7 @@ class StoreBrowserWidget(Widget):
                  store: str = "docstore",
                  open_namespace: str = DEFAULT_OPEN_NAMESPACE,
                  title: str = "",
-                 host: str = "mqtt-broker.local",
+                 host: Optional[str] = None,
                  port: int = 0,
                  roots: Optional[List[str]] = None,
                  default_path: str = "",

@@ -6,6 +6,15 @@ Behavior defined in YAML configuration, not firmware.
 
 __version__ = "0.1.0"
 
+# --- the host overlay: FIRST, before any submodule ---------------------------- #
+# [CXC-SCL-SCRUB-OVERLAY-PARITY]. Submodules read the environment at their own
+# import time (fleet, the decision_ops review tools, composeserver_plugins), so
+# the per-host overlay must fill unset names before any of them load. It sets
+# only names the environment lacks and never raises; see composeio/_overlay.py.
+from composeio import _overlay as _overlay_mod
+_overlay_mod.apply()
+del _overlay_mod
+
 # --- the composebus kernel: seat + identity aliases --------------------------- #
 # [SPEC:CXC-COMPOSEBUS-KERNEL] §7. The bare-bus kernel modules MOVED to the
 # `composebus` distribution (python/composebus/). Every moved `composeio.<name>`
