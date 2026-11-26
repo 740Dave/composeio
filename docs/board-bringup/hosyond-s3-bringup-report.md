@@ -118,6 +118,7 @@ The as-shipped vendor image was dumped **before** the first flash and verified s
 ```
 docs/board-bringup/factory-images/hosyond-s3-factory-16mb.bin   16,777,216 bytes
 sha256 7678d207aeb19cdbfee65da582132059eb6f8f933b514e7508a2fc57e8b97dce
+# UNGUARDED: manual; check identity first: python3 python/composeio/flash_guard.py check --port /dev/cu.usbmodem31101 || exit 1
 esptool.py --port /dev/cu.usbmodem31101 write-flash 0 <file>
 ```
 

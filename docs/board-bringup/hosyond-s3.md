@@ -88,7 +88,7 @@ is preserved at:
 ```
 docs/board-bringup/factory-images/hosyond-s3-factory-16mb.bin        # 16,777,216 bytes
 docs/board-bringup/factory-images/hosyond-s3-factory-16mb.bin.sha256 # 7678d207ae…
-# restore: esptool.py --port /dev/cu.usbmodem31101 write-flash 0 <file>
+# restore (UNGUARDED: manual; check identity first; run flash_guard.py check --port first): esptool.py --port /dev/cu.usbmodem31101 write-flash 0 <file>
 ```
 
 Dumping 16 MB takes ~25 minutes. `--baud 921600` fails on this board ("chip stopped responding"); use the

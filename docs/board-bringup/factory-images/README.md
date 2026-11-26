@@ -60,9 +60,10 @@ Dump:
 esptool.py --port /dev/cu.usbmodem31101 read-flash 0 0x1000000 hosyond-s3-factory-16mb.bin
 ```
 
-Restore:
+Restore (**UNGUARDED: manual; check identity first**):
 
 ```bash
+python3 python/composeio/flash_guard.py check --port /dev/cu.usbmodem31101 || exit 1
 esptool.py --port /dev/cu.usbmodem31101 write-flash 0 hosyond-s3-factory-16mb.bin
 ```
 

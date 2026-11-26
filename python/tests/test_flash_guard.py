@@ -32,8 +32,8 @@ HOOK = REPO / "python" / "scripts" / "pio_flash_guard.py"
 BUILD_SH = REPO / "firmware" / "r503_probe" / "build.sh"
 R503PROBE = REPO / "docs" / "r503" / "probe-archive" / "r503probe.py"
 
-TEST_DENIED = "AA:BB:CC:00:00:01"     # test values only; never a real device
-TEST_OTHER = "AA:BB:CC:00:00:02"
+TEST_DENIED = "00:00:5E:00:53:F1"     # RFC 7042 documentation MACs; never a real device
+TEST_OTHER = "00:00:5E:00:53:F2"
 
 
 def _load(path: Path, name: str):
@@ -89,7 +89,7 @@ def test_expect_var_unset_mismatch_and_match(fg, ports):
     env = {"FLASH_DENY_SERIALS": TEST_DENIED}
     with pytest.raises(fg.FlashRefused, match="BOARD_EXPECT_SERIAL"):
         fg.check_flash("/dev/cu.usbmodemOK", env, ports=ports, expect_var="BOARD_EXPECT_SERIAL")
-    env["BOARD_EXPECT_SERIAL"] = "AA:BB:CC:00:00:09"
+    env["BOARD_EXPECT_SERIAL"] = "00:00:5E:00:53:F9"
     with pytest.raises(fg.FlashRefused, match="different board"):
         fg.check_flash("/dev/cu.usbmodemOK", env, ports=ports, expect_var="BOARD_EXPECT_SERIAL")
     env["BOARD_EXPECT_SERIAL"] = TEST_OTHER
@@ -147,7 +147,7 @@ def test_esptool_is_the_allowed_serial_protocol(fg, ports, proto):
 
 # Serial normalisation: ONE function, BOTH sides. Every format the review listed.
 FORMATS = [
-    lambda s: s,                                   # AA:BB:CC:00:00:01
+    lambda s: s,                                   # as written, colon-separated
     lambda s: s.lower(),                           # lower case
     lambda s: s.replace(":", ""),                  # no separators
     lambda s: s.replace(":", "").lower(),          # no separators, lower case
@@ -175,7 +175,7 @@ def test_expect_var_matches_every_format_on_both_sides(fg, fmt, port_fmt):
     ports = [fg.PortInfo("/dev/cu.usbmodemOK", FORMATS[port_fmt](TEST_OTHER).strip())]
     env = {"FLASH_DENY_SERIALS": TEST_DENIED, "B": FORMATS[fmt](TEST_OTHER)}
     assert fg.check_flash("/dev/cu.usbmodemOK", env, ports=ports, expect_var="B")
-    env["B"] = FORMATS[fmt]("AA:BB:CC:00:00:09")
+    env["B"] = FORMATS[fmt]("00:00:5E:00:53:F9")
     with pytest.raises(fg.FlashRefused, match="different board"):
         fg.check_flash("/dev/cu.usbmodemOK", env, ports=ports, expect_var="B")
 
@@ -475,8 +475,13 @@ GUARD_FILES = [
     "compose_projects/office_devices/office_hepa/device.yaml",
     "compose_projects/office_devices/README.md",
 ]
-PSEUDONYM = re.compile(r"00:00:5e:00:53:[0-9a-f]{2}|<device-serial>|047dd8|080739|07f199",
-                       re.IGNORECASE)
+# The pseudonymous identity shapes the earlier scrub wrote, assembled from parts so this
+# file does not spell them: the documentation-MAC prefix, the serial placeholder, and the
+# three invented device-id suffixes.
+_DOC_PREFIX = ":".join(["00", "00", "5e", "00", "53"]) + ":[0-9a-f]{2}"
+_PLACEHOLDER = "<" + "device-" + "serial>"
+_SUFFIXES = ["04" + "7dd8", "08" + "0739", "07" + "f199"]
+PSEUDONYM = re.compile("|".join([_DOC_PREFIX, re.escape(_PLACEHOLDER)] + _SUFFIXES), re.IGNORECASE)
 
 
 def test_no_pseudonymous_identity_in_guard_files():
