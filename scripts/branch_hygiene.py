@@ -17,6 +17,11 @@ WHY THIS EXISTS (rewritten 2026-08-26 for the worktrunk model)
     wake/dusk skills call this as the only enforcement surface — the loud-fail
     thresholds and exit codes are preserved verbatim.
 
+    wt 0.80.0 changed `--format json` to "schema 2": an envelope object whose
+    `items` is the row array, with `main_state` -> `display.state`, `path` ->
+    `worktree.path`, `working_tree` -> `worktree.changes` (see `wt list --help`,
+    "Schema 1"). Both shapes are read; any other shape SKIPS with a stated note.
+
     ⛔ `⚑` is NOT a "foreign worktree" marker (verified wt 0.74.0: it means
     duplicate-branch / branch-path mismatch). wt treats Claude-Code worktrees as
     ordinary; there is no foreign marker. So this reporter keys ONLY on the
@@ -100,6 +105,49 @@ def all_refs():
     return [r for r in txt.splitlines() if r]
 
 
+def _wt_items(data):
+    """Normalise a decoded `wt list --format json` payload to its row list.
+
+    Returns (items, None) or (None, why). Two shapes are accepted:
+      * schema 1 — a bare JSON array of row objects (wt <= 0.7x, or
+        `[list] json-schema = 1`);
+      * schema 2 — an envelope object `{schema, repo, collected, items}` whose
+        `items` is the row array (wt 0.80.0 default).
+    Anything else is refused with a reason so the caller SKIPS loudly; iterating an
+    envelope as if it were the array yields its key strings and crashed the daily
+    repo-health audit (`'str' object has no attribute 'get'`, wt 0.80.0)."""
+    if isinstance(data, dict):
+        if "items" not in data:
+            return None, "is an object without `items` (keys: %s)" % ", ".join(
+                sorted(map(str, data))[:8])
+        data = data["items"]
+    if not isinstance(data, list):
+        return None, "has unknown shape (%s)" % type(data).__name__
+    if not all(isinstance(r, dict) for r in data):
+        return None, "rows are not all objects"
+    return data, None
+
+
+def _wt_item_state(row):
+    """The row's default-branch state: schema 1 `main_state`, schema 2
+    `display.state` (wt's own documented mapping). None if neither is present."""
+    if "main_state" in row:
+        return row.get("main_state")
+    disp = row.get("display")
+    if isinstance(disp, dict) and "state" in disp:
+        return disp.get("state")
+    return None
+
+
+def _wt_item_path_and_changes(row):
+    """(path, changes-dict) for a worktree row: schema 1 `path` + `working_tree`,
+    schema 2 `worktree.path` + `worktree.changes`. Branch-only rows give (None, {})."""
+    wt = row.get("worktree")
+    if isinstance(wt, dict) and "path" in wt:
+        return wt.get("path"), (wt.get("changes") or {})
+    return row.get("path"), (row.get("working_tree") or {})
+
+
 def wt_integrated_set():
     """Short branch names wt reports as `main_state == "integrated"` (the `⊂`
     marker): content landed via DIFFERENT history. Best-effort — returns
@@ -121,10 +169,28 @@ def wt_integrated_set():
         data = json.loads(p.stdout)
     except json.JSONDecodeError:
         return set(), "wt list JSON unparseable — `⊂` cross-check SKIPPED"
-    integ = set()
-    for b in data:
-        if b.get("main_state") == "integrated" and b.get("branch"):
+    return integrated_from_wt_json(data)
+
+
+def integrated_from_wt_json(data):
+    """(set, note) from a decoded `wt list --branches --format json` payload, either
+    schema. Pure — split out of wt_integrated_set so both shapes are unit-testable."""
+    items, why = _wt_items(data)
+    if items is None:
+        return set(), "wt list JSON %s — `⊂` integrated cross-check SKIPPED" % why
+    integ, saw_state = set(), False
+    for b in items:
+        state = _wt_item_state(b)
+        if state is not None:
+            saw_state = True
+        if state == "integrated" and b.get("branch"):
             integ.add(b["branch"])
+    if items and not saw_state:
+        # Field drift: rows came back but none carries a state field we know. An
+        # empty set here would read as "nothing integrated" — say so instead.
+        return set(), ("wt list rows carry neither `main_state` (schema 1) nor "
+                       "`display.state` (schema 2) — field drift, `⊂` integrated "
+                       "cross-check SKIPPED")
     return integ, None
 
 
@@ -212,12 +278,20 @@ def _worktree_paths_via_wt():
         data = json.loads(p.stdout)
     except json.JSONDecodeError:
         return [], "wt list JSON unparseable — enumerating via `git worktree list`"
+    return worktree_rows_from_wt_json(data)
+
+
+def worktree_rows_from_wt_json(data):
+    """(rows, note) from a decoded `wt list --format json` payload, either schema.
+    Pure — split out of _worktree_paths_via_wt so both shapes are unit-testable."""
+    items, why = _wt_items(data)
+    if items is None:
+        return [], "wt list JSON %s — enumerating via `git worktree list`" % why
     rows = []
-    for w in data:
-        path = w.get("path")
+    for w in items:
+        path, wtf = _wt_item_path_and_changes(w)
         if not path:
             continue
-        wtf = w.get("working_tree") or {}
         # wt's own booleans. If the field names ever drift, they read as False and
         # the per-worktree porcelain pass below is the authoritative backstop.
         wt_dirty = bool(wtf.get("modified") or wtf.get("untracked")

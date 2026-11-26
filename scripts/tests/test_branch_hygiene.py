@@ -186,3 +186,107 @@ def test_porcelain_files_status_failure_is_reported(monkeypatch):
     files, err = bh._porcelain_files("/broken/wt")
     assert files == []
     assert err and "git status failed" in err
+
+
+# --------------------------------------------------------------------------------------
+# 4. `wt list --format json` SHAPE — wt 0.80.0 moved to "schema 2": an envelope object
+#    {schema, repo, collected, items} instead of a bare array, and renamed the fields
+#    (main_state -> display.state, path -> worktree.path, working_tree ->
+#    worktree.changes). Iterating the envelope as the array yielded its key strings and
+#    the daily repo-health LaunchAgent died with `'str' object has no attribute 'get'`.
+#    Both shapes must parse; any other shape must SKIP with a note, never raise.
+#    The schema-2 fixture is REAL `wt 0.80.0 list --branches --format json` output (a
+#    probe repo: one squash-landed branch, one ancestor, one unlanded, the main
+#    worktree) with its path replaced by a made-up one.
+# --------------------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
+                        "wt080_list_branches_schema2.json")
+
+
+def _schema2():
+    with open(_FIXTURE, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _schema1():
+    # The pre-0.80 bare-array shape, as the reporter has always read it.
+    return [
+        {"branch": "main", "path": "/home/example/src/demo-repo", "main_state": "is_main",
+         "working_tree": {"modified": True, "untracked": False}},
+        {"branch": "squashed", "main_state": "integrated"},
+        {"branch": "ancestor", "main_state": "empty"},
+        {"branch": "unlanded", "main_state": "ahead"},
+    ]
+
+
+def _stub_wt(monkeypatch, payload):
+    stdout = payload if isinstance(payload, str) else json.dumps(payload)
+    monkeypatch.setattr(bh.subprocess, "run", lambda *a, **k: _Proc(0, stdout))
+
+
+def test_fixture_is_the_schema2_envelope():
+    d = _schema2()
+    assert isinstance(d, dict) and d.get("schema") == 2
+    assert sorted(d) == ["collected", "items", "repo", "schema"]
+
+
+def test_integrated_set_old_list_shape(monkeypatch):
+    _stub_wt(monkeypatch, _schema1())
+    integ, note = bh.wt_integrated_set()
+    assert note is None
+    assert integ == {"squashed"}
+
+
+def test_integrated_set_new_envelope_shape(monkeypatch):
+    _stub_wt(monkeypatch, _schema2())
+    integ, note = bh.wt_integrated_set()
+    assert note is None
+    # positive control: the squash-landed branch; negative controls: the ancestor
+    # ("empty", whose integration.reason is same_commit), the unlanded branch, main.
+    assert integ == {"squashed"}
+
+
+@pytest.mark.parametrize("payload", [
+    {"schema": 3, "rows": []},          # object without items
+    {"schema": 2, "items": {"a": 1}},   # items not a list
+    42,                                 # JSON scalar (number)
+    ["main", "squashed"],               # list of non-objects
+])
+def test_integrated_set_unknown_shape_is_noted_not_raised(monkeypatch, payload):
+    _stub_wt(monkeypatch, payload)
+    integ, note = bh.wt_integrated_set()
+    assert integ == set()
+    assert note and "SKIPPED" in note
+
+
+def test_integrated_set_field_drift_is_noted_not_silently_empty(monkeypatch):
+    # Rows present but no state field we know: an empty set would read as
+    # "nothing integrated" — it must be a stated SKIP instead.
+    _stub_wt(monkeypatch, {"schema": 2, "items": [{"branch": "x", "status": "?"}]})
+    integ, note = bh.wt_integrated_set()
+    assert integ == set()
+    assert note and "SKIPPED" in note and "drift" in note
+
+
+def test_worktree_rows_old_list_shape(monkeypatch):
+    _stub_wt(monkeypatch, _schema1())
+    rows, note = bh._worktree_paths_via_wt()
+    assert note is None
+    assert rows == [("/home/example/src/demo-repo", "main", True)]
+
+
+def test_worktree_rows_new_envelope_shape(monkeypatch):
+    _stub_wt(monkeypatch, _schema2())
+    rows, note = bh._worktree_paths_via_wt()
+    assert note is None
+    # only the worktree row has a path; branch-only rows are skipped; it is clean
+    assert rows == [("/home/example/src/demo-repo", "main", False)]
+
+
+def test_worktree_rows_unknown_shape_falls_back_with_note(monkeypatch):
+    _stub_wt(monkeypatch, {"schema": 9})
+    rows, note = bh._worktree_paths_via_wt()
+    assert rows == [] and note and "git worktree list" in note
