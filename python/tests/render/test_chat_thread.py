@@ -288,10 +288,10 @@ def test_markdown_reply_renders_styled_runs():
     w = ChatThreadWidget("t")
     w.on_bus_state("intelligence/architect/out",
                    {"from": "architect",
-                    "text": "cycle **gilligan** then run `power_status` twice"})
+                    "text": "cycle **fleetnode2** then run `power_status` twice"})
     _c, events = _capture_draw(w)
     # the bold inner drew in Plex Sans BOLD, ink color; markers gone
-    assert any(s == "gilligan" and weight == "bold"
+    assert any(s == "fleetnode2" and weight == "bold"
                and fam == _style.FONT_UI and col == tuple(t.ink)
                for (s, fam, weight, col) in events)
     # the code inner drew in Plex MONO, accent color
@@ -330,7 +330,7 @@ def test_dropped_image_empty_text_draws_the_path():
     """V1 sends a dropped image bare: {from:'david', text:'', image:<path>}.
     The bubble must show the PATH (never render empty)."""
     w = ChatThreadWidget("t")
-    path = "/Users/david/Dropbox/Maker/captures/roster-2026-07-19-1440.png"
+    path = "/Users/you/Maker/captures/roster-2026-07-19-1440.png"
     w.on_bus_state("intelligence/architect/in",
                    {"from": "david", "text": "", "image": path})
     # the message survived resolution (empty text is not None -> kept)
@@ -367,7 +367,7 @@ def test_dropped_image_path_is_mono_dim():
 def test_dropped_image_with_caption_draws_both():
     """A future caption: text renders first, the image affordance beneath."""
     w = ChatThreadWidget("t")
-    path = "/Users/david/captures/thing.png"
+    path = "/Users/you/captures/thing.png"
     w.on_bus_state("intelligence/architect/in",
                    {"from": "david", "text": "look at this render",
                     "image": path})
@@ -433,7 +433,7 @@ def test_dropped_image_via_on_bus_state_headless():
     """End-to-end headless: feed a dropped-image message through on_bus_state
     and confirm the path is painted (David's verify ask)."""
     w = ChatThreadWidget("console")
-    path = "/Users/david/Dropbox/Maker/composeio/scratch/dropped-image.png"
+    path = "/Users/you/Maker/composeio/scratch/dropped-image.png"
     w.on_bus_state("intelligence/architect/in",
                    {"from": "david", "text": "", "image": path})
     c = _canvas()
@@ -462,9 +462,9 @@ def test_draw_all_four_voices():
                     "turn": 1})
     w.on_bus_state("intelligence/architect/out",
                    {"from": "architect",
-                    "text": "Recommend a power-cycle of gilligan before the soak."})
+                    "text": "Recommend a power-cycle of fleetnode2 before the soak."})
     w.on_bus_state("intelligence/architect/in",
-                   {"from": "harness", "text": "power_status(gilligan) = offline"})
+                   {"from": "harness", "text": "power_status(fleetnode2) = offline"})
     w.on_bus_state("intelligence/architect/in",
                    {"from": "david", "text": "proceed — cycle it."})
     c = _canvas()

@@ -41,7 +41,7 @@ requires:
   - ref: "bus://assets/displays/{device_id}.compose.yaml"
     kind: scene-config
     status: present
-    note: "fetched at boot from bus_storage (same fungible path as CYD), re-polled every 60s; falls back to displays/default.compose.yaml when the per-device asset is absent. AS OF 2026-08-11 this board carries the BSG engine-thrust panel — source at compose_projects/bsg/game_hardware/engine_thrust_panel/engine_thrust.compose.yaml, PUT to displays/hosyond-d1afe8.compose.yaml. Reflash-free: PUT a new scene and wait, or power-cycle."
+    note: "fetched at boot from bus_storage (same fungible path as CYD), re-polled every 60s; falls back to displays/default.compose.yaml when the per-device asset is absent. AS OF 2026-08-11 this board carries the BSG engine-thrust panel — source at compose_projects/bsg/game_hardware/engine_thrust_panel/engine_thrust.compose.yaml, PUT to displays/hosyond-080739.compose.yaml. Reflash-free: PUT a new scene and wait, or power-cycle."
   - ref: null
     kind: firmware
     status: placeholder
@@ -72,8 +72,8 @@ verify:
       expect: "FT6336 up on SDA=16 SCL=15 @400000 Hz — chip 0x64"
       note: "VERIFIED 2026-08-11: chip 0x64 (FT6336G), firmware 0x02, panel 0x11. A NACK here instead logs 'no ACK from 0x38' and would mean EITHER this board is the ES3N28P (no capacitive touch fitted) OR the I2C bus is wrong. The ACK ANSWERS the [CXC-BRINGUP] §4 SKU question: this is the ES3C28P."
     - check: serial-token
-      expect: "Device id: hosyond-d1afe8"
-      note: "VERIFIED 2026-08-11 (after the prefix fix — see quirk pio-build-flags-dropped). The first boot announced 'cyd-d1afe8' and 404'd its per-device config."
+      expect: "Device id: hosyond-080739"
+      note: "VERIFIED 2026-08-11 (after the prefix fix — see quirk pio-build-flags-dropped). The first boot announced 'cyd-080739' and 404'd its per-device config."
     - check: capture-pixel-diff
       expect: "GET http://<ip>/capture.bmp"
       note: "240x320 BMP is ~150KB — well within what the pull server handles on the CYD, so unlike the Qualia this capture is expected to be reliable. NOT a substitute for eyes (see the hazard below)."
@@ -100,7 +100,7 @@ quirks:
   - id: pio-build-flags-dropped
     value: "-DCXC_BAND_HEIGHT=320"
     resolved: true
-    note: "For framework=espidf, PlatformIO's build_flags NEVER reach the IDF component compile — they are silently dropped (verified against .pio/build/hosyond_s3/compile_commands.json, 2026-08-11: only ESP_PLATFORM/IDF_VER/SOC_* survive). The first build of this board was therefore rendering in 16-line bands while the config claimed full-frame, with zero warning. Fixed by target_compile_definitions(${COMPONENT_LIB} PUBLIC ...) in the HOSYOND_S3 branch of src/CMakeLists.txt. SECOND VICTIM, caught on the first live boot: src/config_fetch.cpp gated its device-id prefix on #ifdef QUALIA_DISPLAY — also build_flag-only — so this board announced itself as 'cyd-d1afe8' and 404'd fetching displays/cyd-d1afe8.compose.yaml. Prefix is now CXC_DEVICE_PREFIX (CMake definition), with the QUALIA_DISPLAY fallback preserved verbatim so no existing board's identity shifts. AUDIT OWED: env:qualia_display passes -DQUALIA_DISPLAY and -DREACTIVE_TRANSFORM_ATTRS the same dropped way."
+    note: "For framework=espidf, PlatformIO's build_flags NEVER reach the IDF component compile — they are silently dropped (verified against .pio/build/hosyond_s3/compile_commands.json, 2026-08-11: only ESP_PLATFORM/IDF_VER/SOC_* survive). The first build of this board was therefore rendering in 16-line bands while the config claimed full-frame, with zero warning. Fixed by target_compile_definitions(${COMPONENT_LIB} PUBLIC ...) in the HOSYOND_S3 branch of src/CMakeLists.txt. SECOND VICTIM, caught on the first live boot: src/config_fetch.cpp gated its device-id prefix on #ifdef QUALIA_DISPLAY — also build_flag-only — so this board announced itself as 'cyd-080739' and 404'd fetching displays/cyd-080739.compose.yaml. Prefix is now CXC_DEVICE_PREFIX (CMake definition), with the QUALIA_DISPLAY fallback preserved verbatim so no existing board's identity shifts. AUDIT OWED: env:qualia_display passes -DQUALIA_DISPLAY and -DREACTIVE_TRANSFORM_ATTRS the same dropped way."
   - id: full-frame-band
     value: 320
     resolved: true

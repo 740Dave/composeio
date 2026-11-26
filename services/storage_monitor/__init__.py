@@ -1,5 +1,5 @@
 """storage_monitor — a bare-Python ComposeBus service that measures free disk space on
-skipper and publishes it as a semantic state fact, ``skipper/storage/free_bytes`` (an
+buildhost and publishes it as a semantic state fact, ``buildhost/storage/free_bytes`` (an
 integer byte count, retained, configurable cadence).
 
 A DUMB SENSOR ([DX-STATE-ON-BUS]): it publishes the FACT and does nothing else — no

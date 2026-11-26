@@ -4,7 +4,7 @@
 touching the board. Everything below marked **measured** was read off the live device or extracted
 from the vendor kit on 2026-08-11. There are no guessed pins in this document.
 
-Vendor kit: `~/Dropbox/Data Sheets/hoysond/2.8inch_IPS_ESP32-S3_ILI9341V_ES3C28P_ES3N28P_V1.0/`
+Vendor kit: `${DATASHEETS_HOME}/hoysond/2.8inch_IPS_ESP32-S3_ILI9341V_ES3C28P_ES3N28P_V1.0/`
 It contains the schematic, the IO allocation table, every component datasheet, an ILI9341V init
 sequence, and Arduino / ESP-IDF / MicroPython demos. **Read from it before inventing anything.**
 
@@ -16,7 +16,7 @@ sequence, and Arduino / ESP-IDF / MicroPython demos. **Read from it before inven
 port      /dev/cu.usbmodem31101      native USB (VID 0x303a / PID 0x1001), NO UART bridge chip
 chip      ESP32-S3 (QFN56) rev v0.2 · Wi-Fi · BT 5 LE · dual core + LP core · 240 MHz
 PSRAM     8 MB embedded (AP_3v3)      flash  16 MB quad, 3.3 V per eFuse
-crystal   40 MHz                      MAC    AA:BB:CC:DD:EE:FF
+crystal   40 MHz                      MAC    00:00:5e:00:53:01
 ```
 
 Currently flashed: a vendor factory image — `arduino-lib-builder`, version `bb76cb1`, IDF

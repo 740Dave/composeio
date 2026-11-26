@@ -910,9 +910,9 @@ def _selftest() -> int:
             assert msg.type == MessageType.CONFIG_PUSH
             _res.append(_r.on_frame(msg.value))
 
-        srv = ConfigServer(send, lambda d: payload, ["hosyond-d1afe8"],
+        srv = ConfigServer(send, lambda d: payload, ["hosyond-080739"],
                            chunk_payload=cp, pace_ms=0)
-        srv.on_message(BusMessage(namespace="_device/hosyond-d1afe8/config",
+        srv.on_message(BusMessage(namespace="_device/hosyond-080739/config",
                                   type=MessageType.CONFIG_REQUEST, value=None))
         if results[-1] != Reassembler.COMPLETE:
             fails.append(f"cp={cp}: transfer ended {results[-1]}")

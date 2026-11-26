@@ -3,7 +3,8 @@
  * [SPEC:CXC-EMBED-REACTIVE] [CXC-ER-DEVICE] [CXC-HAL-CONDITION]
  *
  * Every analog input published by the reactive-core controller tier goes
- * through condition_sample(): invert -> clamp -> EMA -> scale -> deadband.
+ * through condition_sample():
+ *   invert -> clamp -> EMA -> scale/band -> quantize(step) -> deadband.
  * It is a PURE function with caller-owned state, so it host-compiles and
  * host-tests in env:native_test with no Arduino and no hardware.
  *

@@ -56,8 +56,8 @@ def _doc_fake(reachable=True):
 
 def _bus_fake():
     return _Fake("bus://assets", {
-        (): [StoreEntry("cyd-45302c.compose.yaml", "leaf",
-                        ("displays/cyd-45302c.compose.yaml",), hint="displays"),
+        (): [StoreEntry("cyd-00bad8.compose.yaml", "leaf",
+                        ("displays/cyd-00bad8.compose.yaml",), hint="displays"),
              StoreEntry("dradis.json", "leaf", ("animations/dradis.json",),
                         hint="animations"),
              StoreEntry("IBMPlexSans-Regular.ttf", "leaf",

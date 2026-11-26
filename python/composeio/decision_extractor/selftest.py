@@ -130,7 +130,7 @@ def _fixture_lines() -> list[dict]:
                  {"question": "How much endpoint hardware, and how long?",
                   "header": "Scope",
                   "options": [
-                      {"label": "gilligan + professor, 24h",
+                      {"label": "fleetnode2 + benchnode, 24h",
                        "description": "two endpoints"},
                       {"label": "Add 1-2 minnows, 48-72h",
                        "description": "more coverage"},

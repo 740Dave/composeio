@@ -15,7 +15,7 @@ One header per display env (the band-tier CYD has a 120 KB decode budget;
 the Qualia has PSRAM), sized so the logo is the boot hero.
 
 Usage (regenerates both tracked headers from the tracked source):
-    cd ~/Dropbox/Maker/composeio/python
+    cd ${COMPOSEIO_HOME}/python
     python scripts/bake_logo_splash.py
 
 Reproducible: the source PNG and the generated headers are both committed;

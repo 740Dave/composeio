@@ -342,7 +342,7 @@ def test_imports_clean_without_av() -> str:
 #                    resolves/guards correctly and decode falls back to
 #                    software cleanly; FLAG full HW verification as pending.
 # vaapi-on-a-MinnowBoard is the IDENTICAL path with device_type="vaapi" —
-# glass-pending on 'professor' until a provisioned board is in reach.
+# glass-pending on 'benchnode' until a provisioned board is in reach.
 # ---------------------------------------------------------------------------
 
 def _hw_clip() -> "tuple[str, str, int, int, int, list]":

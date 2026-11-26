@@ -15,8 +15,8 @@ a known-but-unreachable backend degrades LOUDLY.
 
 Requires ``composeio`` on the path (PYTHONPATH=composeio/python).
 
-⛔ A LIVE deploy connects to whatever broker the spec resolves — Nexus-Deployer
-owns that step and must verify the live broker host first (the Skipper cutover is
+⛔ A LIVE deploy connects to whatever broker the spec resolves — Haven-Deployer
+owns that step and must verify the live broker host first (the Buildhost cutover is
 pending). Running this points the service at ``config.broker_host()`` by default.
 """
 

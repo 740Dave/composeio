@@ -1,0 +1,113 @@
+# =============================================================================
+#  .config/wt.toml — CANONICAL LAND CONFIG for 740Dave/composeio (private)
+# =============================================================================
+#  THE canonical worktrunk project config for landing dispatched subagent
+#  branches onto live main. The freeze flag points here; git-expert's land
+#  dance and the wake/dusk repo-health gates are written against it. Do not
+#  fork a second land config — edit this one.
+#
+#  Authored + VERIFIED against `wt 0.74.0` on macOS (Phase B). Full evidence +
+#  the corrections folded in below live in
+#  docs/architecture/WORKTRUNK-AGENTIC-STRATEGY-2026-08-26.md.
+#
+#  Project hooks (everything here) require ONE-TIME approval on first run
+#  (`wt config approvals add`, or `-y` on the command). git-expert lands with
+#  `-y`, so an unattended land never stalls on the approval prompt.
+#
+#  TOML NOTE: root-level scalar keys (post-commit) MUST precede the first table
+#  header, and the `[[pre-merge]]` array-of-tables MUST come last — any bare key
+#  after it would bind to the last pre-merge table, not the document root.
+# -----------------------------------------------------------------------------
+
+# --- Durability floor: push every wt-driven commit the instant it exists ------
+#  ⚠ SCOPE (verified 0.74.0): wt's post-commit fires ONLY on a wt-driven commit
+#    (`wt step commit`, or wt merge's internal commit step — which is SKIPPED
+#    under squash=false / when there is nothing to commit). A plain `git commit`
+#    — what Claude-Code isolation:worktree agents run — does NOT fire wt hooks.
+#    So this hook is the wt-path half of the floor only; true per-commit
+#    durability for `git commit` needs a git-native post-commit hook under
+#    core.hooksPath (see the strategy doc's "what we had to bend"). Kept here so
+#    any wt-driven commit is still pushed.
+post-commit = "git push -u origin HEAD"
+
+# ⛔⛔ INERT-CONFIG BANNER (F-B, verified wt 0.74.0) ⛔⛔
+#  The ENTIRE [merge] / [remove] / [commit] block below is IGNORED by wt 0.74.0:
+#  `wt config show` reports each key as "belongs in user config (will be ignored)",
+#  and there is no user config, so the land behaves by wt's DEFAULTS. These keys are
+#  set to intent purely as FUTURE-PROOFING if a later wt honors project [merge] keys.
+#  ⭐ ENFORCEMENT LIVES ENTIRELY IN git-expert's DANCE CLI FLAGS
+#     (`wt merge --no-commit --no-squash --no-remove`) — the ONLY honored lever. A
+#     flag cannot be silently ignored the way these keys are, so the land is correct
+#     ONLY because the dance passes them. Do NOT drop the flags trusting these keys.
+#  RECOMMENDED (do NOT execute here — architect's call): move this block into USER
+#     config under [projects."github.com/740Dave/composeio-internal"], where wt honors
+#     it. See WORKTRUNK-AGENTIC-STRATEGY-2026-08-26.md correction #7.
+[merge]
+squash  = false   # honor [DEC-DISPATCHED-BUILDS-COMMIT-TO-BRANCH]: preserve
+                  # per-defect commits + enforcing-test provenance. The native
+                  # ANCESTOR property comes from rebase+ff, NOT from squashing.
+commit  = false   # CORRECTED DELTA-2 (verified): never auto-commit working-tree
+                  # changes into a trunk commit. Land ONLY already-committed
+                  # history via rebase+ff. With commit=true (the default) wt
+                  # AUTO-STAGES untracked scratch and rides it onto trunk; with
+                  # `stage=none` instead, a land aborts "Nothing to commit"
+                  # because the agent already committed. commit=false is the
+                  # mechanism that actually expresses "untracked scratch never
+                  # lands" AND still lands the committed history.
+rebase  = true    # rebase onto live main so landed commits are ANCESTORS
+ff      = true    # fast-forward the trunk ref (no merge bubble)
+remove  = false   # ⛔ TEARDOWN MUST NEVER PRECEDE PUBLICATION. With remove=true
+                  # `wt merge` tears the worktree down as PART of the merge —
+                  # BEFORE the dance's `git push origin main` (the ONLY publisher;
+                  # a no-commit ff pushes nothing on its own) and the provenance
+                  # capture can run — destroying the execution context that would
+                  # push and STRANDING the land (origin left behind local main;
+                  # proven 2026-08-26 in scratch). Teardown is now the LAST step of
+                  # the dance: land --no-remove -> push -> provenance -> THEN
+                  # `wt remove <branch> --foreground` from the primary checkout.
+                  # ⚠ THIS [merge] KEY IS IGNORED BY wt 0.74.0 ("belongs in user
+                  # config" — verified via `wt config show`). It is set false only
+                  # as future-proofing IF a later wt honors project [merge] keys;
+                  # the guarantee TODAY is the dance's CLI `--no-remove`, which a
+                  # flag cannot be silently ignored the way this key is. Do NOT
+                  # revert to true.
+verify  = true    # RUN the [[pre-merge]] gate below; a failing hook ABORTS
+
+[remove]
+delete-branch = true   # removing the worktree also deletes its branch
+
+[commit]
+# Belt-and-suspenders for any stray `wt step commit`: stage nothing beyond the
+# index. Moot for the land itself (commit=false skips the commit step), but it
+# keeps the DELTA-2 guarantee if a wt-driven commit is ever run here.
+stage = "none"
+
+# --- The LAND GATE ------------------------------------------------------------
+#  pre-merge hooks run AFTER rebase onto live main, BEFORE the fast-forward
+#  merge, in the rebased worktree (cwd = worktree root). A non-zero hook exit
+#  ABORTS the land — nothing reaches main. Array-of-tables = SEQUENTIAL pipeline
+#  (DELTA-3): the cheap QA-verdict check runs first and short-circuits the
+#  expensive corpus/suite gate on failure. A single [pre-merge] table would run
+#  them CONCURRENTLY — we want fail-fast ordering, so two [[pre-merge]] blocks.
+[[pre-merge]]
+qa-verdict = "scripts/land-gate.sh"
+
+[[pre-merge]]
+# Corpus property-key gate + suite, run POST-REBASE in the rebased worktree.
+# ⛔ --range main..HEAD IS LOAD-BEARING, NOT OPTIONAL. This hook fires AFTER the
+#   rebase and BEFORE the fast-forward, so the landed delta is already COMMITTED and
+#   NOTHING is staged. A BARE `scripts/pre-commit-tests.sh` reads the INDEX
+#   (`git diff --cached`), finds it empty, and short-circuits "nothing staged ->
+#   pass" HAVING TESTED ZERO FILES — every land would green-light on an untested
+#   suite. --range main..HEAD closes that hole: at pre-merge the local `main` ref is
+#   still pre-ff (the rebase base) and HEAD is the rebased tip, so `main..HEAD` IS the
+#   landing delta. The script routes that range through the SAME classifier as
+#   --cached and RUNS the mapped suites against the working tree. Proven 2026-08-26:
+#   bare -> "nothing staged -> pass" (0 tests); --range main..HEAD -> classifies the
+#   delta and runs the suite (see strategy doc §1.8). Do NOT revert to bare — the
+#   green a bare invocation prints here is a lie.
+# SDL_VIDEODRIVER=dummy keeps render tests off the human's desktop.
+# ⚠ Operational prerequisite: the rebased worktree must have .mcp.json seated,
+#   or ~20 tests fail FileNotFoundError and ABORT the land (the worktree-is-not-
+#   the-environment trap). Seat it (or `wt step copy-ignored`) before landing.
+corpus-gate = "SDL_VIDEODRIVER=dummy scripts/pre-commit-tests.sh --range main..HEAD"

@@ -50,7 +50,7 @@ echo 'LIBVA_DRIVER_NAME=i965' | sudo tee /etc/environment.d/50-vaapi.conf
 ## 4. PyAV must link the SYSTEM ffmpeg (the crux)
 
 The pip PyAV **wheel bundles its own ffmpeg with no VA-API codecs** — this is exactly why the first probe on
-professor.local reported `vaapi codecs: NONE`. Rebuild PyAV from source so it links Debian's vaapi-enabled
+benchnode.local reported `vaapi codecs: NONE`. Rebuild PyAV from source so it links Debian's vaapi-enabled
 libav*:
 
 ```bash

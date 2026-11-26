@@ -23,6 +23,8 @@
  */
 #include "../real_r503_hal.h"
 #include "../r503_protocol.h"
+#include "../fp_persist.h"
+#include "../fp_bus_messages.h"
 
 #include <cstdio>
 #include <cstring>
@@ -77,6 +79,26 @@ public:
      * cousin, where even an empty end packet does not rescue. */
     bool     wedge_forever     = false;
 
+    /* ⛔ THE 2026-08-20 STORE-NO-ACK SIGNATURE, MADE REPRODUCIBLE.
+     * store_needs_settle: after the data phase terminates the module is busy
+     * committing the char buffer, and a Store command that arrives before a
+     * real settle (a sleep_ms(>0)) is DROPPED — no ack, the bench signature.
+     * A Store issued after the settle is accepted normally.  This is what makes
+     * synctest (which inadvertently listens ~400ms before its next command)
+     * pass while the zero-settle production Store failed. */
+    bool     store_needs_settle = false;
+    /* store_always_drops: the module answers ReadSysPara (it is alive and in
+     * command mode) but silently drops EVERY Store — the "alive but Store lost"
+     * failure store_template must label honestly, not as a dead transport. */
+    bool     store_always_drops = false;
+    /* a documented Store CONFIRMATION code (e.g. flash-write error) — the
+     * "documented CONF -> sensor_refusal/axis_for" half of the taxonomy. */
+    uint8_t  store_conf         = r503::CONF_OK;
+
+    /* the last AuraLedConfig content the module received: [0x35][ctrl][speed]
+     * [color][times].  Lets a test assert the exact scene command_feedback emits. */
+    Bytes    last_aura;
+
     uint32_t address       = r503::kDefaultAddress;
     uint16_t library_size  = 200;
     uint16_t packet_code   = 2;           /* 128 bytes, the factory default */
@@ -104,6 +126,12 @@ public:
     }
     void drain_input() override { tx_.clear(); }
     uint32_t now_ms() override { return clock_++; }
+    /* A real settle passes real time AND marks the commit window satisfied.  A
+     * zero settle does neither — the model's whole point. */
+    void sleep_ms(uint32_t ms) override {
+        clock_ += ms;
+        if (ms > 0) settled_since_commit_ = true;
+    }
 
 private:
     void emit(const Bytes& b) { for (char c : b) tx_.push_back(c); }
@@ -150,6 +178,10 @@ private:
 
             if (terminates) {
                 receiving_ = false;
+                if (store_needs_settle) {
+                    committing_ = true;
+                    settled_since_commit_ = false;
+                }
                 if (separate_buffers) {
                     /* Ambiguity A5 made real: DownChar wrote a buffer UpChar
                      * does not read.  The manual does not rule this out, so
@@ -296,6 +328,12 @@ private:
             }
             case r503::CMD_STORE: {
                 if (p.content.size() < 4) { emit_ack(r503::CONF_PACKET_RECV_ERROR); break; }
+                if (store_always_drops) break;   /* alive, but every Store lost */
+                if (store_conf != r503::CONF_OK) { emit_ack(store_conf); break; }
+                /* The Store-no-ack model: while committing and un-settled, the
+                 * module DROPS Store entirely — no ack at all (not a code). */
+                if (committing_ && !settled_since_commit_) break;
+                committing_ = false;
                 const int page = (static_cast<uint8_t>(p.content[2]) << 8) |
                                  static_cast<uint8_t>(p.content[3]);
                 flash_[page] = char_buffer_;
@@ -316,8 +354,13 @@ private:
                 emit_ack(r503::CONF_OK);
                 break;
             }
-            case r503::CMD_REG_MODEL:
             case r503::CMD_AURA_LED:
+                /* record [0x35][ctrl][speed][color][times] so a test can assert
+                 * the exact scene bytes command_feedback emitted. */
+                last_aura = p.content;
+                emit_ack(r503::CONF_OK);
+                break;
+            case r503::CMD_REG_MODEL:
                 emit_ack(r503::CONF_OK);
                 break;
             case r503::CMD_EMPTY:
@@ -352,6 +395,8 @@ private:
     Bytes rx_, char_buffer_, other_buffer_, incoming_, notepad_;
     std::deque<char> tx_;
     bool receiving_ = false;
+    bool committing_ = false;             /* Store-no-ack model: mid-commit    */
+    bool settled_since_commit_ = false;   /* a real sleep_ms since the commit  */
     uint32_t clock_ = 1000;
 };
 
@@ -807,6 +852,9 @@ int r503_protocol_tests(int* out_checks) {
         TCHECK(c.has_feedback_channel(FeedbackChannel::AURA_LED),
                "capabilities: the Aura ring is announced");
         TCHECK(c.supports_readback, "capabilities: readback CLAIMED (UpChar exists)");
+        TCHECK(c.feedback_profile == "r503-2ch",
+               "capabilities: feedback_profile == \"r503-2ch\" (the R503 Aura realization, "
+               "NOT the mock's canonical table) — the SIXTH required field");
         TCHECK(hal.packet_content_len() == 128,
                "the packet length comes from ReadSysPara, never a constant");
 
@@ -1490,6 +1538,318 @@ int r503_protocol_tests(int* out_checks) {
         printf("   data packet length field = 0x%04X == N(128) + 2  [Length "
                "COUNTS the checksum]\n", lf);
         TCHECK(lf == 0x0082, "a full 128-byte data packet's length field is 0x0082");
+    }
+
+    /* =================================================================
+     * 9. ⭐ THE STORE-NO-ACK FIX + run_store_test() (Round 2, 2026-08-20)
+     *    DownChar+data succeed, then Store(0x06) no-acks because it arrives
+     *    before the module has committed the char buffer.  The fix is a
+     *    settle; these prove it is load-bearing and the label is honest.
+     * ================================================================= */
+    {
+        /* --- 9a. the fix: store_template's default settle rescues Store --- */
+        {
+            FakeR503 f; f.store_needs_settle = true;
+            RealR503HAL hal(&f);
+            FingerprintHALFailure err;
+            TCHECK(hal.begin(err), "storefix: begin ok");
+            Bytes t(1536, '\0');
+            for (size_t i = 0; i < t.size(); i++)
+                t[i] = static_cast<char>((i * 13 + 5) & 0xFF);
+            Slot slot = -1;
+            TCHECK(hal.store_template(t, slot, err),
+                   "⭐ storefix: store_template SUCCEEDS on a settle-needing module "
+                   "(the default settle commits the buffer before Store)");
+            TCHECK(f.char_buffer() == t, "storefix: char buffer byte-exact");
+            Bytes back;
+            TCHECK(hal.read_template(slot, back, err) && back == t,
+                   "⭐ storefix: readback byte-exact — flash round trip holds");
+        }
+        /* --- 9b. run_store_test with a real settle PASSES (real template) - */
+        {
+            FakeR503 f; f.store_needs_settle = true;
+            f.preload_slot(5, Bytes(1536, 'R'));   /* a REAL leftover template */
+            RealR503HAL hal(&f);
+            FingerprintHALFailure err;
+            TCHECK(hal.begin(err), "storetest/settle: begin ok");
+            R503StoreTestOptions opt; opt.settle_ms = 200; opt.real_src_slot = 5;
+            R503StoreTestResult r = hal.run_store_test(opt);
+            TCHECK(r.used_real_template,
+                   "storetest is REAL-template only (no ramp to real flash)");
+            TCHECK(r.pass(), "⭐ run_store_test PASSES with a 200ms settle");
+            TCHECK(r.alive_after_data_phase,
+                   "run_store_test: the module is responsive AFTER the data phase");
+            TCHECK(r.store_acked && r.store_conf == 0x00 && r.byte_exact,
+                   "run_store_test: Store acked 0x00 and readback byte-exact");
+        }
+        /* --- 9c. NEGATIVE: settle=0 leaves Store no-acking -------------- */
+        {
+            FakeR503 f; f.store_needs_settle = true;
+            f.preload_slot(5, Bytes(1536, 'R'));
+            RealR503HAL hal(&f);
+            FingerprintHALFailure err;
+            TCHECK(hal.begin(err), "storetest/no-settle: begin ok");
+            R503StoreTestOptions opt; opt.settle_ms = 0; opt.real_src_slot = 5;
+            R503StoreTestResult r = hal.run_store_test(opt);
+            TCHECK(!r.pass() && !r.store_acked,
+                   "⭐ NEGATIVE: settle=0 -> Store NO-ACK (proves settle is the fix)");
+            TCHECK(r.store_timed_out, "NEGATIVE/no-settle: the Store timed out");
+            TCHECK(r.alive_after_data_phase,
+                   "NEGATIVE/no-settle: the module WAS alive — it dropped Store, "
+                   "the data phase did terminate");
+            TCHECK(r.failure.find("settle") != std::string::npos,
+                   "NEGATIVE/no-settle: the failure points at the settle knob");
+        }
+        /* --- 9d. TAXONOMY: a Store timeout/silence -> TRANSPORT, no code --
+         * (the landed C72 mapping; the round-2 protocol_desync remap was a
+         * regression and is reverted per [CXC-FPHAL-FAILURE-AXES]). */
+        {
+            FakeR503 f; f.wedge_forever = true;
+            RealR503HAL hal(&f);
+            FingerprintHALFailure err;
+            TCHECK(hal.begin(err), "storelabel/timeout: begin ok");
+            Bytes t(1536, 'Z');
+            Slot slot = -1;
+            TCHECK(!hal.store_template(t, slot, err),
+                   "storelabel/timeout: store_template FAILS when Store gets no ack");
+            TCHECK(err.axis == FailureAxis::TRANSPORT,
+                   "⭐ TAXONOMY: a Store wire-timeout/silence is TRANSPORT");
+            TCHECK(!err.sensor_code.has_value() && fp_failure_valid(err.axis, err.sensor_code),
+                   "TAXONOMY: a transport timeout carries NO sensor_code (taxonomy-valid)");
+        }
+        /* --- 9e. TAXONOMY: a documented Store CONF code -> sensor_refusal - */
+        {
+            FakeR503 f; f.store_conf = r503::CONF_FLASH_WRITE_ERR;
+            RealR503HAL hal(&f);
+            FingerprintHALFailure err;
+            TCHECK(hal.begin(err), "storelabel/conf: begin ok");
+            Bytes t(1536, 'Q');
+            Slot slot = -1;
+            TCHECK(!hal.store_template(t, slot, err),
+                   "storelabel/conf: store_template FAILS on a documented Store refusal");
+            TCHECK(err.axis == FailureAxis::SENSOR_REFUSAL,
+                   "⭐ TAXONOMY: a documented Store CONF code -> sensor_refusal");
+            TCHECK(err.sensor_code.has_value() &&
+                       *err.sensor_code == r503::CONF_FLASH_WRITE_ERR &&
+                       fp_failure_valid(err.axis, err.sensor_code),
+                   "TAXONOMY: sensor_refusal carries the exact CONF byte (taxonomy-valid)");
+        }
+        /* --- 9f. the instrument's honest reporting on a wedge ----------- */
+        {
+            FakeR503 f; f.wedge_forever = true;
+            f.preload_slot(5, Bytes(1536, 'R'));
+            RealR503HAL hal(&f);
+            FingerprintHALFailure err;
+            TCHECK(hal.begin(err), "storetest/wedge: begin ok");
+            R503StoreTestOptions opt; opt.real_src_slot = 5;
+            R503StoreTestResult r = hal.run_store_test(opt);
+            TCHECK(!r.pass() && !r.store_acked,
+                   "run_store_test/wedge: reports the Store failure");
+            TCHECK(!r.alive_after_data_phase,
+                   "⭐ run_store_test/wedge: the diagnostic row shows the module was "
+                   "UNRESPONSIVE after the data phase — WHERE it died is visible");
+        }
+        /* --- 9g. storetest REFUSES a ramp (no synthetic bytes to real flash) */
+        {
+            FakeR503 f;
+            RealR503HAL hal(&f);
+            FingerprintHALFailure err;
+            TCHECK(hal.begin(err), "storetest/ramp-refused: begin ok");
+            R503StoreTestOptions opt;   /* real_src_slot defaults to -1 */
+            R503StoreTestResult r = hal.run_store_test(opt);
+            TCHECK(!r.ran || (!r.store_acked && r.failure.find("PARITY") != std::string::npos),
+                   "⭐ storetest REFUSES a ramp-to-real-flash ([CXC-FPHAL-PARITY-TEST])");
+        }
+    }
+
+    /* =================================================================
+     * 11. ⭐ command_feedback — the RATIFIED AuraLedConfig bytes per state,
+     *     per flow.  C72 [CXC-FPHAL-FEEDBACK-STATES] + DESIGN-r503-sensor-ux.
+     *     Machine-green proves the COMMAND BYTES; the colour/pattern on the
+     *     ring is GLASS.
+     * ================================================================= */
+    {
+        FakeR503 f; RealR503HAL h(&f); FingerprintHALFailure e;
+        TCHECK(h.begin(e), "feedback: begin ok");
+        auto CF = [&](FeedbackState st) { h.command_feedback(st, FpProgress{}, e); };
+        /* [0x35][ctrl][speed][color][times] */
+        #define A_CTRL() ((uint8_t)f.last_aura[1])
+        #define A_COL()  ((uint8_t)f.last_aura[3])
+        #define A_CNT()  ((uint8_t)f.last_aura[4])
+
+        /* ---- MATCH flow ---- */
+        h.set_feedback_flow(FeedbackFlow::MATCH);
+        CF(FeedbackState::IDLE);
+        TCHECK(A_CTRL() == r503::AURA_OFF, "feedback/IDLE: off");
+        CF(FeedbackState::READY);
+        TCHECK(A_CTRL() == r503::AURA_ON && A_COL() == r503::AURA_BLUE && A_CNT() == 0,
+               "feedback/READY: blue steady-on, infinite");
+        CF(FeedbackState::AWAITING_FINGER);
+        TCHECK(A_CTRL() == r503::AURA_ON && A_COL() == r503::AURA_BLUE,
+               "feedback/AWAITING(match): BLUE steady-on");
+        CF(FeedbackState::CAPTURE_ACCEPTED);
+        TCHECK(A_CTRL() == r503::AURA_FLASHING && A_COL() == r503::AURA_BLUE && A_CNT() == 1,
+               "⭐ feedback/CAPTURE_ACCEPTED(match): BLUE 1-flash blip (the match arc is ALL BLUE)");
+        CF(FeedbackState::BUSY);
+        TCHECK(A_CTRL() == r503::AURA_BREATHING && A_COL() == r503::AURA_BLUE,
+               "feedback/BUSY: blue breathing (match processing)");
+        CF(FeedbackState::ENROLL_PROGRESS);
+        TCHECK(A_CTRL() == r503::AURA_BREATHING && A_COL() == r503::AURA_PURPLE,
+               "feedback/ENROLL_PROGRESS: purple breathing (enroll processing)");
+        CF(FeedbackState::ACCEPT);
+        TCHECK(A_CTRL() == r503::AURA_FLASHING && A_COL() == r503::AURA_BLUE && A_CNT() == 3,
+               "feedback/ACCEPT(match): BLUE 3-flash success");
+        CF(FeedbackState::CAPTURE_RETRY);
+        TCHECK(A_CTRL() == r503::AURA_FLASHING && A_COL() == r503::AURA_PURPLE && A_CNT() == 2,
+               "feedback/CAPTURE_RETRY: purple 2-flash");
+        CF(FeedbackState::RETRY);
+        TCHECK(A_COL() == r503::AURA_PURPLE && A_CNT() == 2,
+               "feedback/RETRY == CAPTURE_RETRY");
+        CF(FeedbackState::FAULT);
+        TCHECK(A_CTRL() == r503::AURA_FLASHING && A_COL() == r503::AURA_RED,
+               "feedback/FAULT: red strobe");
+
+        /* denied ≡ unrecognized: BYTE-IDENTICAL command */
+        CF(FeedbackState::REJECT_SILENT);  Bytes rs = f.last_aura;
+        CF(FeedbackState::REJECT_KNOWN);    Bytes rk = f.last_aura;
+        TCHECK(rs == rk,
+               "⭐ denied ≡ unrecognized: REJECT_SILENT and REJECT_KNOWN emit "
+               "BYTE-IDENTICAL AuraLedConfig ([CXC-FPID-RING-HIDES-DENIAL])");
+        TCHECK((uint8_t)rs[1] == r503::AURA_FLASHING && (uint8_t)rs[3] == r503::AURA_RED &&
+                   (uint8_t)rs[4] == 3,
+               "feedback/rejected: red 3-flash");
+
+        /* ---- ENROLL flow: awaiting + CAPTURE + accept flip to purple ---- */
+        h.set_feedback_flow(FeedbackFlow::ENROLL);
+        CF(FeedbackState::AWAITING_FINGER);
+        TCHECK(A_CTRL() == r503::AURA_ON && A_COL() == r503::AURA_PURPLE,
+               "⭐ feedback/AWAITING(enroll): flips to PURPLE steady-on");
+        CF(FeedbackState::CAPTURE_ACCEPTED);
+        TCHECK(A_CTRL() == r503::AURA_FLASHING && A_COL() == r503::AURA_PURPLE && A_CNT() == 1,
+               "⭐ feedback/CAPTURE_ACCEPTED(enroll): flips to PURPLE 1-flash blip");
+        CF(FeedbackState::ACCEPT);
+        TCHECK(A_CTRL() == r503::AURA_FLASHING && A_COL() == r503::AURA_PURPLE && A_CNT() == 3,
+               "⭐ feedback/ACCEPT(enroll): flips to PURPLE 3-flash");
+        CF(FeedbackState::READY);
+        TCHECK(A_COL() == r503::AURA_BLUE,
+               "feedback/READY: BLUE even in enroll flow (flow-independent)");
+        CF(FeedbackState::BUSY);
+        TCHECK(A_COL() == r503::AURA_BLUE, "feedback/BUSY: blue in both flows");
+        CF(FeedbackState::REJECT_SILENT);
+        TCHECK(A_COL() == r503::AURA_RED, "feedback/rejected: red in both flows");
+
+        /* ---- ⛔ the DEFECT this replaces: no unrenderable colour anywhere ---- */
+        const FeedbackState all12[12] = {
+            FeedbackState::IDLE, FeedbackState::READY, FeedbackState::AWAITING_FINGER,
+            FeedbackState::CAPTURE_ACCEPTED, FeedbackState::CAPTURE_RETRY,
+            FeedbackState::ENROLL_PROGRESS, FeedbackState::BUSY, FeedbackState::FAULT,
+            FeedbackState::ACCEPT, FeedbackState::REJECT_SILENT,
+            FeedbackState::REJECT_KNOWN, FeedbackState::RETRY };
+        bool all_renderable = true;
+        const FeedbackFlow flows[2] = { FeedbackFlow::MATCH, FeedbackFlow::ENROLL };
+        for (int fl = 0; fl < 2; fl++) {
+            h.set_feedback_flow(flows[fl]);
+            for (int i = 0; i < 12; i++) {
+                CF(all12[i]);
+                const uint8_t col = A_COL();
+                if (col < r503::AURA_RED || col > r503::AURA_PURPLE) all_renderable = false;
+            }
+        }
+        TCHECK(all_renderable,
+               "⭐ NO unrenderable colour: every state in BOTH flows emits only "
+               "red/blue/purple — the green/cyan/yellow/white defect is gone");
+        #undef A_CTRL
+        #undef A_COL
+        #undef A_CNT
+    }
+
+    /* =================================================================
+     * 12. ⭐ NVS bridge round-trip + the bus message contract (GAP-002/003/004)
+     * ================================================================= */
+    {
+        /* --- 12a. NVS persist/restore round-trip ([CXC-FPID-DEVICE-BRIDGE]) --- */
+        DevicePersistence p;
+        p.count_authentication_attempts = 7;
+        p.role_capability_table["crew"] = std::vector<std::string>{ "open_hatch", "vent" };
+        p.role_capability_table["guest"] = std::vector<std::string>{};
+        p.bridge[0] = BridgeEntry{ "alice", 1, "Captain", "crew" };
+        p.bridge[5] = BridgeEntry{ "bob", 2, "Passenger", "guest" };
+        const std::string blob = fp_persist::to_blob(p);
+        DevicePersistence q;
+        TCHECK(fp_persist::from_blob(blob, q), "nvs: blob parses");
+        TCHECK(q.count_authentication_attempts == 7, "nvs: count survives");
+        TCHECK(q.bridge.size() == 2 && q.bridge[0].person == "alice" &&
+                   q.bridge[0].ordinal == 1 && q.bridge[0].character == "Captain" &&
+                   q.bridge[0].role == "crew",
+               "⭐ nvs: bridge entry restored byte-exact (crew resolves after reboot)");
+        TCHECK(q.bridge[5].person == "bob" && q.bridge[5].role == "guest",
+               "nvs: second bridge entry restored");
+        TCHECK(q.role_capability_table["crew"].size() == 2 &&
+                   q.role_capability_table["crew"][0] == "open_hatch",
+               "nvs: role_capability_table restored");
+        TCHECK(q.role_capability_table.count("guest") == 1 &&
+                   q.role_capability_table["guest"].empty(),
+               "nvs: an empty-capability role survives");
+        DevicePersistence r;
+        TCHECK(!fp_persist::from_blob("not a valid blob", r) && r.bridge.empty(),
+               "nvs: a garbage blob is rejected, leaving a clean reset");
+
+        /* --- 12b. inbound trailing-tail routing (device_id CONTAINS a slash) --- */
+        const std::string P = "composeio";
+        const std::string DID = "dev/s3-fp1";
+        TCHECK(fp_bus::route_inbound("composeio/global/dev/s3-fp1/template_set", P, DID) ==
+                   fp_bus::Inbound::TEMPLATE_SET, "route: template_set");
+        TCHECK(fp_bus::route_inbound("composeio/global/dev/s3-fp1/cmd/enroll", P, DID) ==
+                   fp_bus::Inbound::ENROLL,
+               "⭐ route: cmd/enroll (multi-segment tail; device_id has a slash)");
+        TCHECK(fp_bus::route_inbound("composeio/global/dev/s3-fp1/cmd/enroll/cancel", P, DID) ==
+                   fp_bus::Inbound::ENROLL_CANCEL,
+               "⭐ route: cmd/enroll/cancel (NOT mis-routed to enroll)");
+        TCHECK(fp_bus::route_inbound("composeio/global/dev/s3-fp1/announce", P, DID) ==
+                   fp_bus::Inbound::UNKNOWN, "route: a device->service tail is not an inbound cmd");
+        TCHECK(fp_bus::route_inbound("composeio/global/other/template_set", P, DID) ==
+                   fp_bus::Inbound::UNKNOWN, "route: a different device is not ours");
+        TCHECK(fp_bus::route_inbound("composeio/global/dev1/cmd/enroll", P, "dev1") ==
+                   fp_bus::Inbound::ENROLL, "route: a flat device_id routes too");
+
+        /* --- 12c. announce payload shape + retained flag (GAP-003) --- */
+        const std::string ann = fp_bus::announce("dev/s3-fp1", "open_hatch", 200, 1536, true, "r503-2ch", 1.0, 1);
+        TCHECK(ann.find("\"evt\":\"announce\"") != std::string::npos, "announce: evt=announce");
+        TCHECK(ann.find("\"device_id\":\"dev/s3-fp1\"") != std::string::npos, "announce: device_id");
+        TCHECK(ann.find("\"gated_capability\":\"open_hatch\"") != std::string::npos, "announce: gated_capability");
+        TCHECK(ann.find("\"capabilities\":{") != std::string::npos, "⭐ announce: NESTED capabilities object");
+        TCHECK(ann.find("\"slot_count\":200") != std::string::npos, "announce: slot_count (unstarves the size-guard)");
+        TCHECK(ann.find("\"template_size_bytes\":1536") != std::string::npos, "announce: template_size_bytes");
+        TCHECK(ann.find("\"supports_readback\":true") != std::string::npos, "announce: supports_readback");
+        TCHECK(ann.find("\"feedback_profile\":\"r503-2ch\"") != std::string::npos,
+               "⭐ announce: feedback_profile rides the nested capabilities (C73, the 6th field)");
+        TCHECK(fp_bus::retained(fp_bus::Outbound::ANNOUNCE), "⭐ announce: RETAINED (discovery)");
+
+        /* --- 12d. enroll-complete: template_ref (fingerprint://), NOT raw bytes (GAP-002) --- */
+        const std::string ec = fp_bus::enroll_complete("dev/s3-fp1", "alice", 2,
+                                                       "fingerprint://abc123", "req-9", 1.0, 2);
+        TCHECK(ec.find("\"template_ref\":\"fingerprint://abc123\"") != std::string::npos,
+               "⭐ enroll_complete: carries template_ref (a fingerprint:// reference)");
+        TCHECK(ec.find("\"person\":\"alice\"") != std::string::npos &&
+                   ec.find("\"ordinal\":2") != std::string::npos &&
+                   ec.find("\"request_id\":\"req-9\"") != std::string::npos,
+               "enroll_complete: {person, ordinal, request_id}");
+        TCHECK(ec.find("\"template\":\"") == std::string::npos,
+               "⭐ enroll_complete: NO raw `template` bytes on the bus "
+               "([DEFECT-ENROLL-PY-...-A4128F])");
+        TCHECK(ec.find("dev/s3-fp1/result/enroll/complete") != std::string::npos,
+               "enroll_complete: ns is <dev>/result/enroll/complete");
+        TCHECK(!fp_bus::retained(fp_bus::Outbound::ENROLL_COMPLETE),
+               "enroll_complete: an event, NOT retained");
+
+        /* --- 12e. enroll status: retained, capture_of == captures_per_template --- */
+        const std::string st = fp_bus::enroll_status("dev/s3-fp1", "capturing", 1, 2, 2, 1.0, 3);
+        TCHECK(st.find("\"phase\":\"capturing\"") != std::string::npos &&
+                   st.find("\"capture_n\":2") != std::string::npos &&
+                   st.find("\"capture_of\":2") != std::string::npos,
+               "enroll_status: {phase, ordinal, capture_n, capture_of}");
+        TCHECK(fp_bus::retained(fp_bus::Outbound::ENROLL_STATUS),
+               "enroll_status: RETAINED (last-value-wins progress)");
     }
 
     printf("\n   [r503] %d checks, %d failed%s\n", t_checks, t_fail,

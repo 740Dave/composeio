@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<!--
+  ComposeUX DOM backend — GLASS demo page ([SPEC:CXC-DOM], [CXC-DOM-ACCEPTANCE]).
+
+  A real browser rendering, from the SAME .compose.yaml-shaped scene the Python
+  runtime would parse:
+    * a config FORM (from a pydantic-shaped field set) that buffers -> submits
+      over WS -> shows SERVER-side per-field validation errors ([CXC-DOM-FORM-
+      PRIMITIVE], [CXC-DOM-SERVER-VALIDATION]);
+    * a read-only NAMESPACE TREE (role=tree) for namespace review
+      ([CXC-DOM-CONTROL-SET-V1]);
+    * a live CONTROL surface whose publishes travel over the WS connector and
+      are seen by a subscriber on the same bus ([CXC-DOM-CONTROL-PUBLISH-REUSE],
+      [CXC-DOM-TWO-WAY-BINDING]).
+
+  This page is the verify-human GLASS gate — it is NOT what the machine tests
+  prove.  Run:  python -m composeio.render.dom.server   then open this URL.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ComposeUX DOM backend — glass demo</title>
+  <link rel="stylesheet" href="../demo/demo.css" />
+  <script src="../static/dsl.js"></script>
+  <script src="../static/bindings.js"></script>
+  <script src="../static/dom_canvas.js"></script>
+  <script src="../static/ws_client.js"></script>
+  <script src="../static/controls.js"></script>
+  <script src="../static/form.js"></script>
+  <script src="../static/runtime.js"></script>
+</head>
+<body>
+  <header>
+    <h1>ComposeUX DOM render backend</h1>
+    <div id="status" class="status">connecting…</div>
+  </header>
+
+  <main>
+    <section class="col">
+      <h2>Config form (server-validated)</h2>
+      <div id="scene-form"></div>
+      <p class="hint">Submit validates SERVER-side against a real pydantic
+        <code>Config</code>. Try <code>mode=ha</code> with
+        <code>replicas=1</code> for a cross-field error, or a non-numeric port.</p>
+    </section>
+
+    <section class="col">
+      <h2>Namespace tree (read-only review)</h2>
+      <div id="scene-tree"></div>
+      <h2>Live control surface</h2>
+      <div id="scene-controls"></div>
+      <div class="subscriber">
+        subscriber sees <code>demo/greeting</code>:
+        <span id="sub-value" class="sub-value">—</span>
+      </div>
+    </section>
+
+    <section class="col">
+      <h2>Bus monitor (raw frames over WS)</h2>
+      <ul id="monitor" class="monitor"></ul>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+      // WS endpoint: default to the demo harness (:8901), but allow pointing at a
+      // REAL ComposeServer WS listener without editing this file, e.g.
+      //   demo.html?ws=ws://127.0.0.1:8430&tenant=haven
+      // (?ws may be a bare port or a full ws:// URL).
+      var params = new URLSearchParams(location.search);
+      var wsParam = params.get("ws");
+      var WS_URL = !wsParam ? ("ws://" + location.hostname + ":8901")
+        : (/^wss?:\/\//.test(wsParam) ? wsParam
+          : "ws://" + location.hostname + ":" + wsParam);
+      var TENANT = params.get("tenant") || "haven";
+
+      var ws = new ComposeWsClient({ url: WS_URL, tenant: TENANT, source: "dom-demo-page" });
+      var statusEl = document.getElementById("status");
+      ws.on("state", function (s) { statusEl.textContent = s; statusEl.className = "status " + s.toLowerCase().replace(/[^a-z]/g, "-"); });
+
+      // raw bus monitor — subscribe a wildcard so publishes are visible on glass.
+      var monEl = document.getElementById("monitor");
+      ws.subscribe("*", function (ns, val, meta) {
+        var li = document.createElement("li");
+        li.textContent = (meta && meta.retained ? "↺ " : "→ ") + ns + " = " + JSON.stringify(val);
+        monEl.insertBefore(li, monEl.firstChild);
+        while (monEl.childNodes.length > 40) monEl.removeChild(monEl.lastChild);
+      });
+
+      ws.on("bound", function () {
+        // FORM scene — the config-UI vocabulary ([CXC-DOM-CONTROL-SET-V1]).
+        new ComposeRuntime.Runtime({ parent: document.getElementById("scene-form"), ws: ws })
+          .mount({ root: { type: "form", id: "cfg", target: "demo", namespace: "config/demo",
+            title: "demo service", submit_label: "Apply config", children: [
+              { type: "text", id: "name", field: "name", label: "name", placeholder: "service name" },
+              { type: "number", id: "port", field: "port", label: "port", min: 1, max: 65535 },
+              { type: "select", id: "mode", field: "mode", label: "mode",
+                options: ["auto", "ha", "manual"], value: "auto" },
+              { type: "number", id: "replicas", field: "replicas", label: "replicas" },
+              { type: "textarea", id: "notes", field: "notes", label: "notes", rows: 2 }
+            ] } });
+
+        // TREE scene — namespace review ([CXC-DOM-CONTROL-SET-V1]).
+        new ComposeRuntime.Runtime({ parent: document.getElementById("scene-tree"), ws: ws })
+          .mount({ root: { type: "tree", id: "ns", label: "namespaces", data: {
+            demo: { greeting: "(live)", mode: "auto" },
+            config: { demo: "(form target)" },
+            _bus: { discovery: "…" }
+          } } });
+
+        // CONTROL surface — live publishes over WS ([CXC-DOM-CONTROL-PUBLISH-REUSE]).
+        new ComposeRuntime.Runtime({ parent: document.getElementById("scene-controls"), ws: ws })
+          .mount({ root: { type: "column", gap: 10, children: [
+            { type: "text", id: "greet", field: "greeting", label: "greeting (live-publish)",
+              namespace: "demo/greeting", value: { namespace: "demo/greeting" } },
+            { type: "emit_button", id: "ping", label: "Send ping", emits: [
+              { namespace: "demo/ping", value: { namespace: "demo/greeting", default: "hi" } } ] },
+            { type: "radio_button_group", id: "mode", labels: ["auto", "ha", "manual"], index_namespace: "demo/mode_idx" },
+            { type: "theme_toggle", id: "dark", label: "dark mode", namespace: "demo/dark" }
+          ] } });
+
+        // a plain subscriber on the same bus, proving a control's publish
+        // reaches a live peer ([CXC-DOM-CONTROL-PUBLISH-REUSE] verify-human).
+        ws.subscribe("demo/greeting", function (ns, val) {
+          document.getElementById("sub-value").textContent = JSON.stringify(val);
+        });
+      });
+
+      ws.connect();
+    })();
+  </script>
+</body>
+</html>

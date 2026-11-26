@@ -131,7 +131,7 @@ static const NsHashCase kNsHashCases[] = {
     {"sys/cpu", 0x54F7},
     {"ftl_jump", 0x5CBA},
     {"ftl_jump_led", 0x9415},
-    {"_device/wsc6-6f4ce4/restart", 0x9062},
+    {"_device/wsc6-07f199/restart", 0x9062},
     {"game/system", 0x1A73},
     {"a", 0x9D77},
     {"", 0xFFFF},

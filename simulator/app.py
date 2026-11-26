@@ -12,7 +12,7 @@ Demonstrates:
   - Namespace labels (DP-CIO-2 extension)
 
 Run: python3 -m simulator.app
-     (from ~/Dropbox/Maker/composeio/)
+     (from ${COMPOSEIO_HOME}/)
 """
 
 from __future__ import annotations

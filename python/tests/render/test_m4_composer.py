@@ -348,9 +348,24 @@ def test_m31_gate_preview_equals_deployed(tmp_path):
         f"{ratio * 100:.2f}% pixels differ")
 
 
+M31_BOARD_URI = "bus://assets/m31/board.png"
+
+
 def test_m31_composer_chrome_golden(tmp_path):
     """Golden-pin the full Composer window with the M31 build loaded
     (btn_start selected, Layers tab active)."""
+    # The golden contains the REAL board photo, which exists only in the live
+    # bus_storage service (no copy in the repo). With the service unreachable
+    # the image widget draws its placeholder and the frame differs by ~13%: a
+    # missing PREREQUISITE, not a render regression. Say so as a skip that names
+    # the service, never as a failure (same rule as the .mcp.json gate).
+    from composeio import resolve as _resolve
+    try:
+        _resolve.resolve_bytes(M31_BOARD_URI, timeout=5)
+    except OSError as exc:
+        pytest.skip(f"{M31_BOARD_URI} unresolvable ({_resolve.BUS_STORAGE_URL}): "
+                    f"{exc!r} -- the golden needs the live bus_storage asset; "
+                    f"NOT exercised here")
     app = _composer_app(tmp_path)
     try:
         _build_m31(app.core)

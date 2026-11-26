@@ -30,7 +30,7 @@ flash:
     -std=gnu++17; each env's build_src_filter excludes boards/ wholesale then re-includes only its own board .cpp.
     WiFi creds go in a GITIGNORED src/wifi_config.h (**/wifi_config.h) defining WIFI_SSID/WIFI_PASS — never commit;
     alt: PLATFORMIO_BUILD_FLAGS='-DWIFI_SSID=\"..\" -DWIFI_PASS=\"..\"'. MQTT broker is the SHARED ecosystem broker
-    mqtt-broker.local:1883 (mqtt-broker.local) via -DMQTT_PORT=1883 — a deliberate override, NOT the 1884 foundation
+    192.0.2.75:1883 (mqtt-broker.local) via -DMQTT_PORT=1883 — a deliberate override, NOT the 1884 foundation
     default (confirmed e74e56a). monitor: pio device monitor -e <env> (recipe §2/§3).
 
 config_source: null   # reactive/headless tier — driven by LIVE MQTT namespaces, not a fetched scene .compose.yaml
@@ -40,7 +40,7 @@ requires:
     kind: secret
     status: host-config
     note: "gitignored WIFI_SSID/WIFI_PASS; NOT a bus asset — host-provided at build. Never commit credentials (recipe §3)"
-  - ref: "mqtt://mqtt-broker.local:1883"
+  - ref: "mqtt://192.0.2.75:1883"
     kind: broker
     status: transport
     note: "mqtt-broker.local shared ecosystem broker; a bus TRANSPORT endpoint (not a bus:// asset). -DMQTT_PORT=1883 (recipe §3)"
@@ -62,7 +62,7 @@ verify:
       expect: "ALL PASS (94 checks)"
       note: "env native_test: `cd firmware/reactive_core && pio run -e native_test && .pio/build/native_test/program` — pure core + actuator HAL, no hardware (R1 46/46 + R2 HAL = 94/94) (recipe §5)"
     - check: live-bus-to-gpio
-      expect: "publish demo/level (MQTT mqtt-broker.local:1883) -> ns('demo/level')>50 -> GPIO3"
+      expect: "publish demo/level (MQTT 192.0.2.75:1883) -> ns('demo/level')>50 -> GPIO3"
       note: "manual observe: GPIO3 toggling (mirrored on WS2812) or serial self-report; e74e56a: 72->HIGH, 30->LOW, 88->HIGH (recipe §5)"
   human: >
     Actuator motion/light is NOT automatable. lego_dots lights and rack_triple_gauge needles/backlights
@@ -91,7 +91,7 @@ variants:
     board_variant: esp32-c3-supermini
     port_pinned: null                      # auto-detect; boards plugged in ad hoc (recipe §2)
     power: 12V-low-side-switched
-    detail: "12x low-side light switches: light/1..12 -> GPIO [0,1,2,3,4,5,6,7,8,9,10,20]; each GPIO->150R->BC337 base, active-high (HIGH=light ON); 12/24V load on JST-XH. PCB gen: ~/Dropbox/Maker/pcb/lego_dots/generate_pcb.py v1.0. All channels init LOW (recipe §4)"
+    detail: "12x low-side light switches: light/1..12 -> GPIO [0,1,2,3,4,5,6,7,8,9,10,20]; each GPIO->150R->BC337 base, active-high (HIGH=light ON); 12/24V load on JST-XH. PCB gen: ${MAKER_HOME}/pcb/lego_dots/generate_pcb.py v1.0. All channels init LOW (recipe §4)"
     quirks:
       - id: strapping-pins-drive-bc337
         resolved: false
@@ -110,7 +110,7 @@ variants:
       (A0-2=GND, RESET high) -> 3x L293D (EN/VS/VCC on +5V) -> 3x steppers (12V load): gauge/1..3 = GPA0-3 / GPA4-7 /
       GPB0-3. Backlights gauge/1/light=GPIO0, gauge/2/light=GPIO1, gauge/3/light=GPIO3 (PWM, 5kHz/8-bit LEDC, 2N2222).
       gauge/1..3: stepper, in 0..100 -> out 0..600 full steps, step_interval_ms=3, home_on_boot=true (mechanical-stop
-      homing, no feedback). PCB gen: ~/Dropbox/Maker/pcb/rack_triple_gauge/generate_pcb.py (recipe §4)
+      homing, no feedback). PCB gen: ${MAKER_HOME}/pcb/rack_triple_gauge/generate_pcb.py (recipe §4)
     quirks:
       - id: out-max-placeholder
         value: 600

@@ -1,0 +1,24 @@
+# ⛔ FREERTOS_HZ=1000 IS LOAD-BEARING, NOT TUNING.
+# The IDF default is 100 Hz, which makes pdMS_TO_TICKS(2) evaluate to ZERO ticks.
+# Every timeout in r503_link.c would then be quantised to 10 ms, and this probe
+# REPORTS first_byte_ms and elapsed_ms as measurements. An instrument whose clock
+# is ten times coarser than the numbers it prints is reporting precision it does
+# not have.
+CONFIG_FREERTOS_HZ=1000
+
+# Host link is the native USB Serial/JTAG peripheral (the SuperMini's only port).
+# The console stays on it so a PANIC IS VISIBLE — a probe whose crash is invisible
+# is one more instrument that can only report success.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Logs are noise on a line protocol. The protocol's own '#' diagnostics carry
+# everything a human needs, and the host ignores any line not starting with '<'.
+CONFIG_LOG_DEFAULT_LEVEL_ERROR=y
+
+# report_txn() renders a full-content hex line on the stack; the default 3584 is
+# uncomfortably close.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# The probe idles in a bounded read loop; the task WDT has nothing useful to say
+# about it and its output would interleave with the protocol.
+CONFIG_ESP_TASK_WDT_INIT=n

@@ -245,7 +245,7 @@ These are inferred defaults, not settled — confirm with David before treating 
 - The **MQTT broker host/port** for the `attention/*` topics isn't specified in the source
   design note. `firmware/reactive_core/` defaults to `mqtt-broker.local:1884`, and
   composeio-wide memory says the live broker is still `mqtt-broker.local` (.75) — I've
-  assumed the panel firmware reuses that same broker, but nexus't hardcoded a value into
+  assumed the panel firmware reuses that same broker, but haven't hardcoded a value into
   this doc since the design note didn't state one explicitly.
 - The **74AHCT125 level-shifter wiring** (which of its 4 buffers to use, OE tie-off) isn't
   detailed in the source note beyond "add one if flaky" — I've left it as a named contingency

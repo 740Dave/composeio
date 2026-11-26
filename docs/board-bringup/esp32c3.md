@@ -61,7 +61,7 @@ pin wired, no addressable LED on the SuperMini).
   inject at build time via
   `PLATFORMIO_BUILD_FLAGS='-DWIFI_SSID=\"ssid\" -DWIFI_PASS=\"pass\"' pio run -e esp32c3 -t upload`.
 - MQTT broker: all three envs set `-DMQTT_PORT=1883` — the **shared
-  ecosystem broker** (`mqtt-broker.local:1883`, i.e. `mqtt-broker.local`),
+  ecosystem broker** (`192.0.2.75:1883`, i.e. `mqtt-broker.local`),
   the same broker the Composer/headless smokes use. This is a deliberate
   override: the ini's header comment documents the *foundation's*
   historical default as `mqtt-broker.local:1884`, but reactive-core
@@ -82,7 +82,7 @@ light.
 ### `lego_dots` — 12x low-side light switches (Output Tier 1)
 
 - Source: `firmware/reactive_core/src/boards/lego_dots.cpp`; PCB
-  generator `~/Dropbox/Maker/pcb/lego_dots/generate_pcb.py` v1.0.
+  generator `${MAKER_HOME}/pcb/lego_dots/generate_pcb.py` v1.0.
 - ESP32-C3 SuperMini. Each channel: GPIO -> 150R -> BC337 base,
   emitter to GND, collector = low-side switch for a **12/24V** light
   (JST-XH pin3 return, pin2 = +12V). GPIO HIGH = transistor ON = light
@@ -103,7 +103,7 @@ light.
 ### `rack_triple_gauge` — 3x stepper needle gauges + PWM backlights (Output Tier 2 + Tier 1)
 
 - Source: `firmware/reactive_core/src/boards/rack_triple_gauge.cpp`;
-  PCB generator `~/Dropbox/Maker/pcb/rack_triple_gauge/generate_pcb.py`.
+  PCB generator `${MAKER_HOME}/pcb/rack_triple_gauge/generate_pcb.py`.
 - ESP32-C3 SuperMini -> MCP23017 over I2C (`SDA = GPIO4`, `SCL =
   GPIO5`, 4.7k pullups to 3V3, 400kHz) -> 3x L293D -> 3x stepper motors
   (the dial needles), plus 3x 2N2222 low-side PWM -> LED backlights.
@@ -151,7 +151,7 @@ light.
   (`src/host_test_main.cpp`). R1 baseline was 46/46; R2 added the
   actuator HAL cases for 94/94 total (`9d85c95`).
 - **Live reactive core** (`esp32c3` env): publish to the bus (MQTT
-  `mqtt-broker.local:1883`) and watch it land — either GPIO3 toggling on
+  `192.0.2.75:1883`) and watch it land — either GPIO3 toggling on
   the devkit (mirrored on the WS2812) or the serial monitor's
   self-report. Hardware-verified pattern from `e74e56a`: publishing
   `demo/level` drove `ns('demo/level')>50` -> GPIO3 (`72->HIGH,
@@ -190,7 +190,7 @@ boards:
         placeholder_defines: [WIFI_SSID=YOUR_WIFI_SSID, WIFI_PASS=YOUR_WIFI_PASSWORD]
         alt_injection: "PLATFORMIO_BUILD_FLAGS='-DWIFI_SSID=... -DWIFI_PASS=...'"
       mqtt:
-        broker_host: mqtt-broker.local
+        broker_host: 192.0.2.75
         broker_alias: mqtt-broker.local
         port: 1883
         build_flag: -DMQTT_PORT=1883
@@ -233,7 +233,7 @@ boards:
         pattern: src/wifi_config.h
         gitignore_rule: "**/wifi_config.h"
       mqtt:
-        broker_host: mqtt-broker.local
+        broker_host: 192.0.2.75
         port: 1883
         build_flag: -DMQTT_PORT=1883
     power: 12V_low_side_switched
@@ -272,7 +272,7 @@ boards:
         pattern: src/wifi_config.h
         gitignore_rule: "**/wifi_config.h"
       mqtt:
-        broker_host: mqtt-broker.local
+        broker_host: 192.0.2.75
         port: 1883
         build_flag: -DMQTT_PORT=1883
     power: 12V_motors_5V_driver_logic

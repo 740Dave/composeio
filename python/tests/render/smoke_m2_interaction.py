@@ -9,7 +9,7 @@ queue -> engine dispatch), using the minnow-bringup production config:
 
   1. Window opens on the production composition (no placeholders).
   2. Click the hostname TextInput -> it takes focus (CXC-R-ENGINE-FOCUS).
-  3. Inject SDL_TEXTINPUT "ginger" + Return -> characters appear at the
+  3. Inject SDL_TEXTINPUT "fleetnode" + Return -> characters appear at the
      cursor and the commit publishes bringup/hostname ([CXC-R-C8]).
   4. Click the avahi Checkbox -> bringup/opt_avahi == "on".
   5. Click a Button (test dashboard config) -> state engine advances and
@@ -88,17 +88,17 @@ def main() -> int:
     _click(app, hx, hy)
     check("TextInput takes focus on click", hostname.focused)
 
-    for ch in "ginger":
+    for ch in "fleetnode":
         app.canvas.inject_text(ch)
     _frames(app, 2)
     check("typed characters appear at cursor (CXC-R-C8)",
-          hostname.text == "ginger", f"text={hostname.text!r}")
+          hostname.text == "fleetnode", f"text={hostname.text!r}")
 
     app.canvas.inject_key("Return")
     _frames(app, 2)
     committed = app.bus.get_state("bringup/hostname")
     check("Return commits -> namespace published",
-          committed == "ginger", f"bus={committed!r}")
+          committed == "fleetnode", f"bus={committed!r}")
 
     avahi = next(w for w in widgets
                  if isinstance(w, CheckboxWidget)

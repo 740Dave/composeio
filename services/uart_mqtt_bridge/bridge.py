@@ -40,7 +40,7 @@ TWO THINGS THAT ARE NOT OBVIOUS
 
 USAGE
     python3 -m services.uart_mqtt_bridge.bridge \\
-        --port /dev/cu.usbserial-FTZ29P6A \\
+        --port /dev/cu.usbserial-<device-serial> \\
         --broker mqtt-broker.local \\
         --ns throttle/left --ns throttle/right
 
@@ -48,6 +48,7 @@ USAGE
     first-light test; too noisy for a long soak).
 """
 from __future__ import annotations
+import os
 
 import argparse
 import logging
@@ -235,7 +236,7 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="serial device for the UART side")
     ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--broker", default="mqtt-broker.local")
+    ap.add_argument("--broker", default=os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local"))
     ap.add_argument("--mqtt-port", type=int, default=1883)
     ap.add_argument("--ns", action="append", default=[], metavar="NAMESPACE",
                     help="a namespace to relay (repeatable). REQUIRED: the frame "
@@ -248,7 +249,7 @@ def main() -> int:
                          "([SPEC:CXC-CONFIG-BUS], repeatable). Answers its "
                          "CONFIG_REQUEST on _device/<id>/config and pushes an "
                          "unsolicited transfer when the scene changes.")
-    ap.add_argument("--bus-storage", default="http://mqtt-broker.local:8420",
+    ap.add_argument("--bus-storage", default=os.environ.get("COMPOSEIO_STORAGE_URL", "http://mqtt-broker.local:8420"),
                     help="where the head dereferences scenes on the leaf's "
                          "behalf (the leaf has no IP; that is the point)")
     ap.add_argument("--config-pace-ms", type=float, default=2.0,

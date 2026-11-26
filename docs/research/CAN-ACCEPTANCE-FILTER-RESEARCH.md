@@ -73,13 +73,13 @@ attached boards' full 4 MB flash before doing so, so the original firmware is re
 
 | | |
 |---|---|
-| Flashed (needs restoring) | **ESP32-C3**, MAC `AA:BB:CC:DD:EE:FF`, seen at `/dev/cu.usbmodem31101` |
-| Read only, never written | **ESP32-C6**, MAC `AA:BB:CC:DD:EE:FF`, seen at `/dev/cu.usbmodem31201` |
+| Flashed (needs restoring) | **ESP32-C3**, MAC `00:00:5e:00:53:02`, seen at `/dev/cu.usbmodem31101` |
+| Read only, never written | **ESP32-C6**, MAC `00:00:5e:00:53:05`, seen at `/dev/cu.usbmodem31201` |
 
 Backups, 4.0 MB each, in the session scratch directory:
 
 ```
-/private/tmp/claude-501/-Users-davidleeburnett-Dropbox-Maker-composeio/\
+/private/tmp/claude-501/-Users-you-composeio/\
 e1a82ba7-0c99-4f14-a7c9-4e7c40b1d0fc/scratchpad/flash_backup/board_1cdbd4c091f4.bin
 …/scratchpad/flash_backup/board_dc1ed56f4ce4_C6.bin
 ```
@@ -274,8 +274,8 @@ On 2026-08-10, two ESP32 boards were attached to David's Mac and were interrogat
 
 | Port (as enumerated then) | Chip | Revision | MAC |
 |---|---|---|---|
-| `/dev/cu.usbmodem31101` | **ESP32-C3** | v0.4 | `AA:BB:CC:DD:EE:FF` |
-| `/dev/cu.usbmodem31201` | **ESP32-C6** | v0.1 | `AA:BB:CC:DD:EE:FF` |
+| `/dev/cu.usbmodem31101` | **ESP32-C3** | v0.4 | `00:00:5e:00:53:02` |
+| `/dev/cu.usbmodem31201` | **ESP32-C6** | v0.1 | `00:00:5e:00:53:05` |
 
 The observation is kept because **one part of it is a durable, reusable finding** rather
 than an accident of that afternoon:
@@ -623,7 +623,7 @@ Wiring — **every** connection:
 ### 4.1 Build
 
 ```bash
-cd /Users/davidleeburnett/Dropbox/Maker/composeio/firmware/can_filter_bench
+cd ${COMPOSEIO_HOME}/firmware/can_filter_bench
 pio run -e c3_usbcdc
 ```
 

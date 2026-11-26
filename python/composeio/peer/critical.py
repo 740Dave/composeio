@@ -28,12 +28,62 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from composeio.transport import MessageType
+from composeio.transport import BusMessage, MessageType
 
 logger = logging.getLogger("composeio.peer.critical")
 
 # Default retry backoff GAPS in ms ([BP-ACK-RETRY]: 50 / 200 / 1000).
 DEFAULT_BACKOFF_MS = (50, 200, 1000)
+
+
+# --------------------------------------------------------------------------- #
+# FRAME-STAMP HELPERS — relocated OUT of the bus kernel ([DEC-...-BUS-STANDUP-
+# 2026-08-23]). Stamping `pri: critical` / `cid` / the ACK type-8 frame is
+# transport QoS, not bus-core; it now lives beside the retry machinery that is
+# its sole caller. The kernel provides only the generic `bus.send_message`
+# addressing seam.
+# --------------------------------------------------------------------------- #
+def stamp_and_send_critical(bus, namespace: str, value: Any, cid: int,
+                            source: str = "") -> None:
+    """Stamp a ``pri: critical`` STATE frame carrying its correlation id and
+    route it over whatever transport the bus carries ([AMEND:BP-ACK] BP-C13).
+
+    Lands the value locally (tolerant of a strict engine, so the frame keeps
+    flowing) and notifies pattern subscribers, exactly as the former
+    ``bus.publish_critical`` did — behavior is preserved byte-for-byte.
+    """
+    resolved_ns = bus._resolve_namespace(namespace)
+    ns = bus.ensure_namespace(resolved_ns)
+    old = ns.value
+    try:
+        ns.publish_state(value, source=source)
+    except ValueError:
+        pass  # keep the frame flowing even if the local engine is strict
+    bus._notify_pattern_subs(resolved_ns, ns.value, old)
+    bus.send_message(BusMessage(
+        namespace=resolved_ns,
+        type=MessageType.STATE,
+        value=value,
+        source=source,
+        scope="global",
+        sequence=bus._next_seq(),
+        data={"_priority": "critical", "_cid": cid},
+    ))
+
+
+def stamp_and_send_ack(bus, namespace: str, status: Any, cid: int,
+                       source: str = "") -> None:
+    """Stamp an application-level ``ack`` (type code 8) for a critical message,
+    correlated by ``cid`` ([AMEND:BP-ACK] BP-TYPE-ACK / BP-C12)."""
+    bus.send_message(BusMessage(
+        namespace=namespace,
+        type=MessageType.ACK,
+        value=status,
+        source=source,
+        scope="global",
+        sequence=bus._next_seq(),
+        data={"_cid": cid},
+    ))
 
 
 @dataclass
@@ -119,7 +169,7 @@ class CriticalAckOrigin:
                 cid=cid, namespace=namespace, value=value, source=source,
                 expected=set(ack_from), started=time.monotonic(),
             )
-        self._bus.publish_critical(namespace, value, cid, source=source)
+        stamp_and_send_critical(self._bus, namespace, value, cid, source=source)
         if self._auto_retry:
             self._ensure_thread()
         return cid
@@ -196,7 +246,7 @@ class CriticalAckOrigin:
             with self._lock:
                 if entry.cid not in self._table:
                     continue
-            self._bus.publish_critical(entry.namespace, entry.value, entry.cid,
+            stamp_and_send_critical(self._bus, entry.namespace, entry.value, entry.cid,
                                        source=entry.source)
         for entry in due_faults:
             with self._lock:
@@ -315,7 +365,7 @@ class CriticalAcker:
             # Duplicate critical (a retry) — re-ack, do NOT re-execute.
             self.reacks += 1
             status = self._cache[cid][0]
-            self._bus.publish_ack(msg.namespace, status, cid, source=self._module_id)
+            stamp_and_send_ack(self._bus, msg.namespace, status, cid, source=self._module_id)
             return
         status: Any = "ok"
         if self._handler is not None:
@@ -335,7 +385,7 @@ class CriticalAcker:
         if len(self._cache) > self.CACHE_MAX:
             self._cache.popitem(last=False)
         self.processed += 1
-        self._bus.publish_ack(msg.namespace, status, cid, source=self._module_id)
+        stamp_and_send_ack(self._bus, msg.namespace, status, cid, source=self._module_id)
 
     def _expire(self) -> None:
         now = time.monotonic()

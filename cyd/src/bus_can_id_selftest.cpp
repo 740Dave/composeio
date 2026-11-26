@@ -158,9 +158,9 @@ int main(void) {
             bus_priority_for("alert_status", BusMessageType::State),
             bus_ns_hash("alert_status"), st, 1, g);
         uint32_t bulk = bus_can_id_encode(
-            bus_priority_for("_device/hosyond-d1afe8/config",
+            bus_priority_for("_device/hosyond-080739/config",
                              BusMessageType::ConfigPush),
-            bus_ns_hash("_device/hosyond-d1afe8/config"), cp, 1, g);
+            bus_ns_hash("_device/hosyond-080739/config"), cp, 1, g);
         uint32_t ack_id = bus_can_id_encode(
             bus_priority_for("_bus/ack", BusMessageType::Ack),
             bus_ns_hash("_bus/ack"), ack, 1, g);

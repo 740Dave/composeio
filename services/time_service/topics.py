@@ -8,7 +8,7 @@ rotation: those are the time BODIES' concern, never time_service's
 
 The names are plain strings, defined once here so the service, its bodies, and any
 consuming leaf agree on the same spelling — the same discipline
-``fingerprint_storage/topics.py`` keeps for its device-addressed names.
+``fingerprint_service/topics.py`` keeps for its device-addressed names.
 """
 
 from __future__ import annotations

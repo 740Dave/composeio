@@ -108,7 +108,7 @@ from composeio.transport import BusMessage, MessageType, Transport
 
 #: The bus master (see the project memory: mqtt-broker.local /
 #: mqtt-broker.local).  Overridable, because a bench segment is a legitimate target
-#: and because this host is planned to move to a dedicated Skipper.
+#: and because this host is planned to move to a dedicated Buildhost.
 DEFAULT_BROKER = os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local")
 DEFAULT_PORT = int(os.environ.get("COMPOSEIO_MQTT_PORT", "1883"))
 

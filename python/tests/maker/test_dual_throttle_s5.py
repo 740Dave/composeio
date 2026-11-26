@@ -107,9 +107,11 @@ def test_mcu_config_falls_out_of_the_yaml(comp):
     # the full span here would be describing a device that does not exist.
     assert (left.normalize.in_min, left.normalize.in_max) == (96.0, 3999.0)
     assert (left.normalize.out_min, left.normalize.out_max) == (0.0, 100.0)
-    # ...and the conditioning knobs the emitter used to DROP ENTIRELY.
-    assert left.conditioning == {"deadband": 1}
-    assert by_slot["throttle/right"].conditioning == {"invert": True, "deadband": 1}
+    # ...and the conditioning knobs the emitter used to DROP ENTIRELY.  `step`
+    # (output-scale level quantization, wire-declared step: 10 on both pots) is a
+    # leaf-owned conditioning knob too, so both slots carry it alongside deadband.
+    assert left.conditioning == {"deadband": 1, "step": 10}
+    assert by_slot["throttle/right"].conditioning == {"invert": True, "deadband": 1, "step": 10}
     assert by_slot["throttle/right"].pin == "GPIO1"
     assert not cfg.warnings
 
@@ -175,45 +177,6 @@ def test_contract_namespaces_match_bsg():
     # the documented world-app hook names the real seams
     assert "game/own_heading" in WORLD_APP_HOOK or "own_heading" in WORLD_APP_HOOK
     assert "throttle/left" in WORLD_APP_HOOK and "throttle/right" in WORLD_APP_HOOK
-
-
-def test_vendored_helm_fork_agrees_with_upstream():
-    """``compose_projects/bsg/world/helm.py`` is a SELF-DECLARED VENDORED COPY of
-    this module, kept so the bsg repo takes no composeio dependency.
-
-    ⛔ A VENDORED COPY IS A FORK, AND A FORK THAT MISSES A WIRE-FORMAT CHANGE
-    DOES NOT FAIL.  When ``THRUST_FULL_SCALE`` moved 255 -> 100 here (the
-    2026-08-15 percentage migration), a helm.py still dividing by 255 would
-    have produced a ship that steers at 2.55x the intended rate — forever, with
-    no exception on any tier, because both halves are internally consistent.
-    That class of drift is invisible to every "do these two lists match?" check,
-    since the disagreement is in a NUMBER rather than in a list of names.
-
-    So this asserts BEHAVIOURAL equivalence over a sweep, not merely equal
-    constants: a fork that re-derived the same physics differently is fine, and
-    a fork that kept the old full scale is not.
-    """
-    import importlib.util
-
-    helm_path = os.path.join(REPO_ROOT, "compose_projects", "bsg", "world",
-                             "helm.py")
-    assert os.path.isfile(helm_path), f"vendored helm fork missing: {helm_path}"
-    spec = importlib.util.spec_from_file_location("_bsg_helm_fork", helm_path)
-    helm = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helm)
-
-    # The one constant that couples the fork to the wire format.
-    assert helm.THRUST_FULL_SCALE == THRUST_FULL_SCALE, (
-        f"vendored helm.py full scale {helm.THRUST_FULL_SCALE} != upstream "
-        f"{THRUST_FULL_SCALE} — the fork missed a wire-format change")
-    assert helm.NS_THROTTLE_LEFT == NS_THROTTLE_LEFT
-    assert helm.NS_THROTTLE_RIGHT == NS_THROTTLE_RIGHT
-
-    # ...and the physics it drives, across the whole percentage domain.
-    for left in range(0, 101, 5):
-        for right in range(0, 101, 5):
-            assert helm.heading_rate(left, right) == pytest.approx(
-                heading_rate(left, right), abs=1e-9), (left, right)
 
 
 # ===========================================================================

@@ -1,7 +1,7 @@
 """The two guards that had to exist before can_mqtt_bridge met a real segment.
 
 Both defects were found by reading the code on 2026-08-12, the day the bridge
-was first deployed to pi.example.local against a live 500 kbit CAN HAT and the live
+was first deployed to display-node.local against a live 500 kbit CAN HAT and the live
 production MQTT broker. Neither would have shown up as an exception, a traceback
 or a failed test — the firehose "works", and a fabricated namespace publishes
 cleanly. That is precisely why they get assertions.

@@ -34,20 +34,20 @@ from composeio import device_announce as da
 
 @pytest.mark.parametrize("leaf", list(da.ANNOUNCE_FIELDS))
 def test_announcement_namespaces_round_trip(leaf: str) -> None:
-    ns = da.announce_namespace("hosyond-d1afe8", leaf)
-    assert ns == f"_device/hosyond-d1afe8/{leaf}"
-    assert da.parse_namespace(ns) == ("hosyond-d1afe8", leaf)
+    ns = da.announce_namespace("hosyond-080739", leaf)
+    assert ns == f"_device/hosyond-080739/{leaf}"
+    assert da.parse_namespace(ns) == ("hosyond-080739", leaf)
 
 
 @pytest.mark.parametrize("ns", [
     # The OTHER `_device/` namespaces. Every one is a real, shipping control
     # namespace, and a fleet report that turned one into a field would invent
     # a device state out of a command.
-    "_device/hosyond-d1afe8/restart",
-    "_device/hosyond-d1afe8/status",
-    "_device/hosyond-d1afe8/config",
-    "_device/hosyond-d1afe8/config_source",
-    "_device/hosyond-d1afe8/announce",
+    "_device/hosyond-080739/restart",
+    "_device/hosyond-080739/status",
+    "_device/hosyond-080739/config",
+    "_device/hosyond-080739/config_source",
+    "_device/hosyond-080739/announce",
     "_device/restart",
     "_device/broadcast/announce",
     "_device/x/twai/tx_error_counter",

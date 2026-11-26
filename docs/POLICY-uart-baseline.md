@@ -13,7 +13,7 @@ over **three wires with no IP address and no working radio**. A board without it
 as reachable as its radio.
 
 That is not a convenience. It is the difference between a bricked board and a recoverable
-one, and this project has already used exactly that path: `hosyond-d1afe8` was configured
+one, and this project has already used exactly that path: `hosyond-080739` was configured
 over UART with its WiFi deliberately off.
 
 ## The rule
@@ -264,7 +264,7 @@ The guard is delivered as a patch, not as an edit, because `cyd/src/CMakeLists.t
 being edited concurrently when this was written.
 
 ```sh
-cd /Users/davidleeburnett/Dropbox/Maker/composeio
+cd ${COMPOSEIO_HOME}
 git apply --check docs/patches/uart-baseline-guard.patch   # verify first
 git apply         docs/patches/uart-baseline-guard.patch
 ```

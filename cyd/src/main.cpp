@@ -48,6 +48,7 @@
 #include "freshness.h"
 #include "config_chunk.h"       /* config_content_hash() — the scene fingerprint */
 #include "config_fetch.h"
+#include "asset_reload_bus.h"    /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] */
 #include "widgets/sprite.h"
 #include "widgets/button.h"
 #include "capture_http.h"
@@ -120,6 +121,20 @@ static void reboot_now(void) {
     vTaskDelay(pdMS_TO_TICKS(250));
     esp_restart();
 }
+
+/* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] the reboot seam the asset-change
+ * consumer invokes to RELOAD — the recovery FLOOR (re-runs the boot config
+ * fetch).  Adapts reboot_now() to the injected AssetReloadReboot signature. */
+static void asset_reload_reboot(void* /*user*/, const char* reason) {
+    ESP_LOGW(TAG, "[CXC-ACN] %s -> reload (esp_restart -> boot fetch)", reason);
+    reboot_now();
+}
+
+/* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] backstop cadence — re-GET our own
+ * config this often and compare the SERVER's fresh content-hash to held, to
+ * catch a missed event / skipped multi-PUT while we stayed connected.  5 min,
+ * matching controller_main.cpp's kBackstopIntervalMs. */
+static const uint32_t kAssetBackstopMs = 300000;
 
 /* ------------------------------------------------------------------ */
 /* Splash / error screens (the only firmware-baked drawing)            */
@@ -378,6 +393,16 @@ static char* config_obtain(size_t* out_len) {
                 /* [CXC-REPOINT-CONFIRM] a 200 + non-empty body from the ACTIVE
                  * tier's store is the STORE plane of a commit-confirmed trial. */
                 bus_binding_note_store_ok();
+                /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] hold the SERVER-provided
+                 * content-hash read off this GET's header — the device never
+                 * hashes the bytes.  Empty until bus_storage serves the header
+                 * ([CXC-DEVICE-BASELINE-CAP-HASH-ON-GET]); SHOUT so the inert
+                 * event path is visible rather than a silent no-op. */
+                if (!asset_reload_bus_note_held(config_fetch_last_content_hash()))
+                    ESP_LOGW(TAG, "[CXC-ACN] no server content-hash on GET — "
+                             "asset-change self-select INERT until "
+                             "X-Content-Hash/ETag is served; restart floor still "
+                             "recovers via _device/<id>/restart");
                 if (out_len) *out_len = len;
             } else if (bus_binding_active_is_trial()) {
                 /* [CXC-REPOINT-REVERT] Note 1: name WHY the store plane failed —
@@ -585,6 +610,13 @@ static void drain_control_plane(void) {
          * and on non-mqtt transports whose rx task does not intercept it. */
         if (bus_binding_on_bus_value(ev.ns, (int)ev.kind, ev.num, ev.b, ev.str))
             continue;
+        /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] asset-change-notify is a
+         * control-plane event, consumed here even pre-scene: a config change
+         * while the board is stuck at "waiting for config" must still trigger a
+         * reload-via-restart. */
+        if (asset_reload_bus_consume(ev.ns, (int)ev.kind, ev.str,
+                                     asset_reload_reboot, nullptr))
+            continue;
         ESP_LOGD(TAG, "pre-scene arrival on %s ignored — no scene yet", ev.ns);
     }
 }
@@ -688,6 +720,13 @@ static uint32_t drain_bus(Scene* scene, int* arrivals) {
          * into the reactive core, dirties no band, and repaints nothing. */
         if (freshness_consume_heartbeat(ev.ns, (int)ev.kind, ev.num, ev.str,
                                         now_ms))
+            continue;
+        /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] the asset-change-notify event
+         * ({old,new} content-hash dict, arrives as a String) — self-select by
+         * held hash and reload-via-restart if OUR config changed.  Consumed
+         * here, never routed to the scene. */
+        if (asset_reload_bus_consume(ev.ns, (int)ev.kind, ev.str,
+                                     asset_reload_reboot, nullptr))
             continue;
         dirty |= scene_on_bus_value(scene, ev.ns, (int)ev.kind, ev.num,
                                     ev.b, ev.str, t);
@@ -1053,7 +1092,7 @@ extern "C" void app_main(void) {
      * timer BEFORE the network comes up ([CXC-REPOINT-COMMIT-CONFIRMED]
      * ordering-is-load-bearing) and before the transport reads the active
      * broker URI.  Also reads the two-stage escape-hatch GPIO here.  120 s is
-     * [DEC-SKIPPER-COMMIT-CONFIRM-WINDOW-120S]. */
+     * [DEC-BUILDHOST-COMMIT-CONFIRM-WINDOW-120S]. */
     bus_binding_boot_init(device_id(), 120);
 
     BusTransport& bus = bus_transport();
@@ -1133,6 +1172,17 @@ extern "C" void app_main(void) {
         bus.subscribe(rns[i]);
         ESP_LOGI(TAG, "[CXC-ER-RESTART-BUS] restart namespace: %s", rns[i]);
     }
+
+    /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] arm the consumer (clears held) —
+     * BEFORE the boot scene fetch that sets held from the GET header — then
+     * subscribe the retained bus_storage asset-change-notify
+     * (composeio/+/bus_storage/asset/changed).  On connect the broker
+     * re-delivers the last retained event; the held-hash self-select absorbs it
+     * (new==held) unless we are genuinely stale. */
+    asset_reload_bus_init();
+    bus.subscribe(asset_reload_bus_namespace());
+    ESP_LOGI(TAG, "[CXC-ACN] asset-change namespace: %s",
+             asset_reload_bus_namespace());
 
     /* Transport control plane ([CXC-BOARD-HW-UART-SLAVE] bootstrap-trap):
      * `_device/<id>/transport` re-selects the substrate for the NEXT boot,
@@ -1336,6 +1386,34 @@ extern "C" void app_main(void) {
     unsigned last_tap = tap_serial();
 
     while (true) {
+        /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] periodic backstop — re-GET the
+         * config and compare the SERVER's fresh content-hash to held.  OUTSIDE
+         * the capture lock (a blocking GET must not stall the capture server),
+         * gated on the HTTP source (bus/cached carry no server hash), and only
+         * once a scene exists.  First fire is one interval after boot so the
+         * fresh boot fetch is not redundantly re-GET.  Device never hashes. */
+        {
+            static uint32_t s_backstopNext = 0;
+            static bool s_backstopArmed = false;
+            const uint32_t nowb = (uint32_t)(esp_timer_get_time() / 1000);
+            if (!s_backstopArmed) {
+                s_backstopNext = nowb + kAssetBackstopMs;
+                s_backstopArmed = true;
+            } else if (scene && config_source() == ConfigSource::Http &&
+                       asset_reload_bus_held()[0] &&
+                       asset_backstop_due(nowb, s_backstopNext)) {
+                s_backstopNext = nowb + kAssetBackstopMs;
+                size_t blen = 0;
+                char* bt = config_fetch(&blen);
+                if (bt) {
+                    asset_reload_bus_backstop("timer",
+                                              config_fetch_last_content_hash(),
+                                              asset_reload_reboot, nullptr);
+                    free(bt);
+                }
+            }
+        }
+
         /* The render lock serializes this whole body against the
          * capture server's pull-render (shared band buffer + SPI). */
         capture_http_lock();

@@ -57,7 +57,7 @@ EXAMPLES = os.path.join(PY_ROOT, "composeio", "render", "examples")
 # The two committed scenes are the fixtures, and which is which is MEASURED,
 # not assumed — see `test_the_fixtures_are_what_this_file_claims`.
 CLEAN = os.path.join(EXAMPLES, "dual_throttle.compose.yaml")      # 0 skips
-SKIPPER = os.path.join(EXAMPLES, "tm1637_quad_panel.compose.yaml")  # 7 skips
+BUILDHOST = os.path.join(EXAMPLES, "tm1637_quad_panel.compose.yaml")  # 7 skips
 
 
 def _hookup(path: str):
@@ -84,9 +84,9 @@ def test_the_fixtures_are_what_this_file_claims():
         f"{len(clean.skipped)}: {clean.skipped_text()}")
     assert clean.hops, "the clean fixture must still HOP, or it proves nothing"
 
-    _, dirty = render_hookup(_hookup(SKIPPER))
+    _, dirty = render_hookup(_hookup(BUILDHOST))
     assert not dirty.ok, (
-        f"{SKIPPER} was the POSITIVE CONTROL (7 skipped crossings) and now "
+        f"{BUILDHOST} was the POSITIVE CONTROL (7 skipped crossings) and now "
         "skips none. If the layout was re-routed, this file needs a new "
         "fixture that genuinely fails — do not delete the assertion.")
     assert len(dirty.skipped) == 7
@@ -97,7 +97,7 @@ def test_the_fixtures_are_what_this_file_claims():
 # A — the skip report is SURFACED, and the SVG is unchanged
 # ===========================================================================
 def test_render_hookup_surfaces_the_report_plan_hops_always_returned():
-    for path in (CLEAN, SKIPPER):
+    for path in (CLEAN, BUILDHOST):
         h = _hookup(path)
         svg, report = render_hookup(h)
         hops, skipped = plan_hops(layout_hookup(h), wire_segments(h))
@@ -109,7 +109,7 @@ def test_surfacing_the_report_does_not_change_one_svg_byte():
     """⛔ A PURE REPORTING ADDITION.  `hookup_to_svg` is `render_hookup`'s first
     element and nothing else, so every committed artifact re-renders
     identically — including the diagram that DOES skip crossings."""
-    for path in (CLEAN, SKIPPER):
+    for path in (CLEAN, BUILDHOST):
         h = _hookup(path)
         assert hookup_to_svg(h) == render_hookup(h)[0], path
 
@@ -118,7 +118,7 @@ def test_the_refusal_payload_names_every_crossing_actionably():
     """"7 crossings skipped" is a dead end — the author has to re-route a
     specific column.  Every row names both conductors, the coordinate and the
     reason."""
-    _, report = render_hookup(_hookup(SKIPPER))
+    _, report = render_hookup(_hookup(BUILDHOST))
     rows = report.skipped_rows()
     assert len(rows) == len(report.skipped)
     for row in rows:
@@ -134,16 +134,16 @@ def test_the_refusal_payload_names_every_crossing_actionably():
 
 def test_the_report_is_deterministic():
     """A committed artifact re-renders byte-identically; so must its verdict."""
-    first = render_hookup(_hookup(SKIPPER))[1].as_dict()
+    first = render_hookup(_hookup(BUILDHOST))[1].as_dict()
     for _ in range(3):
-        assert render_hookup(_hookup(SKIPPER))[1].as_dict() == first
+        assert render_hookup(_hookup(BUILDHOST))[1].as_dict() == first
 
 
 # ===========================================================================
 # C — the ARCS in the document, counted and stripped
 # ===========================================================================
 def test_the_arc_count_equals_the_planned_hops():
-    for path in (CLEAN, SKIPPER):
+    for path in (CLEAN, BUILDHOST):
         svg, report = render_hookup(_hookup(path))
         assert count_hop_arcs(svg) == len(report.hops), path
 
@@ -155,7 +155,7 @@ def test_a_naive_document_wide_arc_count_is_MEASURABLY_WRONG():
     returns 69 against 57 real bridges — the surplus is pin NAMES (`r1.A` in a
     `data-wire` attribute, and the same name in a `<text>` label).  A count
     that drifts with the netlist's pin names is not a count of bridges."""
-    svg, report = render_hookup(_hookup(SKIPPER))
+    svg, report = render_hookup(_hookup(BUILDHOST))
     naive = len(re.findall(r"\bA\b", svg))
     assert naive > len(report.hops), (
         "the fixture no longer carries a pin named `A`, so this test no longer "
@@ -195,7 +195,7 @@ def test_strip_hops_flattens_the_bridges_and_nothing_else():
     conductor stays a valid, identically-terminated polyline.  (Deleting the
     command instead would break the path and make the differential measure the
     breakage rather than the loss.)"""
-    svg = render_hookup(_hookup(SKIPPER))[0]
+    svg = render_hookup(_hookup(BUILDHOST))[0]
     flat = strip_hops(svg)
     assert count_hop_arcs(flat) == 0
     assert len(flat) < len(svg)
@@ -218,7 +218,7 @@ def test_strip_hops_REPLACES_each_arc_with_an_L_TO_ITS_ENDPOINT():
     hop whose endpoints are not collinear would silently move the conductor,
     and the survival differential would then be measuring the BREAKAGE instead
     of the lost bridge.  The endpoint must survive explicitly."""
-    svg = render_hookup(_hookup(SKIPPER))[0]
+    svg = render_hookup(_hookup(BUILDHOST))[0]
     flat = strip_hops(svg)
     arc = re.compile(r"\sA\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+[01]\s+[01]\s+"
                      r"([-\d.]+)\s+([-\d.]+)")
@@ -234,7 +234,7 @@ def test_strip_hops_REPLACES_each_arc_with_an_L_TO_ITS_ENDPOINT():
 
 
 def test_strip_hops_is_idempotent():
-    svg = render_hookup(_hookup(SKIPPER))[0]
+    svg = render_hookup(_hookup(BUILDHOST))[0]
     assert strip_hops(strip_hops(svg)) == strip_hops(svg)
 
 
@@ -332,7 +332,7 @@ def test_the_endpoint_REFUSES_a_diagram_with_a_skipped_crossing():
     re-routed.  That is the ruling ("a skipped crossing is a hard failure"),
     accepted deliberately — the alternative is seven perfboard intersections
     that read as solder joints."""
-    r, published = _send(SKIPPER)
+    r, published = _send(BUILDHOST)
     assert r["status"] == "error"
     assert r.get("refused_unhopped_crossing") is True
     assert published == [], "a refusal must publish NOTHING"
@@ -420,7 +420,7 @@ def test_a_crossing_at_an_ALREADY_BRIDGED_POINT_is_not_reported_as_skipped():
 
 def test_the_colocation_fix_does_not_silence_a_REAL_skip():
     """⭐ The positive control for the fix itself."""
-    _, dirty = render_hookup(_hookup(SKIPPER))
+    _, dirty = render_hookup(_hookup(BUILDHOST))
     assert len(dirty.skipped) == 7, (
         "the seven genuine skips on the TM1637 panel must survive the "
         "co-location fix — otherwise the fix disabled the gate")

@@ -1,0 +1,459 @@
+---
+title: "The Fingerprint Bus Contract — One Semantic Push, The Device Owns The Mechanism"
+id: "SPEC:CXC-FPBUSC"
+domain: plt.cux
+scope: "Every off-device message a fingerprint-bearing device exchanges with fingerprint_storage: the minimal device announce, the three mutually-exclusive heartbeats, the one semantic template-set push and its five device-emitted results, the enrollment ceremony message sequence, and the failure obligations. Conforms to docs/EXAMPLE-push-sequence-proper-lts.lts, which this document extends with the announce, the enrollment ceremony, and the escalation-class proposal the EXAMPLE itself left open."
+audience: "The author of services/fingerprint_storage/roster_push.py; the author of the device firmware's bus client; the author of the enrollment station's bus client; the author of the acceptance tests for any of them."
+boundary: "IN: the announce, the heartbeats, the push (validation, comparison, receipt, failure), the enrollment ceremony, and what must never cross this bus. OUT: the R503 command set (below the seam, [SPEC:CXC-R503C]), the device-internal HAL contract ([SPEC:CXC-FPHALC]), the fingerprint_storage storage model, and the bus namespace literals (contested three ways in the originals and not this pass's to close)."
+not-this: "Not a port of corpus/73-fingerprint-bus-contract.lts. That file exposed eleven HAL operations as eleven RPC-style bus messages, mirroring the device's internal mechanism onto the bus almost 1:1. This document deletes that surface. Nine of the eleven RPC messages (template/write, slot/delete, store/empty, occupancy/read, stamp/write, stamp/read, template/audit, plus the full six-field capabilities() payload and the per-device retained roster-desired topic) have no replacement, because the operation they exposed no longer crosses the bus at all — the device now owns the whole mechanism internally."
+depends-on: [plt.cux:SPEC:CXC-HAL-DECLARE, plt.cux:SPEC:CXC-HAL]
+confidentiality: internal-only
+artifact-readiness: design-review
+derived-from: "corpus/70,71,72,73-*.lts (concepts mined, not ported) and docs/EXAMPLE-push-sequence-proper-lts.lts (the conformant device-side shape this document extends)"
+status: draft
+created: 2026-08-18
+---
+
+# The Fingerprint Bus Contract — One Semantic Push, The Device Owns The Mechanism [SPEC:CXC-FPBUSC]
+
+> The originals exposed eleven HAL operations as eleven bus messages: `store/empty`, `slot/delete`,
+> `template/write`, `template/audit`, `stamp/write`, `stamp/read`, `occupancy/read`, plus a
+> `capabilities()` announcement and a per-device retained "desired roster" topic. That published
+> **mechanism** — the device's own comparison, deletion and loading sequence, narrated on the bus one
+> HAL call at a time. It violates the same rule the EXAMPLE was written to demonstrate: the cheapest
+> node that can fully own a behavior is the device, and the device already has everything it needs
+> (an on-chip matcher and a 200-template store) to own the whole mechanism without asking permission
+> for each step.
+>
+> This document publishes **one semantic push** carrying a desired template set; the device compares
+> its own held UUID against the pushed one, and if they differ, owns its entire response — delete,
+> load, stamp, announce a result. No slot number, no per-template write command, no occupancy read
+> and no roster stamp read ever cross this bus, because none of them answers a question anyone on the
+> far side of it needs to ask. **Identity is `template_set_uuid`; completeness is `entry_count`.
+> There is no hash anywhere in this document.**
+>
+> A second simplification follows from the first and is not in the EXAMPLE by name: because every
+> device receives the **complete** entry list (`person_id`, `ordinal`, `template` bytes) in the one
+> push message, the device can build its own slot-to-person map at load time and resolve a match to
+> a person **without a second lookup and without a bus-visible slot at all**. The fleet-wide uniform
+> slot index the originals built three costed invariants around — explicit-slot-required,
+> service-owned allocation, a population ceiling on slot-number stability — answers a question this
+> design does not have, because no slot number is ever addressed from outside the device.
+
+---
+
+## 1. The envelope
+
+### [CXC-FPBUSC-ADDRESSING] Every message to or from a device carries the device in its address
+
+- constraint: every topic in this contract is `<device_id>/...`. `device_id` is REQUIRED and is the only source identity on the wire. No payload carries a `device_id` key that could disagree with its own address.
+- rationale: an event or a command carries the minimum key needed to identify its source or its target; everything else about that device — the capability it gates, its optional location — is an attribute resolved by joining to the announce, never duplicated onto every message.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+### [CXC-FPBUSC-FAILURE-TAXONOMY] A failure crossing this bus carries one of six closed, disjoint axes
+
+- constraint: any failure this contract emits carries exactly one of `transport`, `sensor_refusal`, `capacity`, `protocol_desync`, `unsupported`, `unknown_code`, plus a `sensor_code` (null on `transport`, required on `sensor_refusal` and `unknown_code`) and a `detail` string no caller may parse.
+- rationale: transport failure must stay numerically disjoint from sensor refusal, so a service cannot mistake a wire timeout for a documented part refusal. An unrecognised confirmation code is `unknown_code` and is never fatal — the operation fails, the device remains usable, and the next operation must succeed.
+- artifact: services/fingerprint_storage/failure.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+- see-also: [SPEC:CXC-FPHALC]
+
+---
+
+## 2. The device announce
+
+### [CXC-FPBUSC-MSG-DEVICE-ANNOUNCE] device_announce
+
+- definition: a device's minimal, retained self-description — its address, the single capability it gates, and its optional location. It does NOT carry the device-internal HAL capability schema (slot count, template size, capture count): nothing on the far side of the bus needs those numbers, because the push carries its own completeness proof (`entry_count`) and the fleet's set-size limit is a fixed constant, not a per-device announced bound.
+- payload: {device_id, gated_capability, location}
+- emitted-when: once at boot and whenever any of the three fields changes.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+### [CXC-FPBUSC-REQ-ANNOUNCE-RETAINED] A device announce MUST be retained, and the fleet's device inventory has no other source
+
+- constraint: a device MUST publish `device_announce` with the retain flag set, at boot and on any change to `gated_capability` or `location`. `fingerprint_storage` MUST NOT read a device list from any config file, database table or seed; the device inventory it pushes to is exactly the set of devices whose announce it has ever received.
+- rationale: a hand-maintained device list goes stale silently the first time a device is added or moved without someone remembering to update it. An announce-derived registry cannot go stale that way — a device that has never announced is invisible, which is correct, not a defect to work around with a second list.
+- artifact: firmware/fingerprint_device/announce.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-ANNOUNCE-ON-BOOT] A fresh device makes itself known
+
+- when: a device boots for the first time
+- then: it publishes a retained `device_announce` before it publishes any heartbeat, and a subscriber connecting afterward sees it immediately
+- part-of: [CXC-FPBUSC-REQ-ANNOUNCE-RETAINED]
+
+---
+
+## 3. Heartbeats
+
+> Transcribed from the EXAMPLE unchanged in shape; carried here so this document is self-contained.
+
+### [CXC-FPBUSC-MSG-FINGERPRINT-READY] fingerprint_ready
+
+- definition: the positive steady-state announcement. A healthy, configured device says so on a cadence, carrying the UUID of the set it holds and a count of authentication attempts.
+- payload: {template_set_uuid, count_authentication_attempts}
+- emitted-when: once at power-up and every 60 seconds thereafter, if and only if fingerprint hardware is detected and a valid saved `template_set_uuid` exists.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+- counter-semantics: `count_authentication_attempts` counts every attempt against the currently loaded set. Stored in NVS beside `template_set_uuid`; survives a reboot. Zeroed only on a genuine `template_set_uuid` change during a push — an idempotent re-push of the same UUID does NOT reset it.
+
+### [CXC-FPBUSC-MSG-FINGERPRINT-PUSH-NEEDED] fingerprint_push_needed
+
+- definition: the device's request for a template set — the empty-device announcement and the retry request after a recoverable failure.
+- payload: none
+- emitted-when: the device holds no templates, or a retry is needed after a recoverable failure from a prior push.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+### [CXC-FPBUSC-MSG-FINGERPRINT-INOPERABLE] fingerprint_inoperable
+
+- definition: the device cannot be used — the sensor is disconnected, or it is misconfigured in a way no push can reset.
+- payload: {inop_code, human_readable}
+- emitted-when: the device is in a state where it cannot be used.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+### [CXC-FPBUSC-REQ-READY-HEARTBEAT] A healthy configured device announces itself at boot and every 60 seconds
+
+- constraint: a device MUST emit `fingerprint_ready` once at power-up and every 60 seconds thereafter, if and only if fingerprint hardware is detected and a valid saved `template_set_uuid` exists. Otherwise it emits `fingerprint_inoperable` or `fingerprint_push_needed`, and MUST NOT emit `fingerprint_ready`.
+- rationale: the three heartbeats are mutually exclusive and jointly exhaustive; a subscriber determines any device's state from which message arrives. Because `fingerprint_ready` carries `template_set_uuid`, the service learns which set every healthy device holds without asking — this is the whole reconciliation mechanism, and it is why no separate roster-stamp read, occupancy read, or retained desired-set topic exists in this contract.
+- artifact: firmware/fingerprint_device/bus_client.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-RECONCILE-VIA-HEARTBEAT] The heartbeat is the whole reconciliation loop
+
+- when: a device's `fingerprint_ready` carries a `template_set_uuid` that does not match the currently desired set
+- then: `fingerprint_storage` re-runs the push ([CXC-FPBUSC-MSG-TEMPLATE-SET-PUSH]) to that device alone, triggered by the mismatch, never by a timer
+- part-of: [CXC-FPBUSC-REQ-READY-HEARTBEAT]
+
+### [CXC-FPBUSC-REQ-PUSH-NEEDED-HEARTBEAT] An unconfigured device asks for a set every 15 seconds
+
+- constraint: a device with no configured template set MUST emit `fingerprint_push_needed` every 15 seconds.
+- artifact: firmware/fingerprint_device/bus_client.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-PUSH-NEEDED-HEARTBEAT] Empty device keeps asking
+
+- when: a device holds no configured template set
+- then: it emits `fingerprint_push_needed` every 15 seconds
+- part-of: [CXC-FPBUSC-REQ-PUSH-NEEDED-HEARTBEAT]
+
+### [CXC-FPBUSC-REQ-INOPERABLE-HEARTBEAT] An inoperative device says so every 15 seconds
+
+- constraint: an inoperative device MUST emit `fingerprint_inoperable` every 15 seconds.
+- artifact: firmware/fingerprint_device/bus_client.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-INOPERABLE-HEARTBEAT] Sensor disconnected while the device runs
+
+- when: a device's fingerprint sensor becomes disconnected
+- then: it emits `fingerprint_inoperable` every 15 seconds
+- part-of: [CXC-FPBUSC-REQ-INOPERABLE-HEARTBEAT]
+
+---
+
+## 4. The push — one message, four device-owned steps
+
+### [CXC-FPBUSC-REQ-SET-SIZE-LIMIT] A set larger than 20 templates is never published
+
+- constraint: a template set MUST NOT be pushed if it has more than 20 templates.
+- rationale: the fleet's cast is at most ten live players times two index fingers. Twenty is a fixed design bound, not a value derived from any device's announced capacity — every plausible sensor's store is far larger, so the limit protects the cast design, not the hardware.
+- artifact: services/fingerprint_storage/roster_push.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-SET-SIZE-LIMIT] Twenty-one templates
+
+- when: the service is asked to push a set of 21 templates
+- then: the set is not published and no push message reaches the bus
+- part-of: [CXC-FPBUSC-REQ-SET-SIZE-LIMIT]
+
+### [CXC-FPBUSC-REQ-SET-UUID-PRESENT] A set without a UUID is never published
+
+- constraint: a template set MUST NOT be pushed if it does not carry a `template_set_uuid`.
+- rationale: the device's whole receipt algorithm is a UUID comparison. A set with no UUID gives it nothing to compare and nothing to store.
+- artifact: services/fingerprint_storage/roster_push.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-SET-UUID-PRESENT] Set with no UUID
+
+- when: the service is asked to push a set with no UUID
+- then: the set is not published
+- part-of: [CXC-FPBUSC-REQ-SET-UUID-PRESENT]
+
+### [CXC-FPBUSC-MSG-TEMPLATE-SET-PUSH] template_set (the one push message)
+
+- definition: the service's single command to a device, carrying the complete desired set — the UUID, the count, and every entry's person, ordinal, service-private locator and opaque template bytes. This is the ONLY message that carries template bytes, and it is the only message the nine RPC-style messages of the originals collapse into.
+- payload: {template_set_uuid, entry_count, entries: [{person_id, ordinal, template_ref, template}]}
+- surface: command, addressed to one device, NOT retained.
+- rationale-not-retained: a device that missed the push because it was off learns nothing new by the push having been retained — it re-requests via `fingerprint_push_needed` (empty) or is re-pushed on the next `fingerprint_ready` mismatch. Retention buys nothing here that the heartbeats do not already buy, and a retained multi-kilobyte topic per device is a cost this design does not need to pay.
+- rationale-no-slot: no entry names a device-local slot. The device loads entries in the order received and keeps its own in-memory map from its internal store position to `{person_id, ordinal}` — built once, at load time, from data it already has. A match resolves to a person without any second lookup and without any bus-visible slot ever existing.
+- rationale-no-hash: identity is the set's `template_set_uuid`; completeness is `entry_count`. A device that receives fewer entries than `entry_count` declares has an incomplete set and fails the load — see [CXC-FPBUSC-REQ-LOAD-FAILURE]. No content hash of any kind is computed, checked, or carried, on this message or any other in this contract.
+- rationale-template-ref: `template_ref` (`fp://<person>/<ordinal>`) rides the entry as an opaque, service-private correlation key. Nothing outside `fingerprint_storage` may resolve it to bytes; the device stores and echoes it and never parses it. It exists so a failure report can name which entry failed without the device needing to know a person's identity beyond what it was already given.
+- size: 20 entries at up to ~1536 bytes each is at most ~31 KB — one ordinary message on any transport that carries this contract at all; chunking, where the substrate requires it, is a transport property and never a property of this payload.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+- see-also: [CXC-FPBUSC-REQ-UUID-COMPARE], [CXC-FPBUSC-REQ-SET-SIZE-LIMIT], [CXC-FPBUSC-REQ-SET-UUID-PRESENT]
+
+### [CXC-FPBUSC-REQ-UUID-COMPARE] Receipt begins with a UUID comparison
+
+- constraint: a device receiving `template_set` MUST compare its `template_set_uuid` against `current_template_set_uuid`, the value stored from the last successful load. The comparison selects one of the two branches below.
+- artifact: firmware/fingerprint_device/bus_client.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+### [CXC-FPBUSC-REQ-UUID-MATCH-BRANCH] A matching UUID means no work and an acknowledgement
+
+- given: the pushed UUID equals `current_template_set_uuid`
+- constraint: the device MUST take no action and MUST emit `template_set_loaded`.
+- artifact: firmware/fingerprint_device/bus_client.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-SAME-SET-PUSHED-TWICE] Same set pushed twice
+
+- when: a device receives a push whose UUID equals `current_template_set_uuid`
+- then: it performs no delete and no write, and emits `template_set_loaded`
+- part-of: [CXC-FPBUSC-REQ-UUID-MATCH-BRANCH]
+
+### [CXC-FPBUSC-REQ-UUID-MISMATCH-BRANCH] A differing UUID means delete all, load all, then stamp — and the device owns every step
+
+- given: the pushed UUID differs from `current_template_set_uuid`
+- constraint: the device MUST delete every resident template, then load every entry's template bytes, building its own slot-to-person map as it goes. Only if every entry saves successfully does the device save the pushed UUID as `current_template_set_uuid` and emit `template_set_loaded`.
+- rationale: this is the entire mechanism the originals exposed as six separate bus messages (`store/empty`, `template/write` x N, `stamp/write`, plus the reads that verified them). None of those six steps is visible from outside the device; the device is the cheapest node that can fully own all of them, and it already had to, internally, to answer either branch of this comparison.
+- artifact: firmware/fingerprint_device/bus_client.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-ALL-ENTRIES-SAVE] Every entry saves
+
+- when: a device receives a push whose UUID differs from `current_template_set_uuid`
+- and-when: every entry saves successfully
+- then: the device has deleted every previously saved template and holds only the pushed entries
+- and-then: `current_template_set_uuid` holds the pushed UUID, its in-memory slot-to-person map reflects every entry, and it emits `template_set_loaded`
+- part-of: [CXC-FPBUSC-REQ-UUID-MISMATCH-BRANCH]
+
+#### [CXC-FPBUSC-SCEN-PARTIAL-LOAD-HOLDS-STAMP] One entry fails to save, or fewer entries arrive than entry_count promised
+
+- when: a device receives a push whose UUID differs from `current_template_set_uuid`
+- and-when: at least one entry does not save successfully, OR the number of entries received is less than `entry_count`
+- then: `current_template_set_uuid` is not advanced
+- and-then: the device does not emit `template_set_loaded`
+- part-of: [CXC-FPBUSC-REQ-UUID-MISMATCH-BRANCH]
+
+### [CXC-FPBUSC-MSG-TEMPLATE-SET-LOADED] template_set_loaded
+
+- definition: the device's acknowledgement of a push. It reports the device holds the pushed set, whether that required work or not.
+- payload: {template_set_uuid}
+- emitted-when: the pushed UUID was already held, or a delete-and-load of the new set completed successfully.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+### [CXC-FPBUSC-MSG-TEMPLATE-SET-FAILED] template_set_failed
+
+- definition: the device's report that a push did not complete, carrying the exact error and a human-readable string.
+- payload: {template_set_uuid, error_code, human_readable}
+- emitted-when: the push failed.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+### [CXC-FPBUSC-REQ-LOAD-FAILURE] A failed load reports, holds the stamp, and empties the device
+
+- constraint: any failure loading a template set requires the device to send `template_set_failed`, leave `current_template_set_uuid` unmodified, and delete every fingerprint template on the device.
+- rationale: a device that reports a UUID it does not fully hold is confidently wrong rather than merely empty. Holding the old stamp while deleting the templates leaves the device unambiguously unconfigured, which the push-needed heartbeat then announces.
+- artifact: firmware/fingerprint_device/bus_client.py
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-LOAD-FAILURE] Save failure part way through a load
+
+- when: an entry fails to save part way through loading a template set
+- then: the device emits `template_set_failed`, leaves `current_template_set_uuid` unmodified, and deletes every fingerprint template on the device
+- part-of: [CXC-FPBUSC-REQ-LOAD-FAILURE]
+
+### [CXC-FPBUSC-REQ-DELETE-FAILURE-ESCALATION] A failed delete escalates to one of two messages, by a proposed error-class split
+
+- given: the deletion required by [CXC-FPBUSC-REQ-LOAD-FAILURE] itself fails after try and catch
+- constraint: the device MUST emit either `fingerprint_push_needed` or `fingerprint_inoperable`, chosen by the failure axis of the delete error.
+- proposed-class-split: recoverable (-> `fingerprint_push_needed`): `transport`, `protocol_desync`, `unknown_code` — link-level or stream-desync conditions where the hardware itself is presumed intact and a retried push is likely to succeed. Unrecoverable (-> `fingerprint_inoperable`): `sensor_refusal`, `capacity`, `unsupported` — the part answered and refused, or the operation is fundamentally outside what this implementation can do, and no amount of re-pushing changes that.
+- status: proposed
+- who-decides: David. This is the open mapping the EXAMPLE itself names and leaves unenumerated.
+- artifact: firmware/fingerprint_device/bus_client.py
+- part-of: [SPEC:CXC-FPBUSC]
+- see-also: [CXC-FPBUSC-FAILURE-TAXONOMY]
+
+#### [CXC-FPBUSC-SCEN-DELETE-FAILURE-ESCALATION] Cleanup delete fails
+
+- when: the delete of every fingerprint template that follows a failed load itself fails after try and catch
+- then: the device emits either `fingerprint_push_needed` or `fingerprint_inoperable`, chosen by the proposed class split above
+- part-of: [CXC-FPBUSC-REQ-DELETE-FAILURE-ESCALATION]
+
+### [CXC-FPBUSC-NO-RETAINED-DESIRED-SET] There is no retained "desired roster" topic, and the heartbeats are why
+
+- constraint: `fingerprint_storage` MUST NOT maintain a retained per-device topic declaring a desired set independent of the push message itself.
+- rationale: the originals used a retained desired-set topic specifically so a device that missed a push would receive it on reconnect. That mechanism is redundant here: an unconfigured device already announces `fingerprint_push_needed` every 15 seconds until served, and a misconfigured device already announces its actual `template_set_uuid` every 60 seconds, which the service compares against the desired set on every heartbeat. The reconciliation loop is the subscription to the heartbeats, not a second retained store of intent.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+- see-also: [CXC-FPBUSC-SCEN-RECONCILE-VIA-HEARTBEAT]
+
+---
+
+## 5. Enrollment — capturing a new template, distinct from pushing the cast
+
+> Enrollment happens at whichever device captures a new person's finger (an enrollment station, or
+> any fleet device pressed into that role); it produces template bytes that `fingerprint_storage`
+> stores in its library. It is device-addressed and device-internal in mechanism, exactly like the
+> push, and it is a genuinely separate concern from pushing the cast to fleet devices — nothing about
+> the fleet-wide desired set changes until a game start pushes the newly-cast player.
+
+### [CXC-FPBUSC-MSG-ENROLL] enroll ceremony — command in, retained status out
+
+- definition: one command starts a capture ceremony for one of a person's templates; one retained status reports its progress and terminal outcome.
+- payload-in: {ordinal} — which of the person's templates this capture is for. No slot argument: the capturing device manages its own local capture buffer and never exposes a slot externally.
+- payload-out: {phase, ordinal, capture_n, capture_of}, RETAINED, last-value-wins. `capture_of` is announced by the device's own HAL, never a constant.
+- phases: `awaiting_finger -> capture_accepted -> capture_retry (repeats) -> merging -> stored | cancelled | failed`, three terminal.
+- rationale-no-slot: the fleet-wide uniform slot index the originals built to keep a service-directed slot number stable across an unbounded library answers a question this design no longer has, because no fleet device is ever addressed by slot from outside the device. The capturing device's own HAL still needs an internal slot to capture into; that is firmware-private and never crosses this bus.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+### [CXC-FPBUSC-REQ-ENROLL-DEVICE-ADDRESSED] The enroll command and its status are device-addressed
+
+- constraint: `<device_id>/cmd/enroll` and `<device_id>/status/enroll` — never a bare, un-addressed topic.
+- rationale: an un-addressed enroll command would start a ceremony on every fingerprint-bearing device at once, which is physically absurd — one finger touches one sensor. A shared retained status topic would let one device's ceremony overwrite another's terminal record with no field revealing the mistake. Addressing by device closes both failure modes with the same fix.
+- status: proposed
+- who-decides: architect. This is the corrected form of a question two of the source documents left open by omission rather than by design; this document does not leave it open.
+- artifact: firmware/fingerprint_device/bus_client.py
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-ENROLL-TERMINAL] A ceremony completes
+
+- when: a capture ceremony reaches a terminal phase
+- then: the retained status holds that phase until the next `cmd/enroll` on that same device, and no other device's ceremony is affected
+- part-of: [CXC-FPBUSC-REQ-ENROLL-DEVICE-ADDRESSED]
+
+### [CXC-FPBUSC-MSG-ENROLL-CANCEL] enroll/cancel
+
+- definition: abandons a ceremony in progress on the addressed device.
+- payload: {} — the ceremony is identified by the device address; there is no ceremony id or session token, because the device runs at most one ceremony and its shape is firmware-private.
+- emitted-when: a human abandons the ceremony, or the device's own timeout fires.
+- rule: a cancel publishes `cancelled`, never `failed` — `failed` carries a failure axis describing the link or the sensor, and none of the six axes describes a person who walked away.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+
+#### [CXC-FPBUSC-SCEN-CANCEL-LEAVES-NOTHING-CHANGED] Cancel mid-ceremony
+
+- when: `enroll/cancel` is received mid-ceremony on a device
+- then: the device publishes `cancelled` and its held templates are unchanged
+- part-of: [CXC-FPBUSC-MSG-ENROLL-CANCEL]
+
+---
+
+## 6. What must never cross this bus
+
+### [CXC-FPBUSC-WHAT-NEVER-CROSSES] Six things forbidden on this bus, each with its tell
+
+- never-a-hash: no template hash, no roster hash, of any kind, anywhere. Identity is `template_set_uuid`; completeness is `entry_count`. TELL — any `sha256` token in a payload builder or schema in this contract.
+- never-a-slot: no slot number, on any message. TELL — a `slot` key anywhere outside `firmware/fingerprint_device/`.
+- never-a-score: match confidence is device-internal and never republished. TELL — a `score` key in any payload.
+- never-a-ring-command: nothing on the bus commands device feedback; the device owns it always, including mid-enrollment, and reports semantic progress upward only. TELL — a colour, mode, or feedback-state token in any payload.
+- never-a-device-internal-hal-call: `fingerprint_storage`, the editor and the enrollment station never call a HAL method — the device owns the driver and the HAL, and the bus is the whole interface. TELL — an import of any HAL module outside device firmware.
+- never-a-resolvable-template-locator: `fp://<person>/<ordinal>` rides the push as an opaque correlation key; nothing outside `fingerprint_storage` may resolve it to bytes. TELL — a `urlparse`, a `split("/")`, or an `fp://` literal outside the service.
+- status: draft
+- part-of: [SPEC:CXC-FPBUSC]
+- artifact: tests/bus/test_forbidden_fields.py
+
+---
+
+## 7. Decisions carried forward, proposed
+
+### [DD-FPBUSC-CAPABILITY-BINDING] Proposed: a device ANNOUNCES the capability it gates
+
+- decision: PROPOSED — `gated_capability` is part of `device_announce`, stated by the device itself, per [plt.cux:CXC-VISION-ANNOUNCE-BIND].
+- status: proposed
+- who-decides: David.
+- tension-to-flag: the corresponding node in the originals leaned the OPPOSITE way — centrally assigned, on the argument that the device-to-capability binding is deployment topology (the same sensor moved from a locker to a hatch gates a different capability with no hardware change), not device identity. That argument is real and is not dismissed here; it is outweighed by the platform's own announce-then-bind convention, which this pass adopts as the default unless David rules the topology argument controlling. If he does, `gated_capability` moves from the announce to a service-side `device_id -> capability` map, and nothing else in this document changes.
+- part-of: [SPEC:CXC-FPBUSC]
+- see-also: [CXC-FPBUSC-MSG-DEVICE-ANNOUNCE]
+
+### [DD-FPBUSC-ENROLL-IS-DEVICE-ADDRESSED] Proposed: yes, device-addressed
+
+- decision: PROPOSED — yes. See [CXC-FPBUSC-REQ-ENROLL-DEVICE-ADDRESSED] for the full rationale; an un-addressed `cmd/enroll` would start a ceremony on every sensor at once.
+- status: proposed
+- who-decides: David ratifies; the architect's reasoning is recorded at the requirement node above.
+- part-of: [SPEC:CXC-FPBUSC]
+
+### [DD-FPBUSC-DEVICE-ANNOUNCEMENT-SHAPE] Proposed: the minimal shape the reconciliation actually needs
+
+- decision: PROPOSED — {device_id, gated_capability, location}. No HAL capability schema on the wire.
+- rationale: the reconciliation this contract runs on needs exactly three things from a device's identity: an address to push to, the capability it gates (for RBAC and the fleet view), and an optional location (for a human-facing display). It does not need `slot_count`, `template_size_bytes`, `captures_per_template` or any other HAL-internal figure, because the push carries its own size limit (a fixed constant) and its own completeness proof (`entry_count`), and the device's internal capture ceremony announces its own `capture_of` on the enroll status topic where it is actually consumed.
+- status: proposed
+- who-decides: David.
+- part-of: [SPEC:CXC-FPBUSC]
+- see-also: [CXC-FPBUSC-MSG-DEVICE-ANNOUNCE]
+
+### [DD-FPBUSC-DELETE-FAILURE-ESCALATION-CLASS-SPLIT] Proposed: the recoverable/unrecoverable class split
+
+- decision: PROPOSED — see [CXC-FPBUSC-REQ-DELETE-FAILURE-ESCALATION] `proposed-class-split`.
+- status: proposed
+- who-decides: David.
+- part-of: [SPEC:CXC-FPBUSC]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-FPBUSC-REQ-READY-HEARTBEAT] USES [CXC-FPBUSC-MSG-FINGERPRINT-READY]
+- [CXC-FPBUSC-REQ-PUSH-NEEDED-HEARTBEAT] USES [CXC-FPBUSC-MSG-FINGERPRINT-PUSH-NEEDED]
+- [CXC-FPBUSC-REQ-INOPERABLE-HEARTBEAT] USES [CXC-FPBUSC-MSG-FINGERPRINT-INOPERABLE]
+- [CXC-FPBUSC-REQ-UUID-MATCH-BRANCH] USES [CXC-FPBUSC-MSG-TEMPLATE-SET-LOADED]
+- [CXC-FPBUSC-REQ-UUID-MISMATCH-BRANCH] USES [CXC-FPBUSC-MSG-TEMPLATE-SET-LOADED]
+- [CXC-FPBUSC-REQ-LOAD-FAILURE] USES [CXC-FPBUSC-MSG-TEMPLATE-SET-FAILED]
+- [CXC-FPBUSC-REQ-DELETE-FAILURE-ESCALATION] USES [CXC-FPBUSC-MSG-FINGERPRINT-PUSH-NEEDED]
+- [CXC-FPBUSC-REQ-DELETE-FAILURE-ESCALATION] USES [CXC-FPBUSC-MSG-FINGERPRINT-INOPERABLE]
+- [CXC-FPBUSC-REQ-UUID-MATCH-BRANCH] CONTRAST_WITH [CXC-FPBUSC-REQ-UUID-MISMATCH-BRANCH]
+- [CXC-FPBUSC-MSG-FINGERPRINT-READY] CONTRAST_WITH [CXC-FPBUSC-MSG-TEMPLATE-SET-LOADED]
+- [CXC-FPBUSC-REQ-UUID-MATCH-BRANCH] DEPENDS_ON [CXC-FPBUSC-REQ-UUID-COMPARE]
+- [CXC-FPBUSC-REQ-UUID-MISMATCH-BRANCH] DEPENDS_ON [CXC-FPBUSC-REQ-UUID-COMPARE]
+- [CXC-FPBUSC-MSG-TEMPLATE-SET-PUSH] DEPENDS_ON [CXC-FPBUSC-ADDRESSING]
+- [CXC-FPBUSC-MSG-ENROLL] DEPENDS_ON [CXC-FPBUSC-ADDRESSING]
+- [CXC-FPBUSC-NO-RETAINED-DESIRED-SET] CONTRAST_WITH [CXC-FPBUSC-SCEN-RECONCILE-VIA-HEARTBEAT]
+- [CXC-FPBUSC-REQ-DELETE-FAILURE-ESCALATION] USES [CXC-FPBUSC-FAILURE-TAXONOMY]
+- [DD-FPBUSC-CAPABILITY-BINDING] DOCUMENTS [CXC-FPBUSC-MSG-DEVICE-ANNOUNCE]
+- [DD-FPBUSC-DEVICE-ANNOUNCEMENT-SHAPE] DOCUMENTS [CXC-FPBUSC-MSG-DEVICE-ANNOUNCE]
+- [DD-FPBUSC-ENROLL-IS-DEVICE-ADDRESSED] DOCUMENTS [CXC-FPBUSC-REQ-ENROLL-DEVICE-ADDRESSED]
+- [DD-FPBUSC-DELETE-FAILURE-ESCALATION-CLASS-SPLIT] DOCUMENTS [CXC-FPBUSC-REQ-DELETE-FAILURE-ESCALATION]
+
+### Causal
+
+- [CXC-FPBUSC-REQ-UUID-COMPARE] PRECONDITION_FOR [CXC-FPBUSC-REQ-UUID-MATCH-BRANCH]
+- [CXC-FPBUSC-REQ-UUID-COMPARE] PRECONDITION_FOR [CXC-FPBUSC-REQ-UUID-MISMATCH-BRANCH]
+- [CXC-FPBUSC-REQ-LOAD-FAILURE] PRECONDITION_FOR [CXC-FPBUSC-REQ-DELETE-FAILURE-ESCALATION]
+- [CXC-FPBUSC-REQ-SET-UUID-PRESENT] ENABLES [CXC-FPBUSC-REQ-UUID-COMPARE]
+- [CXC-FPBUSC-REQ-LOAD-FAILURE] CAUSES [CXC-FPBUSC-REQ-PUSH-NEEDED-HEARTBEAT]
+- [CXC-FPBUSC-MSG-FINGERPRINT-READY] ENABLES [CXC-FPBUSC-SCEN-RECONCILE-VIA-HEARTBEAT]
+
+### Temporal
+
+- [CXC-FPBUSC-REQ-SET-SIZE-LIMIT] BEFORE [CXC-FPBUSC-REQ-UUID-COMPARE]
+- [CXC-FPBUSC-REQ-SET-UUID-PRESENT] BEFORE [CXC-FPBUSC-REQ-UUID-COMPARE]
+- [CXC-FPBUSC-REQ-UUID-MISMATCH-BRANCH] BEFORE [CXC-FPBUSC-REQ-LOAD-FAILURE]
+- [CXC-FPBUSC-MSG-DEVICE-ANNOUNCE] BEFORE [CXC-FPBUSC-MSG-TEMPLATE-SET-PUSH]
+
+### Entity
+
+- [CXC-FPBUSC-REQ-ANNOUNCE-RETAINED] GROUNDS [CXC-FPBUSC-MSG-DEVICE-ANNOUNCE]
+
+---
+
+**Version**: 1.0
+**Status**: Draft — awaiting the four proposed decisions (§7) and David's ratify of the escalation class split.

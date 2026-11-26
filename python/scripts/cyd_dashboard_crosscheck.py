@@ -21,7 +21,7 @@ The C++ and Python GaugeWidget text offsets are now aligned:
 No subclass override is needed — the standard GaugeWidget is used directly.
 
 Usage:
-    cd ~/Dropbox/Maker/composeio/python
+    cd ${COMPOSEIO_HOME}/python
     python scripts/cyd_dashboard_crosscheck.py
 
 Output:

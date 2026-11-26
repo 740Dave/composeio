@@ -22,8 +22,10 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "nvs.h"
+
+#include "bus_mailbox.h"
 
 static const char* TAG = "bus_uart";
 
@@ -172,7 +174,11 @@ static constexpr int kMaxSubs = 16;
  * plane grows by one namespace per feature, and the failure mode of being one
  * short is a silent drop of the most important namespace on the device. */
 static constexpr int kMaxPersist = 8;
-static constexpr int kQueueDepth = 16;
+/* THE COALESCING MAILBOX capacity ([bus_mailbox.h]) — the scene subscription
+ * width plus the (larger, 8-slot) UART control plane plus headroom.  Tier
+ * parity with the MQTT path: same structure, sized to this transport's own
+ * subscription caps rather than a shared magic number. */
+static constexpr int kMailboxSlots = kMaxSubs + kMaxPersist + 4;
 static constexpr int kRxRingBytes = 1024;
 static constexpr int kRxTaskStack = 4096;
 
@@ -191,9 +197,16 @@ static int s_sub_count = 0;
 static NsEntry s_persist[kMaxPersist];
 static int s_persist_count = 0;
 
-static QueueHandle_t s_queue = nullptr;
+static BusMailbox<kMailboxSlots> s_mailbox;
+/* Writer = the uart rx task, reader = the render loop; the FIFO used to be
+ * their sync.  Short mutex (priority-inheriting) around the slot write and the
+ * drain read, exactly as bus_mqtt.cpp does it. */
+static SemaphoreHandle_t s_lock = nullptr;
 static volatile int64_t s_pending_since_us = 0;
 static volatile bool s_started = false;
+/* device id (== client_id passed to start()) — used to name
+ * `_device/<id>/bus_dropped`. */
+static char s_client_id[32] = "";
 static TaskHandle_t s_rx_task = nullptr;
 
 /* FRAME-LEVEL RECEIVE ERRORS — bad CRC, an unallocated type code, or a full
@@ -257,6 +270,52 @@ void bus_uart_set_raw_sink(BusRawFrameFn fn, void* ud) {
     s_raw_ud = ud;
     ESP_LOGW(TAG, "raw frame sink installed — this node now forwards frames "
              "it does not subscribe (relay mode)");
+}
+
+/* Encode a numeric State and send it, forward-declared: send() appears below
+ * deliver() in this file. */
+static bool send(const char* ns, BusMessageType type,
+                 const uint8_t* value, size_t value_len);
+
+/* Publish the cumulative genuine-overflow drop count on
+ * `_device/<id>/bus_dropped`, from the rx task.  RATE-LIMITED to one frame /
+ * 5 s and only when the count moved — a per-drop publish would push frames
+ * onto the very link whose congestion caused the drop (the diagnostic that
+ * causes the failure it reports).  A cumulative gauge self-heals a missed
+ * sample on the next. */
+static void uart_publish_drop_count(uint32_t total) {
+    if (!s_started || !s_client_id[0]) return;
+    static int64_t last_us = 0;
+    static uint32_t last_total = 0;
+    if (total == last_total) return;
+    int64_t now = esp_timer_get_time();
+    if (last_us && now - last_us < 5 * 1000000LL) return;
+    last_us = now;
+    last_total = total;
+    char ns[96];
+    snprintf(ns, sizeof(ns), "_device/%s/bus_dropped", s_client_id);
+    uint8_t v[kBusValueMaxNumeric];
+    size_t n = bus_value_encode_f32((float)total, v);
+    send(ns, BusMessageType::State, v, n);
+}
+
+/* Hand one arrival to the mailbox under the lock; outside the critical section
+ * preserve the latency stamp and emit any genuine drop.  Mirrors
+ * bus_mqtt.cpp's mailbox_post. */
+static void uart_mailbox_post(const BusEvent& ev) {
+    if (!s_lock) return;
+    const int64_t now = esp_timer_get_time();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const bool was_empty = (s_mailbox.pending() == 0);
+    const bool stored = s_mailbox.post(ev);
+    const uint32_t drops = s_mailbox.dropped();
+    xSemaphoreGive(s_lock);
+    if (was_empty && stored) s_pending_since_us = now;
+    if (!stored) {
+        ESP_LOGW(TAG, "bus mailbox full (%d slots) — %s dropped (%lu total)",
+                 kMailboxSlots, ev.ns, (unsigned long)drops);
+        uart_publish_drop_count(drops);
+    }
 }
 
 static void deliver(const BusFrame& f) {
@@ -415,12 +474,7 @@ static void deliver(const BusFrame& f) {
                              (uint32_t)(esp_timer_get_time() / 1000)))
         return;
 
-    if (s_queue) {
-        if (uxQueueMessagesWaiting(s_queue) == 0)
-            s_pending_since_us = esp_timer_get_time();
-        if (xQueueSend(s_queue, &ev, 0) != pdTRUE)
-            ESP_LOGW(TAG, "bus queue full — %s dropped", ev.ns);
-    }
+    uart_mailbox_post(ev);
 }
 
 static void rx_task(void*) {
@@ -543,7 +597,9 @@ static bool uart_start(const char* client_id) {
     uart_set_pin((uart_port_t)s_port, (int)s_tx, (int)s_rx,
                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
-    s_queue = xQueueCreate(kQueueDepth, sizeof(BusEvent));
+    if (client_id && *client_id)
+        snprintf(s_client_id, sizeof(s_client_id), "%s", client_id);
+    if (!s_lock) s_lock = xSemaphoreCreateMutex();
     s_started = true;
     xTaskCreate(rx_task, "bus_uart_rx", kRxTaskStack, nullptr, 5,
                 &s_rx_task);
@@ -623,15 +679,17 @@ public:
     }
 
     bool poll(BusEvent* out) override {
-        if (!s_queue || !out) return false;
-        bool got = xQueueReceive(s_queue, out, 0) == pdTRUE;
-        if (got && uxQueueMessagesWaiting(s_queue) == 0)
-            s_pending_since_us = 0;
+        if (!s_lock || !out) return false;
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        bool got = s_mailbox.poll(out);
+        if (got && s_mailbox.pending() == 0) s_pending_since_us = 0;
+        xSemaphoreGive(s_lock);
         return got;
     }
 
+    /* Advisory, read without the lock — see the same note in bus_mqtt.cpp. */
     size_t pending() const override {
-        return s_queue ? (size_t)uxQueueMessagesWaiting(s_queue) : 0;
+        return s_mailbox.pending();
     }
     int64_t pending_since_us() const override { return s_pending_since_us; }
 

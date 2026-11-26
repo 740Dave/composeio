@@ -31,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PY_ROOT = os.path.abspath(os.path.join(HERE, os.pardir, os.pardir))
 sys.path.insert(0, PY_ROOT)
 
-BROKER = sys.argv[1] if len(sys.argv) > 1 else "mqtt-broker.local"
+BROKER = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local")
 os.environ["COMPOSEUX_MQTT_BROKER"] = BROKER
 
 from composeio.app import ComposeApp  # noqa: E402

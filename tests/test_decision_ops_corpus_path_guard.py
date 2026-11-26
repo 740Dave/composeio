@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
 from composeio.decision_ops.lts_refresh import LtsRefresher
 from composeio.decision_ops.mcp_server import (
     CorpusPathError,
+    is_vanished_root,
     main,
     validate_default_graph,
 )
@@ -62,7 +63,12 @@ def _write_graph(dirpath: Path) -> Path:
 # --------------------------------------------------------------------------- #
 def test_reproduces_terminal_stale_when_file_vanishes(tmp_path: Path) -> None:
     """Build a partition from a present file, then remove the file (the reorg rename):
-    every subsequent read is STALE with live_hash=sha256("") and does NOT self-heal."""
+    every subsequent read is terminal STALE on a vanished root and does NOT self-heal.
+
+    The engine's vanished-root signature changed in 85c5834 (2026-10-28): the root-SET
+    check now answers first, `reason: root-set-changed`, `live_hash: None`, before any
+    content re-hash could produce sha256(""). This pins the CURRENT documented signature
+    and reads it through the server's own predicate, so the two cannot drift apart again."""
     graph = _write_graph(tmp_path / "decisions")
     r = LtsRefresher()
     built = r.refresh(str(graph))
@@ -72,12 +78,13 @@ def test_reproduces_terminal_stale_when_file_vanishes(tmp_path: Path) -> None:
 
     first = r.query(graph_path=str(graph), tool="lts_find", text="fixture")
     assert first.get("stale") is True
-    assert first.get("live_hash") == _EMPTY_SHA  # reconciled-to-empty: the defect signature
+    assert first.get("reason") == "root-set-changed"  # the engine's documented reason
+    assert is_vanished_root(first)                     # ...and the server recognises it
 
     # heal-on-next-read cannot fire -- there is no file to rebuild from
     second = r.query(graph_path=str(graph), tool="lts_find", text="fixture")
     assert second.get("stale") is True
-    assert second.get("live_hash") == _EMPTY_SHA
+    assert is_vanished_root(second)
 
 
 # --------------------------------------------------------------------------- #

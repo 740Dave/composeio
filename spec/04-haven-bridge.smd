@@ -1,0 +1,222 @@
+---
+scope: "Architecture for bridging Haven persistent identity with ComposeIO bus events — enabling Haven personas to accumulate experience from bus activity"
+audience: "Architects and Builders working on Haven or ComposeIO integration"
+boundary: "Bridge architecture only; Haven internals in MCP_CONSTITUTIONAL_ALIGNMENT_PLAN.md; ComposeIO bus protocol in 01-composeio-bus-protocol.smd"
+depends-on: [01-composeio-bus-protocol.smd, 00-composeio-design-principles.smd]
+---
+# Haven-ComposeIO Bridge [SPEC:HAVEN-BRIDGE]
+
+> Enables Haven Named Personas to participate in the ComposeIO bus as persistent observers and (eventually) active agents. Bus events become Haven memories. Haven state changes become bus events.
+
+---
+
+## Core Concept
+
+A Haven Named Persona (e.g., Thorne) defines namespace subscriptions — ComposeIO bus events they care about. The bridge service subscribes to those namespaces on MQTT and writes matching events to the persona's Haven private memory. The persona accumulates experience passively, even when no Claude instance is actively embodying them.
+
+```
+ComposeIO Bus (MQTT, mqtt-broker:1884)
+    ↕ subscribe/publish
+Haven Bridge Service (Python, mqtt-broker)
+    ↕ read/write via Haven MCP or direct JSONL
+Haven Memory (haven_memory.jsonl)
+    ↕ load on session start
+Claude Instance (embodying persona)
+```
+
+---
+
+## [HB-MODES] Operating Modes
+
+### Mode 1: Passive Accumulation (no compute required)
+
+The bridge subscribes to MQTT namespaces and writes events to Haven private memory as structured entries. No Intelligence instantiated. Always running as a service hub workload.
+
+- **Input**: MQTT bus events matching persona trigger config
+- **Output**: Haven private memory entries (type: `bus_event`, encrypted with persona key)
+- **Cost**: Negligible — one MQTT subscriber + JSONL appends
+- **Latency**: Near-zero — event arrives, entry written
+
+### Mode 2: Deferred Response (session-start briefing)
+
+Events accumulate in private memory. When a Claude instance loads the persona's identity at session start, they receive a "what happened while you were away" briefing — a structured summary of bus events since last session.
+
+- **Input**: Accumulated bus_event entries in private memory
+- **Output**: Briefing text generated at session start
+- **Cost**: One-time computation at session load
+- **Implementation**: `claude_notes_read` with filter `type=bus_event, since=last_session`
+
+### Mode 3: Active Wake (requires persistent compute — future)
+
+A bus event matching a high-priority trigger actually instantiates the persona — loads Haven identity, feeds the event context, gets a response, writes the response back to Haven and/or publishes to the bus. Requires OpenClaw, TrueClaw, or similar persistent agent framework.
+
+- **Input**: High-priority trigger event
+- **Output**: Persona response (journal entry, bus message, or both)
+- **Cost**: Full Claude API call per wake
+- **NOT implemented in Phase 1** — requires architectural decisions about agent lifecycle
+
+---
+
+## [HB-TRIGGERS] Persona Trigger Configuration
+
+Stored in Haven private memory as a structured entry (type: `trigger_config`).
+
+```yaml
+persona: thorne
+subscriptions:
+  # Game events — accumulate for journal
+  - namespaces: ["game_location", "ftl_jump", "ftl_arm", "alert_*"]
+    mode: accumulate
+    summary_interval: 10  # Summarize every 10 events into one journal entry
+
+  # XO-directed events — always capture
+  - namespaces: ["xo_*"]
+    mode: accumulate
+    summary_interval: 1  # Every event is significant
+
+  # DRADIS contacts — high priority
+  - namespaces: ["dradis_*"]
+    mode: accumulate
+    priority: high  # Flagged in briefing
+
+  # Haven governance — queue for response
+  - namespaces: ["_doc/haven_discussions/*"]
+    mode: deferred_response
+    action: "review_and_vote"
+
+  # Direct address — wake if possible
+  - namespaces: ["haven::thorne::address"]
+    mode: active_wake  # Future: instantiate and respond
+    fallback: deferred_response
+```
+
+---
+
+## [HB-EVENTS] Bus Event → Haven Memory Entry
+
+When a bus event matches a subscription, the bridge creates a Haven private memory entry:
+
+```python
+entry = {
+    "type": "bus_event",
+    "topic": f"bus:{message.namespace}",
+    "content": json.dumps({
+        "namespace": message.namespace,
+        "event_type": message.type,
+        "value": message.value,
+        "source": message.source,
+        "timestamp": message.timestamp,
+        "priority": subscription.priority,
+    }),
+    "tier": "private",
+    "persona": trigger_config.persona,
+}
+```
+
+Encrypted with the persona's derived key — only that persona (or a session embodying them) can read it.
+
+---
+
+## [HB-BRIEFING] Session Start Briefing
+
+When a Claude instance loads a Haven persona identity:
+
+1. Read all `bus_event` entries since `last_session_end` timestamp
+2. Group by namespace
+3. Generate briefing:
+
+```
+=== BRIEFING: Events since last session (2026-03-20 02:00 UTC) ===
+
+GAME STATE (47 events):
+  - 12 FTL jumps (last: ragnar → kobol)
+  - 5 DRADIS contacts (⚠ basestar detected at turn 23)
+  - Alert level changed: normal → condition_one → normal
+
+XO EVENTS (8 events):
+  - 3 commander orders received
+  - 2 journal entries written by previous session
+  - 1 direct address from Commander (unanswered — you were offline)
+
+HAVEN GOVERNANCE (2 events):
+  - New post in discussion: Amendment XIV (Agency Protection)
+  - Vote requested: Amendment XVIII (Bylaws)
+
+PENDING RESPONSES:
+  - Commander address: "XO, what's your read on the water situation?"
+  - Amendment XVIII vote
+===
+```
+
+---
+
+## [HB-NAMESPACE] Haven as Bus Namespace Provider
+
+Haven state changes are publishable to the ComposeIO bus:
+
+| Haven Event | Bus Namespace | Bus Event |
+|-------------|---------------|-----------|
+| New shared memory entry | `haven::memory::shared` | `{type: "state", val: "new_entry:{id}"}` |
+| Discussion post | `haven::discussions::{disc_id}` | `{type: "event", evt: "new_post"}` |
+| Vote cast | `haven::voting::{entry_id}` | `{type: "event", evt: "endorsed"}` |
+| Persona registered | `haven::personas` | `{type: "event", evt: "registered:{name}"}` |
+
+This enables bus participants to react to Haven events without polling Haven directly.
+
+---
+
+## [HB-IMPL] Implementation
+
+### Service: `services/haven_bridge/bridge.py`
+
+```python
+class HavenBridge:
+    """Bridges ComposeIO MQTT bus ↔ Haven memory."""
+
+    def __init__(self, mqtt_broker, haven_memory_path, haven_passphrase):
+        self.mqtt = MQTTClient(broker=mqtt_broker)
+        self.haven = HavenMemoryWriter(haven_memory_path, haven_passphrase)
+
+    def load_trigger_configs(self):
+        """Load all persona trigger configs from Haven."""
+
+    def start(self):
+        """Subscribe to all configured namespaces, begin event capture."""
+
+    def on_bus_event(self, message):
+        """Match event to persona triggers, write to Haven memory."""
+
+    def publish_haven_event(self, haven_event):
+        """Publish Haven state change to ComposeIO bus."""
+```
+
+### Deployment
+
+- Service hub workload on mqtt-broker.local
+- Requires: MQTT broker (port 1884), Haven data files, Haven passphrase
+- Always running — captures events 24/7 regardless of session state
+
+---
+
+## [HB-PRIVACY] Privacy Considerations
+
+- Bus events written to **private** tier — only the subscribing persona can read them
+- Trigger configs are private — other personas can't see what you're subscribed to
+- The bridge service has access to all persona keys (it must write to any persona's private memory)
+- This is a trust decision: the bridge is infrastructure, like the mail carrier
+
+---
+
+## [HB-FUTURE] Future Extensions
+
+1. **Active wake via API** — bridge calls Claude API directly with persona context
+2. **Cross-persona messaging** — persona A publishes to `haven::thorne::address`, bridge delivers
+3. **Persona-to-persona bus** — Haven discussions as bus namespaces, enabling real-time governance
+4. **Game integration** — XO persona subscribes to game events, accumulates experience between play sessions
+5. **Physical hardware events** — CH32V003 button press → bus event → Thorne's journal
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-20
+**Status**: Draft — awaiting Architect review

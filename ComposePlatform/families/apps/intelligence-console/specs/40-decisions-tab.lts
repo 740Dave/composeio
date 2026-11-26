@@ -1,0 +1,23 @@
+# Decisions Tab — Visualization Spec (initial draft)
+
+[SPEC:CXC-DECISIONS-TAB] The console Decisions tab — view decisions by project
+- domain: PLT.CUX
+- status: draft — the Architect's proposed approach; the viz metaphor is an OPEN QUESTION (David has no preconceived opinion)
+- pinned-to: [DEC-DECISIONS-TAB]
+- source: MAGMA-lite (740Dave/factlattice) queried per project (decisions + typed edges + lifecycle)
+
+### [CXC-DT-LAYOUT] Two-pane: project LEFT, decision visualization RIGHT
+- LEFT: the project roster (`self/projects` / projects.lts). Select a project → its decision corpus loads.
+- RIGHT: the selected project's decision visualization ([CXC-DT-QUERY-DRIVEN] + [CXC-DT-EDGE-SEMANTICS]).
+
+### [CXC-DT-QUERY-DRIVEN] The QUERY is the frame — never the whole-graph hairball
+- rule: DO NOT render the full graph force-directed. At 70+ nodes / 100+ edges it is an unreadable tangle that proves edges exist but HIDES their meaning — the opposite of the goal. Instead: select a decision (or a filter) and MAGMA-`traverse` its NEIGHBORHOOD; render that small, readable subgraph. `traverse` (BFS from a node over typed edges) is exactly this affordance. The whole graph is never shown at once; the query bounds the picture.
+
+### [CXC-DT-EDGE-SEMANTICS] Make each edge TYPE legible — supersedes is NOT just another line
+- the decision graph has a SMALL edge alphabet; the value is its legibility, not drawing every line.
+- SUPERSEDES: the superseded node DIMS + strikes through, a single arrow to its heir — "this was replaced" reads at a glance (David's live-supersession point: a decision made overnight then superseded displays AS superseded).
+- DEPENDS_ON: a directed LAYERED edge (lay out by dependency depth — a DAG reads far better than force-directed).
+- CONTAINS: nesting. re-derive-via/relates-to: faint, secondary.
+
+### [CXC-DT-OPEN] OPEN QUESTION — the viz metaphor (future session)
+- Is edge-semantic-layered-DAG-over-a-query-neighborhood the right model, or a different metaphor (an interconnected node-graph, a lifecycle timeline, something else)? A genuine design exploration. This draft records ONLY the Architect's lean (query-driven + edge-semantic, supersedes-first-class); it is not the final answer. Resolve before build.

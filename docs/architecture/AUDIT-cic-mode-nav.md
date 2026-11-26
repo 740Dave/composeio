@@ -70,7 +70,7 @@ Your call: Sorry, for whatever reason, '/' delimiters look like file paths to me
 
 `[CXC-MODE-NAV-CIC-INSTANCE]` asserts DRADIS and EXT are override leaves carrying `annotation:{path: ".../dradis_mode.svg"}` / `ext_mode.svg`, and `MODE-NAV-C7` makes that a machine-tested acceptance gate. **David never mentioned DRADIS or EXT anywhere in the five turns** — the names and their treatment come from the architect's opening turn and from prior specs (`[CXC-CIC-RADIO-MODE]`), not from this design session. It is legitimately grounded in *prior* ratified art, but it is NOT session-derived and inherits Q1's unresolved premise (that the mode row is folded in at all). If Q1 resolves to "later," this node has no basis yet.
 
-Ratify (DRADIS/EXT override-leaf treatment is prior-spec-derived, contingent on Q1)? I didn't mention DRADIS or EXT because they have been built and are running as worked examples on pi.example.local (as you could see in the screen shot"
+Ratify (DRADIS/EXT override-leaf treatment is prior-spec-derived, contingent on Q1)? I didn't mention DRADIS or EXT because they have been built and are running as worked examples on display-node.local (as you could see in the screen shot"
 
 ### C2 — ALTERED: your "we'll need a DIFFERENT control" repurposed as evidence for SAMENESS
 

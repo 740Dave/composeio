@@ -41,7 +41,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # fold uses these aliases so the wrappers never break the helpers.
 _bsum, _bmin, _bmax = sum, min, max
 
-DEFAULT_ENGINE_ROOT = "/Users/davidleeburnett/factlattice"
+DEFAULT_ENGINE_ROOT = os.path.expanduser("~/factlattice")
 
 # Sentinel bucket key for a node whose group attribute is absent/None/unparseable.
 NONE_KEY = "(none)"

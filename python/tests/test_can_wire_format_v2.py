@@ -106,7 +106,7 @@ def _crc16_ccitt_false(s: str) -> int:
 def test_the_hash_function_is_what_the_spec_says_it_is():
     """`namespace_hash` vs a from-the-algorithm CRC-16/CCITT-FALSE."""
     for ns in ("alert_status", "shields", "throttle/left", "_bus/ack",
-               "_app/console/bbox", "_device/hosyond-d1afe8/config",
+               "_app/console/bbox", "_device/hosyond-080739/config",
                "dradis/bodies", "", "a", "x" * 300):
         assert namespace_hash(ns) == _crc16_ccitt_false(ns), (
             f"namespace_hash({ns!r}) is not CRC-16/CCITT-FALSE")
@@ -139,7 +139,7 @@ def test_an_id_computed_with_no_production_code_at_all():
     cases = [
         (0, "state", "alert_status", 3, "global",
          MessageType.STATE, 0x0027F10D),
-        (7, "config_push", "_device/hosyond-d1afe8/config", 3, "global",
+        (7, "config_push", "_device/hosyond-080739/config", 3, "global",
          MessageType.CONFIG_PUSH, 0x1CB1AD8D),
         (1, "state", "throttle/left", 0, "local",
          MessageType.STATE, 0x0400FD80),
@@ -173,9 +173,9 @@ def test_the_namespace_hashes_match_the_independent_brief():
         "_app/console/bbox": 0x159F,
         "dradis/bodies": 0x2A97,
         "_device/relay-000000/config": 0x6B92,
-        "_device/wsc6-6f4ce4/config": 0x8921,
+        "_device/wsc6-07f199/config": 0x8921,
         "alert_status": 0x9FC4,
-        "_device/hosyond-d1afe8/config": 0xC6B6,
+        "_device/hosyond-080739/config": 0xC6B6,
         "shields": 0xCC50,
     }
     for ns, expected in from_the_brief.items():
@@ -211,7 +211,7 @@ def test_config_push_frame_is_this_exact_number():
 
         CONFIG_PUSH is tier 7 (bulk) BY TYPE                  -> prio = 0b111
         CONFIG_PUSH is wire code 2                            -> type = 0b0010
-        namespace_hash("_device/hosyond-d1afe8/config") = 0xC6B6 (from the brief)
+        namespace_hash("_device/hosyond-080739/config") = 0xC6B6 (from the brief)
         node 3, scope global
 
         prio 7 << 26 = 0x1C000000
@@ -220,7 +220,7 @@ def test_config_push_frame_is_this_exact_number():
         src + scope  =                     0x0D
                                      -> 0x1CB1AD8D
     """
-    assert encode_arbitration_id("_device/hosyond-d1afe8/config",
+    assert encode_arbitration_id("_device/hosyond-080739/config",
                                  MessageType.CONFIG_PUSH, "global",
                                  3) == 0x1CB1AD8D
 
@@ -251,8 +251,8 @@ def test_throttle_left_frame_is_this_exact_number():
         ("_app/console/bbox", MessageType.STATE, "remote", 1),
         ("dradis/bodies", MessageType.EVENT, "global", 7),
         ("_bus/ack", MessageType.ACK, "global", 2),
-        ("_device/hosyond-d1afe8/config", MessageType.CONFIG_PUSH, "global", 3),
-        ("_device/hosyond-d1afe8/config", MessageType.LOG_ENTRY, "auto", 15),
+        ("_device/hosyond-080739/config", MessageType.CONFIG_PUSH, "global", 3),
+        ("_device/hosyond-080739/config", MessageType.LOG_ENTRY, "auto", 15),
         ("sys/cpu", MessageType.TIME_SYNC, "local", 4),
         ("game/whatever", MessageType.HEARTBEAT, "remote", 9),
     ],
@@ -294,11 +294,11 @@ def test_an_alarm_state_frame_outranks_a_bulk_config_push():
     """ACCEPTANCE CRITERION 5a. On CAN a numerically LOWER id wins arbitration.
 
     Under v1 this went the WRONG WAY: `alert_status` hashed to 0x9FC4 and
-    `_device/hosyond-d1afe8/config` to 0xC6B6, so the alarm did win — BY LUCK,
+    `_device/hosyond-080739/config` to 0xC6B6, so the alarm did win — BY LUCK,
     on a hash comparison, and `shields` (0xCC50) lost to almost everything.
     """
     alarm = _id("alert_status", MessageType.STATE)
-    bulk = _id("_device/hosyond-d1afe8/config", MessageType.CONFIG_PUSH)
+    bulk = _id("_device/hosyond-080739/config", MessageType.CONFIG_PUSH)
     assert alarm < bulk, (
         f"alarm 0x{alarm:08X} must win against bulk 0x{bulk:08X}")
     assert arbitration_priority(alarm) == 0
@@ -317,7 +317,7 @@ def test_an_ack_outranks_the_bulk_transfer_it_terminates():
     without touching a single type code.
     """
     ack = _id("_bus/ack", MessageType.ACK)
-    bulk = _id("_device/hosyond-d1afe8/config", MessageType.CONFIG_PUSH)
+    bulk = _id("_device/hosyond-080739/config", MessageType.CONFIG_PUSH)
     assert ack < bulk, f"ack 0x{ack:08X} must win against bulk 0x{bulk:08X}"
     # And the type codes were NOT renumbered — the prohibition, pinned.
     assert wire_code_for_type(MessageType.CONFIG_PUSH) == 2
@@ -340,15 +340,15 @@ def test_shields_is_no_longer_the_lowest_priority_thing_on_the_bus():
 def test_renaming_a_signal_does_not_re_rank_it():
     """The v1 defect stated as a property rather than as an example.
 
-    `_device/wsc6-6f4ce4/config` (0x8921) outranked
-    `_device/hosyond-d1afe8/config` (0xC6B6) — two transfers of identical role
+    `_device/wsc6-07f199/config` (0x8921) outranked
+    `_device/hosyond-080739/config` (0xC6B6) — two transfers of identical role
     and urgency, ordered by a MAC suffix.
     """
-    a = _id("_device/wsc6-6f4ce4/config", MessageType.CONFIG_PUSH)
-    b = _id("_device/hosyond-d1afe8/config", MessageType.CONFIG_PUSH)
+    a = _id("_device/wsc6-07f199/config", MessageType.CONFIG_PUSH)
+    b = _id("_device/hosyond-080739/config", MessageType.CONFIG_PUSH)
     assert arbitration_priority(a) == arbitration_priority(b) == 7
-    assert namespace_hash("_device/wsc6-6f4ce4/config") \
-        < namespace_hash("_device/hosyond-d1afe8/config"), (
+    assert namespace_hash("_device/wsc6-07f199/config") \
+        < namespace_hash("_device/hosyond-080739/config"), (
             "the hashes still differ — the point is that the TIER no longer does")
     assert _id("throttle/left", MessageType.STATE) >> 26 \
         == _id("throttle/right", MessageType.STATE) >> 26

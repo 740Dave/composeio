@@ -55,6 +55,26 @@
 #ifndef R503_BAUD
 #define R503_BAUD 57600            /* module default: 9600 * N, N=6 */
 #endif
+/* ⛔ THE STORE-NO-ACK FIX (bench 2026-08-20, Round 1 axis capture 2026-08-20).
+ * DownChar+data-phase succeed, then Store(0x06) gets NO ack.  Root cause: Store
+ * was issued 0 ms after the last data packet, while the module was still
+ * committing the just-received char buffer, so it dropped the command.
+ * `synctest` only ever PASSED because it happens to listen ~400 ms after the
+ * data phase (its post_data_listen) before the next command — an inadvertent
+ * settle the production store path never had.  down_char now applies an
+ * explicit settle.  A SETTING, not a baked constant: the right value is a
+ * MEASUREMENT the bench takes via `r503 storetest settle <ms>`. */
+#ifndef R503_DOWNCHAR_SETTLE_MS
+#define R503_DOWNCHAR_SETTLE_MS 200
+#endif
+#ifndef R503_INTER_PACKET_DELAY_MS
+#define R503_INTER_PACKET_DELAY_MS 0   /* back-to-back; synctest proved it fine */
+#endif
+/* R503 flash write, then its ack.  2000 ms had no margin over a slow clone; the
+ * ack still arrives AFTER the flash commit, so the window must cover it. */
+#ifndef R503_STORE_TIMEOUT_MS
+#define R503_STORE_TIMEOUT_MS 3000
+#endif
 
 /* --- the port seam ------------------------------------------------------- */
 class R503Port {
@@ -138,6 +158,12 @@ public:
      * because the right value is a MEASUREMENT nobody has taken yet. */
     void set_inter_packet_delay_ms(uint32_t ms) { inter_packet_delay_ms_ = ms; }
     uint32_t inter_packet_delay_ms() const { return inter_packet_delay_ms_; }
+
+    /* Real-time settle between the end of a data phase and the NEXT command,
+     * via the port's sleep (a no-op on a fake port, which has no reason to
+     * actually wait).  This is the Store-no-ack fix's mechanism: give the
+     * module time to commit the char buffer before Store arrives. */
+    void settle(uint32_t ms) { if (port_) port_->sleep_ms(ms); }
 
     /* Send an already-built data-packet stream, pacing it, and note after
      * each packet whether the module said anything back (it should not —
@@ -276,6 +302,76 @@ struct R503SyncTestResult {
     bool pass() const { return byte_exact && sent_len > 0; }
 };
 
+/* --- DownChar options: pacing + the settle that fixes the Store no-ack ---- */
+struct R503DownCharOptions {
+    uint32_t settle_ms             = R503_DOWNCHAR_SETTLE_MS;
+    uint32_t inter_packet_delay_ms = R503_INTER_PACKET_DELAY_MS;
+    r503::EndPacketStyle style     = r503::EndPacketStyle::LAST_DATA_IS_END;
+};
+
+/* --- `r503 storetest` — the DownChar->Store->readback de-risk instrument ---
+ * synctest proved the CHAR-BUFFER round trip (DownChar<->UpChar).  It does NOT
+ * touch flash, so Store-to-flash of a real template was never exercised until
+ * the bus reload run — and THAT is the step that no-acked.  This instrument
+ * exercises exactly it, DESTRUCTIVELY (it writes a flash slot), with a per-step
+ * trace and pacing/settle sweep so the bench can watch WHERE it dies and find
+ * the settle value that makes it hold. */
+struct R503StoreTestOptions {
+    Slot     slot                  = -1;    /* -1 => first_free_slot()        */
+    uint8_t  buffer_id             = 1;
+    uint32_t settle_ms             = R503_DOWNCHAR_SETTLE_MS;
+    uint32_t inter_packet_delay_ms = R503_INTER_PACKET_DELAY_MS;
+    r503::EndPacketStyle style     = r503::EndPacketStyle::LAST_DATA_IS_END;
+    Slot     real_src_slot         = -1;    /* >=0 => LoadChar+UpChar a REAL
+                                             * template from that slot instead
+                                             * of a synthetic ramp             */
+    bool     readback              = true;  /* LoadChar+UpChar back and compare */
+};
+
+struct R503StoreTestResult {
+    bool     ran                     = false;
+    size_t   template_size           = 0;
+    const char* size_source          = "none";
+    bool     used_real_template      = false;
+    Slot     slot                    = -1;
+    uint32_t settle_ms               = 0;
+    uint32_t inter_packet_delay_ms   = 0;
+    r503::EndPacketStyle style        = r503::EndPacketStyle::LAST_DATA_IS_END;
+
+    bool     downchar_acked          = false;
+    uint8_t  down_conf               = 0xFF;
+    size_t   data_packets_sent       = 0;
+    r503::Bytes post_data_bytes;             /* volunteered during/after data phase */
+    bool     alive_after_data_phase  = false; /* ⭐ responsive to ReadSysPara BEFORE Store? */
+
+    r503::Bytes store_cmd_bytes;
+    bool     store_acked             = false;
+    uint8_t  store_conf              = 0xFF;
+    bool     store_timed_out         = false;
+
+    bool     readback_attempted      = false;
+    bool     readback_complete       = false;
+    bool     byte_exact              = false;
+    size_t   readback_len            = 0;
+    size_t   first_diff_index        = 0;
+
+    std::string failure;                     /* empty on PASS */
+    R503LinkDiag diag;
+
+    bool pass() const {
+        return store_acked && store_conf == 0x00 &&
+               (!readback_attempted || byte_exact);
+    }
+};
+
+/* --- feedback flow: the device-firmware-owned mode that flips the two
+ * flow-dependent states (AWAITING_FINGER, ACCEPT) blue->purple for the enroll
+ * arc.  This is DEVICE STATE the operation flow sets at enroll entry/exit; it
+ * is NOT new HAL or bus semantics, and command_feedback stays the ONLY ring
+ * writer (C72 [CXC-FPHAL-FEEDBACK-STATES]).  Every other state's colour is
+ * flow-independent. */
+enum class FeedbackFlow { MATCH, ENROLL };
+
 /* --- RealR503HAL --------------------------------------------------------- */
 class RealR503HAL final : public FingerprintHAL {
 public:
@@ -305,6 +401,12 @@ public:
                   FingerprintHALFailure& err);
     bool command_feedback(FeedbackState state, const FpProgress& progress,
                           FingerprintHALFailure& err) override;
+
+    /* The operation flow sets this at enroll entry/exit; command_feedback reads
+     * it to render AWAITING_FINGER + ACCEPT purple in the enroll arc, blue
+     * otherwise.  Device state, not bus/HAL semantics. */
+    void set_feedback_flow(FeedbackFlow f) { feedback_flow_ = f; }
+    FeedbackFlow feedback_flow() const { return feedback_flow_; }
 
     /* ---- the R503-NATIVE enrollment ceremony ----------------------------
      * ⛔ DO NOT drive a real enrollment through the inherited
@@ -341,6 +443,11 @@ public:
     /* THE DISCRIMINATOR — UpChar with no DownChar anywhere near it. */
     R503ExtractResult run_extract(Slot slot, uint8_t buffer_id = 1);
 
+    /* THE STORE DE-RISK — DownChar->Store(flash)->readback, traced.  DESTRUCTIVE
+     * (writes a flash slot).  This is the instrument for the 2026-08-20 Store
+     * no-ack, with a settle/pacing sweep. */
+    R503StoreTestResult run_store_test(const R503StoreTestOptions& opt);
+
     /* Send a bare empty PID 0x08, then probe with ReadSysPara.  If the
      * module was stuck mid-DownChar this ends that phase and the probe
      * answers; if the probe still fails, it was stuck for another reason.
@@ -366,9 +473,12 @@ private:
      * carrying the raw byte — it must never be laundered into a refusal. */
     static FingerprintHALFailure axis_for(uint8_t conf, const char* what);
 
-    /* DownChar the bytes into `buffer_id`; does NOT Store. */
+    /* DownChar the bytes into `buffer_id`; does NOT Store.  The settle in `opt`
+     * is the Store-no-ack fix: after the data phase, wait before the caller's
+     * next command so the module can commit the char buffer. */
     bool down_char(uint8_t buffer_id, const TemplateBytes& t,
-                   FingerprintHALFailure& err);
+                   FingerprintHALFailure& err,
+                   const R503DownCharOptions& opt = R503DownCharOptions());
     /* UpChar out of `buffer_id`. */
     bool up_char(uint8_t buffer_id, TemplateBytes& out,
                  FingerprintHALFailure& err);
@@ -385,6 +495,7 @@ private:
     size_t template_size_ = 0;
     const char* template_size_source_ = "unknown";
     Ordinal enroll_ordinal_ = 0;
+    FeedbackFlow feedback_flow_ = FeedbackFlow::MATCH;
 
 public:
     size_t template_size() const { return template_size_; }

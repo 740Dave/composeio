@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# .githooks/post-commit — the git-native DURABILITY FLOOR.
+#
+# WHY THIS EXISTS (strategy doc §1.3 correction #5 — prescribed, never built):
+#   `.config/wt.toml`'s `post-commit = "git push -u origin HEAD"` fires ONLY on a
+#   wt-DRIVEN commit (`wt step commit` / `wt merge`'s internal commit). A plain
+#   `git commit` — what Claude-Code isolation:worktree agents actually run — fires
+#   NO wt hook. `core.hooksPath` points at THIS dir, so this git-native hook is the
+#   half of the floor that fires on the ordinary commit. Together every commit is
+#   pushed the instant it exists; nobody has to remember.
+#
+# ⛔ NON-FATAL, NON-BLOCKING — INVARIANTS THIS HOOK MUST NEVER VIOLATE:
+#   * git IGNORES a post-commit exit code, so we can never FAIL a commit — but a
+#     hook that BLOCKS (a hung push over a dead network) would stall every commit.
+#     So the push is BACKGROUNDED with stdio fully detached and, where available,
+#     wrapped in a hard timeout. The commit returns immediately, always.
+#   * A push failure is LOGGED (git-common-dir/wt-autopush.log) and swallowed —
+#     never surfaced as an error. An instrument that can only report success is not
+#     an instrument, so the log records BOTH outcomes with a timestamp.
+#
+# Skips cleanly (no push, no noise) when a push would be wrong or impossible:
+#   detached HEAD · no `origin` remote · mid-rebase / mid-merge (the commit is an
+#   intermediate state that must not be published as the branch tip).
+#
+# main IS pushed (private repo, delegated push-is-free norm) — made safe by the
+# same backgrounding + timeout as any other branch.
+set -uo pipefail
+
+_log() {
+  # Best-effort structured line into the shared git dir; never fail the hook.
+  local gd
+  gd="$(git rev-parse --git-common-dir 2>/dev/null)" || return 0
+  printf '%s post-commit: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" \
+    >>"${gd}/wt-autopush.log" 2>/dev/null || true
+}
+
+# --- Skip conditions: publish nothing that should not be a branch tip ----------
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [ -z "$branch" ]; then
+  _log "SKIP detached HEAD (no branch to push)"
+  exit 0
+fi
+
+if ! git remote get-url origin >/dev/null 2>&1; then
+  _log "SKIP no 'origin' remote configured"
+  exit 0
+fi
+
+# Mid-rebase / mid-merge: the commit just made is an intermediate step, not a tip
+# to publish. rebase-merge / rebase-apply / MERGE_HEAD are the standard markers.
+git_dir="$(git rev-parse --git-dir 2>/dev/null || echo .git)"
+if [ -d "${git_dir}/rebase-merge" ] || [ -d "${git_dir}/rebase-apply" ] \
+   || [ -f "${git_dir}/MERGE_HEAD" ] || [ -f "${git_dir}/CHERRY_PICK_HEAD" ]; then
+  _log "SKIP mid-rebase/merge/cherry-pick on '$branch' (intermediate commit)"
+  exit 0
+fi
+
+# --- The push: backgrounded, stdio-detached, timeout-wrapped, non-fatal --------
+# Pick a timeout wrapper if one exists (macOS ships neither by default; coreutils
+# provides `gtimeout`). Absent both, background alone still guarantees non-blocking.
+_timeout=""
+if command -v timeout >/dev/null 2>&1; then _timeout="timeout 30"
+elif command -v gtimeout >/dev/null 2>&1; then _timeout="gtimeout 30"; fi
+
+# Run in a detached subshell. stdin/stdout/stderr are redirected so git does not
+# wait on an inherited pipe, and the whole thing is `&`-backgrounded so the commit
+# returns now. The push result (pass OR fail) is logged either way.
+(
+  if $_timeout git push -u origin "$branch" >/dev/null 2>&1; then
+    _log "OK pushed '$branch' -> origin"
+  else
+    rc=$?
+    _log "WARN push of '$branch' failed/timed out (rc=$rc) — commit UNAFFECTED, retry at next push/audit"
+  fi
+) </dev/null >/dev/null 2>&1 &
+
+# Detach the child so no shell job-control waits on it.
+disown 2>/dev/null || true
+exit 0

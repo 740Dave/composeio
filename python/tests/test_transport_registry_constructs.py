@@ -45,6 +45,16 @@ SPECS: dict[str, dict] = {
     # does not "fix" the factory to match a mistaken expectation.
     "synthetic": {"type": "synthetic", "config": "/nonexistent.gen.yaml"},
     "replay": {"type": "replay", "capture": "/dev/null"},
+    # ws is the LISTEN-role connector: its factory only CONSTRUCTS the
+    # WSConnector object (no socket bind until start()), so a construction check
+    # needs no live registry ([SPEC:CXC-WS] [CXC-WS-CONNECTOR-INTERFACE]).
+    "ws": {"type": "ws", "host": "127.0.0.1", "port": 0},
+    # mcp is the agent-facing LISTEN-role umbrella: its factory CONSTRUCTS the
+    # MCPConnector only (the MCP SDK is imported at start(), never at build), so
+    # this check needs neither the SDK nor a live registry. A LAN/loopback host
+    # is REQUIRED — a world-facing bind is refused ([SPEC:CXC-MCP]
+    # [CXC-MCP-CONNECTOR-INTERFACE], [DD-MCP-AUTH-GATE]).
+    "mcp": {"type": "mcp", "host": "127.0.0.1", "port": 8431},
 }
 
 

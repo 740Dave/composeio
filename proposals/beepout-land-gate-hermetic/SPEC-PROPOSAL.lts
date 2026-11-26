@@ -1,0 +1,43 @@
+---
+scope: "SPEC PROPOSAL (spec-first half of defect/beepout-land-gate-hermetic). The corpus lives OUTSIDE every worktree since 2026-08-17 ([corpora MOVE, c52b54c]), so a spec change cannot be branch-scoped — it would be immediately live for all worktrees. This file is therefore the REVIEWABLE proposal: the architect splices these two edits into corpora/platform-specs/71-beepout-review.lts on concurrence, then (optionally) runs resolve --status verified. The CODE + TEST half is already committed on this branch."
+target-spec: corpora/platform-specs/71-beepout-review.lts  # [SPEC:CXC-BPO]
+root-cause-class: under-spec  # with a spec-drift symptom (the pinned per-board counts)
+defect: "the worktrunk pre-merge corpus-gate blocked EVERY python-touching composeio land on a pre-existing, delta-independent failure of test_geometry_agrees_with_copper_written_by_a_different_code_path[path2], which reads a board OUTSIDE the repo (${MAKER_HOME}/pcb/lego_dots/lego_dots.kicad_pcb). The live board was respun after the suite was authored — the spec pinned 92/92, the file is now 94/121 (0.777 < 0.9)."
+---
+
+# ======================================================================
+# EDIT 1 — ADD this node to section 4 ("The negative control"), after
+#          [CXC-BPO-NEGATIVE-CONTROL].
+# ======================================================================
+
+### [CXC-BPO-BOARD-QA-NOT-LAND-GATE] The board-derived checks are BOARD-QA — outside the composeio LAND GATE
+- definition: every check whose outcome is a function of a fabricated `.kicad_pcb` that lives OUTSIDE this repo (David's `pcb/` tree — the geometry-coincidence cross-check, the rail-classification sweep, and every negative control that derives from a live board) is BOARD-QA. It is SKIPPED in the default land-gate invocation and runs only under `COMPOSEIO_BOARD_QA=1` (marker `board_qa`, seam `tests/_hermetic_policy.py`, the dual of the glass policy's `needs_glass`).
+- premise: a land gate exists to catch what a DELTA broke. A test whose result depends on state no delta controls — an out-of-repo file that David may bodge or respin at will — is not a delta-regression check; it is a property of the environment it happened to read. Routing it through the gate makes a green land hostage to a working tree the committer does not own.
+- ruling: David, 2026-08-28 — "the lego_dots board is already fabricated; it is what it is. Its geometry is MY concern. It must NOT block composeio code lands." A fabricated board changing is a BOARD finding, delivered to the bench, never a code-land blocker.
+- boundary: this SCOPES the board checks out of the gate; it does NOT delete them. `COMPOSEIO_BOARD_QA=1 pytest tests -m board_qa` still fires the full negative-control battery — the instrument that proves the deriver READS the board is preserved, exactly as `[CXC-BPO-NEGATIVE-CONTROL]` requires; it is only relocated off the land path.
+- generalisation: the same shape as the glass policy ([PRINCIPLE-MACHINE-GREEN-IS-NOT-GLASS-GREEN]) and the away-watch guard — a check whose truth lives in ONE invocation path is a property of that path. Lift the "reads out-of-repo state" property to the seam every pytest crosses (`tests/conftest.py`) so no future board-reading test can silently re-arm the gate; a test that requests an out-of-repo board fixture is `board_qa` by construction (auto-marked).
+- enforced-by: `tests/test_land_gate_is_hermetic.py` — fails if the geometry check is not `board_qa`, if the default land-gate invocation still selects it, or if a default run of the beep-out module is not green.
+- part-of: [SPEC:CXC-BPO]
+
+# ======================================================================
+# EDIT 2 — CORRECT the drifted cross-check in [CXC-BPO-NEGATIVE-CONTROL].
+#          The current `cross-check` line pins exact per-board counts that
+#          DRIFT with the live board and are already stale (lego_dots is a
+#          respin: 92/92 -> 94/121). Replace the hardcoded triple with a
+#          qualitative invariant that names the drift and its scope.
+# ----------------------------------------------------------------------
+# CURRENT (stale):
+#   - cross-check: the netlist reader also carries an INDEPENDENT internal check —
+#     pad positions agree with the copper endpoints written by a different code path
+#     in the same file: 130/130, 156/156 and 92/92 across the three boards. Two writers
+#     of the same file agreeing is evidence the reader is reading, not guessing.
+# ----------------------------------------------------------------------
+# REPLACE WITH:
+- cross-check: the netlist reader carries an INDEPENDENT internal check — pad positions agree with the copper endpoints written by a DIFFERENT code path in the same file (`board.geometry_coincidence()`). Two writers of one file agreeing is evidence the reader is reading, not guessing. ⛔ This coincidence is a property of the LIVE fabricated board, not of the parser: a clean design meets a high bar (the gauge and button boards do), a respun or bodged board may not (`lego_dots` fell from 92/92 to 94/121 after a respin — a BOARD finding, David's to resolve). The check therefore belongs to BOARD-QA, not the land gate ([CXC-BPO-BOARD-QA-NOT-LAND-GATE]); its assertion is that a GOOD board's copper coincides with the parsed geometry, run under `COMPOSEIO_BOARD_QA=1`.
+
+# ======================================================================
+# OPTIONAL follow-on (architect's call, NOT required for the fix):
+# once EDIT 1 lands, [CXC-BPO-BOARD-QA-NOT-LAND-GATE] may be added to the
+# node list asserted by test_the_gate_is_spec_backed_not_code_only so the
+# new invariant is itself spec-presence-guarded.
+# ======================================================================

@@ -47,7 +47,7 @@ _BRIDGE = _ROOT / "services" / "can_mqtt_bridge" / "bridge.py"
 
 #: The device under test. Its id is a MAC suffix — the exact shape that makes a
 #: `_device/*` prefix rule impossible, because the hash is over the FULL name.
-DEV = "hosyond-d1afe8"
+DEV = "hosyond-080739"
 DEV_NAMESPACES = [f"_device/{DEV}/heartbeat", f"_device/{DEV}/build",
                   f"_device/{DEV}/transport", f"_device/{DEV}/scene",
                   f"_device/{DEV}/health"]
@@ -181,8 +181,8 @@ def test_a_prefix_rule_could_not_have_helped():
     """The reason this design exists, asserted rather than asserted-in-prose:
     the hashes of `_device/<id>/heartbeat` for two different ids share nothing,
     so no expansion of `_device/*` produces them without the ids."""
-    a = namespace_hash("_device/hosyond-d1afe8/heartbeat")
-    b = namespace_hash("_device/wsc6-6f4ce4/heartbeat")
+    a = namespace_hash("_device/hosyond-080739/heartbeat")
+    b = namespace_hash("_device/wsc6-07f199/heartbeat")
     assert a != b
     # and the prefix itself hashes to something unrelated to either
     p = namespace_hash("_device/")
@@ -337,7 +337,7 @@ def test_two_unassigned_announcers_collide_LOUDLY(monkeypatch, caplog):
     share one reassembler. They must not silently produce a plausible table."""
     mod = _load_bridge(monkeypatch)
     a = announcement_frames([f"_device/{DEV}/heartbeat"])
-    b = announcement_frames(["_device/wsc6-6f4ce4/heartbeat"])
+    b = announcement_frames(["_device/wsc6-07f199/heartbeat"])
 
     with caplog.at_level("WARNING"):
         mod.message_from_can(_can_id(NS_ANNOUNCE_HASH, type_code=5, src=0), a[0])
@@ -349,7 +349,7 @@ def test_two_unassigned_announcers_collide_LOUDLY(monkeypatch, caplog):
     assert any("ABANDONED" in r.message for r in caplog.records)
     # the INTERRUPTED one taught nothing; the interrupting one completed
     assert f"_device/{DEV}/heartbeat" not in mod._name_to_hash
-    assert "_device/wsc6-6f4ce4/heartbeat" in mod._name_to_hash
+    assert "_device/wsc6-07f199/heartbeat" in mod._name_to_hash
 
     # ALLOCATED node ids make them independent — the actual fix, proven here so
     # the recommendation is not a guess.
@@ -359,7 +359,7 @@ def test_two_unassigned_announcers_collide_LOUDLY(monkeypatch, caplog):
     for f in b:
         mod2.message_from_can(_can_id(NS_ANNOUNCE_HASH, type_code=5, src=2), f)
     assert f"_device/{DEV}/heartbeat" in mod2._name_to_hash
-    assert "_device/wsc6-6f4ce4/heartbeat" in mod2._name_to_hash
+    assert "_device/wsc6-07f199/heartbeat" in mod2._name_to_hash
 
 
 def test_a_malformed_name_is_refused_and_the_rest_still_learned(monkeypatch, caplog):

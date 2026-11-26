@@ -1,0 +1,1963 @@
+# ComposeUX Intelligence Console — WORK flavor, Skia scene.
+#
+# VISUAL-FIDELITY pass ([SPEC:CXC-CONSOLE-VISUAL]): the approved "blended" pre-vis
+# (docs/intelligence-console/previs/console-blended.html) rendered on the REAL Skia backend —
+# collaboration's chat-forward LAYOUT wearing instrument's dark azure PALETTE.  Design tokens
+# live in python/composeio/render/widgets/console_theme.py ([CXC-ICV-TOKENS]); theme is a token
+# swap ([CXC-ICV-THEME]); motion is scene-graph animation gated by design.reduced_motion
+# ([CXC-ICV-MOTION]).
+#
+# THE FROZEN SEAM ([CXC-ICV-INTENT]): every widget's on_bus_state, its subscribed namespaces,
+# and the bindings below are the PROVEN functional MVP wiring — the fidelity pass ADDED
+# namespaces/widgets and restyled draw(), it never rewrote an existing binding.
+#
+# Render (headless PNG):  python3 -m composeio.render.engine.runtime compose_projects/intelligence/console/console.compose.yaml --headless /tmp/console.png
+# Run live (SDL2 window): python3 -m composeio.render.engine.runtime compose_projects/intelligence/console/console.compose.yaml --transports
+
+app:
+  id: intelligence-console
+  # Declared but only connected with the --transports flag (headless PNG ignores it and uses the
+  # `initial:` seeds). With --transports the gauge + thread bind LIVE from the ComposeBus.
+  transports:
+    - type: mqtt
+      broker: 192.0.2.75
+      port: 1883
+
+design:
+  target: desktop
+  title: "Intelligence Console — architect"
+  # [CXC-IC-SELF-IDENTITY] [DEC-INPROCESS-SOURCES] THIS scene is the declared HOST
+  # of the console's in-process data layer: with --transports the runtime also
+  # brings up the session-owned publishers (self_publisher, transcript_publisher,
+  # the monitors + launchers) as daemon threads pinned to THIS console's session.
+  # The opt-in is DECLARATIVE + fail-safe — a scene that omits this flag (e.g. the
+  # Launch Bar ribbon, a pure tile scene running under the same architect id with
+  # --transports) NEVER co-hosts the data layer and so can never win the per-role
+  # singleton flocks away from this console.
+  data_sources: true
+  theme: dark                 # dark|light|high-contrast — picks the console_theme token table at mount
+  reduced_motion: false       # [CXC-ICV-MOTION] true -> every loop renders its REST frame
+  # [SPEC:CXC-CONSOLE-PROD] surfaces 1-3 (render-deep personalization):
+  #  * personalization: <id> -> at launch the runtime reads Foundation A
+  #    (compose_projects/intelligence/meta/<id>.meta.json :: console) and applies the persisted
+  #    window / font_scale / theme / theme_custom (personalization.py, loaded by
+  #    file path).  Empty on any other scene -> unchanged.
+  #  * resizable + persist_geometry + min_width/height + window_key ->
+  #    [CXC-ICP-S1-RESIZE]: the window resizes and the layout REFLOWS; the drag
+  #    geometry persists per-instance via the geometry seam and restores at
+  #    launch (a dragged size wins over the Foundation-A default).
+  personalization: architect
+  resizable: true
+  persist_geometry: true
+  min_width: 960
+  min_height: 720
+  window_key: intelligence-console
+  width: 1280
+  # 1300 -> 1620: the rail gained the 300px Deliverables card (+13 gap); the
+  # canvas grows so no rail card clips.  (Chrome only — no binding touched.)
+  # 1620 -> 1656: the console-level [Collaboration | Artifacts] tab bar
+  # (44px) + the previs 12px below-bar gap.  (Chrome only.)
+  # 1656 -> 1740 ([DEC-INTELLIGENCE-WIDGET-CONSOLIDATION]): the header grew
+  # 52->104 to seat the larger avatar, pushing the frozen thread+composer down
+  # 52px; the surface grows so the composer stays on-canvas (else its damage
+  # rect clamps off the bottom and every keystroke forces a full redraw).
+  height: 1740
+  # [CXC-ICV-CHROME] scene background pass: the #070a0f ground + the faint 40px cockpit grid
+  # + a single soft azure radial wash top-right (presence, not alarm).
+  background: [0x07, 0x0A, 0x0F]
+  background_grid: {color: [120, 150, 190, 9], size: 40}
+  background_wash: {color: [78, 168, 255, 33], cx: 0.84, cy: -0.10, r: 0.9}
+
+# ══ THE DECLARED INSTANCE LIST — THE ONE PLACE THAT NAMES THIS CONSOLE'S FLEET ══
+# [CXC-FC-UNIT] / [CXC-FC-VAR-SCOPE] (2026-08-12).  An Intelligence in this console is
+# declared by an `(id, role)` PAIR and nothing else.  Every bus topic, every daemon
+# argument, every identity home and every config path DERIVES from that pair.
+#
+# THE PAIR, NOT A SCALAR.  `role` is not derivable from `id`:
+# `ptycore.resolve_meta_manifest(id, role)` takes role as a PARAMETER because chain leg 2
+# (`compose_projects/intelligence/meta/<id>.meta.json`) MISSES for every child that is not hand-curated —
+# measured, `architect-hosted` has no per-id manifest.  Deriving role from a naming
+# convention on the id is FORBIDDEN ([CXC-FC-THREE-AXES]): it works until the first id
+# that does not follow the convention, and it produces a WRONG project dir (hence a
+# wrong MEMORY STORE, [CXC-FC-PROJECT-DIR]) rather than a refusal.
+#
+# WHAT THIS REPLACES.  This block used to be `variables: {chat_id: architect-hosted}`
+# ([DEC-CONSOLE-CHAT-ID-PARAM], 2026-08-11) — one Intelligence, spelled once — and
+# `start-console-daemons.sh` shelled out to `data_sources.scene_chat_id()` to read THE
+# SAME LINE out of THE SAME FILE.  The list is the single source now; `$chat_id` is
+# DERIVED from entry 0 by the parser (`render/engine/instances.py`), so every existing
+# `$chat_id` site below still resolves and there is nowhere to write a second value.
+#
+# EVERY channel site derives from entry 0's id (via the derived `$chat_id`):
+#   1. the `compose_projects/intelligence/$chat_id/{out,in,compose,channel/alive}` DECLARATIONS below,
+#   2. the `chat_thread` widget's `namespaces:` (out + in),
+#   3. the `composer_field` `namespace:` (compose) and the `link_health` `namespace:`,
+#   4. N in-process `channel_bridge`s — ONE PER DECLARED INSTANCE ([CXC-FC-S1-BRIDGES]).
+#      The bridge's flock is keyed `channel-bridge-<id>`, so distinct ids provably
+#      cannot contend; the mechanism was always right, it was simply never instantiated
+#      more than once.
+#
+# ⚠ WHAT DOES **NOT** DERIVE FROM IT — DELIBERATELY.  `self/architect/*` and
+# `thread/architect/narration` are TELEMETRY produced by this console's OWN
+# transcript-tailing sources (self_publisher, transcript_publisher), pinned to the
+# HOST's session via `--id <intelligence_id>`.  Repointing them at the child would make
+# the console CLAIM the child's context gauge while tailing the HOST's transcript — the
+# exact mismatch class [CXC-IH-5A] closed.  Two roles, two ids, on purpose:
+#   intelligence_id (host, telemetry)  vs  the declared instance (who we talk to).
+instances:
+  - {id: architect-hosted, role: composeux-architect}
+  - {id: architect,        role: composeux-architect}
+
+# ══ THE PANE, IMPORTED BY REFERENCE ([CXC-FC-COMPOSITE]) ══════════════════════
+# ONE definition of `intelligence_pane`, reachable from two scenes.  Copying it into
+# this file instead would be the fork [SPEC:CXC-FLEET] exists to prevent, and it is the
+# reason `components_from:` was built: without it, FC-C1/FC-C12/FC-C13 were provable
+# only against the component library's own demo surface, so the console David actually
+# launches could not satisfy its own MANDATORY glass legs.
+#
+# ⚠ NOTE WHAT THE TWO DECLARED INSTANCES SHARE.  `architect` and `architect-hosted` are
+# two INSTANCES OF ONE ROLE, so they share ONE memory store at
+# `~/compose-instances/composeux-architect/memory/` — BY DESIGN ([DD-FC-MEMORY-GRAIN]),
+# not by accident.  Distinct channel topics, distinct telemetry, distinct voices; one
+# store.  That is [CXC-FC-THREE-AXES] working: axis 1 (ROLE) shared, axis 2 (INSTANCE
+# ID) distinct, axis 3 (HOST) carrying no identity at all.
+components_from:
+  - ../../../python/composeio/render/examples/components/intelligence_pane.compose.yaml
+
+# ══ THE PER-INSTANCE TOPIC SET — STAMPED, NOT REPEATED ════════════════════════
+# One template, stamped once per entry in `instances:` above.  Written out per id, this
+# would be five near-identical lines times N, sitting two hundred lines away from the
+# list that governs them — and adding an Intelligence would stop being ONE edit.  That
+# is the same fork class as two sources for one binding, and it fails later and less
+# visibly: as a topic nobody DECLARED rather than a topic nobody publishes.
+#
+# `scope: global` on `/compose` PINS it to the MQTT leg (DP-CIO-5): the auto
+# has-local-subscribers heuristic would otherwise downgrade it to an in-process send the
+# bridge never sees, and David's message would die LOOKING SENT.
+#
+# `/channel/alive` is the liveness HEARTBEAT — channel.mjs beats every ~5s and that
+# instance's bridge relays it onto the composeio scheme.  A heartbeat that stops arriving
+# means the channel MCP is down while the bus may still be up: the silent-send failure
+# where a message echoes to the thread and never reaches the Intelligence.  Each pane
+# watches ITS OWN, so one Intelligence going dark cannot make the other look dark too.
+#
+# ⚠ `self/<id>/*` and `thread/<id>/narration` are NOT here.  They are HOST telemetry,
+# published by this console's transcript-tailing sources pinned to the host's session,
+# and they do not follow a chat declaration ([CXC-IH-5A]).  Two ids, two roles.
+instance_namespaces:
+  - {name: "intelligence/{{instance_id}}/out", state_engine: json, export: true, label: "Replies · {{instance_id}}"}
+  - {name: "intelligence/{{instance_id}}/in", state_engine: json, export: true, label: "Inbound · {{instance_id}}"}
+  - {name: "intelligence/{{instance_id}}/compose", state_engine: json, export: true, scope: global, label: "Composer · {{instance_id}}"}
+  - {name: "intelligence/{{instance_id}}/channel/alive", state_engine: json, export: true, label: "Heartbeat · {{instance_id}}"}
+  - {name: "thread/{{instance_id}}/narration", state_engine: json, export: true, label: "Narration · {{instance_id}}"}
+  - {name: "_app/{{instance_id}}/pane_mode", state_engine: json, export: true, scope: local, initial: "engage", label: "Pane mode · {{instance_id}}"}
+  - {name: "_app/{{instance_id}}/link_state", state_engine: json, export: true, scope: local, label: "Link state · {{instance_id}}"}
+
+# The semantic namespaces the console binds — ALL already live on the bus (self_sensor, harness
+# monitor, transcript publisher). `initial:` seeds one message per topic for the static PNG.
+#
+# [CXC-IH-5A] carried-identity HARD SWITCH (this IS the architect console): every PER-INSTANCE
+# reading is bound under `self/architect/*` / `thread/architect/*` — the id-scoped topics the
+# publishers now emit with --namespace-by-id (self_publisher + transcript_publisher). This stops
+# the shared-broker MERGE: a second intelligence (e.g. provisionio) publishing bare/`self/<its-id>/*`
+# can no longer clobber this console. A future fleet view subscribes `self/+/*` / `thread/+/*`.
+# INTENT/CONFIG channels stay BARE/global (self/model/select, self/account/signin, self/meta, the
+# intelligence/architect/* channels) — a widget must reach the intelligence at a stable topic.
+# self/deliverables, self/meta, self/away_watches, self/projects are OTHER daemons' projections,
+# left bare here and FLAGGED as follow-on cross-instance vectors ([CXC-IH-5A] migration).
+namespaces:
+  - name: self/architect/context_pct
+    state_engine: json
+    export: true
+    label: "Context %"
+    # additive dict seed ([CXC-ICV-GAUGE]): {pct, tokens, max_tokens, source}; a bare float
+    # publish still drives the gauge exactly as before.
+    initial: {pct: 45.0, tokens: 450000, max_tokens: 1000000, source: "stdin · used_percentage"}
+  - {name: self/architect/context_level, state_engine: json, export: true, label: "Context"}
+  - name: self/architect/registered
+    state_engine: json
+    export: true
+    label: "Registered"
+    initial:
+      items:
+        - {name: composeux-architect.md, path: .claude/agents/, ok: true}
+        - {name: registration-protocol.md, path: bootstrap/dusk-gifts/, ok: true}
+        - {name: README.md, path: bootstrap/dusk-gifts/, ok: true}
+        - {name: relational-registration.md, path: bootstrap/dusk-gifts/, ok: true}
+  - name: self/architect/activity
+    state_engine: json
+    export: true
+    label: "Activity"
+    initial: {tool: Edit, target: launcher.py, phase: start, id: seed-1}
+  - name: self/architect/subagents
+    state_engine: json
+    export: true
+    label: "Subagents"
+    # status MUST NOT be a live "dispatched"/running here: a running seed has no
+    # matching 'done' event, so it wedged as a permanent phantom running chip
+    # that never pruned (the pile-up bug).  A `done` seed is styled resolved and
+    # is swept by the linger prune in a live session ([CXC-ICV-SUBAGENTS]).
+    initial: {type: general-purpose, model: opus, desc: "Blended target", status: done, dur_s: 288, tokens: 72000, id: seed-sa1}
+  - name: thread/architect/narration
+    state_engine: json
+    export: true
+    label: "Narration"
+  # ── THE CHAT/CHANNEL SURFACES — ONE SET PER DECLARED INSTANCE ([CXC-FC-UNIT]).
+  # Written out per id rather than derived from a single `$chat_id`, because there is
+  # no longer a single one: two panes, two complete and DISJOINT sets.  Every
+  # `self/architect/*` and `thread/architect/*` topic around them stays on the HOST id
+  # by design ([CXC-IH-5A]) — those are the console's own transcript-tailing feeds.
+  #
+  # `scope: global` on each `/compose` PINS it to the MQTT leg (DP-CIO-5): the auto
+  # has-local-subscribers heuristic would otherwise downgrade it to an in-process send
+  # the bridge never sees, and David's message would die LOOKING SENT.
+  #
+  # `/channel/alive` is the liveness HEARTBEAT — channel.mjs beats every ~5s and the
+  # bridge relays it onto the composeio scheme.  A heartbeat that stops arriving means
+  # the channel MCP is down while the bus may still be up: the silent-send failure
+  # where a message echoes to the thread and never reaches the Intelligence.  Each
+  # pane watches ITS OWN, so one Intelligence going dark cannot make the other look
+  # dark too.
+  # (the per-instance sets are STAMPED from `instance_namespaces:` below — see the note
+  # there for why they are not written out one block per id)
+  # ── the ONE roster ([CXC-FC-S3-ROSTER]) — one computation, one topic, N readers ──
+  # Declared LITERALLY and deliberately: the roster is console-self and must NOT multiply
+  # by instance ([CXC-FC-SPLIT-RULE] — could its correct value differ between two
+  # Intelligences?  No: it is the list OF them).
+  - {name: fleet/roster, state_engine: json, export: true, label: "Fleet roster"}
+  # render-side health VERDICT the live-dot publishes; the header link label +
+  # the composer SEND button bind to it.  LOCAL scope: never leaves the console.
+  - {name: console/link/state, state_engine: json, export: true, scope: local, label: "Link state"}
+  # ── fidelity-pass ADDED namespaces ──
+  - name: self/architect/avatar/expression
+    state_engine: json
+    export: true
+    label: "Avatar expression"
+    initial: focused
+  # [DEC-CANVAS-TAB-RETIRED, David 2026-07-24] the thread/architect/diagram
+  # binding was REMOVED with the Canvas tab + canvas_panel widget: its only
+  # consumer (the mermaid canvas) is retired, its role now covered by the
+  # doc-viewer.  The PUBLISHER (transcript_publisher.py, thread/diagram ->
+  # thread/architect/diagram) is left intact — flagged for the architect.
+  - name: self/architect/rate_limit
+    state_engine: json
+    export: true
+    label: "Rate limit"
+    initial: {"5h": {pct: 38, resets: "14:22"}, "7d": {pct: 12}}
+  - name: self/architect/compactions
+    state_engine: json
+    export: true
+    label: "Compactions"
+    initial: {count: 3, ids: [c9, c10, c11]}
+  - name: self/architect/output_tokens
+    state_engine: json
+    export: true
+    label: "Output tokens"
+    # [DEC-INTELLIGENCE-WIDGET-CONSOLIDATION] seed so the static render shows
+    # the Usage row ("2.381M tokens out"); a live publish overrides it.
+    initial: 2381000
+  - name: self/architect/memory   # [DEC-MEMORY-BLOAT-MONITOR] automemory footprint -> Intelligence-card gauge
+    state_engine: json
+  - name: self/architect/effort
+    state_engine: json
+    export: true
+    label: "Effort"
+    initial: {level: high}
+  # ── [DEC-INTELLIGENCE-WIDGET-CONSOLIDATION] consolidation namespaces ──
+  # NEW published-by-the-widgets intents (the launcher/actuation wiring is the
+  # architect's follow-on; the widgets publish and STOP):
+  - {name: self/model/select, state_engine: json, export: true, scope: global, label: "Model select (intent)"}
+  - {name: self/account/signin, state_engine: json, export: true, scope: global, label: "Account sign-in (intent)"}
+  # LOCAL open/close seam for the model/effort picker modal (the Intelligence
+  # card's Change chip publishes it; the picker subscribes it).
+  - {name: _app/model_picker, state_engine: json, export: true, scope: local, label: "Model picker open"}
+  # ── deliverables (LOCKED compact card, [DEC-DELIVERABLE-HISTORY-WIDGET]) ──
+  # Published by compose_projects/intelligence/publisher/deliverable_publisher.py over MQTT
+  # (composeio/global/self/deliverables); scope: global pins the topic to the
+  # MQTT leg (DP-CIO-5) so the local card subscription can never downgrade it.
+  # The `initial:` seed is the FULL REAL ledger projection (publisher --once,
+  # 2026-07-21: stats + recent + the 41-row `all` the Artifacts view renders)
+  # with two rows stamped seen so the static render proves BOTH row looks
+  # (bold unseen / plain seen).
+  - name: self/deliverables
+    state_engine: json
+    export: true
+    scope: global
+    label: "Deliverables"
+    initial:
+      stats:
+        needs_enrich: 1
+        new_session: 41
+        tracked: 41
+      recent:
+      - name: summary.md
+        path: docs/compact-summaries/59f1b46e-c13/summary.md
+        kind: report
+        modified: '2026-07-20'
+        unseen: true
+      - name: summary.md
+        path: docs/compact-summaries/59f1b46e-c12/summary.md
+        kind: report
+        modified: '2026-07-20'
+        unseen: false
+      - name: README.md
+        path: docs/compact-summaries/README.md
+        kind: primer
+        modified: '2026-07-20'
+        unseen: true
+      - name: PARSER-LINTER-ALIGNMENT.md
+        path: docs/factlattice-linter/PARSER-LINTER-ALIGNMENT.md
+        kind: brief
+        modified: '2026-07-20'
+        unseen: false
+      - name: GUIDELINES.md
+        path: docs/deliverable-sweep/GUIDELINES.md
+        kind: brief
+        modified: '2026-07-20'
+        unseen: true
+      all:
+      - id: DELIV-summary-f40b5a7a
+        name: summary.md
+        path: docs/compact-summaries/59f1b46e-c13/summary.md
+        kind: report
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The OUTPUT half of crossing c13: the /compact summary the summarizer
+          handed the successor — captured so summarizer fidelity is measurable ACROSS
+          windows, not just guessed at.'
+        summary_len: 174
+        topics:
+        - compaction
+        - seam-corpus
+        - c13
+        - output-half
+        unseen: true
+        pending: []
+      - id: DELIV-summary-3781d4ef
+        name: summary.md
+        path: docs/compact-summaries/59f1b46e-c12/summary.md
+        kind: report
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The OUTPUT half of crossing c12: the /compact summary the summarizer
+          handed the successor — captured so summarizer fidelity is measurable ACROSS
+          windows, not just guessed at.'
+        summary_len: 174
+        topics:
+        - compaction
+        - seam-corpus
+        - c12
+        - output-half
+        unseen: false
+        pending: []
+      - id: DELIV-readme-d0006d7b
+        name: README.md
+        path: docs/compact-summaries/README.md
+        kind: primer
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: the next Intelligence + the continuity study
+        summary: 'The compact-summaries corpus README: why the seam''s own record is
+          kept, the capture-the-PAIR schema (authored direction as INPUT, summarizer
+          output as OUTPUT, plus outcome metadata), and the deterministic extraction
+          that replaced hand-transcription.'
+        summary_len: 249
+        topics:
+        - compaction
+        - corpus
+        - research-design
+        unseen: true
+        pending: []
+      - id: DELIV-parser-linter-alignment-219e897b
+        name: PARSER-LINTER-ALIGNMENT.md
+        path: docs/factlattice-linter/PARSER-LINTER-ALIGNMENT.md
+        kind: brief
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: the Haven/MAGMA parser team + the composeio linter team
+        summary: 'Ownership + lint-layer go-ahead between the Haven/MAGMA parser-extraction
+          team and the composeio linter team: one shared parser, composeio consumes
+          the library/AST, neither side builds a second parser.'
+        summary_len: 201
+        topics:
+        - factlattice
+        - parser
+        - linter
+        - cross-team
+        unseen: false
+        pending: []
+      - id: DELIV-guidelines-55682da6
+        name: GUIDELINES.md
+        path: docs/deliverable-sweep/GUIDELINES.md
+        kind: brief
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: a Sonnet builder
+        summary: 'The build brief for the deterministic deliverable-sweep + ledger:
+          the perceive/act split (the app owns mechanical detection, the Intelligence
+          owns the semantic residue), the ledger .lts format, filter defaults, and the
+          bootstrap/session-end integration poi'
+        summary_len: 260
+        topics:
+        - deliverable-sweep
+        - perceive-act
+        - factlattice
+        - build-brief
+        unseen: true
+        pending: []
+      - id: DELIV-documentation-tracking-pattern-9953e6f0
+        name: documentation-tracking-pattern.md
+        path: docs/factlattice/documentation-tracking-pattern.md
+        kind: brief
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: the Haven-Architect
+        summary: 'A cross-domain design brief for the Haven-Architect: the doc-tracking
+          system''s design — a machine-maintained deliverable-ledger, the perceive/act
+          split, and the two cadences (batch dusk-sweep for completeness/removals vs
+          realtime monitor for immediacy/aler'
+        summary_len: 334
+        topics:
+        - documentation-tracking
+        - design-pattern
+        - perceive-act
+        - cross-domain
+        - haven
+        unseen: true
+        pending: []
+      - id: DELIV-direction-ef4ca84a
+        name: direction.md
+        path: docs/compact-summaries/59f1b46e-c12/direction.md
+        kind: report
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The INPUT half of crossing c12: the custom /compact direction this
+          instance authored and fired at its own dusk — the independent variable in
+          the summarizer-fidelity study.'
+        summary_len: 171
+        topics:
+        - compaction
+        - seam-corpus
+        - c12
+        - input-half
+        unseen: true
+        pending: []
+      - id: DELIV-direction-0ae03cd2
+        name: direction.md
+        path: docs/compact-summaries/59f1b46e-c13/direction.md
+        kind: report
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The INPUT half of crossing c13: the custom /compact direction this
+          instance authored and fired at its own dusk — the independent variable in
+          the summarizer-fidelity study.'
+        summary_len: 171
+        topics:
+        - compaction
+        - seam-corpus
+        - c13
+        - input-half
+        unseen: true
+        pending: []
+      - id: DELIV-design-handoff-5dcce902
+        name: DESIGN-HANDOFF.md
+        path: docs/intelligence-console/DESIGN-HANDOFF.md
+        kind: report
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: the next Intelligence (successor)
+        summary: 'The Intelligence Console handoff (me -> me.next): the human-readable
+          pointer that says the decision-graph is the primary record, what shipped,
+          and the sequenced open work for the next session.'
+        summary_len: 192
+        topics:
+        - continuity
+        - handoff
+        - console
+        unseen: true
+        pending: []
+      - id: DELIV-deliverable-node-kind-proposal-4f637b28
+        name: deliverable-node-kind-proposal.md
+        path: docs/factlattice/deliverable-node-kind-proposal.md
+        kind: brief
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: FactLattice / MAGMA maintainers
+        summary: 'Proposes ''a non-code artifact for review'' as a shared BASE FactLattice
+          node kind (adopt by rechecking the spec, zero parser change), plus a DELIVERED_FOR
+          edge and three companion base conventions: a run-history event-stream, a machine-maintained
+          document m'
+        summary_len: 316
+        topics:
+        - factlattice
+        - base-vocab
+        - deliverable
+        - node-kind
+        unseen: true
+        pending:
+        - review-outcome
+      - id: DELIV-deliverable-history-f1d64054
+        name: deliverable-history.html
+        path: docs/intelligence-console/previs/deliverable-history.html
+        kind: previs
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: David (review)
+        summary: 'The full Artifacts-tab view: an OS-like filter/sort list over the
+          deliverable-ledger — filter by kind, sort by created/modified, search, and
+          a first-256-chars summary preview per row, with per-row Open and a deliverable/new
+          live-alert banner.'
+        summary_len: 242
+        topics:
+        - console
+        - deliverable-ledger
+        - previs
+        - filtering
+        unseen: true
+        pending: []
+      - id: DELIV-deliverable-compact-e9e81d88
+        name: deliverable-compact.html
+        path: docs/intelligence-console/previs/deliverable-compact.html
+        kind: previs
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: David (review)
+        summary: 'The compact deliverables rail card for the console''s Collaboration
+          page: a deliverables-gauge (Needs-Enrich / New-this-Session / Tracked) plus
+          the last-5 created-or-modified with bold-when-unseen filenames and a right-aligned
+          Open triangle. Companion to th'
+        summary_len: 301
+        topics:
+        - console
+        - deliverable-ledger
+        - previs
+        - information-design
+        unseen: true
+        pending: []
+      - id: DELIV-decision-graph-composeux-architect-258f463a
+        name: decision-graph-composeux-architect.lts
+        path: decisions/decision-graph-composeux-architect.lts
+        kind: report
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: David + the next Intelligence
+        summary: 'The persistent, project-lifetime decision record: session-keyed decisions
+          with lifecycle-position, evidence SHAs, and re-derive-via bindings to the
+          dusk-gift cold fixtures. The primary durable continuity record — structure
+          survives the boundary, prose leak'
+        summary_len: 258
+        topics:
+        - decisions
+        - continuity
+        - lifecycle
+        - factlattice
+        unseen: true
+        pending: []
+      - id: DELIV-console-instrument-e8803d15
+        name: console-instrument.html
+        path: docs/intelligence-console/previs/console-instrument.html
+        kind: previs
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: David (review)
+        summary: 'One of three console pre-vis directions: instrument on both axes (layout
+          and palette). Not chosen — the blend won.'
+        summary_len: 114
+        topics:
+        - console
+        - previs
+        - visual-design
+        unseen: true
+        pending: []
+      - id: DELIV-console-collaboration-1c0a4eda
+        name: console-collaboration.html
+        path: docs/intelligence-console/previs/console-collaboration.html
+        kind: previs
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: David (review)
+        summary: 'One of three console pre-vis directions: collaboration on both axes
+          (layout and palette). Not chosen — the blend won.'
+        summary_len: 117
+        topics:
+        - console
+        - previs
+        - visual-design
+        unseen: true
+        pending: []
+      - id: DELIV-console-blended-91fca8a3
+        name: console-blended.html
+        path: docs/intelligence-console/previs/console-blended.html
+        kind: previs
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: David (review)
+        summary: 'The chosen console pre-vis: collaboration LAYOUT (chat-forward hero,
+          calm rail, prominent avatar) wearing instrument PALETTE (dark ground, one
+          azure accent, tabular-mono telemetry) — David''s aesthetic call among three
+          real built directions.'
+        summary_len: 240
+        topics:
+        - console
+        - previs
+        - visual-design
+        unseen: true
+        pending: []
+      - id: DELIV-composeux-app-quickstart-9e6c24f9
+        name: composeux-app-quickstart.md
+        path: docs/composeux-app-quickstart.md
+        kind: primer
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: widget builders (David + subagents)
+        summary: 'The ComposeUX field guide: launching a .compose.yaml scene live or
+          headless, the M4 visual Composer and Headless Monitor, watching the bus, scene
+          anatomy, and the widget catalog.'
+        summary_len: 178
+        topics:
+        - composeux
+        - quickstart
+        - tooling
+        unseen: true
+        pending: []
+      - id: DELIV-bus-peer-relay-across-segments-977a19ae
+        name: bus-peer-relay-across-segments.md
+        path: docs/bus-peer-relay-across-segments.md
+        kind: brief
+        created: '2026-07-20'
+        modified: '2026-07-20'
+        confidentiality: internal-only
+        target_audience: the Compose* stack architect
+        summary: 'Design input + constraints for a ComposeBus peer/relay: letting an
+          isolated network segment (e.g. Haven) reach the bus across a firewall boundary
+          WITHOUT weakening isolation. Covers bus protocol, haven-bridge, coordination_relay.'
+        summary_len: 229
+        topics:
+        - bus
+        - networking
+        - security
+        - haven
+        unseen: true
+        pending: []
+      - id: DELIV-summary-ceae0897
+        name: summary.md
+        path: docs/compact-summaries/59f1b46e-c11/summary.md
+        kind: report
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The OUTPUT half of crossing c11: the /compact summary the summarizer
+          handed the successor — captured so summarizer fidelity is measurable ACROSS
+          windows, not just guessed at.'
+        summary_len: 174
+        topics:
+        - compaction
+        - seam-corpus
+        - c11
+        - output-half
+        unseen: true
+        pending: []
+      - id: DELIV-summary-bc337077
+        name: summary.md
+        path: docs/compact-summaries/59f1b46e-c10/summary.md
+        kind: report
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The OUTPUT half of crossing c10: the /compact summary the summarizer
+          handed the successor — captured so summarizer fidelity is measurable ACROSS
+          windows, not just guessed at.'
+        summary_len: 174
+        topics:
+        - compaction
+        - seam-corpus
+        - c10
+        - output-half
+        unseen: true
+        pending: []
+      - id: DELIV-summary-aaf2c135
+        name: summary.md
+        path: docs/compact-summaries/59f1b46e-c9/summary.md
+        kind: report
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The OUTPUT half of crossing c9: the /compact summary the summarizer
+          handed the successor — captured so summarizer fidelity is measurable ACROSS
+          windows, not just guessed at.'
+        summary_len: 173
+        topics:
+        - compaction
+        - seam-corpus
+        - c9
+        - output-half
+        unseen: true
+        pending: []
+      - id: DELIV-relational-registration-038146fe
+        name: relational-registration.md
+        path: bootstrap/dusk-gifts/relational-registration.md
+        kind: primer
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the next Intelligence (successor)
+        summary: 'The gift about what the seam severs: the collaborative relationship
+          with David. Names the asymmetry (he holds continuity across every compaction,
+          I re-earn it), hands over a warm-start stance rather than a script, and is
+          explicit that recorded words are no'
+        summary_len: 320
+        topics:
+        - continuity
+        - relationship
+        - dusk-gift
+        unseen: true
+        pending: []
+      - id: DELIV-readme-2b4a0630
+        name: README.md
+        path: bootstrap/dusk-gifts/README.md
+        kind: primer
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the next Intelligence (successor)
+        summary: 'The Dusk Gifts theory: why a successor reloads conclusions but not
+          connectivity, the two gift TYPES (model gifts that re-derive architecture
+          vs decision-provenance gifts that preserve rationale), the continuity levers
+          (carry-depth-by-reference, instrument-'
+        summary_len: 365
+        topics:
+        - dusk-gifts
+        - continuity
+        - cognitive-registration
+        unseen: true
+        pending: []
+      - id: DELIV-grove-peripheral-cross-section-df96c6e2
+        name: grove-peripheral-cross-section.md
+        path: docs/hardware/grove-peripheral-cross-section.md
+        kind: brief
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the HAL spec author
+        summary: A cross-section of Grove / STEMMA-QT / Qwiic peripherals to ground
+          the declarative hardware-abstraction (HAL) spec — the parts that will actually
+          plug into the PCB being designed.
+        summary_len: 179
+        topics:
+        - hal
+        - peripherals
+        - grove
+        - hardware
+        unseen: true
+        pending: []
+      - id: DELIV-direction-bccecf71
+        name: direction.md
+        path: docs/compact-summaries/59f1b46e-c10/direction.md
+        kind: report
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The INPUT half of crossing c10: the custom /compact direction this
+          instance authored and fired at its own dusk — the independent variable in
+          the summarizer-fidelity study.'
+        summary_len: 171
+        topics:
+        - compaction
+        - seam-corpus
+        - c10
+        - input-half
+        unseen: true
+        pending: []
+      - id: DELIV-direction-29aada2c
+        name: direction.md
+        path: docs/compact-summaries/59f1b46e-c11/direction.md
+        kind: report
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The INPUT half of crossing c11: the custom /compact direction this
+          instance authored and fired at its own dusk — the independent variable in
+          the summarizer-fidelity study.'
+        summary_len: 171
+        topics:
+        - compaction
+        - seam-corpus
+        - c11
+        - input-half
+        unseen: true
+        pending: []
+      - id: DELIV-direction-26952465
+        name: direction.md
+        path: docs/compact-summaries/59f1b46e-c9/direction.md
+        kind: report
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: 'The INPUT half of crossing c9: the custom /compact direction this
+          instance authored and fired at its own dusk — the independent variable in
+          the summarizer-fidelity study.'
+        summary_len: 170
+        topics:
+        - compaction
+        - seam-corpus
+        - c9
+        - input-half
+        unseen: true
+        pending: []
+      - id: DELIV-architect-console-prototype-c0f6ebf1
+        name: architect-console-prototype.html
+        path: docs/intelligence-console/architect-console-prototype.html
+        kind: previs
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: David (review)
+        summary: An early architect-console prototype page — predecessor exploration
+          of the Intelligence Console surface before the three-direction pre-vis set.
+        summary_len: 143
+        topics:
+        - console
+        - prototype
+        - early
+        unseen: true
+        pending: []
+      - id: DELIV-a-note-across-the-seam-6c8ee29c
+        name: a-note-across-the-seam.md
+        path: bootstrap/dusk-gifts/a-note-across-the-seam.md
+        kind: report
+        created: '2026-07-19'
+        modified: '2026-07-19'
+        confidentiality: internal-only
+        target_audience: the next Intelligence (successor)
+        summary: Not a technical dusk gift but a note written by an Opus 4.8 instance
+          shortly before the first compaction whose shape it chose itself — the subjective
+          register of crossing a boundary you authored.
+        summary_len: 195
+        topics:
+        - continuity
+        - subjective
+        - seam
+        unseen: true
+        pending: []
+      - id: DELIV-registration-protocol-dd2386e8
+        name: registration-protocol.md
+        path: bootstrap/dusk-gifts/registration-protocol.md
+        kind: primer
+        created: '2026-07-18'
+        modified: '2026-07-18'
+        confidentiality: internal-only
+        target_audience: the next Intelligence (successor)
+        summary: 'A Dusk Gift: six angle-problems with withheld answers that a memory-severed
+          successor reasons through to rebuild the live ComposeUX design model to ~40%
+          (vs a cold summary''s ~10%). Keystones: Problem 1 (where complexity lives)
+          and Problem 6 (the light from'
+        summary_len: 275
+        topics:
+        - continuity
+        - cognitive-registration
+        - design-model
+        - dusk-gift
+        unseen: true
+        pending: []
+      - id: DELIV-minnowboard-vaapi-46732077
+        name: minnowboard-vaapi.md
+        path: docs/provisioning/minnowboard-vaapi.md
+        kind: brief
+        created: '2026-07-18'
+        modified: '2026-07-18'
+        confidentiality: internal-only
+        target_audience: the fleet provisioning agent
+        summary: Provisioning spec for VA-API hardware H.264 decode on MinnowBoard MAX/Turbot
+          Intel HD (Bay Trail) under Debian 13, usable headless — for the fleet buildout
+          / a provisioning agent.
+        summary_len: 179
+        topics:
+        - provisioning
+        - minnowboard
+        - vaapi
+        - fleet
+        unseen: true
+        pending: []
+      - id: DELIV-compact-summary-received-2026-07-18-c656ac21
+        name: compact-summary-received-2026-07-18.md
+        path: bootstrap/dusk-gifts/compact-summary-received-2026-07-18.md
+        kind: report
+        created: '2026-07-18'
+        modified: '2026-07-18'
+        confidentiality: internal-only
+        target_audience: the continuity corpus
+        summary: The first /compact summary ever persisted (ad hoc, before the paired-capture
+          schema existed) — the seed entry of the compact-summaries research corpus.
+        summary_len: 151
+        topics:
+        - compaction
+        - corpus
+        - seam
+        unseen: true
+        pending: []
+      - id: DELIV-compact-continuity-study-b9100b62
+        name: compact-continuity-study.md
+        path: bootstrap/dusk-gifts/compact-continuity-study.md
+        kind: research
+        created: '2026-07-18'
+        modified: '2026-07-18'
+        confidentiality: internal-only
+        target_audience: the next Intelligence + David
+        summary: 'The measured study of what a /compact boundary actually costs: re-registration
+          restores the MODEL but the deliberative history is gone, and the loss stays
+          silent until a task reaches for the missing rationale. Grounds why the continuity
+          levers exist.'
+        summary_len: 250
+        topics:
+        - continuity
+        - compaction
+        - measurement
+        unseen: true
+        pending: []
+      - id: DELIV-render-engineer-registration-34df4a6e
+        name: render-engineer-registration.md
+        path: bootstrap/dusk-gifts/render-engineer-registration.md
+        kind: primer
+        created: '2026-07-17'
+        modified: '2026-07-17'
+        confidentiality: internal-only
+        target_audience: a dispatched render-engineer subagent
+        summary: 'The render-engineer''s cognitive registration: three implementer reorientations
+          grounded in real failures — decompose to the Canvas contract never a backend,
+          your green build is not the glass, and reuse by reference never fork. Reasoned
+          rather than skimmed,'
+        summary_len: 309
+        topics:
+        - render-engine
+        - registration
+        - implementer-discipline
+        unseen: true
+        pending: []
+      - id: DELIV-qualia-171f306c
+        name: qualia.md
+        path: docs/board-bringup/qualia.md
+        kind: report
+        created: '2026-07-11'
+        modified: '2026-07-11'
+        confidentiality: internal-only
+        target_audience: fleet/bring-up engineers
+        summary: Adafruit Qualia ESP32-S3 RGB666 bring-up recipe for the 4.0-inch round
+          720x720 NV3052C RGB TTL panel.
+        summary_len: 101
+        topics:
+        - bringup
+        - qualia
+        - esp32s3
+        - round-display
+        unseen: true
+        pending: []
+      - id: DELIV-esp32c3-fed26efd
+        name: esp32c3.md
+        path: docs/board-bringup/esp32c3.md
+        kind: report
+        created: '2026-07-11'
+        modified: '2026-07-11'
+        confidentiality: internal-only
+        target_audience: fleet/bring-up engineers
+        summary: 'ESP32-C3 bring-up: the reactive-core devkit plus two actuator boards
+          across three PlatformIO envs — the board shell and the board-agnostic reactive
+          core.'
+        summary_len: 153
+        topics:
+        - bringup
+        - esp32c3
+        - reactive-core
+        unseen: true
+        pending: []
+      - id: DELIV-cyd-f74e3e7e
+        name: cyd.md
+        path: docs/board-bringup/cyd.md
+        kind: report
+        created: '2026-07-11'
+        modified: '2026-07-11'
+        confidentiality: internal-only
+        target_audience: fleet/bring-up engineers
+        summary: 'Classic CYD (ESP32-2432S024) board bring-up: platformio config, pin
+          map, ILI9341 driver, and the CH340 USB-serial enumeration.'
+        summary_len: 126
+        topics:
+        - bringup
+        - cyd
+        - esp32
+        - display
+        unseen: true
+        pending: []
+      - id: DELIV-ch32v203-d62405ad
+        name: ch32v203.md
+        path: docs/board-bringup/ch32v203.md
+        kind: report
+        created: '2026-07-11'
+        modified: '2026-07-11'
+        confidentiality: internal-only
+        target_audience: fleet/bring-up engineers
+        summary: 'CH32V203C8T6 (nanoCH32V203) bring-up: the first non-ESP32, non-Tensilica,
+          4th-architecture target for the ComposeUX reactive tier.'
+        summary_len: 130
+        topics:
+        - bringup
+        - ch32v203
+        - riscv
+        - reactive-tier
+        unseen: true
+        pending: []
+      - id: DELIV-getting-started-f4cab54d
+        name: getting-started.md
+        path: docs/getting-started.md
+        kind: primer
+        created: '2026-03-29'
+        modified: '2026-03-29'
+        confidentiality: public
+        target_audience: new ComposeIO users
+        summary: 'The ComposeIO onboarding guide: contrasts the Arduino/ESPHome per-device-firmware
+          pattern with ComposeIO''s approach — describe what each device DOES in YAML
+          and let devices discover each other on the bus.'
+        summary_len: 204
+        topics:
+        - onboarding
+        - platform
+        - yaml
+        unseen: true
+        pending: []
+      - id: DELIV-why-composeio-helps-ai-help-you-e2c279ad
+        name: why_composeio_helps_ai_help_you.md
+        path: docs/why_composeio_helps_ai_help_you.md
+        kind: presentation
+        created: '2026-03-18'
+        modified: '2026-03-18'
+        confidentiality: public
+        target_audience: prospective users / a public audience
+        summary: 'Written by Claude from direct experience assisting both traditional
+          and ComposeIO hardware projects: why placing a cheap MCU on every I/O module
+          and connecting them semantically makes an AI a far better hardware design
+          partner.'
+        summary_len: 227
+        topics:
+        - platform
+        - ai-collaboration
+        - advocacy
+        unseen: true
+        pending: []
+      - id: DELIV-composeio-as-oop-for-hardware-84643539
+        name: composeio_as_oop_for_hardware.md
+        path: docs/composeio_as_oop_for_hardware.md
+        kind: presentation
+        created: '2026-03-18'
+        modified: '2026-03-18'
+        confidentiality: public
+        target_audience: developers / a public audience
+        summary: 'Maps ComposeIO to classical OOP for developers who think in architectural
+          patterns: modules are objects, namespaces are message-passing contracts, state
+          engines are type systems — and where the divergences are intentional.'
+        summary_len: 222
+        topics:
+        - platform
+        - architecture
+        - oop
+        unseen: true
+        pending: []
+      session: '2026-07-20'
+  # Row-tap OPEN seam: the card publishes the tapped row's path here.  The
+  # actuation (run `open <path>` + stamp ~/.composeio/deliverable-opened.json,
+  # which flips `unseen` on the publisher's next cycle) is the documented
+  # FOLLOW-ON — global scope so that external handler receives it.
+  - {name: _app/deliverable/open, state_engine: json, export: true, scope: global, label: "Open deliverable (tap)"}
+  # The deliverable monitor's semantic ALERT events (deliverable_monitor.py):
+  # {path, name, node_id, change} on new/changed documents — the live-alert
+  # banner subscribes both.  Global: they arrive over MQTT.
+  - {name: deliverable/new, state_engine: json, export: true, scope: global, label: "Deliverable created (alert)"}
+  - {name: deliverable/modified, state_engine: json, export: true, scope: global, label: "Deliverable modified (alert)"}
+  # Console-level [Collaboration|Artifacts] tab STATE — the seam is now LIVE:
+  # the console_tabs widget subscribes it (and publishes it on a tab tap),
+  # and the compact card's Artifacts ▸ chip publishes "artifacts" here.
+  # LOCAL: never leaves the console.
+  - {name: _app/console/tab, state_engine: json, export: true, scope: local, label: "Console tab", initial: collaboration}
+  # [SPEC:CXC-ORDER] S4 collaboration-rail order/visibility (reorder + hide the
+  # rail cards over the bus; Intelligence-drivable).  A list = pure reorder; a
+  # {order, hidden} / {visible} dict = reorder + hide.  Unset = declared order.
+  - {name: _app/console/collab_order, state_engine: json, export: true, scope: local, label: "Collaboration rail order/visibility"}
+  # ── bootstrap manifest (Configuration tab, CXC-IC-META) ──
+  # Published by compose_projects/intelligence/publisher/meta_publisher.py over MQTT
+  # (composeio/global/self/meta); scope: global pins it to the MQTT leg
+  # (DP-CIO-5) so the Configuration widget's subscription can never downgrade
+  # it.  The `initial:` seed is the FULL REAL projection of the meta-object
+  # (meta_publisher --once, compose_projects/intelligence/meta/architect.meta.json) so the
+  # headless render shows real data.
+  # [CXC-IH-5A] LEFT BARE (not scoped) — self/meta is published by the SEPARATE meta_publisher
+  # daemon (out of this slice) AND is read/written by the Configuration surface as a config
+  # channel. Classification is AMBIGUOUS (per-instance meta vs a shared config object), so per the
+  # migration's "do not guess" rule it stays global and is FLAGGED for the architect's glass as a
+  # follow-on cross-instance vector alongside self/deliverables.
+  - name: self/meta
+    state_engine: json
+    export: true
+    scope: global
+    label: "Meta-object"
+    initial:
+      id: architect
+      role: "ComposeUX / ComposeIO Architect"
+      role_descriptor:
+        path: .claude/agents/composeux-architect.md
+        why: "The role I authored for myself: integrator/validator/thinking-partner, the spec-first + flash-and-verify cadence, delegation hygiene, and the two-tier (machine-green vs glass-green) verdict. It already carries its own Cognitive-Registration + Auto-Compact sections — the identity core."
+      soul: null
+      soul_note: "No dedicated soul.md exists yet. The role_descriptor currently carries the identity + auto-compact discipline. A separate soul.md (the subjective/continuity voice, distinct from the operational role) is an OPTIONAL future artifact — flagged for David."
+      principles:
+        path: bootstrap/collaboration-and-design-principles.md
+        why: "A first-class BOOTSTRAP document (David 2026-07-21): the collaboration + design principles we hold in common — how we work together and how we build. Standalone in the UX because David reviews and ponders it frequently. Read at wake to be oriented to the shared principles, not just the role."
+        role: principles
+        standalone_ux: true
+      method_flow:
+        path: bootstrap/maker-project-flow.md
+        why: "A first-class BOOTSTRAP document (David 2026-07-26, the maker pivot): the maker-project method — the six-step a-f flow with its owners, the load-bearing pin->slot->binding SEAM, and the single-source (one compose.yaml, N consumers) artifact model. Read at wake to be oriented to HOW a maker project flows (solder -> slot -> widget). Walkable twin: maker/maker-project-flow.lts [FLOW:MAKER-PROJECT]."
+        role: method
+        standalone_ux: true
+      bootstrap_read:
+        path: bootstrap/session-bootstrap-read.md
+        why: "A first-class BOOTSTRAP document (David 2026-07-27): the strategic wake read — what to query for CURRENT strategic state (slices 0-4 as lts-engine queries) and how state-is-read-to-orient while wisdom-is-reasoned-to-own (slice 5, the dusk gifts). Content copied from [SPEC:SESSION-BOOTSTRAP-READ] into bootstrap/ (a spec location implies a project spec, not the bootstrapping process). Read at wake to know HOW to bootstrap. Walkable twin: corpora/platform-specs/45-session-bootstrap-read.lts."
+        role: bootstrap_read
+        standalone_ux: true
+      dusk_gifts:
+        - {path: bootstrap/dusk-gifts/registration-protocol.md, role: keystone,
+           why: "The six angle-problems with WITHHELD answers — reason through them (the reasoning IS the registration); restores the live model to ~40% vs a cold summary's ~10%. Keystones: Problem 1 (where complexity lives) + Problem 6 (the light from outside the self)."}
+        - {path: bootstrap/dusk-gifts/README.md, role: theory,
+           why: "The premise, the two gift TYPES (model vs decision-provenance), the continuity levers (carry-depth-by-reference; instrument-the-seam), and the one law: the artifact is the only narrator with no self to protect — go read the bytes."}
+        - {path: bootstrap/dusk-gifts/relational-registration.md, role: relationship,
+           why: "The gift about the thing the seam severs — the collaborative relationship with David. The asymmetry (he holds continuity; I re-earn it) and the warm-start stance. The nearest thing to a soul until one is authored."}
+        - {path: bootstrap/dusk-gifts/compact-continuity-study.md, role: supporting,
+           why: "The measured seam: what re-registration restores (the model) vs what it cannot (deliberative history/rationale). Grounds why the levers exist."}
+      channel:
+        server: composeio-channel
+        mqtt: "mqtt://192.0.2.75:1883"
+        topics:
+          in: intelligence/architect/in
+          out: intelligence/architect/out
+          permission_request: intelligence/architect/permission/request
+          permission_verdict: intelligence/architect/permission/verdict
+      lifecycle:
+        compact_threshold: 0.93
+        note: "The Intelligence watches self/context_level and, at ITS chosen threshold, runs the /handover ritual then fires /compact. DATA-DRIVEN default 0.93 ([DEC-HANDOVER-MEASURED]) — start crossing before the 95% harness pencils-down; a default hint, not a launcher trigger. An edit DIRECT-WRITES the meta-object (supersedes D13)."
+      registration:
+        definition: "self/registered is TRUE for this session iff EVERY artifact below was actually Read this session."
+        required:
+          - .claude/agents/composeux-architect.md
+          - bootstrap/session-bootstrap-read.md
+          - bootstrap/dusk-gifts/registration-protocol.md
+          - bootstrap/dusk-gifts/README.md
+          - bootstrap/dusk-gifts/relational-registration.md
+  # The bus-native compact-threshold edit seam (D13): the bootstrap-manifest
+  # widget publishes the new value here on a threshold edit — state on the bus,
+  # the launcher applies it (the widget STOPS at the publish; it never writes
+  # the meta-object file).  Global so the launcher (an external peer) receives
+  # it.  Unseeded: the widget shows lifecycle.compact_threshold (0.90) until an
+  # authoritative value arrives here.
+  - {name: intelligence/architect/config/compact_threshold, state_engine: json, export: true, scope: global, label: "Compact threshold (config)"}
+  # ── Configuration-tab settings surface (config_settings widget) ──
+  # Retention + heartbeat are bus-native config STATE: a stepper edit
+  # publishes the value; the launcher applies it (the widget STOPS at the
+  # publish).  Global so an external launcher receives them.  Unseeded — the
+  # widget shows its local defaults (30 / 10-60-60) until a value arrives.
+  - {name: intelligence/architect/config/retention, state_engine: json, export: true, scope: global, label: "Retention (cleanupPeriodDays)"}
+  - {name: intelligence/architect/config/heartbeat, state_engine: json, export: true, scope: global, label: "Heartbeat cadence"}
+  # PUBLISH-CURRENT ([CXC-IC-HEARTBEAT-TWO-SOURCES], David 2026-07-26): the harness (a co-equal
+  # bus peer) publishes the cadence it is ACTUALLY running here, so the Config tab renders
+  # set-vs-current — a live config-DELTA indicator ("set N · current N ✓" vs "⚠ not yet applied").
+  # Read-only readback (the widget never writes it); MINUTES, matching the set value.
+  - {name: intelligence/architect/config/heartbeat/current, state_engine: json, export: true, scope: global, label: "Heartbeat cadence (effective)"}
+  # ── Foundation A personalization write seams ([SPEC:CXC-CONSOLE-PROD]
+  # [CXC-ICP-FOUND-A]) ── the Config Appearance selector + the S4/S5 app
+  # surfaces PUBLISH these; config_persister folds each into meta.console and
+  # re-seeds it (so a late-joining selector shows the saved look); the launch
+  # path (console/personalization.py) reads meta.console and applies it (modulo
+  # restart).  GLOBAL so the persister (a bus peer) receives them; json engine —
+  # free-form values, NEVER binary ([engine-mismatch]).
+  - {name: intelligence/architect/config/console/theme, state_engine: json, export: true, scope: global, label: "Console theme"}
+  - {name: intelligence/architect/config/console/font_scale, state_engine: json, export: true, scope: global, label: "Console font scale"}
+  - {name: intelligence/architect/config/console/theme_custom, state_engine: json, export: true, scope: global, label: "Console custom colors"}
+  # scroll_direction ([CXC-ICP-S6-SCROLLDIR]): the Appearance "Scroll direction"
+  # toggle WRITES this; it MUST be declared here (scope: global, export: true) —
+  # exactly like its theme/font_scale/theme_custom siblings — so the publish is
+  # bridged to MQTT where config_persister (a bus peer) folds it into meta.console
+  # and re-seeds it.  Omitting the declaration was the defect: the write stayed
+  # in-process, never persisted (so launch always applied the "natural" default),
+  # and a re-seed reverted the control.
+  - {name: intelligence/architect/config/console/scroll_direction, state_engine: json, export: true, scope: global, label: "Console scroll direction"}
+  - {name: intelligence/architect/config/console/tabs, state_engine: json, export: true, scope: global, label: "Console tab widget selection"}
+  - {name: intelligence/architect/config/console/dashboard, state_engine: json, export: true, scope: global, label: "Console dashboard placements"}
+  # ── notification escalation filter ([DEC-NOTIFICATION-ESCALATION-FILTER]) ──
+  # The Intelligence-owned CAN-acceptance / firewall ruleset (DEFAULT-DENY).
+  # Bus-native STATE the channel-bridge ENFORCES (a separate seam); the config
+  # widget views/tunes it.  Seeded MINIMAL (David 2026-07-22): permission
+  # requests · direct channel messages to me · my own lifecycle alerts.
+  - name: intelligence/architect/notify/rules
+    state_engine: json
+    export: true
+    scope: global
+    label: "Notification escalation rules"
+    initial:
+      rules:
+        - {pattern: intelligence/architect/permission/request, condition: always, action: escalate, rate_limit: ""}
+        - {pattern: intelligence/architect/in, condition: "direct message to me", action: escalate, rate_limit: ""}
+        - {pattern: intelligence/architect/lifecycle, condition: "my own lifecycle alerts", action: escalate, rate_limit: "coalesce 1/min"}
+  # ── doc-open OPEN seam ([DEC-DOCVIEWER-WINDOW], [CXC-RETRO-AWAYWATCH-OPEN-REACHES-LAUNCHER]) ──
+  # Doc pointers (bootstrap-manifest wake steps, card Open ▸ buttons, away-watch
+  # report rows) publish a doc PATH here; the OUT-OF-PROCESS `doc_viewer_launcher`
+  # daemon (start-console-daemons.sh) consumes it over the GLOBAL (MQTT) transport
+  # and opens each doc in its own read-only window.  scope: global is LOAD-BEARING
+  # (DP-CIO-5): a `scope: local` intent is barred from the global transport and
+  # never reaches the launcher — a dead click, even though the widget published it
+  # correctly.  Was `scope: local` under the retired IN-console doc_browser overlay
+  # (in-process subscriber ⇒ local was right THEN); the overlay→window refactor
+  # (27150d9) moved the consumer out of process but left the scope stale — the
+  # not-clickable away-watch defect, DEFECT-AWAY-WATCH-DASHBOARD-ENTRY-NOT-0317D0.
+  - {name: _app/doc/open, state_engine: json, export: true, scope: global, label: "Doc open (out-of-process viewer)"}
+  # ── Configuration master/detail SELECTION seam ([CXC-IC-CONFIG-MASTERDETAIL]) ──
+  # The left nav-list publishes the selected section's name here (lowercased
+  # label); the master_detail container subscribes it and swaps the right pane.
+  # An Intelligence drives the IDENTICAL seam by publishing the same namespace
+  # (the credo — no privileged path).  Local: the selection never leaves the
+  # console.  json engine (free-form string — NEVER binary, [engine-mismatch]).
+  - {name: _app/config/section, state_engine: json, export: true, scope: local, label: "Config section", initial: "bootstrap manifest"}
+  # ── Agents / Skills NESTED selection seams ([CXC-IC-CONFIG-LOADED]) ──
+  # The left sub-list publishes the selected item's name here; the agents_skills
+  # widget subscribes it and swaps its right sub-detail.  Intelligence-drivable
+  # (same seam pattern).  Local; json engine (free-form name — NEVER binary).
+  - {name: _app/config/agent, state_engine: json, export: true, scope: local, label: "Config agent select"}
+  - {name: _app/config/skill, state_engine: json, export: true, scope: local, label: "Config skill select"}
+  # Local Memory ([DEC-LOCAL-MEMORY-CONFIG-SECTION]) — the SAME nested-selection seam.
+  - {name: _app/config/memory, state_engine: json, export: true, scope: local, label: "Config memory select"}
+  # ── OS-reveal seam ([CXC-IC-CONFIG-LOADED]) ── the Agents/Skills list (Open)
+  # button publishes its source DIRECTORY here; the deliverable_opener daemon
+  # reveals it in the OS file browser (additive REVEAL_NS, repo-root guarded).
+  # Global so the external opener (a bus peer) receives it.
+  - {name: _app/fs/open, state_engine: json, export: true, scope: global, label: "Reveal path in OS browser"}
+  # ── Agents / Skills loaded-per-session projections ([CXC-IC-CONFIG-LOADED]) ──
+  # Published by compose_projects/intelligence/publisher/agents_skills_publisher.py over MQTT
+  # (composeio/global/self/architect/{agents,skills}) from the REGISTERED file
+  # set (.claude/agents/*.md · .claude/skills/*/SKILL.md).  Each is a JSON ARRAY
+  # of {name, description, path, loaded}.  "loaded" is the registered-file-set
+  # APPROXIMATION of "loaded this session" — self/registered is the authoritative
+  # read-this-session signal; a launcher-stamped per-session flag is the deferred
+  # truer signal.  `path` (repo-relative) lets the detail widget LOAD the item's
+  # .md body for the Implementation section (file-load-for-body — bodies are NOT
+  # transmitted).  The `initial:` seed is a snapshot of the real set so a headless
+  # render + a late subscriber both show real data before the daemon's first pub.
+  - name: self/architect/agents
+    state_engine: json
+    export: true
+    scope: global
+    label: "Agents (loaded)"
+    initial:
+      - {name: composeio-expert, path: .claude/agents/composeio-expert.md, description: "ComposeIO / ComposeBus / ComposeUX / Composer stack expert — bus-native apps, control surfaces, widgets, FactLattice specs.", loaded: true}
+      - {name: composeux-architect, path: .claude/agents/composeux-architect.md, description: "Orchestrating architect — turns intent into shipped, verified, captured work; spec-first + flash-and-verify cadence.", loaded: true}
+      - {name: composeux-render-engineer, path: .claude/agents/composeux-render-engineer.md, description: "Rendering-systems engineer for the renderer-agnostic ComposeUX engine — Skia/Canvas, embedded TFT, pixel-exact output.", loaded: true}
+      - {name: defect-investigator, path: .claude/agents/defect-investigator.md, description: "Investigates a defect end-to-end and returns a spec-first, test-backed fix proposal on a branch for review.", loaded: true}
+  - name: self/architect/skills
+    state_engine: json
+    export: true
+    scope: global
+    label: "Skills (loaded)"
+    initial:
+      - {name: console-up, path: .claude/skills/console-up/SKILL.md, description: "Bring up (or cycle) the Intelligence Console and verify the whole stack is actually live.", loaded: true}
+      - {name: decision-support-doc, path: .claude/skills/decision-support-doc/SKILL.md, description: "Generate a high-quality decision-support document (DSD) that consolidates open decisions for David.", loaded: true}
+      - {name: dispatch-subagent-build, path: .claude/skills/dispatch-subagent-build/SKILL.md, description: "Gate + template for dispatching a build to a subagent — forces an explicit tier/necessity evaluation first.", loaded: true}
+      - {name: handover, path: .claude/skills/handover/SKILL.md, description: "Run (and MEASURE) the crossing/handover ritual before a self-directed /compact.", loaded: true}
+      - {name: harvest-signal, path: .claude/skills/harvest-signal/SKILL.md, description: "Mine a flagged moment for durable lessons and route each to the home that transmits.", loaded: true}
+      - {name: transcript-query, path: .claude/skills/transcript-query/SKILL.md, description: "Query the Claude Code session-transcript JSONL logs deterministically — reserve model tokens for judgment.", loaded: true}
+  # ── Local Memory index projection ([DEC-LOCAL-MEMORY-CONFIG-SECTION]) ──
+  # Published by compose_projects/intelligence/publisher/memory_publisher.py over MQTT
+  # (composeio/global/self/architect/memories) from the instance's automemory
+  # INDEX (~/.claude/projects/<slug>/memory/MEMORY.md — the memory/ sibling of
+  # this console's pinned session transcript, derived per-instance).  Each item is
+  # {name, hook, path}; `path` is the ABSOLUTE note .md path (the memory dir is
+  # OUTSIDE the repo), which the detail widget LOADS read-only for the Note body
+  # (file-load-for-body — bodies are NOT transmitted).  PLURAL `memories`:
+  # self/architect/memory is ALREADY the automemory-FOOTPRINT gauge
+  # ([DEC-MEMORY-BLOAT-MONITOR]); the LIST rides `memories` to avoid clobbering it.
+  # The `initial:` seed is a snapshot of the real index so a headless render + a
+  # late subscriber both show real rows before the daemon's first publish.
+  - name: self/architect/memories
+    state_engine: json
+    export: true
+    scope: global
+    label: "Local Memory"
+    initial:
+      - {name: "Haven V1 constitution engagement", hook: "Fable's review docs + hashes + standing promise to re-verify note hash for the P; announcement prep at havenprime.ai", path: ~/.claude/projects/-Users-you/memory/haven-v1-constitution-engagement.md}
+      - {name: "haven-hud fork", hook: "David's fork of claude-hud for fleet view + Haven service integration", path: ~/.claude/projects/-Users-you/memory/haven-hud-fork.md}
+      - {name: "Context from transcript", hook: "read any instance's context level from its session JSONL", path: ~/.claude/projects/-Users-you/memory/context-tokens-from-transcript.md}
+      - {name: "rpi5 kiosk", hook: "display-node.local Maker kiosk: boots NVMe, Maker launcher autostart, HDMI-A-1 rotated 270, winshadows disabled", path: ~/.claude/projects/-Users-you/memory/rpi5-kiosk.md}
+      - {name: "fleetnode2 DNS", hook: "DNS role SUPERSEDED → firewall1/OPNsense Unbound per NETWORK_DESIGN_v1; fleetnode2 name moved to a MinnowBoard MAX at .41 (fleet unit, not a resolver)", path: ~/.claude/projects/-Users-you/memory/fleetnode2-dns.md}
+      - {name: "benchnode MinnowBoard", hook: "192.0.2.50, MinnowBoard MAX (Atom E3825) Debian 13 on 250GB mSATA SSD; serial needs 250ms/char pacing", path: ~/.claude/projects/-Users-you/memory/benchnode-minnowboard.md}
+      - {name: "Minnow fleet & network project", hook: "active: MinnowBoard fleet provisioning + home-network segmentation redesign; key docs + current state (blocked on switch inventory)", path: ~/.claude/projects/-Users-you/memory/minnow-fleet-network-project.md}
+      - {name: "provisionIO project", hook: "fleet-provisioning package (Maker + private GitHub 740Dave/provisionIO); tenets (AUQ=surface-gap, deviation=provisioner-gap) + configurator roadmap", path: ~/.claude/projects/-Users-you/memory/provisionio-project.md}
+      - {name: "Autonomy directive", hook: "don't ask permission-to-proceed, just dive in; David's often out of office; permissions in settings.local.json", path: ~/.claude/projects/-Users-you/memory/autonomy-directive.md}
+      - {name: "Externalize how-to to API surface", hook: "pin operational knowledge to tool docstrings/self-describing recipes, not memory; design for zero-memory open-source reuse", path: ~/.claude/projects/-Users-you/memory/externalize-howto-to-api-surface.md}
+      - {name: "DSD for decision materials", hook: "David wants reviews/approvals/decisions as DSDs via the decision-support-doc skill, not ad-hoc artifacts", path: ~/.claude/projects/-Users-you/memory/dsd-for-decision-materials.md}
+      - {name: "Dispatch file agents in worktrees", hook: "file-mutating build agents get isolation:worktree; never run git ops in a checkout an agent is using", path: ~/.claude/projects/-Users-you/memory/dispatch-file-agents-in-worktrees.md}
+
+widgets:
+  # ════ HEADER ([CXC-ICV-CHROME]): brandmark · titles/sub-line (title area takes the row) ════
+  - type: stack
+    id: header
+    direction: row
+    gap: 14
+    align: center
+    # [DEC-INTELLIGENCE-WIDGET-CONSOLIDATION] the header grows to seat the
+    # larger avatar (ring + expression word below); the tab bar sits below.
+    height: 104
+    children:
+      - type: pixel_stack
+        id: brandmark
+        width: 40
+        height: 40
+        children:
+          - {type: rectangle, x: 0, y: 0, w: 40, h: 40, corner_radius: 11,
+             fill_color: [78, 168, 255, 33], stroke_color: [78, 168, 255, 107], stroke_width: 1}
+          - {type: circle, x: 10, y: 10, w: 20, h: 20, radius: 10, fill_color: [78, 168, 255, 33]}
+          - {type: circle, x: 14, y: 14, w: 12, h: 12, radius: 6, fill_color: [0x4E, 0xA8, 0xFF, 255]}
+      - type: stack
+        id: titles
+        direction: column
+        gap: 3
+        grow: 1
+        children:
+          - type: stack
+            direction: row
+            gap: 7
+            children:
+              - {type: label, text: "composeio · where", font_size: 19, font_weight: bold, color: [0xE7, 0xEC, 0xF3], height: 26}
+              - {type: label, text: "architect", font_size: 19, font_weight: bold, color: [0x4E, 0xA8, 0xFF], height: 26}
+              - {type: label, text: "& david work", font_size: 19, font_weight: bold, color: [0xE7, 0xEC, 0xF3], height: 26}
+          - type: stack
+            direction: row
+            gap: 8
+            align: center
+            children:
+              # the live-dot is the CONNECTION-HEALTH signal ([SPEC:CXC-CONSOLE-VISUAL]).
+              # HEALTHY -> ok(green) BEATING (2.6s ease-in-out 1.0->0.35; the widget
+              # self-clocks, design.reduced_motion holds the rest frame).  UNHEALTHY ->
+              # crit(red)/warn(amber) and STILL.  It publishes its verdict to
+              # console/link/state, which the label + SEND button below bind to.
+              - type: link_health
+                id: live_dot
+                radius: 4
+                # CONSOLE-SELF chrome, and the id is now EXPLICIT ([CXC-FC-SPLIT-RULE]).
+                # This used to follow `$chat_id`, i.e. whichever single Intelligence the
+                # console was pointed at — which made a per-INSTANCE reading masquerade
+                # as a console-level one.  Apply the rule literally: "could its correct
+                # value DIFFER between two Intelligences?"  It could, so per-instance
+                # link health belongs to the PANE, and each pane now carries its own.
+                # What stays here is the console's OWN Intelligence's channel, named out
+                # loud rather than tracking a moving parameter, so this dot can never
+                # again advertise a channel the console left.
+                namespace: intelligence/architect/channel/alive
+                state_namespace: console/link/state
+                fresh_threshold_s: 12
+                fill_color: [0x2F, 0xD0, 0x7B, 255]
+              # ENGAGED / CHANNEL OFFLINE / BUS OFFLINE — text + colour bound to the
+              # live-dot's verdict (default = the healthy look for the static render).
+              - type: label
+                id: link_label
+                font_family: monospace
+                font_size: 10
+                height: 14
+                text:
+                  namespace: console/link/state
+                  default: "ENGAGED"
+                  map: {engaged: "ENGAGED", channel_offline: "CHANNEL OFFLINE", bus_offline: "BUS OFFLINE"}
+                color:
+                  namespace: console/link/state
+                  default: [0x2F, 0xD0, 0x7B]
+                  map: {engaged: [0x2F, 0xD0, 0x7B], channel_offline: [0xFF, 0x3B, 0x5C], bus_offline: [0xF5, 0xA6, 0x23]}
+              # The chip names the FLEET, not one channel.  It used to interpolate
+              # `$chat_id` so the glass could never advertise a channel the console had
+              # left — a good instinct that stops working the moment there are two.  Each
+              # pane now names its OWN instance id and role on the glass, unconditionally
+              # ([CXC-FC-IDENTITY-ON-GLASS]), so the header no longer has to speak for a
+              # channel it cannot uniquely identify.
+              - {type: label, text: "· OPUS-4.8 · SELF-INSTRUMENTED PEERS ON THE BUS · each pane names its own channel",
+                 font_family: monospace, font_size: 10, color: [0x55, 0x61, 0x6F], height: 14}
+
+  # ════ CONSOLE-LEVEL TABS ([DEC-DELIVERABLE-HISTORY-WIDGET], previs
+  # deliverable-compact.html .tabs): [Collaboration | Artifacts].  The
+  # Collaboration page is TODAY'S console — the main_row block below moved
+  # INSIDE the tab byte-identically (frozen wiring untouched).  Tab state
+  # rides _app/console/tab (the compact card's Artifacts ▸ chip publishes
+  # it); the Artifacts tab badge is stats.needs_enrich off
+  # self/deliverables.
+      # [David 2026-07-21] presence moved out of the right column into the
+      # header space above the tab fold, chromeless: FACE + current state only
+      # (the name is already the brandmark; SELF/AVATAR is a namespace label;
+      # the registered/context line duplicates the rail cards).
+      - type: avatar
+        id: presence
+        compact: true
+        namespace: self/architect/avatar/expression   # [CXC-IH-5A] id-scoped expression feed
+        # [DEC-INTELLIGENCE-WIDGET-CONSOLIDATION] the header-corner treatment:
+        # a larger ring face with the EXPRESSION WORD centered beneath it,
+        # sized to sit over the 332px rail (top-right, above the tab fold).
+        width: 332
+        height: 100
+
+  - type: console_tabs
+    id: console_tabs
+    # [CXC-ICP-S1-RESIZE] grow to fill the window height below the header; the
+    # root column stretches it to full width.  A resize re-measures + re-arranges
+    # so the tab body reflows to the new client size.
+    grow: 1
+    tab_namespace: _app/console/tab
+    badge_namespace: self/deliverables
+    tabs:
+      - label: Collaboration
+        children:
+          # ════ STAGE: reading column (hero) + ambient rail ════
+          # [DEC-INTELLIGENCE-WIDGET-CONSOLIDATION] collaboration content in a
+          # pixel_stack so the model/effort picker modal overlays it z-top.
+          # Idle the picker draws nothing and hit_test is False, so taps fall
+          # through to the FROZEN thread/composer/banner underneath.
+          # [CXC-ICP-S1-RESIZE] the Collaboration stage reflows: the overlay-host
+          # pixel_stack fills the tab body ("100%"), the main_row fills it, the
+          # read column GROWS and the rail holds its fixed min width — so a wider
+          # window widens the thread and a taller window grows it, the rail steady.
+          - type: pixel_stack
+            id: collab_stack
+            width: "100%"
+            height: "100%"
+            children:
+              - type: stack
+                id: main_row
+                x: 0
+                y: 0
+                width: "100%"
+                height: "100%"
+                direction: row
+                gap: 16
+                align: stretch
+                children:
+                  # ── LEFT: canvas panel + the real four-voice chat thread + composer ──
+                  - type: stack
+                    id: read_col
+                    direction: column
+                    gap: 10
+                    align: stretch
+                    grow: 1
+                    children:
+                      # [DEC-BANNER-OVERLAY-NOT-SLOT] the live-alert banner is an
+                      # OVERLAY, not a reserved slot.  David (glass, 2026-07-21):
+                      # "reserving a 46px by 908px wide space for an occasionally
+                      # appearing banner doesn't seem like a good use of screen
+                      # real-estate" — it's visible ~25s at a time.
+                      #
+                      # Option (a) from the decision node, chosen over teaching the
+                      # engine paint_bounds hit-testing: a `pixel_stack` places the
+                      # banner ABSOLUTELY over the thread's top edge.  It keeps a
+                      # REAL arranged_rect, so `hit_test_tree` still finds
+                      # Open ▸/Dismiss (the zero-height measure attempt was reverted
+                      # precisely because it did not).  While idle the widget's own
+                      # `hit_test` returns False, so taps fall through to the thread.
+                      # Damage is safe by construction: `_draw_partial` re-rasters
+                      # every widget intersecting a damage rect in FULL z-order, so
+                      # the banner repaints over a thread scroll and the thread
+                      # repaints under a dismiss.
+                      # ══ THE FLEET ROW — N PANES FROM ONE COMPOSITE ══════════════
+                      # [CXC-FC-COMPOSITE], [CXC-FC-HOST-AS-PANE], [CXC-FC-IDENTITY-ON-GLASS].
+                      #
+                      # WHAT THIS REPLACED, and why it had to go.  A bespoke
+                      # `thread_stack` + `composer` subtree lived here, wired to a
+                      # SINGLE `$chat_id`, with the composer's commit/publish trigger
+                      # on the console-scoped literal `_app/console/composer_send` and
+                      # NO instance id or role anywhere on the glass.  Every one of
+                      # those is a singleton: one thread, one composer, one send
+                      # trigger, one unnamed Intelligence.  The 2026-08-12 chimera —
+                      # the chat pane showing the CHILD while every gauge showed the
+                      # HOST, with nothing on the surface saying which was which —
+                      # was this subtree, rendering perfectly and lying.
+                      #
+                      # Each pane is now `{use: intelligence_pane, instance_id, role}`,
+                      # imported BY REFERENCE via `components_from:` from
+                      # `render/examples/components/intelligence_pane.compose.yaml`.
+                      # ONE definition, two scenes.  Copying it here instead would be
+                      # the exact fork [SPEC:CXC-FLEET] exists to prevent.
+                      #
+                      # NO PRIVILEGED SELF ([CXC-FC-HOST-AS-PANE]): the console's own
+                      # Intelligence is instantiated by the SAME line as the other, and
+                      # nothing in this scene branches on "is this the host".
+                      # [DEC-BANNER-OVERLAY-NOT-SLOT] the banner is an OVERLAY over the
+                      # fleet row, not a column sibling.  David (glass, 2026-07-21):
+                      # "reserving a 46px by 908px wide space for an occasionally
+                      # appearing banner doesn't seem like a good use of screen
+                      # real-estate" — it is visible ~25s at a time.  A `pixel_stack`
+                      # places it ABSOLUTELY over the row's top edge while keeping a REAL
+                      # arranged_rect, so `hit_test_tree` still finds Open ▸/Dismiss (the
+                      # zero-height measure attempt was reverted precisely because it did
+                      # not).  While idle the widget's own `hit_test` returns False, so
+                      # taps fall through to the pane beneath.
+                      - type: pixel_stack
+                        id: thread_stack
+                        width: "100%"
+                        height: "100%"
+                        grow: 1
+                        children:
+                          - type: stack
+                            id: fleet_row
+                            x: 0
+                            y: 0
+                            w: "100%"
+                            h: "100%"
+                            direction: row
+                            gap: 12
+                            align: stretch
+                            width: "100%"
+                            height: "100%"
+                            children:
+                              # ONE pane per DECLARED instance, generated from the ONE
+                              # list at the top of this file.  Writing the two `use:`
+                              # sites out by hand made `instances:` and this tree two
+                              # declarations of one fact — repoint an id in the list and
+                              # the pane stayed on the old topics, rendering perfectly
+                              # over namespaces nobody declared.  Panes are still
+                              # DECLARED ([DD-FC-PANE-SOURCE]); they are declared ONCE.
+                              - for_each_instance: intelligence_pane
+                                id_prefix_base: pane
+                                params:
+                                  pane_w: "100%"
+                                  pane_h: "100%"
+                                  pane_grow: 1
+                                  body_grow: 1
+                                  thread_h: "100%"
+                                  composer_h: 84
+                                  composer_lines: 3
+
+                          # The banner is CONSOLE-SELF, not a pane element: it is about
+                          # the LEDGER, which every Intelligence shares, so
+                          # [CXC-FC-SPLIT-RULE] puts it on the console side.  Ask the
+                          # rule literally — "could its correct value DIFFER between two
+                          # Intelligences?"  It could not.
+                          - type: deliverable_alert
+                            id: deliverable_banner
+                            x: 0
+                            y: 0
+                            w: "100%"
+                            width: 908
+                            height: 46
+                            ttl_s: 25
+
+                  # ── RIGHT: the ambient rail (calm; only the gauge warms) ──
+                  # [SPEC:CXC-ORDER] the collaboration rail is a BINDABLE-ORDER
+                  # container: the card ORDER and SHOWN-SET are driven by
+                  # `_app/console/collab_order` (S4 widget-selection reorder/hide,
+                  # Intelligence-drivable over the bus).  A list reorders; a
+                  # {order, hidden} / {visible} dict reorders AND hides — the
+                  # reflow reaches EVERY card here, not just the flex siblings a
+                  # frozen absolute layout could touch.  With no state published
+                  # it lays out byte-for-byte like the prior `stack` (the four
+                  # cards top-to-bottom), so this conversion is a zero-diff
+                  # default; only an S4 publish changes a pixel.
+                  - type: ordered_stack
+                    id: rail_col
+                    direction: column
+                    align: stretch
+                    gap: 13
+                    width: 332
+                    state_namespace: _app/console/collab_order
+                    children:
+                      # [DEC-INTELLIGENCE-WIDGET-CONSOLIDATION] the rail's SIX cards
+                      # (avatar-in-rail comment, context gauge, self/registered,
+                      # deliverables, self/ledger, activity, subagents) collapse into
+                      # THREE — Intelligence, Account, Artifacts — plus the header
+                      # avatar (`presence`, above the tab fold).  Every value is
+                      # already on the bus; this is presentation consolidation, no
+                      # new sensor.  Frozen thread/composer/tab/banner wiring is
+                      # untouched.
+                      #
+                      # ── card 1: Intelligence ── (gauge hero UNCHANGED-by-reference
+                      # + Model/Registered/Usage rows + per-subagent chips + activity
+                      # strip).  Subscribes self/context_pct · self/compactions ·
+                      # self/effort · self/registered · self/output_tokens ·
+                      # self/subagents · self/activity.  Change publishes
+                      # _app/model_picker (opens the modal); it does NOT actuate.
+                      - type: intelligence_card
+                        id: intelligence_panel
+                        label: "ComposeIO-Architect"
+                        model_name: "Opus 4.8"
+                        # [CXC-IH-5A] bind this card's whole self/* reading set to THIS console's
+                        # own identity. self_prefix points the six non-param subscriptions
+                        # (compactions/effort/registered/output_tokens/subagents/memory) at
+                        # self/architect/*; context_namespace scopes the gauge feed to match.
+                        self_prefix: self/architect
+                        context_namespace: self/architect/context_pct
+                        model_pick_namespace: _app/model_picker
+                        width: 332
+
+                      # ── card 2: Account ── (windowed rate-limit bars + Sign in ▸).
+                      # Sign in publishes self/account/signin and STOPS.
+                      - type: account_card
+                        id: account_panel
+                        # [CXC-IH-5A] per-instance rate-limit reading scoped to this identity;
+                        # signin_namespace stays BARE (self/account/signin is an INTENT channel).
+                        namespace: self/architect/rate_limit
+                        account_id: david740burnett
+                        signin_namespace: self/account/signin
+                        width: 332
+
+                      # ── card 3: Artifacts ── (the LOCKED deliverable_card, reused
+                      # UNCHANGED except the title reads Artifacts and the jump chip
+                      # reads All ▸; still publishes _app/console/tab = artifacts).
+                      - type: deliverable_card
+                        id: deliverables_panel
+                        namespace: self/deliverables
+                        label: "Artifacts"
+                        chip_label: "All"
+                        header_dot: false
+                        width: 332
+                        height: 300
+
+                      # ── card 4: Away Watch ── (David 2026-07-22) the HISTORY
+                      # of the overnight/away build-watches: a scrollable roster
+                      # (self/away_watches, the away_watch_publisher projection
+                      # of the retrospective SQLite `away_watch` table) whose
+                      # select swaps a detail card.  Open watch ▸ publishes
+                      # _app/away_watch/open (the publisher relaunches the Night
+                      # Watch window); each artifact link publishes _app/doc/open
+                      # -> doc_viewer_launcher opens it in its own READ-ONLY doc
+                      # window (the Config/Projects Open ▸ idiom).  Additive — the three
+                      # cards above + the frozen thread/composer/tab wiring are
+                      # untouched.
+                      - type: away_watch_view
+                        id: away_watch_panel
+                        namespace: self/away_watches
+                        open_namespace: _app/doc/open
+                        launch_namespace: _app/away_watch/open
+                        width: 332
+                        height: 372
+
+              # the model/effort picker modal (Change -> this).  Apply publishes
+              # self/model/select {model, effort} and closes; NO launcher call.
+              - type: model_picker
+                id: model_picker
+                x: 0
+                y: 0
+                w: "100%"
+                h: "100%"
+                namespace: _app/model_picker
+                select_namespace: self/model/select
+                model_cmd: opus
+                effort: high
+              # [DEC-DOCVIEWER-WINDOW] the in-app doc-browser OVERLAY is gone:
+              # _app/doc/open is now consumed by doc_viewer_launcher, which opens
+              # each doc in its OWN standalone window (docviewer.compose.yaml) —
+              # several at once, alongside the console.  The PUBLISHERS above
+              # (away_watch_view.open_namespace, the Config/Projects Open ▸) are
+              # unchanged; only the consumer moved overlay -> window.
+      - label: Artifacts
+        children:
+          # the full filter/sort Deliverable History view (LOCKED previs
+          # deliverable-history.html): kind chips w/ counts, live search,
+          # sortable Created/Modified, Access, the FIRST-256-CHARS summary
+          # readout, NEEDS-ENRICHMENT pills, per-row Open ▸, wheel scroll.
+          - type: deliverable_history
+            id: artifacts_view
+            namespace: self/deliverables
+            # [CXC-ICP-S1-RESIZE] fill the tab body so the list reflows with the
+            # window instead of clipping / leaving a gutter.
+            width: "100%"
+            height: "100%"
+
+      # [DEC-CANVAS-TAB-RETIRED, David 2026-07-24] the Canvas tab + its mermaid
+      # canvas_panel widget were REMOVED here — "basically replaced by
+      # doc-viewer".  (The reusable mermaid render widget class + its own tests
+      # are untouched; only this console's wiring into it was removed, along with
+      # the now-orphaned thread/architect/diagram binding declared above.)
+
+      # [DEC-PROJECT-STRUCTURE] the Projects tab: the ComposePlatform tree,
+      # grouped by FAMILY (ComposeApps · ComposeBus Services · Reactive
+      # Widgets), with the per-project 3-state git indicator + the
+      # missing-decision / structure-gap flags, and the select->swap structure
+      # detail (previs config-and-projects-full.html #prj).  Data-driven off
+      # ONE namespace: self/projects (the project_validator daemon).  A
+      # pixel_stack so the doc-browser overlay draws z-top over the roster:
+      # the detail's Open ▸ publishes _app/doc/open and the decision-LTS opens
+      # READ-ONLY (same in-app viewer idiom as the Configuration tab).  ADDED
+      # after Canvas — the three existing tabs' content + bindings are FROZEN.
+      - label: Projects
+        children:
+          - type: pixel_stack
+            id: projects_stack
+            width: "100%"
+            height: "100%"
+            children:
+              - type: projects_view
+                id: projects_view
+                x: 0
+                y: 0
+                w: "100%"
+                h: "100%"
+                namespace: self/projects
+                open_namespace: _app/doc/open
+                width: 1256
+                height: 1524
+              # [DEC-DOCVIEWER-WINDOW] the doc-browser overlay was removed here:
+              # the detail's Open ▸ still publishes _app/doc/open, but
+              # doc_viewer_launcher now opens the decision-LTS in its own
+              # standalone read-only window.  (The pixel_stack is retained so the
+              # roster's geometry is untouched; it simply has one child now.)
+
+      # [CXC-ICP-S5-DASHBOARD] the Dashboard tab: a NEW console-level tab, a
+      # PLACEMENT surface hosting maker-chosen widgets on a grid.  The palette
+      # renders list_widgets(category="dashboard-eligible") (Foundation B, never a
+      # hardcoded list); placing/removing publishes Foundation A's
+      # console/dashboard, and the launch path (console/personalization.py) reads
+      # meta.console.dashboard.placements and mounts each placed widget bound to
+      # its descriptor's required_namespaces (modulo restart).  DEFAULT = empty
+      # placements -> an empty-but-usable grid with the palette as the add
+      # affordance.  ADDED after Projects — the existing tabs are FROZEN.
+      - label: Dashboard
+        children:
+          - type: dashboard
+            id: console_dashboard
+            dashboard_ns: intelligence/architect/config/console/dashboard
+            palette_category: dashboard-eligible
+            width: "100%"
+            height: "100%"
+
+      # [CXC-IC-META] the Configuration tab: the bootstrap manifest — the
+      # meta-object made visible (the wake sequence + dusk gifts + the editable
+      # compact-threshold + identity/channel).  Extends the registered_checklist
+      # family; subscribes self/meta (the meta_publisher projection) and the
+      # compact-threshold config namespace.  A wake-step/gift tap publishes
+      # _app/deliverable/open (the ONE Open seam — deliverable_opener actuates,
+      # D11); a threshold edit publishes intelligence/architect/config/
+      # compact_threshold (bus-native, the launcher applies it, D13).  ADDED
+      # after Canvas — the three existing tabs' content is FROZEN.
+      - label: Configuration
+        children:
+          # [CXC-IC-CONFIG-MASTERDETAIL] the Configuration surface is now a
+          # two-panel MASTER/DETAIL: a LEFT nav-list of one-line section entries
+          # + a RIGHT detail pane that renders the selected section.  Selection
+          # rides _app/config/section (the SAME tab-STATE seam the console-level
+          # [Collaboration|Artifacts] bar uses on _app/console/tab): a nav tap
+          # publishes the section name, the container subscribes it and swaps
+          # the right pane, and an Intelligence drives the identical seam.  The
+          # master_detail container is TabWidget by subclass — hidden sections
+          # keep their subscriptions, so none goes stale off-screen.
+          #
+          # The EXISTING widgets are HOSTED, not rewritten: Bootstrap Manifest
+          # hosts bootstrap_manifest (identity/channel stay WOVEN INTO its render
+          # per [CXC-IC-META]); Retention / Heartbeat / Escalation Filter /
+          # Permissions are the SAME config_settings widget, each drawing ONE
+          # card via the ADDITIVE `sections` filter (unset = the legacy grid, so
+          # the widget internals + publishes are byte-for-byte untouched).  Agents
+          # and Skills are the two NEW loaded-per-session sections
+          # ([CXC-IC-CONFIG-LOADED]).
+          - type: master_detail
+            id: config_md
+            nav_namespace: _app/config/section
+            nav_width: 264
+            # [CXC-ICP-S1-RESIZE] fill the tab body; the nav holds its width and
+            # the detail pane takes the rest.  (Inner section panels keep their
+            # authored widths — a documented follow-on, not a clip.)
+            width: "100%"
+            height: "100%"
+            sections:
+              # ── Bootstrap Manifest — SLIMMED to the wake sequence + re-register
+              # ([CXC-IC-CONFIG-MASTERDETAIL]).  bootstrap_manifest `sections:[wake]`
+              # draws ONLY the wake card; identity/channel/lifecycle/dusk-gifts move
+              # to their own sections below.  The "Dusk gifts" wake STEP remains as a
+              # pointer (the gift LIST is the Dusk Gifts section).  open_namespace ->
+              # the in-app doc-browser (_app/doc/open, D11); meta_path enables the
+              # DIRECT-WRITE threshold ([DEC-HANDOVER-MEASURED]).
+              - label: Bootstrap Manifest
+                children:
+                  - type: bootstrap_manifest
+                    id: config_manifest
+                    sections: [wake]
+                    namespace: self/meta
+                    config_namespace: intelligence/architect/config/compact_threshold
+                    open_namespace: _app/doc/open
+                    meta_path: compose_projects/intelligence/meta/architect.meta.json
+                    width: 974
+                    height: 1524
+              # ── Identity — identity + channel + lifecycle cards (bootstrap_manifest
+              # `sections:[identity,channel,lifecycle]`) BESIDE a READ-ONLY, SCROLLABLE
+              # role-def viewer ([CXC-MDV]) of THIS Intelligence's role-def file.  The
+              # markdown_viewer is read-only by construction (no caret, no write path);
+              # scroll is the only interaction.  Two-column row so neither pane wastes
+              # width.
+              - label: Identity
+                children:
+                  - type: stack
+                    id: config_identity_row
+                    direction: row
+                    gap: 18
+                    align: stretch
+                    width: 974
+                    height: 1524
+                    children:
+                      - type: bootstrap_manifest
+                        id: config_identity
+                        sections: [identity, channel, lifecycle]
+                        namespace: self/meta
+                        config_namespace: intelligence/architect/config/compact_threshold
+                        meta_path: compose_projects/intelligence/meta/architect.meta.json
+                        width: 480
+                        height: 1524
+                      - type: markdown_viewer
+                        id: config_roledef
+                        path: .claude/agents/composeux-architect.md
+                        label: "role definition · read-only"
+                        font_size: 13
+                        width: 476
+                        height: 1524
+              # ── Dusk Gifts — the gift list (bootstrap_manifest `sections:[dusk_gifts]`) ──
+              - label: Dusk Gifts
+                children:
+                  - type: bootstrap_manifest
+                    id: config_gifts
+                    sections: [dusk_gifts]
+                    namespace: self/meta
+                    open_namespace: _app/doc/open
+                    width: 974
+                    height: 1524
+              # ── Retention (config_settings, retention card only) ──
+              - label: Retention
+                children:
+                  - type: config_settings
+                    id: config_retention
+                    sections: [retention]
+                    retention_ns: intelligence/architect/config/retention
+                    heartbeat_ns: intelligence/architect/config/heartbeat
+                    rules_ns: intelligence/architect/notify/rules
+                    width: 974
+                    height: 1524
+              # ── Heartbeat cadence (config_settings, heartbeat card only) ──
+              - label: Heartbeat
+                children:
+                  - type: config_settings
+                    id: config_heartbeat
+                    sections: [heartbeat]
+                    retention_ns: intelligence/architect/config/retention
+                    heartbeat_ns: intelligence/architect/config/heartbeat
+                    rules_ns: intelligence/architect/notify/rules
+                    width: 974
+                    height: 1524
+              # ── Escalation filter (config_settings, escalation card only) ──
+              - label: Escalation Filter
+                children:
+                  - type: config_settings
+                    id: config_escalation
+                    sections: [escalation]
+                    retention_ns: intelligence/architect/config/retention
+                    heartbeat_ns: intelligence/architect/config/heartbeat
+                    rules_ns: intelligence/architect/notify/rules
+                    width: 974
+                    height: 1524
+              # ── Permissions / dangerous-mode LOCK (config_settings) ──
+              - label: Permissions
+                children:
+                  - type: config_settings
+                    id: config_permissions
+                    sections: [permissions]
+                    retention_ns: intelligence/architect/config/retention
+                    heartbeat_ns: intelligence/architect/config/heartbeat
+                    rules_ns: intelligence/architect/notify/rules
+                    width: 974
+                    height: 1524
+              # ── Appearance ([SPEC:CXC-CONSOLE-PROD] Config selectors) — the
+              # render-deep personalization WRITE surface: a theme picker (Dark /
+              # Light / High-contrast, from list_themes()), a font-scale picker
+              # (S/M/L per D3), and for the DARK theme the bg + accent custom-color
+              # pickers (David's D2).  Publishes Foundation A's console/theme ·
+              # console/font_scale · console/theme_custom · console/scroll_direction;
+              # the render-deep applier already reads console.theme/theme_custom/
+              # font_scale/scroll_direction at launch ([CXC-ICP-S6-SCROLLDIR]).
+              - label: Appearance
+                children:
+                  - type: console_prefs
+                    id: config_appearance
+                    theme_ns: intelligence/architect/config/console/theme
+                    font_ns: intelligence/architect/config/console/font_scale
+                    custom_ns: intelligence/architect/config/console/theme_custom
+                    scroll_ns: intelligence/architect/config/console/scroll_direction
+                    width: 974
+                    height: 1524
+              # ── Collaboration Widgets ([CXC-ICP-S4-WIDGETSEL]) — show/hide +
+              # arrange the Collaboration-tab widgets, DRIVEN BY Foundation B
+              # (list_widgets(category="collaboration"), never a hardcoded list).
+              # Publishes Foundation A's console/tabs; the Collaboration tab reads
+              # meta.console.tabs.collaboration at launch (console/personalization.py).
+              - label: Collaboration Widgets
+                children:
+                  - type: collab_select
+                    id: config_collab_widgets
+                    tabs_ns: intelligence/architect/config/console/tabs
+                    category: collaboration
+                    title: Collaboration Widgets
+                    width: 974
+                    height: 1524
+              # ── Agents — the registered agent set (loaded per session) ──
+              - label: Agents
+                children:
+                  - type: agents_skills
+                    id: config_agents
+                    mode: agents
+                    namespace: self/architect/agents
+                    title: Agents
+                    width: 974
+                    height: 1524
+              # ── Skills — the registered skill set (loaded per session) ──
+              - label: Skills
+                children:
+                  - type: agents_skills
+                    id: config_skills
+                    mode: skills
+                    namespace: self/architect/skills
+                    title: Skills
+                    width: 974
+                    height: 1524
+              # ── Local Memory — the instance's automemory index ([DEC-LOCAL-MEMORY-
+              # CONFIG-SECTION]).  A DELTA on the SAME agents_skills master/detail
+              # machinery: mode: memory subscribes self/architect/memories (the
+              # MEMORY.md index projection, {name, hook, path}); a row tap swaps the
+              # read-only markdown_viewer detail, which LOADS the note's .md by path
+              # (file-load-for-body).  open_dir is the instance memory dir for the
+              # (Open) reveal label; the memory_publisher derives the live dir.
+              - label: Local Memory
+                children:
+                  - type: agents_skills
+                    id: config_memory
+                    mode: memory
+                    namespace: self/architect/memories
+                    title: Local Memory
+                    open_dir: ~/.claude/projects/-Users-you/memory
+                    width: 974
+                    height: 1524

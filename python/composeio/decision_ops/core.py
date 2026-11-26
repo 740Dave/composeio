@@ -67,7 +67,7 @@ log-style pattern, see module docstring below) are never treated as new failures
 FLAGGED, NOT BUILT HERE (see the build brief + this package's `__init__.py` for
 the full notes; do not re-derive any of this from this module alone):
   * MCP-server wrapper   -- a follow-up server layer calls this exact library.
-  * Nexus-Magma sync     -- the external Nexus "Magma" service (a DIFFERENT system
+  * Haven-Magma sync     -- the external Haven "Magma" service (a DIFFERENT system
     from the local lts-engine, still magma_*-named); out of scope.
   * Live-cutover to sole writer -- the hand-append path stays; this is not wired
     as the only writer anywhere. That switch is David's glass call.

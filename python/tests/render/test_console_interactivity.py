@@ -269,10 +269,10 @@ def test_form_mode_blur_still_commits_unchanged():
     w = TextInputWidget("f", namespace="settings/name")
     ctx = _Ctx()
     w.on_mount(ctx)
-    w.text = "gilligan"
+    w.text = "fleetnode2"
     w.on_blur()
-    assert ctx.published == [("settings/name", "gilligan")]
-    assert w.text == "gilligan"          # form fields never clear
+    assert ctx.published == [("settings/name", "fleetnode2")]
+    assert w.text == "fleetnode2"          # form fields never clear
 
 
 # ── scene wiring + end-to-end through the runtime ────────────────────────────

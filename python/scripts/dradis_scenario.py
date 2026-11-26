@@ -61,7 +61,7 @@ from composeio.transport import BusMessage, Transport    # noqa: E402
 
 # --- bus wiring -------------------------------------------------------------
 
-BROKER_DEFAULT = "mqtt-broker.local"
+BROKER_DEFAULT = os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local")
 PORT_DEFAULT = 1883
 SOURCE_ID = "dradis-scenario"
 NS_CONTACTS = "dradis/contacts"

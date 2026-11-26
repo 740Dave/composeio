@@ -1,0 +1,274 @@
+---
+scope: "The fingerprint template-set push contract between fingerprint_storage and a fingerprint sensor device: the five device-emitted semantic messages and their payloads, the two 15-second device heartbeats, the two push-time set validations the service performs before publishing, the UUID comparison a device runs on receipt of a push, and the obligations that hold when a load or a delete fails."
+audience: "The author of services/fingerprint_storage/roster_push.py; the author of the device firmware bus client; the author of the acceptance tests for either side."
+boundary: "IN: the messages, their payloads, the cadences, the push-time validations, the comparison algorithm and the failure obligations. OUT: the storage model behind a template set, slot allocation, the R503 sensor command set, and the bus namespace literals."
+not-this: "Not the corpus copy of this contract. The corpus node is [CXC-FPBUS-PUSH-SEQUENCE] in corpus/73-fingerprint-bus-contract.lts; this file carries the same contract in structured form."
+domain: plt.cux
+status: draft
+created: 2026-08-17
+artifact-readiness: design-review
+confidentiality: internal-only
+---
+
+# Fingerprint Template-Set Push: Order Of Operations And Semantic Messages [SPEC:CXC-FPBUS-PUSH]
+
+> A push moves a desired fingerprint template set from fingerprint_storage to a device. The service
+> publishes; the device executes and answers with a semantic message. Every obligation below is one
+> node with one id, so a test name and a code comment can cite exactly one of them.
+
+---
+
+## [CXC-FPBUS-PUSH-SEQUENCE] Order of operations and semantic messages
+
+- definition: A closed-loop semantic message that pushes the desired fingerprint template set from fingerprint_storage to one or more fingerprint sensor devices in four ordered steps. Two actors alternate: the service pushes the semantic, the device executes and acknowledges with a semantic message.
+- status: draft
+- artifact: services/fingerprint_storage/roster_push.py
+- part-of: [SPEC:CXC-FPBUS]
+- see-also: [CXC-FPID-ROSTER-STAMP], [CXC-FPID-ROSTER-SYNC-MODE], [CXC-FPID-PUSH-TRIGGER],
+  [CXC-FPHAL-CONTAINMENT-INVARIANTS], [CXC-FPID-FULL-RESYNC-COST-DERIVED]
+
+### A healthy configured device announces itself at boot and every 60 seconds [CXC-FPBUS-REQ-READY-HEARTBEAT]
+
+- constraint: A device MUST emit fingerprint_ready on ComposeBus once at power-up and every 60 seconds thereafter, if and only if fingerprint hardware is detected AND a valid saved template_set_uuid exists. If either condition fails the device emits fingerprint_inoperable or fingerprint_push_needed instead, and MUST NOT emit fingerprint_ready.
+- rationale: The three heartbeats are mutually exclusive and jointly exhaustive, so a subscriber determines any device's state from which message arrives: fingerprint_ready means healthy and configured, fingerprint_push_needed means healthy but unconfigured, fingerprint_inoperable means the hardware cannot be used. Silence is the fourth state and means the device is offline.
+- consequence: Because fingerprint_ready carries template_set_uuid, the service learns which set every healthy device holds without asking. Reconciliation is a subscription rather than a query, and no separate occupancy or roster-stamp read is needed.
+- artifact: EMPTY. Device firmware bus client; no path is named in this contract.
+- acceptance-machine: Subscribe to ComposeBus for 150 seconds while a healthy configured device runs. Assert one fingerprint_ready arrives within seconds of power-up and two more at 60-second spacing within tolerance, each carrying the uuid of the set the device holds. Assert no fingerprint_push_needed or fingerprint_inoperable arrives from that device in the same window. The test only subscribes; nothing is published to the device.
+- open-question: ANSWERED by David, 2026-08-17: count_authentication_attempts is reset whenever there is a genuine template_set_uuid change. It is roster-scoped (attempts-against-this-cast), persisted in NVS across reboot, and zeroed as part of the push operation that installs a new uuid; an idempotent re-push of the same uuid does NOT reset it. Full rule recorded as counter-semantics on [CXC-FPBUS-MSG-FINGERPRINT-READY].
+- status: draft
+- cadence-differs-deliberately: 60 seconds here against 15 seconds for the two attention-seeking states. A device that needs something says so four times as often as a device that is merely well.
+
+---
+
+## Device-emitted semantic messages
+
+### [CXC-FPBUS-MSG-TEMPLATE-SET-LOADED] template_set_loaded
+
+- definition: The device's acknowledgement of a template_set push. It reports that the device holds the pushed set, whether that required work or not.
+- payload: {template_set_uuid}
+- emitted-when: The pushed template set uuid is already loaded, or a delete of the existing set and its replacement with the new set completed successfully.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+### [CXC-FPBUS-MSG-TEMPLATE-SET-FAILED] template_set_failed
+
+- definition: The device's report that a template_set push did not complete, carrying the exact error code and a human readable string.
+- payload: {template_set_uuid} && {Error_Code} && {Human_Readable_Error_String}
+- emitted-when: The template_set message failed.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+### [CXC-FPBUS-MSG-FINGERPRINT-INOPERABLE] fingerprint_inoperable
+
+- definition: The device's report that it is in a state where it cannot be used, either because the fingerprint sensor has become disconnected or because it is misconfigured in a way that makes it impossible to reset with a new push message.
+- payload: {Inop_Code} & {Human_Readable_Inop_String}
+- emitted-when: The device is in a state where it cannot be used.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+### [CXC-FPBUS-MSG-FINGERPRINT-PUSH-NEEDED] fingerprint_push_needed
+
+- definition: The device's request for a template set. It is both the empty-device announcement and the retry request after a recoverable failure.
+- payload: none
+- emitted-when: The device has no fingerprint templates stored, or a retry is needed after that device had a recoverable failure from a prior push message.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+### [CXC-FPBUS-MSG-FINGERPRINT-READY] fingerprint_ready
+
+- definition: The positive steady-state announcement. A healthy, configured device says so on a cadence, carrying the uuid of the set it holds and a count of authentication attempts. It is the third of three mutually exclusive device-state heartbeats, and the only one that reports a working device.
+- payload: {template_set_uuid, count_authentication_attempts}
+- emitted-when: Once at power-up, and every 60 seconds thereafter, if and only if both conditions hold: fingerprint hardware is detected, and a valid saved template_set_uuid exists. A device that fails either condition emits fingerprint_inoperable or fingerprint_push_needed instead.
+- status: draft
+- open-question: ANSWERED by David, 2026-08-17, verbatim: fingerprint_ready and {template_set_uuid} and {count_authentication_attempts} - emitted once when a device is powered up and every minute IFF fingerprint hardware detected and a valid saved template_set_uuid exists. It is BOTH candidates - a boot announcement and a steady-state heartbeat - which is why neither alone fitted. It is distinguished from template_set_loaded by trigger rather than by content: template_set_loaded answers a push, fingerprint_ready answers nothing and arrives on a clock.
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+- counter-semantics: count_authentication_attempts counts every authentication attempt made against the currently loaded roster. It is stored in NVS beside template_set_uuid and survives a reboot, so a power-cycle that reloads the same set resumes the same count. It is zeroed only on a genuine template_set_uuid change during a push; an idempotent re-push of the same uuid does NOT reset it. This keeps the two payload fields on one clock: {template_set_uuid, count_authentication_attempts} always describes one cast, and both reset together when the cast is replaced.
+
+---
+
+## Device heartbeats
+
+### [CXC-FPBUS-REQ-PUSH-NEEDED-HEARTBEAT] An unconfigured device asks for a set every 15 seconds
+
+- constraint: A device with no configured fingerprint template set MUST emit the fingerprint_push_needed message on ComposeBus every 15 seconds.
+- artifact: EMPTY. Device firmware bus client; no path is named in this contract.
+- acceptance-machine: Bring up a device whose template store is empty and subscribe to ComposeBus for 60 seconds. Assert that four fingerprint_push_needed messages arrive from that device, spaced 15 seconds apart within tolerance. The test only subscribes; nothing is published to the device.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+#### [CXC-FPBUS-SCEN-PUSH-NEEDED-HEARTBEAT] Empty device keeps asking
+
+- when: a device holds no configured fingerprint template set
+- then: the device emits fingerprint_push_needed on ComposeBus every 15 seconds
+- part-of: [CXC-FPBUS-REQ-PUSH-NEEDED-HEARTBEAT]
+
+### [CXC-FPBUS-REQ-INOPERABLE-HEARTBEAT] An inoperative device says so every 15 seconds
+
+- constraint: A device that is inoperative MUST emit the fingerprint_inoperable message on ComposeBus every 15 seconds.
+- artifact: EMPTY. Device firmware bus client; no path is named in this contract.
+- acceptance-machine: Disconnect the fingerprint sensor from an otherwise healthy device and subscribe to ComposeBus for 60 seconds. Assert that four fingerprint_inoperable messages arrive from that device, spaced 15 seconds apart within tolerance. Disconnecting the sensor is reversible and writes nothing to the device.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+#### [CXC-FPBUS-SCEN-INOPERABLE-HEARTBEAT] Sensor disconnected while the device runs
+
+- when: a device's fingerprint sensor becomes disconnected
+- then: the device emits fingerprint_inoperable on ComposeBus every 15 seconds
+- part-of: [CXC-FPBUS-REQ-INOPERABLE-HEARTBEAT]
+
+---
+
+## Push-time validations performed by the service
+
+### [CXC-FPBUS-REQ-SET-SIZE-LIMIT] A set larger than 20 templates is never published
+
+- constraint: A template set MUST NOT be pushed onto ComposeBus if it has more than 20 templates.
+- artifact: services/fingerprint_storage/roster_push.py
+- acceptance-machine: Call the publisher with a 21-template set. Assert that it refuses and that no message reaches the bus. The test runs entirely in the service process; no device is contacted.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+#### [CXC-FPBUS-SCEN-SET-SIZE-LIMIT] Twenty-one templates
+
+- when: the service is asked to push a template set containing 21 templates
+- then: the set is not published and no template_set message appears on ComposeBus
+- part-of: [CXC-FPBUS-REQ-SET-SIZE-LIMIT]
+
+### [CXC-FPBUS-REQ-SET-UUID-PRESENT] A set without a UUID is never published
+
+- constraint: A template set MUST NOT be pushed onto ComposeBus if it does not have a UUID.
+- rationale: The device's whole receipt algorithm is a UUID comparison. A set with no UUID gives the device nothing to compare and no value to store.
+- artifact: services/fingerprint_storage/roster_push.py
+- acceptance-machine: Call the publisher with a template set whose UUID is absent. Assert that it refuses and that no message reaches the bus. The test runs entirely in the service process; no device is contacted.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+#### [CXC-FPBUS-SCEN-SET-UUID-PRESENT] Set with no UUID
+
+- when: the service is asked to push a template set that carries no UUID
+- then: the set is not published and no template_set message appears on ComposeBus
+- part-of: [CXC-FPBUS-REQ-SET-UUID-PRESENT]
+
+---
+
+## Device receipt of a push
+
+### [CXC-FPBUS-REQ-UUID-COMPARE] Receipt begins with a UUID comparison
+
+- constraint: A device receiving a template push message MUST compare the template set's UUID against current_template_set_uuid, the UUID stored from the last successful template_set message. The result of that comparison selects which of the two branches below runs.
+- artifact: EMPTY. Device firmware bus client; no path is named in this contract.
+- acceptance-machine: Push a template set to a mock device and assert that the mock recorded a read of current_template_set_uuid before any delete or write call. The assertion is on the mock's recorded call order; no hardware is written.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+### [CXC-FPBUS-REQ-UUID-MATCH-BRANCH] A matching UUID means no work and an acknowledgement
+
+- given: the pushed template set's UUID is the same as current_template_set_uuid
+- constraint: The device MUST take no action and MUST emit the template_set_loaded semantic message.
+- artifact: EMPTY. Device firmware bus client; no path is named in this contract.
+- acceptance-machine: Push a template set to a mock device, then push the identical set a second time. Assert that the mock recorded zero delete calls and zero write calls during the second push, and that template_set_loaded was emitted. The second push writes nothing by definition, so the test is non-destructive.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+#### [CXC-FPBUS-SCEN-SAME-SET-PUSHED-TWICE] Same set pushed twice
+
+- when: a device receives a template push whose UUID equals current_template_set_uuid
+- then: the device performs no delete and no write, and emits template_set_loaded
+- part-of: [CXC-FPBUS-REQ-UUID-MATCH-BRANCH]
+
+### [CXC-FPBUS-REQ-UUID-MISMATCH-BRANCH] A differing UUID means delete all, load all, then stamp
+
+- given: the pushed template set's UUID is not the same as current_template_set_uuid
+- constraint: The device MUST delete all saved fingerprint templates, then load the templates from the template set. Only if all template set templates are saved successfully does the device save the template set UUID as current_template_set_uuid and emit the template_set_loaded semantic message.
+- artifact: EMPTY. Device firmware bus client; no path is named in this contract.
+- acceptance-machine: Against a mock device, push a set whose UUID differs from the stored one. Assert that the delete-all call precedes every write call, that current_template_set_uuid is written only after the last write returned success, and that template_set_loaded is emitted last. Every assertion is on the mock's recorded call order; no hardware is written.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+#### [CXC-FPBUS-SCEN-ALL-TEMPLATES-SAVE] Every template saves
+
+- when: a device receives a template push whose UUID differs from current_template_set_uuid
+- and-when: every template in the set is saved successfully
+- then: the device has deleted all previously saved templates and holds only the pushed set
+- and-then: current_template_set_uuid holds the pushed set's UUID and the device emits template_set_loaded
+- part-of: [CXC-FPBUS-REQ-UUID-MISMATCH-BRANCH]
+
+#### [CXC-FPBUS-SCEN-PARTIAL-LOAD-HOLDS-STAMP] One template fails to save
+
+- when: a device receives a template push whose UUID differs from current_template_set_uuid
+- and-when: at least one template in the set does not save successfully
+- then: current_template_set_uuid is not advanced to the pushed set's UUID
+- and-then: the device does not emit template_set_loaded
+- part-of: [CXC-FPBUS-REQ-UUID-MISMATCH-BRANCH]
+
+---
+
+## Failure obligations
+
+### [CXC-FPBUS-REQ-LOAD-FAILURE] A failed load reports, holds the stamp, and empties the device
+
+- constraint: Any failure in the loading of a template set requires that the device send a template_set_failed message, that current_template_set_uuid remain unmodified, and that the device delete any and all fingerprint templates on the device.
+- rationale: A device that reports a UUID it does not fully hold is confidently wrong rather than merely empty. Holding the old stamp while deleting the templates leaves the device unambiguously unconfigured, which the push_needed heartbeat then announces.
+- artifact: EMPTY. Device firmware bus client; no path is named in this contract.
+- acceptance-machine: In a mock device, inject a write failure on the third template of a five-template set. Assert that template_set_failed was emitted, that current_template_set_uuid still holds its prior value, and that the mock's template store is empty. The failure is injected in the mock, so no hardware write is attempted.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+#### [CXC-FPBUS-SCEN-LOAD-FAILURE] Write failure part way through a load
+
+- when: a template save fails part way through loading a template set
+- then: the device emits template_set_failed, leaves current_template_set_uuid unmodified, and deletes all fingerprint templates on the device
+- part-of: [CXC-FPBUS-REQ-LOAD-FAILURE]
+
+### [CXC-FPBUS-REQ-DELETE-FAILURE-ESCALATION] A failed delete escalates to one of two messages
+
+- given: the deletion required by [CXC-FPBUS-REQ-LOAD-FAILURE] itself fails after try and catch
+- constraint: The device MUST emit either fingerprint_push_needed or fingerprint_inoperable, chosen by the nature of the error.
+- artifact: EMPTY. Device firmware bus client; no path is named in this contract.
+- acceptance-machine: In a mock device, inject a delete failure during the cleanup that follows a failed load, once for a recoverable error class and once for an unrecoverable one. Assert that fingerprint_push_needed is emitted in the first case and fingerprint_inoperable in the second. Both failures are injected in the mock; no hardware is written.
+- open-question: The mapping from error class to message is stated as depending upon the nature of the error and is not enumerated. Which error classes are recoverable enough for fingerprint_push_needed, and which make the device inoperable, is undecided. The acceptance-machine above names the two cases it will assert and cannot be written until the mapping exists.
+- status: draft
+- part-of: [CXC-FPBUS-PUSH-SEQUENCE]
+
+#### [CXC-FPBUS-SCEN-DELETE-FAILURE-ESCALATION] Cleanup delete fails
+
+- when: the delete of all fingerprint templates that follows a failed load itself fails after try and catch
+- then: the device emits either fingerprint_push_needed or fingerprint_inoperable, chosen by the nature of the error
+- part-of: [CXC-FPBUS-REQ-DELETE-FAILURE-ESCALATION]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-FPBUS-REQ-PUSH-NEEDED-HEARTBEAT] USES [CXC-FPBUS-MSG-FINGERPRINT-PUSH-NEEDED]
+- [CXC-FPBUS-REQ-INOPERABLE-HEARTBEAT] USES [CXC-FPBUS-MSG-FINGERPRINT-INOPERABLE]
+- [CXC-FPBUS-REQ-UUID-MATCH-BRANCH] USES [CXC-FPBUS-MSG-TEMPLATE-SET-LOADED]
+- [CXC-FPBUS-REQ-UUID-MISMATCH-BRANCH] USES [CXC-FPBUS-MSG-TEMPLATE-SET-LOADED]
+- [CXC-FPBUS-REQ-LOAD-FAILURE] USES [CXC-FPBUS-MSG-TEMPLATE-SET-FAILED]
+- [CXC-FPBUS-REQ-DELETE-FAILURE-ESCALATION] USES [CXC-FPBUS-MSG-FINGERPRINT-PUSH-NEEDED]
+- [CXC-FPBUS-REQ-DELETE-FAILURE-ESCALATION] USES [CXC-FPBUS-MSG-FINGERPRINT-INOPERABLE]
+- [CXC-FPBUS-REQ-UUID-MATCH-BRANCH] CONTRAST_WITH [CXC-FPBUS-REQ-UUID-MISMATCH-BRANCH]
+- [CXC-FPBUS-MSG-FINGERPRINT-READY] CONTRAST_WITH [CXC-FPBUS-MSG-TEMPLATE-SET-LOADED]
+- [CXC-FPBUS-REQ-UUID-MATCH-BRANCH] DEPENDS_ON [CXC-FPBUS-REQ-UUID-COMPARE]
+- [CXC-FPBUS-REQ-UUID-MISMATCH-BRANCH] DEPENDS_ON [CXC-FPBUS-REQ-UUID-COMPARE]
+
+### Causal
+
+- [CXC-FPBUS-REQ-UUID-COMPARE] PRECONDITION_FOR [CXC-FPBUS-REQ-UUID-MATCH-BRANCH]
+- [CXC-FPBUS-REQ-UUID-COMPARE] PRECONDITION_FOR [CXC-FPBUS-REQ-UUID-MISMATCH-BRANCH]
+- [CXC-FPBUS-REQ-LOAD-FAILURE] PRECONDITION_FOR [CXC-FPBUS-REQ-DELETE-FAILURE-ESCALATION]
+- [CXC-FPBUS-REQ-SET-UUID-PRESENT] ENABLES [CXC-FPBUS-REQ-UUID-COMPARE]
+- [CXC-FPBUS-REQ-LOAD-FAILURE] CAUSES [CXC-FPBUS-REQ-PUSH-NEEDED-HEARTBEAT]
+
+### Temporal
+
+- [CXC-FPBUS-REQ-SET-SIZE-LIMIT] BEFORE [CXC-FPBUS-REQ-UUID-COMPARE]
+- [CXC-FPBUS-REQ-SET-UUID-PRESENT] BEFORE [CXC-FPBUS-REQ-UUID-COMPARE]
+- [CXC-FPBUS-REQ-UUID-MISMATCH-BRANCH] BEFORE [CXC-FPBUS-REQ-LOAD-FAILURE]
+
+---
+
+**Version**: 1.0
+**Status**: Draft

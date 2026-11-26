@@ -28,9 +28,8 @@ from composeio.render.composition import (derive,
                                           missing_screen_placeholder_label,
                                           qualify_binding, route)
 
-BASE_SVG = os.path.join(
-    REPO_ROOT, "compose_projects", "bsg", "resources", "screen_base_layout",
-    "colonial_base_ux.svg")
+BASE_SVG = os.path.join(   # NEUTRAL base layout fixture (same slot grammar)
+    REPO_ROOT, "python", "tests", "fixtures", "neutral", "base_ux.svg")
 
 
 def _svg(groups, viewbox="0 0 100 100"):

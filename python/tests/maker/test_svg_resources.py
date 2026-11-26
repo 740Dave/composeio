@@ -35,28 +35,20 @@ from composeio.maker.svg_resources import (  # noqa: E402
     normalize_fill,
 )
 
-COLONIAL_SVG = os.path.join(
-    REPO_ROOT, "compose_projects", "bsg", "resources",
-    "screen_base_layout", "colonial_base_ux.svg")
-
 # The semantic palettes MOVED to a dedicated file (David 2026-07-31) — the themes
 # sit directly under a layer with NO `semantic_color_palettes` wrapper.  This is
 # the canonical palette source now ([DEC-COLONIAL-OS-SVG-IS-SOURCE-OF-TRUTH]).
+# Public tree: a NEUTRAL fixture with the same dedicated-file layout (four themes directly under a layer,
+# no wrapper group). The project artwork and its ratified palette are checked in the project repo.
 SEMANTIC_COLORS_SVG = os.path.join(
-    REPO_ROOT, "compose_projects", "bsg", "resources",
-    "screen_base_layout", "colonial_base_ux_semantic_colors.svg")
+    REPO_ROOT, "python", "tests", "fixtures", "neutral", "semantic_palettes.svg")
 
-EXPECTED_THEMES = {"cic", "sickbay", "flight_deck", "raptor"}
+EXPECTED_THEMES = {"light", "dark", "warm", "cool"}   # the neutral fixture's four themes
 
 
 # ---------------------------------------------------------------------------
 # the real artwork — the acceptance the task names
 # ---------------------------------------------------------------------------
-def test_colonial_svg_is_tracked():
-    assert os.path.exists(COLONIAL_SVG), COLONIAL_SVG
-    assert os.path.exists(SEMANTIC_COLORS_SVG), SEMANTIC_COLORS_SVG
-
-
 def test_all_four_themes_yield_base_and_highlight():
     palettes = extract_semantic_palettes(SEMANTIC_COLORS_SVG)
     assert set(palettes) == EXPECTED_THEMES
@@ -65,11 +57,6 @@ def test_all_four_themes_yield_base_and_highlight():
         for role, hexv in pair.items():
             assert normalize_fill(hexv) == hexv       # already normalized
             assert len(hexv) in (7, 9) and hexv[0] == "#", (theme, role, hexv)
-
-
-def test_cic_default_palette_is_ratified_amber():
-    palettes = extract_semantic_palettes(SEMANTIC_COLORS_SVG)
-    assert palettes["cic"] == {"base": "#762400", "highlight": "#CD671D"}
 
 
 def test_dedicated_file_has_no_wrapper_group_but_still_extracts():

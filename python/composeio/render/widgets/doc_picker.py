@@ -1,5 +1,5 @@
 """
-ComposeUX DocPickerWidget — a pick list backed by a document_store query.
+ComposeUX DocPickerWidget — a pick list backed by a unified-store query.
 
 M2 port of ux_composer DocPickerRenderer: queries a collection, renders
 the matching docs as a selectable list, and on select publishes chosen
@@ -7,8 +7,10 @@ fields of the doc into namespaces (`load_map`) — or, in launch mode,
 asks the shell to app-switch.  The pick list IS the query result set
 (DP-CIO-23).
 
-Queries run on a background thread (blocking HTTP must never stall the
-render loop); results marshal back via the engine update queue.
+The `where` filter runs CLIENT-SIDE ([SPEC:CXC-STORE] [DD-STORE-QUERY-DISPOSITION] —
+the server-side query engine is retired): `query_docs` lists the collection, gets
+each blob and filters in Python.  Queries run on a background thread (blocking HTTP
+must never stall the render loop); results marshal back via the engine update queue.
 """
 
 from __future__ import annotations
@@ -125,7 +127,7 @@ class DocPickerWidget(Widget):
     def _load_worker(self, doc_id: str) -> None:
         try:
             from composeio.resolve import resolve_doc
-            doc = resolve_doc(f"doc://{self.collection}/{doc_id}")
+            doc = resolve_doc(f"bus://{self.collection}/{doc_id}.json")
         except Exception as exc:
             msg = f"load failed: {exc}"
             self._post(lambda: self._set_status(msg, (0xE0, 0x90, 0x8F)))

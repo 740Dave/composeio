@@ -1,14 +1,14 @@
 """R503 fingerprint-game player/character/RBAC binding UI — example package.
 
-A FUNCTIONAL PLACEHOLDER binding surface for the ``fingerprint_storage``
-service (``services/fingerprint_storage``): enter people, capture up to two
+A FUNCTIONAL PLACEHOLDER binding surface for the ``fingerprint_service``
+service (``services/fingerprint_service``): enter people, capture up to two
 templates each, cast people to characters in a game module, define the
 character RBAC, and START a game (which fires the roster push).
 
 The visual design is a scaffold — David redoes the look in the Colonial (BSG)
 UX.  Everything here is FUNCTION + REUSE:
 
-* ``binder.py``  — in-process controller: owns a FingerprintStorageService +
+* ``binder.py``  — in-process controller: owns a FingerprintService +
                    an in-process reference device, subscribes to the scene's
                    ``fp/cmd/*`` command namespaces, mutates the superset store,
                    and publishes formatted ``fp/view/*`` state.  It invents NO

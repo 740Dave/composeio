@@ -226,6 +226,53 @@ int main(void) {
               "unable to receive the states that scene binds");
     }
 
+    /* ---- THE SCOPE MEMBRANE [CXC-DEVICE-BASELINE-RELAY-MEMBRANE] ---------
+     * local STAYS on its segment, global/remote/auto CROSS.  Negative controls:
+     * a local frame MUST NOT be forwarded (would leak local chatter onto the
+     * shared bus — the exact [CXC-VISION-SCOPE-MEMBRANE] failure). */
+    {
+        /* pure predicate: only local (0) is confined */
+        CHECK(config_relay_scope_crosses(0) == false, "local (0) must NOT cross");
+        CHECK(config_relay_scope_crosses(1) == true,  "global (1) must cross");
+        CHECK(config_relay_scope_crosses(2) == true,  "remote (2) must cross");
+        CHECK(config_relay_scope_crosses(3) == true,  "auto (3) must cross "
+              "(unclaimed scope is not silently confined)");
+
+        const uint8_t st[] = {0xFA};
+
+        /* NEGATIVE CONTROL: a LOCAL-scope state from downstream must be BLOCKED
+         * on its way upstream — it stays on the daughtercard segment. */
+        s_upstream.clear();
+        uint32_t blocked_before = config_relay_membrane_blocked();
+        uint32_t up_before = config_relay_up_frames();
+        config_relay_from_downstream(0x03F6, BusMessageType::State, /*scope=local*/0,
+                                     st, sizeof(st), nullptr);
+        CHECK(s_upstream.frames.empty(),
+              "a LOCAL-scoped frame LEAKED upstream across the membrane");
+        CHECK(config_relay_membrane_blocked() == blocked_before + 1,
+              "the membrane must COUNT the blocked local frame");
+        CHECK(config_relay_up_frames() == up_before,
+              "a blocked frame must not advance the forwarded counter");
+
+        /* POSITIVE: the SAME frame at GLOBAL scope crosses upstream. */
+        s_upstream.clear();
+        config_relay_from_downstream(0x03F6, BusMessageType::State, /*scope=global*/1,
+                                     st, sizeof(st), nullptr);
+        CHECK(s_upstream.frames.size() == 1,
+              "a GLOBAL-scoped frame must cross the membrane upstream");
+
+        /* NEGATIVE CONTROL, other direction: a LOCAL frame from upstream must
+         * not be pushed down onto the local segment either (symmetric). */
+        s_downstream.clear();
+        blocked_before = config_relay_membrane_blocked();
+        config_relay_from_upstream(0x03F6, BusMessageType::State, /*scope=local*/0,
+                                   st, sizeof(st), nullptr);
+        CHECK(s_downstream.frames.empty(),
+              "a LOCAL frame from upstream LEAKED down onto the local segment");
+        CHECK(config_relay_membrane_blocked() == blocked_before + 1,
+              "the membrane must count the blocked local frame (downstream dir)");
+    }
+
     printf("\n%d checks, %d failures\n", s_pass + s_fail, s_fail);
     printf(s_fail ? "RESULT: FAIL\n" : "ALL PASS\n");
     return s_fail ? 1 : 0;

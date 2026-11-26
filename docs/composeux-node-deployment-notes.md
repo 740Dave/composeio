@@ -126,7 +126,7 @@ conformance stays **14/14 byte-match**.
 
 ### Deploy note (serial-only, no git on target)
 mary-ann's `~/composeio-python` is an **editable install but NOT a git checkout** (`git` isn't even installed),
-reachable only over the `ginger` serial console (she's on fw1-LAN, no inbound from the Mac). Deploy path that
+reachable only over the `fleetnode` serial console (she's on firewall1-LAN, no inbound from the Mac). Deploy path that
 worked: bundle new files + an **atomic, idempotent str-replace patcher** → `tar|gzip|base64` → stream in
 ≤1200-char chunks over serial → **sha256-verify the tarball** before extract. Two gotchas bit and are worth
 keeping: (1) **serial flips characters silently** — the byte COUNT matched but 3 chunks were corrupted; per-chunk

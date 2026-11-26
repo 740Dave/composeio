@@ -1,7 +1,7 @@
 <!-- BEGIN BEEPOUT-PROVENANCE (composeio.maker.beepout) -->
 {
   "board": "lego_dots",
-  "derived_from": "/Users/davidleeburnett/Dropbox/Maker/pcb/lego_dots/lego_dots.kicad_pcb",
+  "derived_from": "${MAKER_HOME}/pcb/lego_dots/lego_dots.kicad_pcb",
   "derived_from_sha256": "cae1425f8f94d9afe7381974f01274f8a2e5cc8e0b0bfd5010a9cdf74283a35e",
   "footprints": 47,
   "kicad_version": "20241229",
@@ -44,7 +44,7 @@ a *measurement*. That distinction is the entire value of this document.
 
 | | |
 |---|---|
-| derived-from | `/Users/davidleeburnett/Dropbox/Maker/pcb/lego_dots/lego_dots.kicad_pcb` |
+| derived-from | `${MAKER_HOME}/pcb/lego_dots/lego_dots.kicad_pcb` |
 | derived-from-sha256 | `cae1425f8f94d9afe7381974f01274f8a2e5cc8e0b0bfd5010a9cdf74283a35e` |
 | kicad-version | `20241229` (generator 9.0) |
 | generated-by | `composeio.maker.beepout` |
@@ -54,7 +54,7 @@ a *measurement*. That distinction is the entire value of this document.
 **Re-check that this sheet still describes the board in your hand:**
 
 ```bash
-shasum -a 256 /Users/davidleeburnett/Dropbox/Maker/pcb/lego_dots/lego_dots.kicad_pcb
+shasum -a 256 ${MAKER_HOME}/pcb/lego_dots/lego_dots.kicad_pcb
 # must print: cae1425f8f94d9afe7381974f01274f8a2e5cc8e0b0bfd5010a9cdf74283a35e
 ```
 

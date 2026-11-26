@@ -1,0 +1,41 @@
+# Wire-protocol excerpt — R503 UART packet, command set, confirmation codes, and the
+# request/response hazards. This is the COMPLETE driver-relevant section of the spec;
+# implement the UART command/response driver from THIS and nothing else.
+
+### [CXC-R503C-FRAMING] Big-endian, address-gated; Length counts the checksum
+
+- constraint: `[Header 2B=0xEF01][Address 4B][PID 1B][Length 2B][Content...][Checksum 2B]`, big-endian throughout. Length is content bytes plus two (the checksum) — a parser that reads Length as content-only overruns by exactly two bytes on every packet. A wrong address produces silence, never an error packet.
+- evidence-class: datasheet fact; the checksum rule was independently recomputed against all 21 worked examples in the source characterization and all 21 recomputed exactly.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-UNSOLICITED-0X55] The module emits a bare unframed 0x55 at power-on and after every soft reset
+
+- constraint: a single unframed byte, no header, no address, no checksum, arrives unbidden at power-on and again after every `SoftRst`. A parser that only handles it at boot desyncs the first time it soft-resets.
+- required-remedy: drain RX immediately before every transmit AND parse with a sliding two-byte header window. Either alone is partial; together they absorb the boot byte, the post-reset byte, and any stale packet from an aborted transaction.
+- evidence-class: datasheet fact, confirmed by grep across the manual — exactly three occurrences, all cited.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-ACK-STREAM] One enrollment command produces up to fifteen acknowledge packets, and the enabling config bit moves between commands
+
+- constraint: with its status-reporting config bit set, the packaged AutoEnroll command emits up to fifteen acknowledge packets from one command. The enabling bit sits at a different config index on the sibling AutoIdentify command — a driver that generalises "one config index enables streaming" silently misconfigures the other. There is no explicit end-of-stream marker; termination is inferred from a non-zero confirmation code or a specific terminal step value.
+- consequence-for-this-build: [SPEC:CXC-FPHALC] does not use this packaged command at all — the general capture/generate/register/store sequence is used instead, for reasons independent of this hazard (it also keeps the device's own ring under the device's own control, per [SPEC:CXC-FPIDC]). This node is retained because the hazard is real and any future use of the packaged path must re-discover it.
+- evidence-class: datasheet fact; not one of six surveyed open-source drivers implements either command, so there is no reference implementation of the stream to check this against.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-DATA-PACKET-BURSTS] Five commands return an ack then N data packets, and N depends on device config, not on the command
+
+- constraint: template and image transfer commands return an acknowledge packet followed by several data packets whose count is set by a negotiated packet-size system parameter, not derivable from the command itself. A driver must terminate on the end-of-data PID, never by counting.
+- evidence-class: datasheet fact.
+- status: draft
+- part-of: [SPEC:CXC-R503C]
+
+### [CXC-R503C-BUSY-BEHAVIOUR-UNDEFINED] What happens to a command sent while the module is Busy is undocumented
+
+- constraint: a Busy status bit and a Cancel command both exist, but no revision states whether a command arriving while Busy is queued, rejected, or dropped.
+- consequence: [SPEC:CXC-FPHALC]'s closed failure taxonomy treats an unexpected response here as `protocol_desync` rather than inventing a behaviour the datasheet never promised.
+- evidence-class: derived fact — an exhaustively-searched absence.
+- status: draft
+- part-of: [SPEC:CXC-R503C]

@@ -172,6 +172,44 @@ else
   ( cd "$REPO_ROOT" && "$PY" "$LTS_GATE" --staged ) || exit $?
 fi
 
+# ---------------------------------------------------------------------------------------------
+# ARM 0.5 - .qa/ MUST NOT BE STAGED/TRACKED  ([DEFECT-LAND-GATE-READS-A-FOREIGN-356CD7])
+#
+# .qa/verdict.json is a PER-BRANCH build input, not trunk product: the land-gate reads it from
+# the rebased worktree ON DISK, and it is gitignored + deliberately UNTRACKED (David's ratified
+# policy, commit 1651603). Tracking it resurrects the modify/modify rebase-conflict tax on every
+# concurrent land AND lets a rebased worktree reset the file to a FOREIGN branch's verdict - so a
+# land can pass a GREEN gate reading another branch's instrument ([CXC-VISION-EPISTEMICS], the
+# "green that lies"). gitignore ALONE did not hold: a broad `git add` force-staged it back in
+# 7cdfac0 (collateral in an unrelated hygiene commit), regressing 1651603 SILENTLY. The vector is
+# staging, so the guard is AT staging, and BEFORE the test bypass (the sweep rides a docs/hygiene
+# commit, exactly where SKIP_PRECOMMIT_TESTS gets set). Content-based, not intent-based.
+# Deliberate bypass leaves a trace:  SKIP_QA_TRACKING_GUARD=1 git commit ...
+# ---------------------------------------------------------------------------------------------
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "pre-commit-tests: DRY RUN - .qa/ tracking guard not executed"
+elif [ "${SKIP_QA_TRACKING_GUARD:-}" = "1" ]; then
+  echo "pre-commit-tests: SKIP_QA_TRACKING_GUARD=1 -> skipping the .qa/ tracking guard (deliberate)"
+else
+  if [ "$MODE" = "range" ]; then
+    qa_hits="$( ( unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+                  git -C "$REPO_ROOT" diff --name-only --diff-filter=ACMR "$RANGE" -- .qa/ ) 2>/dev/null )"
+  else
+    qa_hits="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR -- .qa/ 2>/dev/null)"
+  fi
+  if [ -n "$qa_hits" ]; then
+    echo "pre-commit-tests: !! REFUSING - a .qa/ build-input file is staged/in-range:" >&2
+    echo "$qa_hits" | sed 's/^/pre-commit-tests: !!   /' >&2
+    echo "pre-commit-tests: !! .qa/ is gitignored + UNTRACKED by ratified policy (commit 1651603):" >&2
+    echo "pre-commit-tests: !! a per-branch build input the land-gate reads from the worktree on disk." >&2
+    echo "pre-commit-tests: !! Tracking it brings back the rebase-conflict tax and lets a land read a" >&2
+    echo "pre-commit-tests: !! FOREIGN branch's verdict. Unstage it (the file STAYS on disk):" >&2
+    echo "pre-commit-tests: !!     git rm --cached -- $(echo "$qa_hits" | tr '\n' ' ')" >&2
+    echo "pre-commit-tests: !! [DEFECT-LAND-GATE-READS-A-FOREIGN-356CD7]  override: SKIP_QA_TRACKING_GUARD=1" >&2
+    exit 1
+  fi
+fi
+
 # The TEST-suite bypass. Deliberately BELOW arm 0 — see the note there.
 if [ "${SKIP_PRECOMMIT_TESTS:-}" = "1" ]; then
   echo "pre-commit-tests: SKIP_PRECOMMIT_TESTS=1 -> skipping the TEST SUITES (WIP bypass)"
@@ -264,9 +302,13 @@ esac
 run_python=0          # python/**.py changed       -> pytest python/tests + touched-area selftests
 run_intelligence=0    # compose_projects/intelligence/**.py changed -> pytest compose_projects/intelligence/
 run_toplevel=0        # tests/**.py OR corpora/**.lts changed -> pytest tests (repo-root tree)
-run_fpstorage=0       # services/fingerprint_storage/**.py changed -> pytest services/fingerprint_storage/tests
+run_fpstorage=0       # services/fingerprint_service/**.py changed -> pytest services/fingerprint_service/tests
 run_timeservice=0     # services/time_service/**.py changed -> pytest services/time_service/tests
 run_storagemon=0      # services/storage_monitor/**.py changed -> pytest services/storage_monitor/tests
+run_fpexample=0       # examples/fingerprint/**.py changed -> pytest examples/fingerprint
+run_scripts=0         # scripts/branch_hygiene.py OR scripts/*.sh changed -> pytest scripts/tests
+run_composebus=0      # python/composebus/** changed -> pytest python/composebus/tests (stacks with run_python)
+run_compose_plugins=0 # python/compose_plugins/** changed -> pytest python/compose_plugins/tests + python/tests
 unmapped=""           # changed .py in a tree with NO suite mapping (reported, never silent)
 selftest_mods=""
 n_files=0             # every changed file — so a log reader can tell COVERAGE from VACUITY
@@ -294,7 +336,20 @@ while IFS= read -r f; do
     compose_projects/intelligence/*.py|compose_projects/intelligence/*/*.py) run_intelligence=1; run_python=1 ;;
     tests/*.py)        run_toplevel=1 ;;
     services/*.py)     run_toplevel=1 ;;
+    examples/fingerprint/*.py) run_fpexample=1 ;;
+    scripts/branch_hygiene.py|scripts/tests/*.py) run_scripts=1 ;;
     *.py)              unmapped="$unmapped  $f"$'\n' ;;
+  esac
+
+  # scripts/ HYGIENE SCRIPTS — the tree that shipped UNCOVERED. branch_hygiene.py is
+  # hygiene-CRITICAL (the landed-oracle + dirty-worktree + orphan-origin-ref sweeps) yet
+  # had NO test mapping, so it shipped with zero gate coverage (git-expert flag, 2026-09-02).
+  # The .sh audit/land wrappers (repo-health-audit.sh, land-gate.sh, this gate's siblings)
+  # have no test of their own; route them here too so an edit at least runs the smoke suite
+  # that imports and exercises branch_hygiene.py's functions. Stacking block (like the service
+  # arms) rooted at scripts/tests, so the reachability guard sees the suite as covered.
+  case "$f" in
+    scripts/*.sh) run_scripts=1 ;;
   esac
   # A CORPUS FILE IS CODE, NOT A DOC. `.lts` is parsed input: a mis-cased property key
   # or a malformed relationship triple SILENTLY drops content from the graph. The
@@ -308,29 +363,55 @@ while IFS= read -r f; do
     corpora/*.lts) run_toplevel=1 ;;
   esac
 
-  # services/fingerprint_storage/ ships its OWN fast suite BESIDE it
-  # (services/fingerprint_storage/tests), NOT in the top-level tests/ tree, so the
+  # services/fingerprint_service/ ships its OWN fast suite BESIDE it
+  # (services/fingerprint_service/tests), NOT in the top-level tests/ tree, so the
   # services/*.py -> top-level arm above does not run it. Route it explicitly, rooted at
-  # the service's own test dir, so a change to the fingerprint_storage service runs the 10
+  # the service's own test dir, so a change to the fingerprint_service service runs the 10
   # in-process integration tests that guard it. Separate case block so it STACKS with the
   # top-level arm (same shape as the corpora arm) rather than replacing it. Added 2026-08-18
-  # to close the reachability orphan services/fingerprint_storage/tests landed by fee0e8a.
+  # to close the reachability orphan services/fingerprint_service/tests landed by fee0e8a.
   case "$f" in
-    services/fingerprint_storage/*.py) run_fpstorage=1 ;;
+    services/fingerprint_service/*.py) run_fpstorage=1 ;;
   esac
 
   # services/time_service/ ships its OWN fast suite (services/time_service/tests), same shape
-  # as fingerprint_storage. Added 2026-08-20 to close the reachability orphan
+  # as fingerprint_service. Added 2026-08-20 to close the reachability orphan
   # services/time_service/tests landed with the time_service platform build.
   case "$f" in
     services/time_service/*.py) run_timeservice=1 ;;
   esac
 
   # services/storage_monitor/ ships its OWN fast suite (services/storage_monitor/tests), same shape.
-  # Added 2026-08-20 to close the reachability orphan for the skipper disk-space sensor.
+  # Added 2026-08-20 to close the reachability orphan for the buildhost disk-space sensor.
   case "$f" in
     services/storage_monitor/*.py) run_storagemon=1 ;;
   esac
+
+  # python/composebus/ is the ComposeBus kernel distribution ([SPEC:CXC-COMPOSEBUS-KERNEL] §7).
+  # It ships its OWN kernel-only suite (python/composebus/tests) BESIDE it. A stacking block:
+  # `python/*.py) run_python=1` above already fires too, which is RIGHT — composeio aliases the
+  # kernel modules, so a kernel change must also run the full python suite.
+  case "$f" in
+    python/composebus/*) run_composebus=1 ;;
+  esac
+
+  # python/compose_plugins/ is the shared plug-in contract distribution ([SPEC:CXC-PLUGIN-CONTRACT],
+  # spec 95). It ships its OWN suite (python/compose_plugins/tests) BESIDE it. A stacking block
+  # that ALSO sets run_python: the ComposeIO host's tests (python/tests/test_composeserver_plugins.py,
+  # the conformance run at both isolation levels) import the package and its fixtures, so a
+  # non-.py change there (a fixture manifest.json, the schema) must run them too.
+  case "$f" in
+    python/compose_plugins/*) run_compose_plugins=1; run_python=1 ;;
+  esac
+
+  # NOTE examples/fingerprint/ is routed in the FIRST case block above (not a stacking block
+  # like the service arms): it has no parent arm there — services/fingerprint_service rides
+  # `services/*.py) run_toplevel=1`, but nothing covers examples/*, so routing it in the
+  # primary block is what keeps it OUT of the unmapped list. It ships its OWN pure-logic suite
+  # BESIDE the harness (examples/fingerprint/test_roundtrip_no_mangling.py), not in the
+  # top-level tests/ tree. Added 2026-08-24 to close the reachability orphan for the R503
+  # no-mangling round-trip harness (whose transport was ported off raw paho onto the
+  # ComposeBus waist in the same change).
   case "$f" in
     python/composeio/*.py)
       dir="$(dirname "$f")"
@@ -358,9 +439,13 @@ plan=""
 [ "$run_python" -eq 1 ] && plan="$plan python/tests"
 [ "$run_intelligence" -eq 1 ] && plan="$plan compose_projects/intelligence"
 [ "$run_toplevel" -eq 1 ] && plan="$plan tests"
-[ "$run_fpstorage" -eq 1 ] && plan="$plan services/fingerprint_storage/tests"
+[ "$run_fpstorage" -eq 1 ] && plan="$plan services/fingerprint_service/tests"
 [ "$run_timeservice" -eq 1 ] && plan="$plan services/time_service/tests"
 [ "$run_storagemon" -eq 1 ] && plan="$plan services/storage_monitor/tests"
+[ "$run_fpexample" -eq 1 ] && plan="$plan examples/fingerprint"
+[ "$run_scripts" -eq 1 ] && plan="$plan scripts/tests"
+[ "$run_composebus" -eq 1 ] && plan="$plan python/composebus/tests"
+[ "$run_compose_plugins" -eq 1 ] && plan="$plan python/compose_plugins/tests"
 if [ -n "$plan" ]; then
   echo "pre-commit-tests: $source_desc: $n_files changed files, $n_python python ->$plan suite(s)"
 else
@@ -374,7 +459,7 @@ if [ -n "$unmapped" ]; then
   echo "pre-commit-tests: !! add a tree mapping in scripts/pre-commit-tests.sh if these deserve a suite."
 fi
 
-if [ "$run_python" -eq 0 ] && [ "$run_intelligence" -eq 0 ] && [ "$run_toplevel" -eq 0 ] && [ "$run_fpstorage" -eq 0 ] && [ "$run_timeservice" -eq 0 ] && [ "$run_storagemon" -eq 0 ]; then
+if [ "$run_python" -eq 0 ] && [ "$run_intelligence" -eq 0 ] && [ "$run_toplevel" -eq 0 ] && [ "$run_fpstorage" -eq 0 ] && [ "$run_timeservice" -eq 0 ] && [ "$run_storagemon" -eq 0 ] && [ "$run_fpexample" -eq 0 ] && [ "$run_scripts" -eq 0 ] && [ "$run_composebus" -eq 0 ] && [ "$run_compose_plugins" -eq 0 ]; then
   # Legitimate pass: the file set was DETERMINED (non-empty) and holds nothing this gate maps.
   if [ -n "$unmapped" ]; then
     echo "pre-commit-tests: no MAPPED python in $source_desc ($n_files files) -> pass (nothing run; see the unmapped list above)"
@@ -468,22 +553,22 @@ if [ "$run_toplevel" -eq 1 ]; then
   fi
 fi
 
-# 1d. fingerprint_storage service suite — its 10 in-process integration tests live BESIDE
-#     the service (services/fingerprint_storage/tests), not in the top-level tree, so this
+# 1d. fingerprint_service service suite — its 10 in-process integration tests live BESIDE
+#     the service (services/fingerprint_service/tests), not in the top-level tree, so this
 #     arm runs them when the service changes. Rooted at the service's tests dir; the
 #     reachability guard (test_precommit_gate_reachability.py) parses THIS invocation to
 #     prove the suite is reachable. Runs plain from REPO_ROOT: pytest seats services/ on
 #     sys.path (no services/__init__.py) and composeio resolves as in the top-level arm.
 if [ "$run_fpstorage" -eq 1 ]; then
-  echo "  -> fingerprint_storage suite (services/fingerprint_storage/tests)"
+  echo "  -> fingerprint_service suite (services/fingerprint_service/tests)"
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "     (dry-run: not executed)"
   else
-    if ! ( cd "$REPO_ROOT" && "$PY" -m pytest services/fingerprint_storage/tests -q -p no:cacheprovider ) ; then
-      echo "  !! FINGERPRINT_STORAGE SUITE FAILED"
+    if ! ( cd "$REPO_ROOT" && "$PY" -m pytest services/fingerprint_service/tests -q -p no:cacheprovider ) ; then
+      echo "  !! FINGERPRINT_SERVICE SUITE FAILED"
       fail=1
     fi
-    ran="$ran services/fingerprint_storage/tests"
+    ran="$ran services/fingerprint_service/tests"
   fi
 fi
 
@@ -510,6 +595,83 @@ if [ "$run_storagemon" -eq 1 ]; then
       fail=1
     fi
     ran="$ran services/storage_monitor/tests"
+  fi
+fi
+
+# 1e. examples/fingerprint harness suite — the R503 no-mangling round-trip's pure-logic
+#     tests live BESIDE the harness (examples/fingerprint/test_roundtrip_no_mangling.py),
+#     not in the top-level tree, so this arm runs them when the harness changes. Rooted at
+#     the directory; the reachability guard (test_precommit_gate_reachability.py) parses THIS
+#     invocation to prove the suite is reachable. Runs plain from REPO_ROOT: the test file
+#     self-adds its own dir to sys.path to import the harness module (no conftest needed).
+if [ "$run_fpexample" -eq 1 ]; then
+  echo "  -> fingerprint harness suite (examples/fingerprint)"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "     (dry-run: not executed)"
+  else
+    if ! ( cd "$REPO_ROOT" && "$PY" -m pytest examples/fingerprint -q -p no:cacheprovider ) ; then
+      echo "  !! FINGERPRINT HARNESS SUITE FAILED"
+      fail=1
+    fi
+    ran="$ran examples/fingerprint"
+  fi
+fi
+
+# 1f. scripts/ hygiene-script suite — branch_hygiene.py's tests live BESIDE it
+#     (scripts/tests), not in the top-level tree, so this arm runs them when a hygiene
+#     script changes. Rooted at scripts/tests; the reachability guard
+#     (test_precommit_gate_reachability.py) parses THIS invocation to prove the suite is
+#     reachable. Runs plain from REPO_ROOT: the test self-adds scripts/ to sys.path to
+#     import branch_hygiene (no conftest needed). Added 2026-09-02 to close the coverage
+#     orphan git-expert flagged when branch_hygiene.py landed uncovered.
+if [ "$run_scripts" -eq 1 ]; then
+  echo "  -> scripts hygiene suite (scripts/tests)"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "     (dry-run: not executed)"
+  else
+    if ! ( cd "$REPO_ROOT" && "$PY" -m pytest scripts/tests -q -p no:cacheprovider ) ; then
+      echo "  !! SCRIPTS HYGIENE SUITE FAILED"
+      fail=1
+    fi
+    ran="$ran scripts/tests"
+  fi
+fi
+
+# 1h. composebus kernel suite (python/composebus/tests) — the kernel-only subset plus the
+#     closure and contents checks of [SPEC:CXC-COMPOSEBUS-KERNEL] §7. Run from PYDIR with
+#     `-o pythonpath=.` (relative to the suite's rootdir, python/composebus): from python/ the
+#     bare directory python/composebus/ would otherwise satisfy `import composebus` as an EMPTY
+#     namespace package and every test would fail with "No module named 'composebus.bus'".
+if [ "$run_composebus" -eq 1 ]; then
+  echo "  -> composebus kernel suite (python/composebus/tests)"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "     (dry-run: not executed)"
+  else
+    if ! ( cd "$PYDIR" && "$PY" -m pytest composebus/tests -q -p no:cacheprovider -o pythonpath=. ) ; then
+      echo "  !! COMPOSEBUS KERNEL SUITE FAILED"
+      fail=1
+    fi
+    ran="$ran python/composebus/tests"
+  fi
+fi
+
+# 1i. compose_plugins suite (python/compose_plugins/tests). From python/ the bare directory
+#     python/compose_plugins/ satisfies `import compose_plugins` as an EMPTY namespace package,
+#     and the suite's runner/probe tests spawn `python -m compose_plugins._child|_probe` CHILDREN,
+#     which `-o pythonpath` (sys.path only) cannot reach. So the two sibling roots ride an
+#     EXPORTED PYTHONPATH, scoped to this arm's outer subshell; the inner `( cd ... pytest` line
+#     keeps the shape test_precommit_gate_reachability.py parses.
+if [ "$run_compose_plugins" -eq 1 ]; then
+  echo "  -> compose_plugins suite (python/compose_plugins/tests)"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "     (dry-run: not executed)"
+  else
+    if ! ( export PYTHONPATH="$PYDIR/compose_plugins:$PYDIR/composebus${PYTHONPATH:+:$PYTHONPATH}"
+           ( cd "$PYDIR" && "$PY" -m pytest compose_plugins/tests -q -p no:cacheprovider ) ) ; then
+      echo "  !! COMPOSE_PLUGINS SUITE FAILED"
+      fail=1
+    fi
+    ran="$ran python/compose_plugins/tests"
   fi
 fi
 

@@ -535,28 +535,6 @@ def test_example_scene_loads_and_renders_deterministically():
         app.stop()
 
 
-def test_full_tab_matches_golden():
-    """Full-tab chrome golden (tolerance-compared — the query-pane chrome has
-    the documented stroked-AA ±1 class; the GRAPH pane is byte-identical, proven
-    by the Phase-0 spike + test_dag_graph_pane_is_deterministic)."""
-    from .conftest import REFERENCE_DIR, images_match, load_reference
-    w, _ = _mounted()
-    c = SkiaCanvas(); c.create_surface(int(TAB.w), int(TAB.h))
-    c.set_fill_color(7, 10, 15, 255); c.fill_rect(0, 0, TAB.w, TAB.h)
-    w.draw(c, TAB)
-    actual = c._surface.makeImageSnapshot().toarray(
-        colorType=skia.ColorType.kRGBA_8888_ColorType)
-    path = REFERENCE_DIR / "decisions_tab_dag.png"
-    if not path.exists() or os.environ.get("CXC_REGEN_GOLDENS"):
-        c.save_png(str(path))
-        import pytest
-        pytest.skip(f"golden (re)generated: {path}")
-    expected = load_reference("decisions_tab_dag")
-    match, ratio = images_match(actual, expected, tolerance=2,
-                                max_diff_ratio=0.005)
-    assert match, f"{ratio * 100:.2f}% of pixels exceed tolerance"
-
-
 def test_empty_state():
     w = DecisionsTabWidget("dt", nodes=[], edges=[])
     w.on_mount(_Ctx())

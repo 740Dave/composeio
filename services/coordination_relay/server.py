@@ -30,6 +30,17 @@ _messages: list[dict] = []
 _lock = threading.Lock()
 _start_time = time.time()
 
+#: Channels the UI lists before any message arrives. CONFIGURATION, not code: a deployment sets
+#: RELAY_SEED_CHANNELS (comma-separated), beside RELAY_HOST / RELAY_PORT.
+DEFAULT_SEED_CHANNELS = ("haven-reactivation", "general")
+
+
+def seed_channels() -> list[str]:
+    raw = os.environ.get("RELAY_SEED_CHANNELS")
+    if raw is None:
+        return list(DEFAULT_SEED_CHANNELS)
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
 
 class RelayHandler(BaseHTTPRequestHandler):
 
@@ -123,8 +134,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             return self._send_json({"status": "cleared"})
         self._send_json({"error": "not found"}, 404)
 
-    def _serve_ui(self):
-        html = """<!DOCTYPE html>
+    @staticmethod
+    def _ui_template() -> str:
+        return """<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
 <title>ComposeIO Coordination Relay</title>
@@ -171,9 +183,9 @@ class RelayHandler(BaseHTTPRequestHandler):
   </div>
 </div>
 <script>
-let currentChannel = 'nexus-reactivation';
+let currentChannel = 'haven-reactivation';
 let lastTimestamp = 0;
-let channels = new Set(['nexus-reactivation', 'example-host']);
+let channels = new Set(__SEED_CHANNELS__);
 
 function senderClass(name) {
   const n = name.toLowerCase();
@@ -247,6 +259,9 @@ poll();
 setInterval(poll, 2000);
 </script>
 </body></html>"""
+
+    def _serve_ui(self):
+        html = render_ui()
         body = html.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
@@ -269,6 +284,11 @@ class _ThreadingServer(ThreadingHTTPServer):
     # request can't fill the accept queue and strand other callers.
     request_queue_size = 128
     allow_reuse_address = True
+
+
+def render_ui() -> str:
+    seeds = json.dumps(seed_channels()).replace("</", "<\\/")
+    return RelayHandler._ui_template().replace("__SEED_CHANNELS__", seeds)
 
 
 def main():

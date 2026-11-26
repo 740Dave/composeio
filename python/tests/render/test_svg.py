@@ -437,22 +437,21 @@ def test_bindable_surface_registered_for_composer():
         assert a in attrs, a
 
 
-def test_doc_uri_via_asset_manager(monkeypatch):
-    import base64
+def test_doc_uri_no_longer_resolves(monkeypatch):
+    """doc:// is FULLY DEPRECATED (2026-09-03): the AssetManager compat branch is
+    removed, so a doc:// SVG src no longer resolves — it hard-breaks and the widget
+    renders no doc. resolve_doc must NOT even be consulted (negative control)."""
     from composeio import resolve as _resolve
-    svg = open(FLOWCHART_SVG, "rb").read()
-    doc = {"content": base64.b64encode(svg).decode()}
 
-    def fake_doc(uri, **kw):
-        assert uri == "doc://diagrams/flow.svg"
-        return doc
-    monkeypatch.setattr(_resolve, "resolve_doc", fake_doc)
+    def must_not_be_called(uri, **kw):
+        raise AssertionError(f"resolve_doc must not be called for doc:// asset: {uri}")
+    monkeypatch.setattr(_resolve, "resolve_doc", must_not_be_called)
 
     app = _app(_svg_config("doc://diagrams/flow.svg"))
     try:
         app.render_frame_at(0.0)
         w = _widget(app, "g")
-        assert w._doc is not None and w._doc.width == 320
+        assert w._doc is None
     finally:
         app.stop()
 

@@ -26,6 +26,7 @@
 #include "signal_conditioning.h" /* THE one value-conditioning pipeline */
 #include "relay_actuator.h"    /* office relay-fan break-before-make actuator */
 #include "restart.h"           /* remote config-reload handler */
+#include "asset_reload.h"      /* bus_storage asset-change-notify consumer ([CXC-ACN-SHAPE]) */
 #include "fingerprint_hal.h"       /* R503 fingerprint HAL contract (C72) */
 #include "fingerprint_mock.h"      /* MockFingerprintHAL — the reference   */
 #include "fingerprint_device.h"    /* device-logic twin (C71/C73)          */
@@ -34,6 +35,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -41,6 +43,10 @@
  * (src/hosttest/r503_protocol_tests.cpp).  It keeps its own counters and
  * returns the failure count; main() folds both into the totals below. */
 int r503_protocol_tests(int* out_checks);
+
+/* The TM1637 panel's PURE value->digits suite lives in its own translation unit
+ * (src/hosttest/tm1637_panel_tests.cpp), same folding idiom as the R503 suite. */
+int tm1637_panel_tests(int* out_checks);
 
 static int checks = 0;
 static int failures = 0;
@@ -226,7 +232,7 @@ static double fp_data_num(const FpData& d, const char* k) {
 static void fingerprint_parity_tests() {
     /* ---- HAL PARITY — [CXC-FPHAL-PARITY-TEST] ---------------------- */
 
-    /* test_parity_capabilities_five_fields_typed_and_stable */
+    /* test_parity_capabilities_six_fields_typed_and_stable */
     {
         MockFingerprintHAL hal;
         Capabilities caps = hal.capabilities();
@@ -234,9 +240,13 @@ static void fingerprint_parity_tests() {
               caps.supports_readback && caps.captures_per_template == 2 &&
               caps.template_size_bytes == 1536 &&
               caps.has_feedback_channel(FeedbackChannel::AURA_LED),
-              "SCEN parity_capabilities: five fields present + correct");
+              "SCEN parity_capabilities: five original fields present + correct");
+        /* the SIXTH required field (2026-08-22): a typed, non-empty string, and
+         * the mock — being THE canonical reference — names its table "canonical". */
+        CHECK(caps.feedback_profile == "canonical",
+              "SCEN parity_capabilities: feedback_profile typed == \"canonical\" (the mock IS the reference)");
         CHECK(hal.capabilities() == caps,
-              "SCEN parity_capabilities: stable for the life of the object");
+              "SCEN parity_capabilities: all SIX fields stable for the life of the object");
     }
 
     /* test_parity_enroll_drives_to_stored_slot */
@@ -1001,7 +1011,75 @@ static void fingerprint_parity_tests() {
               "INTEROP: inbound push consumed on <dev>/template_set (service contract)");
     }
 
-    printf("  fingerprint parity: 42 selftest scenarios asserted against the "
+    /* ================================================================
+     * CHANGE-1 — HAL live-rebind + fail-loud
+     * (DEFECT-ARMED-ROSTER-LOADED-R503-DEVICE-78C389)
+     * ================================================================ */
+
+    /* test_change1a_fail_loud_never_impersonates_armed_or_loaded
+     * On the mock with a real sensor present but NOT confirmed live, the device
+     * MUST announce fingerprint_inoperable and MUST NOT publish
+     * template_set_loaded or fingerprint_ready-as-armed, and MUST load nothing. */
+    {
+        MockFingerprintHAL mock; DevicePersistence nvs; FpRecordingBus bus;
+        FingerprintDevice dev(&mock, &bus, "dev/s3-fp1", "open_hatch", &nvs,
+                              nullptr, std::nullopt, []() { return 1000.0; });
+        dev.set_hal_confirmed_live(false);   /* real sensor present, mock still bound */
+        std::string st = dev.receive_push(fp_push("uuid-A", fp_cast()));
+        dev.emit_heartbeat();                /* would read READY on a live mock */
+        CHECK(st == "inoperable" &&
+              bus.count("template_set_loaded") == 0 &&
+              bus.count("fingerprint_ready") == 0 &&
+              bus.count("fingerprint_inoperable") >= 1 &&
+              mock.occupancy_count() == 0,
+              "CHANGE-1a fail-loud: mock+real-present announces inoperable, never armed/loaded");
+    }
+
+    /* test_change1_late_sensor_rebind_arms_the_match_path  [ENFORCING]
+     * Reproduces the defect at device scope: the device is born on an EMPTY boot
+     * mock while the real sensor (a second, scripted HAL) arrives late and the
+     * roster + finger happen THERE. Stranded on the mock the match path is dead
+     * (count stuck at 0); after rebind+invalidate+re-push+finger an auth_event
+     * fires and the counter increments. On f99bf3f there is no rebind_hal() so
+     * this scenario cannot arm — the enforcing half FAILS there. */
+    {
+        MockFingerprintHAL boot_mock;    /* what g_dev is born on (empty) */
+        MockFingerprintHAL real_sensor;  /* the late-arriving real R503 */
+        DevicePersistence nvs; FpRecordingBus bus;
+        FingerprintDevice dev(&boot_mock, &bus, "dev/s3-fp1", "open_hatch", &nvs,
+                              nullptr, std::nullopt, []() { return 1000.0; });
+        dev.set_hal_confirmed_live(false);   /* online deployment, sensor absent at boot */
+
+        /* --- pre-rebind: the DEFECT state (match path dead) --- */
+        dev.poll_match();                    /* polls the empty boot mock */
+        CHECK(bus.count("auth_event") == 0 &&
+              dev.count_authentication_attempts() == 0,
+              "CHANGE-1 defect: stranded on the mock, the match path is dead (count 0)");
+
+        /* --- the fix: the sensor answers 'r503 ping' -> live rebind --- */
+        dev.rebind_hal(&real_sensor);
+        dev.set_hal_confirmed_live(true);
+        dev.invalidate_roster_request_push();
+        CHECK(bus.count("fingerprint_push_needed") >= 1 && dev.bridge().empty(),
+              "CHANGE-1c: rebind invalidates the mock-era roster and demands a fresh push");
+
+        /* re-push: now the roster DownChars into the REAL sensor */
+        std::string st = dev.receive_push(fp_push("uuid-A", fp_cast()));
+        CHECK(st == "loaded" && !dev.bridge().empty(),
+              "CHANGE-1: after rebind the push loads onto the real sensor");
+
+        /* present a matching finger ON THE REAL SENSOR */
+        Slot crew = fp_crew_slot(dev);
+        real_sensor.script_match(MatchResult::matched(crew, 200));
+        auto outcome = dev.poll_match();
+        CHECK(outcome.has_value() && *outcome == AuthOutcome::GRANTED &&
+              bus.count("auth_event") == 1 &&
+              dev.count_authentication_attempts() == 1,
+              "CHANGE-1 [ENFORCING]: after live-rebind a matching finger fires "
+              "auth_event + increments count");
+    }
+
+    printf("  fingerprint parity: 45 selftest scenarios asserted against the "
            "C++ mock HAL + device twin\n");
 }
 
@@ -2042,6 +2120,102 @@ int main() {
     }
 
     /* ---------------------------------------------------------------
+     * ASSET-CHANGE-NOTIFY CONSUMER — the config-fetch live-update
+     * self-select ([CXC-ASSET-CHANGE-NOTIFY] [CXC-ACN-SHAPE],
+     * asset_reload.{h,cpp}).  DEFECT-CONFIG-FETCH-FIRMWARE-DOES-NOT-405602.
+     * Pure hash-string decisions: the {old,new} event carries NO asset
+     * path, so the ONLY scoping is old==held.
+     * --------------------------------------------------------------- */
+    {
+        /* Two distinct valid sha256-hex digests + a third for a foreign asset. */
+        static const char* H_OLD =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        static const char* H_NEW =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        static const char* H_FOREIGN =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+        asset_reload_reset();
+
+        /* namespace + recognition (the topic composeio/+/<ns> is built from it) */
+        CHECK(strcmp(asset_reload_namespace(), "bus_storage/asset/changed") == 0,
+              "ACN: default change namespace matches change_notify.py");
+        CHECK(asset_reload_is_change_ns("bus_storage/asset/changed"),
+              "ACN: recognizes its change namespace");
+        CHECK(!asset_reload_is_change_ns("throttle/left"),
+              "ACN: a slot namespace is NOT the change namespace");
+
+        /* --- STATELESS decide(): every self-select branch ---------- */
+        /* no held hash yet -> the boot fetch owns the first config */
+        CHECK(asset_reload_decide(H_OLD, H_NEW, "") == AR_IGNORE_NO_HELD,
+              "ACN: no held hash -> IGNORE (boot fetch owns first config)");
+
+        /* PRIMARY PATH (the e2e old->new the reflash exercises): the exact
+         * bytes I hold changed -> reload. */
+        CHECK(asset_reload_decide(H_OLD, H_NEW, H_OLD) == AR_RELOAD,
+              "ACN: old==held -> RELOAD (my asset updated)");
+
+        /* RETAINED REPLAY: on connect the broker re-delivers the last event,
+         * whose new IS the version I already hold -> ignore, no reload loop. */
+        CHECK(asset_reload_decide(H_OLD, H_NEW, H_NEW) == AR_IGNORE_ALREADY_LATEST,
+              "ACN: new==held -> IGNORE (absorbs retained replay on connect)");
+
+        /* FOREIGN asset changed (old!=held, new!=held) -> NOT MINE, no
+         * re-fetch: reacting here would fire on every asset's PUT fleet-wide. */
+        CHECK(asset_reload_decide(H_FOREIGN, H_NEW, H_OLD) == AR_IGNORE_NOT_MINE,
+              "ACN: old!=held && new!=held -> IGNORE (foreign asset, no re-fetch)");
+
+        /* SKIPPED MULTI-PUT: held H_OLD, asset went H_OLD->H_FOREIGN->H_NEW, the
+         * retained event is {old:H_FOREIGN,new:H_NEW} -> event path IGNORES
+         * (indistinguishable from a foreign change); the BACKSTOP catches it. */
+        CHECK(asset_reload_decide(H_FOREIGN, H_NEW, H_OLD) == AR_IGNORE_NOT_MINE,
+              "ACN: skipped multi-PUT looks foreign on the event path (backstop covers)");
+
+        /* CREATE event ({old:null,new:H}): old empty.  If new==held ignore,
+         * else it is a create of some OTHER asset -> NOT MINE. */
+        CHECK(asset_reload_decide("", H_NEW, H_NEW) == AR_IGNORE_ALREADY_LATEST,
+              "ACN: create event new==held -> IGNORE");
+        CHECK(asset_reload_decide("", H_NEW, H_OLD) == AR_IGNORE_NOT_MINE,
+              "ACN: create event (old null) not my hash -> NOT MINE");
+
+        /* malformed event with no new hash -> safe ignore */
+        CHECK(asset_reload_decide(H_OLD, "", H_OLD) == AR_IGNORE_ALREADY_LATEST,
+              "ACN: empty new hash -> safe IGNORE");
+
+        /* --- BACKSTOP decide(): re-fetch-and-compare -------------- */
+        CHECK(asset_backstop_should_reload(H_NEW, H_OLD),
+              "ACN backstop: fetched != held -> reload (catches missed event)");
+        CHECK(!asset_backstop_should_reload(H_OLD, H_OLD),
+              "ACN backstop: fetched == held -> no-op (foreign event / already latest)");
+        CHECK(!asset_backstop_should_reload("", H_OLD),
+              "ACN backstop: failed fetch (empty) -> keep held, no reload");
+        CHECK(!asset_backstop_should_reload(H_NEW, ""),
+              "ACN backstop: nothing held -> no reload");
+
+        /* backstop timer is wraparound-safe */
+        CHECK(asset_backstop_due(1000, 1000), "ACN backstop: due at exactly next_due");
+        CHECK(asset_backstop_due(2000, 1000), "ACN backstop: due after next_due");
+        CHECK(!asset_backstop_due(500, 1000), "ACN backstop: not due before next_due");
+        CHECK(asset_backstop_due(5, (uint32_t)-100),
+              "ACN backstop: due across the 32-bit millis() wrap");
+
+        /* --- STATEFUL holder: set_held + decide_held convergence --- */
+        asset_reload_set_held(H_OLD);
+        CHECK(strcmp(asset_reload_held(), H_OLD) == 0, "ACN: set_held records the hash");
+        CHECK(asset_reload_decide_held(H_OLD, H_NEW) == AR_RELOAD,
+              "ACN: decide_held old==held -> RELOAD");
+        /* after a reload the device reboots and re-fetches H_NEW; simulate the
+         * post-reboot held-hash update and prove the retained event no longer
+         * fires (loop-free convergence). */
+        asset_reload_set_held(H_NEW);
+        CHECK(asset_reload_decide_held(H_OLD, H_NEW) == AR_IGNORE_ALREADY_LATEST,
+              "ACN: after reload holds H_NEW, the retained event is absorbed (no loop)");
+
+        asset_reload_reset();
+        CHECK(asset_reload_held()[0] == '\0', "ACN: reset clears the held hash");
+    }
+
+    /* ---------------------------------------------------------------
      * List-payload reactive apply ([CXC-RM-M5], [CXC-ER-RENDER]):
      * a retained MQTT list payload updates the widget's item vector.
      * These exercise the SAME setters compose_scene.cpp's
@@ -2527,6 +2701,175 @@ int main() {
             printf("   invert=%d BANDED(%d..%d): rails survive ADC zero-offset "
                    "up to %d codes\n", inv, kBandLo, kBandHi, max_ok);
         }
+
+        /* ================================================================
+         * 7. LEVEL QUANTIZATION — [CXC-HAL-CONDITION-STEP]
+         *
+         * David's directive: the throttle publisher floods the bus (deadband
+         * 1 -> ~1% steps == the whole ramp).  With `step` it must emit only
+         * the % LEVELS (10,20,...) and publish ONLY on a level change, cutting
+         * volume for every thrust consumer.  These checks prove: (a) every
+         * emitted value is an exact level; (b) the top rail stays exact even
+         * when out_max is NOT a multiple of step; (c) hysteresis kills
+         * boundary chatter but stays sticky-not-frozen; (d) BOTH rails remain
+         * reachable across invert x deadband x step; (e) the negative control
+         * — step coarsens the stream and step=0 is byte-identical.
+         * ================================================================ */
+        printf("--- [CXC-HAL-CONDITION-STEP] level quantization ---\n");
+
+        auto mkq = [](bool invert, int deadband, int out_max,
+                      int in_min, int in_max, int step) {
+            SensorSpec s;
+            s.ns = "throttle/test";
+            s.pin = 0;
+            s.adc_max = 4095;
+            s.out_max = out_max;
+            s.invert = invert;
+            s.deadband = deadband;
+            s.ema_alpha = 0.0f;
+            s.in_min = in_min;
+            s.in_max = in_max;
+            s.step = step;
+            return s;
+        };
+
+        /* ---- 7a. EVERY EMITTED VALUE IS A LEVEL --------------------
+         * The dual_throttle config exactly: percent scale, band, step 10.
+         * Sweep the lever end to end; every emitted value is a multiple of
+         * 10 (0,10,...,100 — and 100==out_max is one too). */
+        {
+            SensorSpec s = mkq(false, 1, 100, kBandLo, kBandHi, 10);
+            ConditionState st;
+            int non_level = 0, emits = 0;
+            for (int pass = 0; pass < 2; pass++) {
+                for (int k = 0; k <= 400; k++) {
+                    double p = pass ? 1.0 - k / 400.0 : k / 400.0;
+                    ConditionResult r = condition_sample(s, adc_at(p, 6), st);
+                    if (!r.emit) continue;
+                    emits++;
+                    if (r.value % 10 != 0) non_level++;
+                }
+            }
+            CHECK(non_level == 0,
+                  "step=10: every EMITTED value is a multiple of 10");
+            CHECK(emits > 0, "step=10: the sweep emits at least one level");
+        }
+
+        /* ---- 7b. TOP RAIL EXACT WHEN out_max IS NOT A MULTIPLE OF step ---
+         * out_max=255, step=10: the interior levels are multiples of 10 but
+         * the TOP rail (255) is not.  Every emitted value must be a multiple
+         * of 10 OR exactly the 0/255 rail — and BOTH rails must appear.  This
+         * is the case the rail-escape in quantize_level exists for. */
+        {
+            SensorSpec s = mkq(false, 2, 255, 0, 0, 10);   /* un-banded */
+            ConditionState st;
+            int bad = 0; bool lo = false, hi = false;
+            for (int pass = 0; pass < 2; pass++) {
+                for (int k = 0; k <= 400; k++) {
+                    double p = pass ? 1.0 - k / 400.0 : k / 400.0;
+                    ConditionResult r = condition_sample(s, adc_at(p, 0), st);
+                    if (!r.emit) continue;
+                    if (r.value == 0) lo = true;
+                    if (r.value == 255) hi = true;
+                    if (r.value != 255 && r.value % 10 != 0) bad++;
+                }
+            }
+            CHECK(bad == 0,
+                  "out_max=255 step=10: every emit is a level or the 255 rail");
+            CHECK(lo && hi,
+                  "out_max=255 step=10: BOTH rails 0 and 255 are emitted");
+        }
+
+        /* ---- 7c. HYSTERESIS KILLS BOUNDARY CHATTER ----------------
+         * Park the emitted level at 40, then dither the input INSIDE the
+         * hysteresis window straddling the 40/50 boundary (val 43..47,
+         * boundary 45, margin=deadband=3 -> window [42,48]).  A plain
+         * nearest-level snap would flip 40<->50 every sample; hysteresis must
+         * emit ZERO further changes.  Then a real move past the window (val
+         * 49) must still switch — the mechanism is sticky, not frozen. */
+        {
+            SensorSpec s = mkq(false, 3, 100, 0, 0, 10);
+            ConditionState st;
+            auto raw_of = [](int v) { return (int)(v * 4095.0 / 100.0 + 0.5); };
+            for (int k = 0; k < 10; k++) condition_sample(s, raw_of(40), st);
+            CHECK(st.last_val == 40, "precondition: settled at level 40");
+            int chatter = 0;
+            for (int k = 0; k < 200; k++) {
+                int v = (k & 1) ? 47 : 43;
+                if (condition_sample(s, raw_of(v), st).emit) chatter++;
+            }
+            CHECK(chatter == 0,
+                  "hysteresis: dither across the boundary emits NOTHING");
+            CHECK(st.last_val == 40,
+                  "hysteresis: the level HELD at 40 through the dither");
+            ConditionResult up = condition_sample(s, raw_of(49), st);
+            CHECK(up.emit && up.value == 50,
+                  "hysteresis is sticky, not frozen: val 49 (> window) -> 50");
+        }
+
+        /* ---- 7d. BOTH RAILS REACHABLE across invert x deadband x step ---
+         * [CXC-HAL-CONDITION-RAILS] must survive quantization.  Banded (so the
+         * far rail is structurally reachable), sweep with a 40-code ADC offset
+         * and demand BOTH rails, for every polarity, deadband and step. */
+        {
+            const int steps[] = {5, 10, 20, 25};
+            for (int inv = 0; inv <= 1; inv++) {
+                for (int db = 1; db <= 4; db++) {
+                    for (int si = 0; si < 4; si++) {
+                        int step = steps[si];
+                        SensorSpec s =
+                            mkq(inv != 0, db, 100, kBandLo, kBandHi, step);
+                        bool lo = false, hi = false;
+                        rails_emitted(s, 40, &lo, &hi);
+                        char m[176];
+                        snprintf(m, sizeof(m),
+                                 "quantized invert=%d db=%d step=%d: BOTTOM "
+                                 "rail (0) reachable", inv, db, step);
+                        CHECK(lo, m);
+                        snprintf(m, sizeof(m),
+                                 "quantized invert=%d db=%d step=%d: TOP rail "
+                                 "(out_max) reachable", inv, db, step);
+                        CHECK(hi, m);
+                    }
+                }
+            }
+        }
+
+        /* ---- 7e. NEGATIVE CONTROL: step COARSENS, step=0 unchanged ------
+         * Prove quantization actually does something: over one identical
+         * sweep, step=0 emits the fine ramp (many distinct values) while
+         * step=10 emits only levels (<= 11: 0,10,...,100).  And step=0 is
+         * byte-identical to a spec that never declares step. */
+        {
+            auto distinct_emits = [&](const SensorSpec& s) {
+                ConditionState st;
+                std::set<int> vals;
+                for (int k = 0; k <= 400; k++) {
+                    ConditionResult r =
+                        condition_sample(s, adc_at(k / 400.0, 0), st);
+                    if (r.emit) vals.insert(r.value);
+                }
+                return vals.size();
+            };
+            SensorSpec fine  = mkq(false, 1, 100, 0, 0, 0);
+            SensorSpec level = mkq(false, 1, 100, 0, 0, 10);
+            size_t nf = distinct_emits(fine), nl = distinct_emits(level);
+            CHECK(nl <= 11,
+                  "step=10: at most 11 distinct levels (0..100 by 10)");
+            CHECK(nf > nl,
+                  "NEGATIVE CONTROL: step=0 emits the FINE ramp (more values)");
+
+            /* step=0 == a spec that never declares step (default), code-for-code */
+            SensorSpec bare = mkband(false, 1, 100, 0, 0);   /* step defaults 0 */
+            int diffs = 0;
+            for (int x = 0; x <= 4095; x++) {
+                ConditionState a, b;
+                if (condition_sample(fine, x, a).value !=
+                    condition_sample(bare, x, b).value) diffs++;
+            }
+            CHECK(diffs == 0,
+                  "step=0 is byte-identical to the pre-quantize map");
+        }
     }
 
     /* ===============================================================
@@ -2546,6 +2889,18 @@ int main() {
         const int r503_failures = r503_protocol_tests(&r503_checks);
         checks += r503_checks;
         failures += r503_failures;
+    }
+
+    /* ===============================================================
+     * TM1637 PANEL — the pure thrust->display mapping (Change 2/3),
+     * folded in the same way.  Proves 0..100 lands on the rightmost
+     * three digits before any glass is trusted.
+     * =============================================================== */
+    {
+        int tm_checks = 0;
+        const int tm_failures = tm1637_panel_tests(&tm_checks);
+        checks += tm_checks;
+        failures += tm_failures;
     }
 
     if (failures == 0)

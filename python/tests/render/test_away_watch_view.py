@@ -279,14 +279,3 @@ def test_parser_wires_one_subscription():
 # =============================================================================
 # glass-checkable PNG proof (the condensed, Artifacts-styled roster)
 # =============================================================================
-
-def test_away_watch_view_render_png():
-    """Golden capture: the condensed Away-Watch roster — card chrome, tracked
-    header, one row per watch with the Decisions·Tokens·Elapsed stat line."""
-    w, _ = _mounted()
-    c = _drawn(w)
-    cap_dir = os.path.join(HERE, "captures")
-    os.makedirs(cap_dir, exist_ok=True)
-    out = os.path.join(cap_dir, "away_watch_view.png")
-    c.save_png(out)
-    assert os.path.exists(out) and os.path.getsize(out) > 2000

@@ -1,7 +1,7 @@
-"""storage_monitor — a DUMB disk-space SENSOR for skipper, minus its transport.
+"""storage_monitor — a DUMB disk-space SENSOR for buildhost, minus its transport.
 
 The service is an ordinary ComposeBus client that originates ONE semantic fact,
-``skipper/storage/free_bytes`` — the number of free bytes on the monitored filesystem.
+``buildhost/storage/free_bytes`` — the number of free bytes on the monitored filesystem.
 It does NOTHING else: no thresholds, no colors, no policy ([DX-STATE-ON-BUS] — publish
 the fact, let leaves react). A downstream consumer, the launch bar, owns ALL reaction.
 
@@ -12,7 +12,7 @@ lives in :mod:`.__main__` (the deploy path), which builds a transport from a spe
 concrete Transport class, exactly like ``time_service/service.py``.
 
 WHAT THIS BUILD COVERS:
-  * ``skipper/storage/free_bytes`` at a CONFIGURABLE interval, DEFAULT 30 s (disk space
+  * ``buildhost/storage/free_bytes`` at a CONFIGURABLE interval, DEFAULT 30 s (disk space
     changes slowly; a 1 Hz sensor would be wasteful), carrying an INTEGER byte count from
     ``shutil.disk_usage(path).free``.
   * a RETAINED last-value snapshot: published as a STATE message, which ComposeBus retains
@@ -36,9 +36,9 @@ from . import config, topics
 
 
 class StorageMonitor:
-    """The skipper disk-space sensor. Give it a bus with ``publish_state`` (an in-process
+    """The buildhost disk-space sensor. Give it a bus with ``publish_state`` (an in-process
     ``ComposeIOBus`` or a bridged one) and a path, and it publishes
-    ``skipper/storage/free_bytes`` as a retained STATE at a configurable interval."""
+    ``buildhost/storage/free_bytes`` as a retained STATE at a configurable interval."""
 
     def __init__(
         self,
@@ -83,7 +83,7 @@ class StorageMonitor:
     # ---- ticking --------------------------------------------------------
 
     def tick(self) -> int:
-        """Measure once, publish ONE ``skipper/storage/free_bytes`` value (retained
+        """Measure once, publish ONE ``buildhost/storage/free_bytes`` value (retained
         STATE), and return it."""
         if self._bus is None:
             raise RuntimeError("attach(bus) before tick()")

@@ -1,0 +1,280 @@
+---
+title: "The Fingerprint HAL — An Agnostic, Device-Internal Transactional Contract"
+id: "SPEC:CXC-FPHALC"
+domain: plt.cux
+scope: "The device-internal HAL a fingerprint sensor driver implements: a closed set of operations, one closed failure taxonomy, a required capability announcement, and a mock implementation that is the reference — never a subordinate fake. This contract never crosses ComposeBus; [SPEC:CXC-FPBUSC] is the wire surface the device's firmware builds on top of it."
+audience: "The author of MockFingerprintHAL; the author of R503HAL; the author of the device firmware's bus client, which is the HAL's only caller."
+boundary: "IN: the operation set, the primitive types, the capability schema, the closed failure taxonomy, the two implementations and their behaviour tables, the parity test. OUT: any R503-specific fact (that is [SPEC:CXC-R503C]), the bus messages built on this contract (that is [SPEC:CXC-FPBUSC]), and the identity/roster model above the seam (that is [SPEC:CXC-FPIDC])."
+not-this: "Not a port of corpus/72-fingerprint-hal-contract.lts. That file is retained in structure (this is the one source document that already conformed to the ComposePlatform model — device-owned mechanism, closed failure taxonomy, mock-is-reference, score-never-crosses-the-bus) with three changes: the identity-audit framing on read_template is replaced with its simpler, real purpose (extracting a freshly captured template for upload to the library); template_sha256 and the two-tier hash audit are removed; and the roster stamp collapses from {roster_id, hash} to the single template_set_uuid the wire contract actually uses."
+depends-on: [plt.cux:SPEC:CXC-HAL-DECLARE, plt.cux:SPEC:CXC-HAL]
+confidentiality: internal-only
+artifact-readiness: design-review
+derived-from: "corpus/72-fingerprint-hal-contract.lts (concepts mined; the closed failure taxonomy, the capability schema, the two-faces mechanism and the mock-is-reference doctrine are largely preserved as sound)"
+status: draft
+created: 2026-08-18
+---
+
+# The Fingerprint HAL — An Agnostic, Device-Internal Transactional Contract [SPEC:CXC-FPHALC]
+
+> One contract, N implementations. `R503HAL` speaks to real hardware; `MockFingerprintHAL` speaks to
+> an in-memory dict. Neither is privileged as an *architecture* — both are peer implementations of one
+> interface — but the mock IS the canonical *reference*: where the two disagree on a parity assertion,
+> the mock is the expected value and `R503HAL` is the actual, because the mock's behaviour is fully
+> specified by this document and the part's is inferred from a datasheet with self-contradictions
+> across four revisions.
+>
+> This contract runs entirely on the device. Its only caller is the device's own firmware; nothing
+> above ComposeBus ever imports a HAL module or calls a HAL method. The bus messages
+> ([SPEC:CXC-FPBUSC]) are what the firmware builds on top of this contract, not a reflection of it.
+
+---
+
+## 1. Two faces, one contract
+
+### [CXC-FPHALC-TWO-FACES] The runtime face is a plain call; only enrollment pays a ceremony
+
+- constraint: `capabilities()` and `match()` are plain, value-returning calls — one call, one value, no state to persist and nothing to resume. `begin_enroll()` returns a separately-typed session whose only advancing method, `step()`, advances by at most one interaction and returns immediately, because enrollment is the one operation with a human in the middle of it and cannot block a tick loop.
+- rationale: a runtime-only consumer never constructs a session and never names an enrollment phase. The ceremony's state lives in the session object, never in the HAL.
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+
+---
+
+## 2. The contract
+
+### [CXC-FPHALC-PROTOCOL-SURFACE] Nine operations, fully typed
+
+```python
+class FingerprintHAL(Protocol):
+    """One contract, N implementations. Every method may fail with
+    FingerprintHALError, carrying one of the six closed axes of
+    FailureAxis."""
+
+    def capabilities(self) -> Capabilities: ...
+    """MANDATORY. Total, side-effect-free, stable for the life of the object."""
+
+    def match(self) -> MatchResult: ...
+    """Capture once, search the resident set. Returns an outcome, and a
+    slot plus a device-internal score IFF matched. No verdict of any kind —
+    this HAL has no concept of person, role or capability."""
+
+    def begin_enroll(self, ordinal: Ordinal) -> EnrollmentSession: ...
+    """Returns immediately with a session that has captured nothing.
+    No slot argument: slot is a device-internal capture-buffer detail,
+    never externally addressed."""
+
+    def write_template(self, template: TemplateBytes) -> Slot: ...
+    """Write one opaque template into the next available internal slot
+    and return which slot it landed in, for the caller's own bookkeeping.
+    The push firmware calls this once per entry while loading a set."""
+
+    def read_template(self, slot: Slot) -> TemplateBytes: ...
+    """CAPABILITY-GATED on supports_readback. Its purpose is to extract a
+    freshly captured template so the enrollment station's application
+    layer can upload it to fingerprint_storage — not an identity audit."""
+
+    def delete_slot(self, slot: Slot) -> None: ...
+    """IDEMPOTENT: deleting an unoccupied slot succeeds."""
+
+    def empty(self) -> None: ...
+    """Destroy every resident template. IDEMPOTENT. Does not touch the
+    stamp; the caller clears the stamp separately so a device interrupted
+    between the two never testifies to a roster it does not hold."""
+
+    def write_template_set_uuid(self, uuid: str | None) -> None: ...
+    """Write the stamp durably. None clears it. TESTIMONY, not proof: the
+    device's own claim about which set it holds."""
+
+    def read_template_set_uuid(self) -> str | None: ...
+    """None means no set has EVER been loaded, distinct from a value
+    nobody wrote over."""
+
+    def command_feedback(
+        self,
+        state: FeedbackState,
+        progress: EnrollProgress | None = None,
+    ) -> None: ...
+    """The ONLY method that writes feedback, and it takes the state as an
+    argument. Nothing else on this contract, and nothing on
+    EnrollmentSession, may write feedback — the device is the one writer,
+    always, including mid-enrollment."""
+```
+
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+- see-also: [CXC-FPHALC-CAPABILITIES-SCHEMA], [CXC-FPHALC-FAILURE-AXES], [CXC-FPHALC-FEEDBACK-INVARIANT]
+
+### [CXC-FPHALC-STAMP-FORMAT] The stamp is one UUID, and nothing on this contract hashes anything
+
+- constraint: `write_template_set_uuid` / `read_template_set_uuid` carry a single opaque string — the pushed set's `template_set_uuid` — and nothing else. No hash of any kind is computed, stored, or compared anywhere in this contract.
+- rationale: identity is the UUID; completeness of a load is that every entry the wire contract promised was written successfully. A low-end MCU cannot hash up to twenty templates in a time budget worth defending, and nothing downstream of this contract needs it to.
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+
+### [CXC-FPHALC-ENROLLMENT-SESSION-SURFACE] The enrollment session steps, reports, and holds no path to feedback
+
+```python
+class EnrollmentSession(Protocol):
+    """NO FEEDBACK METHOD, by construction."""
+
+    ordinal: Ordinal
+
+    def step(self) -> EnrollStep: ...
+    """Advance by at most one interaction and return immediately."""
+
+    def cancel(self) -> None: ...
+    """Abandon. IDEMPOTENT."""
+
+
+class EnrollPhase(Enum):
+    AWAITING_FINGER = "awaiting_finger"
+    CAPTURE_ACCEPTED = "capture_accepted"
+    CAPTURE_RETRY = "capture_retry"
+    MERGING = "merging"
+    STORED = "stored"          # TERMINAL, success
+    CANCELLED = "cancelled"    # TERMINAL
+    FAILED = "failed"          # TERMINAL, carries a FingerprintHALFailure
+
+
+@dataclass(frozen=True)
+class EnrollProgress:
+    ordinal: Ordinal
+    capture_n: int
+    capture_of: int   # == capabilities().captures_per_template
+```
+
+- constraint: the session type has no feedback method and no reference to one. The invariant that the HAL never drives feedback is therefore a compile-time property of this type, not a code-review item.
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+- see-also: [CXC-FPHALC-FEEDBACK-INVARIANT]
+
+---
+
+## 3. Primitives, capabilities, feedback
+
+### [CXC-FPHALC-PRIMITIVE-TYPES] Four aliases; score is opaque and never leaves this contract's caller
+
+```python
+Slot = int              # device-internal capture/store index. Never externally addressed.
+Score = int             # vendor-scaled. Ordering meaningful WITHIN one implementation only.
+Ordinal = int           # 1 or 2 today; a position, never an anatomical fact.
+TemplateBytes = bytes   # OPAQUE. Moved, never parsed, by this contract or anything above it.
+```
+
+- constraint: `Score` is returned to the device's own calling code and MUST NOT be published on ComposeBus by anything the firmware does with it. Its one legitimate use is a device-internal match-confidence floor, configured locally, `null` meaning unset.
+- rationale: a score compared across sensor implementations is a coincidence, not a measurement; publishing it invites exactly that comparison the moment a second sensor vendor exists.
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+
+### [CXC-FPHALC-CAPABILITIES-SCHEMA] Six required fields, no defaults
+
+```python
+class FeedbackChannel(Enum):
+    RING_COLOUR = "ring_colour"
+    BUZZER = "buzzer"
+
+
+@dataclass(frozen=True)
+class Capabilities:
+    slot_count: int
+    max_templates_per_person: int
+    supports_readback: bool
+    feedback_channels: frozenset[FeedbackChannel]   # empty set == no feedback at all
+    captures_per_template: int
+    template_size_bytes: int
+```
+
+- constraint: every field is required; an implementation that does not know a value MUST NOT omit the key. This schema is device-internal — it does NOT cross ComposeBus. The bus's own device announcement carries only identity, the gated capability and location; it does not carry this schema, because nothing on the far side of the bus needs a slot count or a template size to validate a fixed twenty-template limit or a completeness count.
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+- see-also: [SPEC:CXC-FPBUSC]
+
+### [CXC-FPHALC-FAILURE-AXES] Six closed, disjoint axes; an unknown code is never fatal
+
+```python
+class FailureAxis(Enum):
+    TRANSPORT = "transport"
+    SENSOR_REFUSAL = "sensor_refusal"
+    CAPACITY = "capacity"
+    PROTOCOL_DESYNC = "protocol_desync"
+    UNSUPPORTED = "unsupported"
+    UNKNOWN_CODE = "unknown_code"
+
+
+@dataclass(frozen=True)
+class FingerprintHALFailure:
+    axis: FailureAxis
+    sensor_code: int | None = None   # required for SENSOR_REFUSAL/UNKNOWN_CODE; None on TRANSPORT
+    detail: str = ""                  # for a human log; no caller may parse it
+```
+
+- constraint: every failure carries exactly one axis; the set is closed and an implementation may not add a seventh. An undocumented confirmation code is `UNKNOWN_CODE`, never fatal — the operation fails, the object remains usable, and the next operation must succeed.
+- rationale: a transport failure must stay numerically disjoint from a sensor refusal, or a service-side decision built on the difference silently collapses the two.
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+
+### [CXC-FPHALC-FEEDBACK-INVARIANT] The HAL never originates feedback; it only reports and renders what is commanded
+
+- constraint: no method on this contract, and nothing on `EnrollmentSession`, may write feedback except `command_feedback`, which takes the state as an argument. The device consumes its own reported progress (`capture_accepted`, `capture_retry`, `enroll_progress{ordinal, capture_n, capture_of}`) and decides what to show; reporting is not driving.
+- rationale: a `reject_silent` denial that the ring must render identically to a genuine non-match cannot leak the true outcome if there is structurally no path from the match result to the ring except through a caller-supplied command.
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+
+---
+
+## 4. The two implementations
+
+### [CXC-FPHALC-MOCK-ARBITRATION] MockFingerprintHAL is a peer implementation AND the canonical reference
+
+- constraint: `MockFingerprintHAL` and `R503HAL` are two implementations of one contract; neither is architecturally privileged — the mock never speaks a vendor's wire protocol, and it is not a fake R503. Where a parity assertion disagrees between the two, the mock is the expected value and `R503HAL` is the actual, because the mock's behaviour is fully specified by this document and the part's is inferred from a datasheet that contradicts itself across revisions.
+- rationale: the mock has three jobs, not one — it is the parity-arbitration reference, the fault injector that proves every failure branch above it is reachable, and the test double every QA suite for the enrollment widgets needs, because a fingertip cannot be automated to produce a scripted `capture_retry` or a scripted capacity error on demand.
+- fault-surface: armed declaratively on the constructor or a script object, never through a method on `FingerprintHAL` itself — a test-only method on the contract would force `R503HAL` to implement it too.
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+
+### [CXC-FPHALC-R503-IMPLEMENTATION] R503HAL maps every operation to its opcodes, below the seam
+
+- constraint: `R503HAL`'s `capabilities()` returns compiled-in constants for the confirmed part in hand; `match()` runs GetImg/GenChar/Search; `begin_enroll`/`write_template` use the general capture/generate/register/store sequence, never the packaged auto-enroll command; `empty()`/`delete_slot()` map to Empty/DeletChar; `read_template()` to LoadChar/UpChar; the stamp to WriteNotepad/ReadNotepad; `command_feedback()` to AuraLedConfig through the realization table of [SPEC:CXC-R503C]. Every operation drains RX before transmitting and parses with a sliding two-byte header window, to absorb the module's unsolicited byte.
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+- see-also: [SPEC:CXC-R503C]
+
+### [CXC-FPHALC-PARITY-TEST] One suite, parameterized over both implementations, with its own negative control
+
+- constraint: `tests/hal/test_fingerprint_hal_parity.py` runs the same assertions against `MockFingerprintHAL` and `R503HAL` with no test modified between runs. It contains no vendor-conditional branch and no comparison of a `Score` magnitude across implementations. Injecting each of the mock's scripted faults MUST turn the corresponding assertion red — a suite that passes against a mock which cannot fail proves nothing.
+- artifact: tests/hal/test_fingerprint_hal_parity.py
+- status: draft
+- part-of: [SPEC:CXC-FPHALC]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-FPHALC-PROTOCOL-SURFACE] DEPENDS_ON [CXC-FPHALC-TWO-FACES]
+- [CXC-FPHALC-PROTOCOL-SURFACE] USES [CXC-FPHALC-CAPABILITIES-SCHEMA]
+- [CXC-FPHALC-PROTOCOL-SURFACE] USES [CXC-FPHALC-FAILURE-AXES]
+- [CXC-FPHALC-PROTOCOL-SURFACE] UPHOLDS [CXC-FPHALC-FEEDBACK-INVARIANT]
+- [CXC-FPHALC-PROTOCOL-SURFACE] UPHOLDS [CXC-FPHALC-STAMP-FORMAT]
+- [CXC-FPHALC-ENROLLMENT-SESSION-SURFACE] UPHOLDS [CXC-FPHALC-FEEDBACK-INVARIANT]
+- [CXC-FPHALC-PRIMITIVE-TYPES] RELATED_TO [CXC-FPHALC-CAPABILITIES-SCHEMA]
+- [CXC-FPHALC-MOCK-ARBITRATION] CONTRAST_WITH [CXC-FPHALC-R503-IMPLEMENTATION]
+- [CXC-FPHALC-PARITY-TEST] DEPENDS_ON [CXC-FPHALC-MOCK-ARBITRATION]
+- [CXC-FPHALC-PARITY-TEST] DEPENDS_ON [CXC-FPHALC-R503-IMPLEMENTATION]
+- [CXC-FPHALC-CAPABILITIES-SCHEMA] CONTRAST_WITH [plt.cux:SPEC:CXC-HAL-DECLARE]
+
+### Causal
+
+- [CXC-FPHALC-CAPABILITIES-SCHEMA] PRECONDITION_FOR [CXC-FPHALC-PROTOCOL-SURFACE]
+- [CXC-FPHALC-FAILURE-AXES] ENABLES [CXC-FPHALC-PARITY-TEST]
+
+### Entity
+
+- [CXC-FPHALC-MOCK-ARBITRATION] TESTED_BY [CXC-FPHALC-PARITY-TEST]
+- [CXC-FPHALC-R503-IMPLEMENTATION] TESTED_BY [CXC-FPHALC-PARITY-TEST]
+
+---
+
+**Version**: 1.0
+**Status**: Draft.

@@ -284,8 +284,8 @@ static void rung1_identity(void) {
     printf("  MAC / USB serial: %02X:%02X:%02X:%02X:%02X:%02X\n",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     printf("  ⚠ CONFIRM THIS IS THE BOARD YOU MEANT.  A port path is not an\n"
-           "    identity.  AA:BB:CC:DD:EE:FF is the LIVE dual-throttle\n"
-           "    controller and AA:BB:CC:DD:EE:FF is the c3lcd/c3can board —\n"
+           "    identity.  00:00:5E:00:53:02 is the LIVE dual-throttle\n"
+           "    controller and 00:00:5E:00:53:03 is the c3lcd/c3can board —\n"
            "    never either.\n");
 
     const esp_reset_reason_t rr = esp_reset_reason();

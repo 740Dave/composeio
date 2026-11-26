@@ -17,7 +17,7 @@ RGB565 quantization.  Anything structural (misplaced/missing widgets)
 is a failure.
 
 Usage:
-    cd ~/Dropbox/Maker/composeio/python
+    cd ${COMPOSEIO_HOME}/python
     python scripts/cyd_config_crosscheck.py <config.compose.yaml> <capture.bmp>
 
 Outputs (next to the capture):

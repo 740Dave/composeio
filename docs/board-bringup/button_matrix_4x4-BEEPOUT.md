@@ -1,7 +1,7 @@
 <!-- BEGIN BEEPOUT-PROVENANCE (composeio.maker.beepout) -->
 {
   "board": "button_matrix_4x4",
-  "derived_from": "/Users/davidleeburnett/Dropbox/Maker/pcb/button_matrix_4x4/button_matrix_4x4.kicad_pcb",
+  "derived_from": "${MAKER_HOME}/pcb/button_matrix_4x4/button_matrix_4x4.kicad_pcb",
   "derived_from_sha256": "747a40e939d7fd19c0734359bf88851cbf8c02a4475fd26ebd0d4e76bda45e4d",
   "footprints": 50,
   "kicad_version": "20241229",
@@ -40,7 +40,7 @@ a *measurement*. That distinction is the entire value of this document.
 
 | | |
 |---|---|
-| derived-from | `/Users/davidleeburnett/Dropbox/Maker/pcb/button_matrix_4x4/button_matrix_4x4.kicad_pcb` |
+| derived-from | `${MAKER_HOME}/pcb/button_matrix_4x4/button_matrix_4x4.kicad_pcb` |
 | derived-from-sha256 | `747a40e939d7fd19c0734359bf88851cbf8c02a4475fd26ebd0d4e76bda45e4d` |
 | kicad-version | `20241229` (generator 9.0) |
 | generated-by | `composeio.maker.beepout` |
@@ -50,7 +50,7 @@ a *measurement*. That distinction is the entire value of this document.
 **Re-check that this sheet still describes the board in your hand:**
 
 ```bash
-shasum -a 256 /Users/davidleeburnett/Dropbox/Maker/pcb/button_matrix_4x4/button_matrix_4x4.kicad_pcb
+shasum -a 256 ${MAKER_HOME}/pcb/button_matrix_4x4/button_matrix_4x4.kicad_pcb
 # must print: 747a40e939d7fd19c0734359bf88851cbf8c02a4475fd26ebd0d4e76bda45e4d
 ```
 

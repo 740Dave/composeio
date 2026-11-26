@@ -109,6 +109,16 @@ void R503Link::send_data_stream(const std::vector<Bytes>& pkts,
 }
 
 bool R503Link::command(const Bytes& cmd_packet, Ack& ack, uint32_t timeout_ms) {
+    /* [CXC-FPHAL-CONTAINMENT-INVARIANTS] inv-4: DRAIN-BEFORE-TRANSMIT, applied
+     * UNIVERSALLY here — this is the single request->ack path cmd_ok routes
+     * every single-packet command through (ReadSysPara, Empty, AuraLedConfig,
+     * Search, DeleteChar, WriteNotepad, DownChar/UpChar/LoadChar/Store cmds).
+     * A stale byte left in RX from a prior exchange would otherwise be parsed
+     * as the head of this command's ack.  NOT in raw send(): send() carries the
+     * DATA-PHASE packets (send_data_stream), where a per-packet flush would
+     * drain the very volunteered bytes collect_unsolicited exists to capture —
+     * inv-4's sibling, "either alone is partial." */
+    flush();
     send(cmd_packet);
     Packet p;
     if (!recv_packet(p, timeout_ms)) return false;
@@ -313,6 +323,13 @@ Capabilities RealR503HAL::capabilities() {
      * (extract:988-995) — two captures. */
     c.captures_per_template = 2;
     c.template_size_bytes = static_cast<int>(template_size_);
+    /* feedback_profile: the R503 realizes command_feedback over its two-channel
+     * Aura ring (blue-arc match / purple-arc enroll), NOT the mock's canonical
+     * table — named here so the announce distinguishes them.  Set inside the
+     * ready_ path so an un-begun backend still reports the all-fields-zero
+     * "not known yet" record (feedback_profile stays empty), consistent with
+     * every other field above. */
+    c.feedback_profile = "r503-2ch";
     return c;
 }
 
@@ -517,7 +534,8 @@ bool RealR503HAL::enroll_store(Slot slot, FingerprintHALFailure& err) {
 /* ======================================================================== */
 
 bool RealR503HAL::down_char(uint8_t buffer_id, const TemplateBytes& t,
-                            FingerprintHALFailure& err) {
+                            FingerprintHALFailure& err,
+                            const R503DownCharOptions& opt) {
     if (t.empty()) {
         err = fp_make_failure(FailureAxis::CAPACITY, "DownChar: empty payload");
         return false;
@@ -532,18 +550,46 @@ bool RealR503HAL::down_char(uint8_t buffer_id, const TemplateBytes& t,
     /* Ambiguity A4, resolved: the module has ACKed "ready to transfer the
      * following data packet"; the HOST now sends them. */
     const std::vector<Bytes> pkts =
-        r503::build_data_packets(link_.address(), t, sys_.packet_content_len());
+        r503::build_data_packets(link_.address(), t, sys_.packet_content_len(),
+                                 opt.style);
     if (pkts.empty()) {
         err = fp_make_failure(FailureAxis::CAPACITY,
                               "DownChar: nothing to send (packet length 0?)");
         return false;
     }
-    for (size_t i = 0; i < pkts.size(); i++) link_.send(pkts[i]);
+    /* Send through send_data_stream so pacing is applied and anything the
+     * module volunteers mid-stream is CAPTURED, not discarded — the same
+     * evidence-preserving path synctest uses, instead of the old raw loop. */
+    link_.set_inter_packet_delay_ms(opt.inter_packet_delay_ms);
+    Bytes volunteered;
+    link_.send_data_stream(pkts, nullptr, &volunteered);
 
-    /* The manual specifies NO trailing ack after a DownChar data stream, so
-     * absence of one is SUCCESS-SHAPED and cannot be used as proof.  That is
-     * precisely why synctest reads the bytes BACK rather than trusting this
-     * step's silence ([CXC-VISION-EPISTEMICS]). */
+    /* ⛔ THE FIX.  Give the module time to COMMIT the just-received char buffer
+     * before the caller's next command (Store).  Store was no-acking because it
+     * arrived 0 ms after the last data packet; synctest only ever passed
+     * because its post-data listen inadvertently supplied this settle.  We also
+     * grab anything the module volunteered during the settle. */
+    link_.settle(opt.settle_ms);
+    {
+        Bytes more;
+        link_.collect_unsolicited(more, 0);
+        volunteered += more;
+    }
+
+    /* The manual specifies NO trailing ack after a well-formed DownChar data
+     * stream, so SILENCE here is success-shaped.  But if the module VOLUNTEERED
+     * a parseable ack, it is complaining — most often 0x01 "error when
+     * receiving package" — and that is a real failure we must surface rather
+     * than march on into Store ([CXC-VISION-EPISTEMICS]). */
+    if (!volunteered.empty()) {
+        r503::ScanOutcome s = r503::scan_packet(volunteered);
+        Ack a;
+        if (s.kind == r503::ScanOutcome::Kind::PACKET &&
+            r503::parse_ack(s.packet, a) && a.confirmation != r503::CONF_OK) {
+            err = axis_for(a.confirmation, "DownChar data phase");
+            return false;
+        }
+    }
     return true;
 }
 
@@ -614,9 +660,16 @@ bool RealR503HAL::store_template(const TemplateBytes& t, Slot& out_slot,
     }
     if (!down_char(1, t, err)) return false;
 
+    /* Store the settled char buffer to flash.  The settle in down_char is the
+     * fix for the 2026-08-20 no-ack (Store was arriving before the module had
+     * committed the char buffer).  The FAILURE MAPPING stays the landed C72
+     * form via cmd_ok: a UART timeout/silence -> TRANSPORT with sensor_code
+     * ABSENT; a documented CONF code -> axis_for's taxonomy (QA-confirmed
+     * correct — the round-2 protocol_desync remap was a regression and is
+     * reverted).  The longer R503_STORE_TIMEOUT_MS gives the flash write margin. */
     Ack ack;
     if (!cmd_ok(r503::cmd_store(link_.address(), 1, static_cast<uint16_t>(slot)),
-                ack, err, "Store", 2000))
+                ack, err, "Store", R503_STORE_TIMEOUT_MS))
         return false;
     out_slot = slot;
     return true;
@@ -744,6 +797,38 @@ std::optional<RosterStamp> RealR503HAL::read_roster_stamp() {
  * SAME red on purpose.  The ring is not a mirror of the bus event — making
  * "unrecognized" visually distinct from "denied" would leak the roster to
  * anyone with a finger. */
+/* Ring animation SPEED bytes — STARTING points, glass-tunable (D3).  The byte's
+ * polarity (fast vs slow gear) has not been eyeballed; the architect tunes them
+ * on the sensor with `r503 aura`.  `count` for FAULT approximates the ratified
+ * "~2s" red strobe with a bounded flash count (also tunable). */
+namespace {
+constexpr uint8_t kAuraSpeedStrobe = 0x20;   /* fast: capture blip, fault      */
+constexpr uint8_t kAuraSpeedFlash  = 0x40;   /* discrete flashes: success/reject/retry */
+constexpr uint8_t kAuraSpeedBreath = 0x80;   /* breathing: processing          */
+constexpr uint8_t kFaultFlashes    = 6;      /* ~2s red strobe, glass-tunable   */
+}
+
+/* [SPEC:CXC-FPHAL] C72 [CXC-FPHAL-FEEDBACK-STATES] — the RATIFIED feedback table
+ * (DESIGN-r503-sensor-ux.md, David's 2026-08-21 DSD, D1-D6).  ONE AuraLedConfig
+ * per state; command_feedback is the ONLY ring writer and the operation flow
+ * OWNS the sequencing (this issues one scene, it does not animate).
+ *
+ * ⛔ RENDERABLE COLOURS ONLY: red(0x01)/blue(0x02)/purple(0x03).  The AuraLED is
+ * a two-channel Red+Blue ring; green/cyan/yellow/white (0x04-0x07) parse but
+ * come up DARK on this part — the datasheet's "7 colours" is false, and the
+ * previous mapping's cyan/green/yellow/white was the defect this replaces.
+ *
+ * Emergent semantics (David 2026-08-20, the MATCH ARC IS ALL BLUE, revising
+ * D2): blue = match, purple = enroll, red = reject/fault.  THREE states flip by
+ * flow — AWAITING_FINGER, CAPTURE_ACCEPTED and ACCEPT are blue in MATCH and
+ * purple in ENROLL, so the base colour is set entirely by the flow-mode; the
+ * blue capture blip is told from armed (steady) and processing (breathing) by
+ * PATTERN, not colour, keeping purple cleanly reserved for enroll.  BUSY (blue)
+ * and ENROLL_PROGRESS (purple) are the two processing states and encode the
+ * flow in their identity; every other colour is flow-independent.
+ * denied ≡ unrecognized on the ring — REJECT_SILENT and REJECT_KNOWN are
+ * BYTE-IDENTICAL ([CXC-FPID-RING-HIDES-DENIAL]); the bus auth_event carries the
+ * distinction, never the LED. */
 bool RealR503HAL::command_feedback(FeedbackState state, const FpProgress& progress,
                                    FingerprintHALFailure& err) {
     (void)progress;
@@ -751,36 +836,42 @@ bool RealR503HAL::command_feedback(FeedbackState state, const FpProgress& progre
         err = fp_make_failure(FailureAxis::TRANSPORT, "command_feedback: link not ready");
         return false;
     }
-    uint8_t ctrl = r503::AURA_OFF, speed = 0x60, colour = r503::AURA_BLUE, count = 0;
+    const bool enroll = (feedback_flow_ == FeedbackFlow::ENROLL);
+    uint8_t ctrl   = r503::AURA_OFF;
+    uint8_t colour = r503::AURA_BLUE;
+    uint8_t count  = 0;
+    uint8_t speed  = kAuraSpeedFlash;
 
     switch (state) {
-        case FeedbackState::IDLE:
-            ctrl = r503::AURA_OFF;  colour = r503::AURA_BLUE;  count = 0; break;
-        case FeedbackState::READY:
-            ctrl = r503::AURA_BREATHING; colour = r503::AURA_BLUE;
-            speed = 0xC0; count = 0; break;
-        case FeedbackState::AWAITING_FINGER:
-            ctrl = r503::AURA_BREATHING; colour = r503::AURA_CYAN;
-            speed = 0x60; count = 0; break;
-        case FeedbackState::CAPTURE_ACCEPTED:
-            ctrl = r503::AURA_ON;   colour = r503::AURA_GREEN;  count = 0; break;
-        case FeedbackState::CAPTURE_RETRY:
+        case FeedbackState::IDLE:                 /* off */
+            ctrl = r503::AURA_OFF; count = 0; break;
+        case FeedbackState::READY:                /* armed: blue steady-on (flow-independent) */
+            ctrl = r503::AURA_ON; colour = r503::AURA_BLUE; count = 0; break;
+        case FeedbackState::AWAITING_FINGER:      /* armed/awaiting: blue (match) / purple (enroll) */
+            ctrl = r503::AURA_ON;
+            colour = enroll ? r503::AURA_PURPLE : r503::AURA_BLUE; count = 0; break;
+        case FeedbackState::CAPTURE_ACCEPTED:     /* the "I'm reading you" blip: blue (match) / purple (enroll) */
+            ctrl = r503::AURA_FLASHING;           /* the MATCH ARC IS ALL BLUE (David 2026-08-20, revising D2): */
+            colour = enroll ? r503::AURA_PURPLE : r503::AURA_BLUE; count = 1;  /* told from armed/processing by PATTERN */
+            speed = kAuraSpeedStrobe; break;
+        case FeedbackState::BUSY:                 /* processing (match): blue breathing */
+            ctrl = r503::AURA_BREATHING; colour = r503::AURA_BLUE; count = 0;
+            speed = kAuraSpeedBreath; break;
+        case FeedbackState::ENROLL_PROGRESS:      /* processing (enroll): purple breathing */
+            ctrl = r503::AURA_BREATHING; colour = r503::AURA_PURPLE; count = 0;
+            speed = kAuraSpeedBreath; break;
+        case FeedbackState::ACCEPT:               /* success: blue (match) / purple (enroll) 3-flash */
+            ctrl = r503::AURA_FLASHING;
+            colour = enroll ? r503::AURA_PURPLE : r503::AURA_BLUE; count = 3; break;
+        case FeedbackState::REJECT_SILENT:        /* rejected: red 3-flash — denied ≡ unrecognized, */
+        case FeedbackState::REJECT_KNOWN:         /* BYTE-IDENTICAL by design */
+            ctrl = r503::AURA_FLASHING; colour = r503::AURA_RED; count = 3; break;
+        case FeedbackState::CAPTURE_RETRY:        /* retry: purple 2-flash */
         case FeedbackState::RETRY:
-            ctrl = r503::AURA_ON;   colour = r503::AURA_YELLOW; count = 0; break;
-        case FeedbackState::ENROLL_PROGRESS:
-            ctrl = r503::AURA_BREATHING; colour = r503::AURA_PURPLE;
-            speed = 0x40; count = 0; break;
-        case FeedbackState::BUSY:
-            ctrl = r503::AURA_BREATHING; colour = r503::AURA_WHITE;
-            speed = 0x30; count = 0; break;
-        case FeedbackState::FAULT:
-            ctrl = r503::AURA_FLASHING; colour = r503::AURA_RED;
-            speed = 0x40; count = 0; break;
-        case FeedbackState::ACCEPT:
-            ctrl = r503::AURA_ON;   colour = r503::AURA_GREEN;  count = 0; break;
-        case FeedbackState::REJECT_SILENT:
-        case FeedbackState::REJECT_KNOWN:
-            ctrl = r503::AURA_ON;   colour = r503::AURA_RED;    count = 0; break;
+            ctrl = r503::AURA_FLASHING; colour = r503::AURA_PURPLE; count = 2; break;
+        case FeedbackState::FAULT:                /* error: red fast strobe, ~2s */
+            ctrl = r503::AURA_FLASHING; colour = r503::AURA_RED; count = kFaultFlashes;
+            speed = kAuraSpeedStrobe; break;
     }
     Ack ack;
     return cmd_ok(r503::cmd_aura_led(link_.address(), ctrl, speed, colour, count),
@@ -1029,6 +1120,148 @@ R503SyncTestResult RealR503HAL::run_sync_test(const R503SyncTestOptions& opt) {
      * synctest that leaves the module wedged and does not SAY SO poisons
      * every command the architect runs next. */
     r.alive_after = alive();
+    r.diag = link_.diag();
+    return r;
+}
+
+/* ======================================================================== */
+/*  run_store_test — the DownChar->Store(flash)->readback de-risk instrument */
+/* ======================================================================== */
+R503StoreTestResult RealR503HAL::run_store_test(const R503StoreTestOptions& opt) {
+    R503StoreTestResult r;
+    r.ran = true;
+    r.settle_ms = opt.settle_ms;
+    r.inter_packet_delay_ms = opt.inter_packet_delay_ms;
+    r.style = opt.style;
+    if (!ready_) { r.failure = "link not ready — run begin() first"; return r; }
+
+    /* ---- 1. establish the bytes to store — a REAL template ONLY ---------
+     * ⛔ [CXC-FPHAL-PARITY-TEST] proportionality: no instrument writes a
+     * synthetic/corrupted template to a real flash slot.  storetest reads a
+     * REAL template out of `real_src_slot` (LoadChar+UpChar) and re-stores it;
+     * there is no ramp mode. */
+    if (opt.real_src_slot < 0) {
+        r.failure = "storetest requires a REAL source slot (real <srcslot>) — "
+                    "writing a synthetic ramp to real flash violates "
+                    "[CXC-FPHAL-PARITY-TEST].  Enroll or push a template first.";
+        r.diag = link_.diag();
+        return r;
+    }
+    TemplateBytes payload;
+    {
+        FingerprintHALFailure e;
+        Ack la;
+        if (!cmd_ok(r503::cmd_load_char(link_.address(), opt.buffer_id,
+                                        static_cast<uint16_t>(opt.real_src_slot)),
+                    la, e, "LoadChar(src)", 2000)) {
+            r.failure = std::string("could not LoadChar the source slot: ") + e.detail;
+            r.diag = link_.diag();
+            return r;
+        }
+        if (!up_char(opt.buffer_id, payload, e) || payload.empty()) {
+            r.failure = std::string("could not UpChar the source template: ") + e.detail;
+            r.diag = link_.diag();
+            return r;
+        }
+        r.used_real_template = true;
+        r.size_source = "REAL template via LoadChar+UpChar";
+    }
+    r.template_size = payload.size();
+
+    /* ---- 2. slot ------------------------------------------------------- */
+    r.slot = opt.slot >= 0 ? opt.slot : first_free_slot();
+    if (r.slot < 0) { r.failure = "no free slot (library full)"; r.diag = link_.diag(); return r; }
+
+    /* ---- 3. DownChar + data phase + settle (the traced path) ----------- */
+    r.down_conf = 0xFF;
+    {
+        link_.flush();
+        Ack ack;
+        if (!link_.command(r503::cmd_down_char(link_.address(), opt.buffer_id),
+                           ack, 1000)) {
+            r.failure = "DownChar: no ack";
+            r.diag = link_.diag();
+            return r;
+        }
+        r.down_conf = ack.confirmation;
+        if (ack.confirmation != r503::CONF_OK) {
+            r.failure = "DownChar refused";
+            r.diag = link_.diag();
+            return r;
+        }
+        r.downchar_acked = true;
+
+        const std::vector<Bytes> pkts = r503::build_data_packets(
+            link_.address(), payload, sys_.packet_content_len(), opt.style);
+        r.data_packets_sent = pkts.size();
+        link_.set_inter_packet_delay_ms(opt.inter_packet_delay_ms);
+        link_.send_data_stream(pkts, nullptr, &r.post_data_bytes);
+        link_.settle(opt.settle_ms);
+        Bytes more;
+        link_.collect_unsolicited(more, 0);
+        r.post_data_bytes += more;
+    }
+
+    /* ---- 4. ⭐ THE DIAGNOSTIC: is the module responsive BEFORE Store? ---
+     * If ReadSysPara answers here, the data phase terminated and the module is
+     * in command mode — so a Store failure is Store-specific, not a wedge.  If
+     * it does NOT answer, the data phase never terminated and Store never had a
+     * chance (it would be eaten as data).  This is the single row that says
+     * WHERE it dies. */
+    r.alive_after_data_phase = alive();
+
+    /* ---- 5. Store to flash --------------------------------------------- */
+    r.store_cmd_bytes = r503::cmd_store(link_.address(), opt.buffer_id,
+                                        static_cast<uint16_t>(r.slot));
+    {
+        Ack ack;
+        if (!link_.command(r.store_cmd_bytes, ack, R503_STORE_TIMEOUT_MS)) {
+            r.store_timed_out = true;
+            r.failure = r.alive_after_data_phase
+                ? "Store: no ack though the module answered ReadSysPara after "
+                  "the data phase — Store confirmation lost; sweep settle higher"
+                : "Store: no ack AND the module was already unresponsive after "
+                  "the data phase — it is wedged mid-receive (data phase never "
+                  "terminated for this firmware)";
+            r.diag = link_.diag();
+            return r;
+        }
+        r.store_acked = true;
+        r.store_conf = ack.confirmation;
+        if (ack.confirmation != r503::CONF_OK) {
+            r.failure = "Store refused with a confirmation code (see store_conf)";
+            r.diag = link_.diag();
+            return r;
+        }
+    }
+
+    /* ---- 6. read it back and compare ----------------------------------- */
+    if (opt.readback) {
+        r.readback_attempted = true;
+        FingerprintHALFailure e;
+        TemplateBytes back;
+        if (!read_template(r.slot, back, e)) {
+            r.failure = std::string("Store acked but readback FAILED: ") + e.detail;
+            r.diag = link_.diag();
+            return r;
+        }
+        r.readback_complete = true;
+        r.readback_len = back.size();
+        if (back.size() != payload.size()) {
+            r.failure = "readback length mismatch";
+            r.diag = link_.diag();
+            return r;
+        }
+        for (size_t i = 0; i < payload.size(); i++) {
+            if (payload[i] != back[i]) {
+                r.first_diff_index = i;
+                r.failure = "readback byte mismatch";
+                r.diag = link_.diag();
+                return r;
+            }
+        }
+        r.byte_exact = true;
+    }
     r.diag = link_.diag();
     return r;
 }

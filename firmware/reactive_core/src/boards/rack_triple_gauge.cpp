@@ -5,7 +5,7 @@
  * define-once flagship: a `gauge/N` namespace drives this physical
  * needle AND an on-screen GaugeWidget.
  *
- * Hardware (~/Dropbox/Maker/pcb/rack_triple_gauge/generate_pcb.py):
+ * Hardware (${MAKER_HOME}/pcb/rack_triple_gauge/generate_pcb.py):
  * ESP32-C3 SuperMini -> MCP23017 (I2C) -> 3x L293D -> 3x stepper
  * motors (the dials) + 3x 2N2222 low-side PWM -> LED backlights.
  *

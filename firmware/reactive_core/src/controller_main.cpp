@@ -44,6 +44,9 @@
 #include "audio_cover.h"
 #include "bus_binding.h"         /* cyd/src via -I: the ComposeBus repoint binding ([SPEC:CXC-REPOINT]) */
 #include "bus_uri.h"             /* split the active mqtt:// URI into host+port for PubSubClient */
+#include "asset_reload.h"        /* cyd/src via -I: bus_storage asset-change-notify consumer ([CXC-ACN-SHAPE]) */
+#include "mbedtls/sha256.h"      /* sha256 of fetched config bytes — MUST match change_notify.py hashlib.sha256().hexdigest() */
+#include "mbedtls/version.h"      /* MBEDTLS_VERSION_NUMBER — pick the _ret vs base sha256 API */
 
 /* --- Configuration (creds injected at flash; see platformio.ini) --------- */
 #if defined(__has_include)
@@ -158,6 +161,94 @@ static void rebootNow() {
     esp_restart();
 }
 
+/* [CXC-ACN] periodic backstop cadence — re-hash our own asset this often to
+ * catch a missed event / skipped multi-PUT while we stayed connected. */
+static const uint32_t kBackstopIntervalMs = 300000;  /* 5 minutes */
+
+/* [CXC-ACN] sha256 of the fetched config bytes -> lowercase hex.  MUST match
+ * bus_storage change_notify.content_hash (hashlib.sha256(data).hexdigest())
+ * byte-for-byte, or the {old,new} self-select never matches.  mbedtls ships
+ * with Arduino-ESP32; this file only compiles on device (CONTROLLER_CONFIG_
+ * FETCH), never in the host suite, so the include is unconditional. */
+static void sha256_hex(const uint8_t* data, size_t len,
+                       char out[ASSET_HASH_HEX_LEN + 1]) {
+    uint8_t digest[32];
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+#if defined(MBEDTLS_VERSION_NUMBER) && MBEDTLS_VERSION_NUMBER >= 0x03000000
+    mbedtls_sha256_starts(&ctx, /*is224=*/0);
+    mbedtls_sha256_update(&ctx, data, len);
+    mbedtls_sha256_finish(&ctx, digest);
+#else
+    mbedtls_sha256_starts_ret(&ctx, /*is224=*/0);
+    mbedtls_sha256_update_ret(&ctx, data, len);
+    mbedtls_sha256_finish_ret(&ctx, digest);
+#endif
+    mbedtls_sha256_free(&ctx);
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2]     = hexd[(digest[i] >> 4) & 0xF];
+        out[i * 2 + 1] = hexd[digest[i] & 0xF];
+    }
+    out[ASSET_HASH_HEX_LEN] = '\0';
+}
+
+/* [CXC-ACN] handle a bus_storage/asset/changed event.  The event carries NO
+ * asset path ([CXC-ACN-SHAPE]) — self-select STRICTLY by held hash: old==held
+ * is our asset (reload); new==held absorbs the retained replay on connect; a
+ * mismatch is a foreign asset (or a skipped multi-PUT the backstop covers) and
+ * is ignored.  Reload re-uses the proven boot path (esp_restart -> boot fetch
+ * -> parse -> apply), which is correct for ANY config change (pins, sensors,
+ * relay, audio), not only a scalar re-tune. */
+static void handleAssetChange(const char* old_h, const char* new_h) {
+    switch (asset_reload_decide_held(old_h, new_h)) {
+        case AR_RELOAD:
+            Serial.printf("[CXC-ACN] my config changed (%s -> %s) — reload\n",
+                          (old_h && *old_h) ? old_h : "(none)", new_h);
+            rebootNow();                    /* re-runs boot fetch -> applies latest */
+            return;
+        case AR_IGNORE_ALREADY_LATEST:
+            Serial.printf("[CXC-ACN] change new==held (%s) — already latest, ignore\n",
+                          new_h);
+            return;
+        case AR_IGNORE_NOT_MINE:
+            Serial.printf("[CXC-ACN] change (%s -> %s) not from held %s — not mine, "
+                          "ignore (backstop covers a skipped multi-PUT)\n",
+                          (old_h && *old_h) ? old_h : "(none)", new_h,
+                          asset_reload_held());
+            return;
+        case AR_IGNORE_NO_HELD:
+            return;                         /* boot/loop fetch owns the first config */
+    }
+}
+
+/* [CXC-ACN] BACKSTOP: re-GET our own asset, sha256 it, and reload if it differs
+ * from the held hash.  Closes the two event-path gaps (brief pt 7): the
+ * retained event carries only the LAST transition (a multi-PUT past an older
+ * held version skips us), and a best-effort emit is missed if the broker was
+ * down at PUT time.  Called on a timer and on every MQTT RE-connect. */
+static void assetBackstopCheck(const char* trigger) {
+    if (!configReady) return;               /* nothing held to compare yet */
+    size_t len = 0;
+    char* text = config_fetch(&len);        /* same per-device->default resolution */
+    if (!text) {
+        Serial.printf("[CXC-ACN] backstop(%s): re-fetch failed — keeping current\n",
+                      trigger);
+        return;
+    }
+    char h[ASSET_HASH_HEX_LEN + 1];
+    sha256_hex((const uint8_t*)text, len, h);
+    free(text);
+    if (asset_backstop_should_reload(h, asset_reload_held())) {
+        Serial.printf("[CXC-ACN] backstop(%s): asset advanced (%s -> %s) — reload\n",
+                      trigger, asset_reload_held(), h);
+        rebootNow();                        /* never returns on hardware */
+    } else {
+        Serial.printf("[CXC-ACN] backstop(%s): asset unchanged (%s) — no action\n",
+                      trigger, h);
+    }
+}
+
 /* --- Relay bank drive sink: a physical GPIO level (polarity pre-applied) -- */
 static void relaySink(void*, int pin, bool level) {
     digitalWrite(pin, level ? HIGH : LOW);
@@ -262,6 +353,17 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     }
 
     if (self) return;                    /* never our own echo (loop guard) */
+
+    /* [CXC-ACN] bus_storage asset-change-notify.  The `val` is the identity-
+     * free {old,new} content-hash dict; self-select by held hash and reload if
+     * our config changed.  Consumed here, never routed to an actuator. */
+    if (asset_reload_is_change_ns(ns)) {
+        JsonVariantConst v = doc["val"];
+        const char* oldh = v["old"] | "";   /* null (create) -> "" */
+        const char* newh = v["new"] | "";
+        handleAssetChange(oldh, newh);
+        return;
+    }
 
     /* CONTROL PLANE first ([CXC-ER-REMOTE-RESTART]): a truthy command to
      * `_device/<id>/restart` (or broadcast `_device/restart`) re-runs the
@@ -378,6 +480,22 @@ static void reconnectMQTT() {
             mqtt.subscribe(topic, 1);
             Serial.printf("Subscribed (confirm): %s\n", topic);
         }
+        /* [CXC-ACN] subscribe the retained bus_storage asset-change-notify
+         * (composeio/+/bus_storage/asset/changed).  On connect the broker
+         * re-delivers the last retained event; the held-hash self-select
+         * absorbs it (new==held) unless we are genuinely stale. */
+        snprintf(topic, sizeof(topic), "%s/+/%s", CIO_TOPIC_PREFIX,
+                 asset_reload_namespace());
+        mqtt.subscribe(topic, 1);
+        Serial.printf("Subscribed (asset-change): %s\n", topic);
+
+        /* [CXC-ACN] on a RE-connect (not the first connect after boot — the
+         * boot fetch is already fresh), run the backstop: a missed event while
+         * the broker was down at PUT time is otherwise invisible.  Placed after
+         * the subscribes so a rebootNow() here still leaves the device subscribed
+         * on the next boot. */
+        static uint32_t s_mqttConnects = 0;
+        if (++s_mqttConnects > 1) assetBackstopCheck("reconnect");
     } else {
         Serial.printf("MQTT failed (rc=%d)\n", mqtt.state());
     }
@@ -407,12 +525,20 @@ static bool fetchConfig() {
      * over HTTP, so the store plane is genuinely exercised and store_required
      * stays true — a trial confirms only with BOTH this and the broker echo. */
     bus_binding_note_store_ok();
+    /* [CXC-ACN] hash the EXACT fetched bytes (sha256 lowercase hex) BEFORE
+     * free — this is the version we now hold, the key the asset-change-notify
+     * consumer self-selects on.  Computed here so it matches change_notify.py's
+     * content_hash of the same asset bytes byte-for-byte. */
+    char cfgHash[ASSET_HASH_HEX_LEN + 1];
+    sha256_hex((const uint8_t*)text, len, cfgHash);
     g_cfg = controller_config_parse(text, len);
     free(text);
     if (!g_cfg.ok()) {
         Serial.printf("Config error: %s\n", g_cfg.error.c_str());
         return false;
     }
+    asset_reload_set_held(cfgHash);
+    Serial.printf("[CXC-ACN] holding config hash %s\n", cfgHash);
     return true;
 }
 
@@ -514,7 +640,7 @@ void setup() {
      * timer BEFORE the network comes up ([CXC-REPOINT-COMMIT-CONFIRMED]
      * ordering-is-load-bearing: a DHCP/TLS hang after this point still reverts)
      * and before config_fetch/mqtt read the active store/broker.  Also reads the
-     * two-stage escape-hatch GPIO.  120 s is [DEC-SKIPPER-COMMIT-CONFIRM-WINDOW-
+     * two-stage escape-hatch GPIO.  120 s is [DEC-BUILDHOST-COMMIT-CONFIRM-WINDOW-
      * 120S].  Installing the control plane here sets the publish seam + the
      * confirm-echo namespace so the broker round-trip plane can land. */
     bus_binding_boot_init(device_id(), 120);
@@ -529,6 +655,10 @@ void setup() {
         bus_binding_note_reason("no-wifi");
 
     Serial.printf("Device id: %s\n", device_id());
+    /* [CXC-ACN] arm the asset-change-notify consumer BEFORE the fetch loop —
+     * asset_reload_init clears the held hash, so it must precede the fetch that
+     * sets it (fetchConfig -> asset_reload_set_held). */
+    asset_reload_init(nullptr);
     /* config_fetch resolves bus://assets/displays/<device_id>.compose.yaml
      * -> {BUS_STORAGE_URL}/api/v1/assets/displays/<device_id>.compose.yaml */
     for (int attempt = 0; attempt < 5 && !configReady; attempt++) {
@@ -575,6 +705,23 @@ void loop() {
     bus_binding_tick(millis());
 
     if (!configReady || !mqtt.connected()) return;
+
+    /* [CXC-ACN] periodic backstop re-hash — catches a change we missed while
+     * staying connected (a dropped best-effort emit, or a multi-PUT that
+     * skipped our held version).  First fire is one interval AFTER boot so the
+     * fresh boot fetch is not redundantly re-GET. */
+    {
+        static uint32_t s_backstopNext = 0;
+        static bool s_backstopArmed = false;
+        const uint32_t nowb = millis();
+        if (!s_backstopArmed) {
+            s_backstopNext = nowb + kBackstopIntervalMs;
+            s_backstopArmed = true;
+        } else if (asset_backstop_due(nowb, s_backstopNext)) {
+            s_backstopNext = nowb + kBackstopIntervalMs;
+            assetBackstopCheck("timer");
+        }
+    }
 
     /* OUTPUT: complete any pending break-before-make (energize the target
      * relay once the dead-time has elapsed). */

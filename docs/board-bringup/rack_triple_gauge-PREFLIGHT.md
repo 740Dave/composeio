@@ -649,7 +649,7 @@ explicitly ring-fenced.
   A native-USB ESP32 publishes its **MAC as the USB serial number**.
 * ⛔ **`esptool chip-id` is NOT an identity check.** It resets the board to connect, and that
   reset is precisely the harm the identity check exists to prevent.
-* ⚠ **`AA:BB:CC:DD:EE:FF` is the LIVE dual-throttle controller. `AA:BB:CC:DD:EE:FF` is the
+* ⚠ **`00:00:5E:00:53:02` is the LIVE dual-throttle controller. `00:00:5E:00:53:03` is the
   c3lcd/c3can board. Never either.**
 
 ### F3 — seat the module, and re-measure
@@ -782,7 +782,7 @@ lit, and a swapped `J_MOT` harness homes perfectly and runs backwards forever.
 
 ## Appendix — the net table, for probing anything not listed above
 
-Read from `~/Dropbox/Maker/pcb/rack_triple_gauge/generate_pcb.py` and confirmed against the
+Read from `${MAKER_HOME}/pcb/rack_triple_gauge/generate_pcb.py` and confirmed against the
 pad→net assignments in the emitted `rack_triple_gauge.kicad_pcb`.
 
 | net | name | appears at |

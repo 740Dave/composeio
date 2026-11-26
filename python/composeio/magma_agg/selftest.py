@@ -21,7 +21,7 @@ import sys
 
 from .core import MagmaAggregator, canonical_token, date_bucket
 
-DEFAULT_ENGINE_ROOT = "/Users/davidleeburnett/factlattice"
+DEFAULT_ENGINE_ROOT = os.path.expanduser("~/factlattice")
 
 
 def _ensure_engine_on_path() -> None:

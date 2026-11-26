@@ -13,7 +13,7 @@ Dependency (report only — do NOT add here):
 
 Portability: PyAV ships manylinux + macOS wheels bundling FFmpeg, so the
 same code decodes H.264/MP4 on macOS (workhorse), Debian x86 (MinnowBoard
-'professor'), and RPi.  CYD/ESP32 is NOT a target here (cannot decode
+'benchnode'), and RPi.  CYD/ESP32 is NOT a target here (cannot decode
 H.264 — see MediaWidget docstring).
 
 v1 compositing path ([CXC-RM-MEDIA]): a decoded RGB frame is encoded to

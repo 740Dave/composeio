@@ -1,0 +1,247 @@
+---
+scope: "Spec vs implementation gap analysis for the Board Manager ComposeApp"
+audience: "David, builder agents"
+status: "Generated"
+created: 2026-03-29
+---
+
+# Board Manager — Spec vs Implementation Gap Analysis [ANALYSIS:CIO-BOARD-MANAGER-GAP]
+
+> Systematic comparison of `${COMPOSEIO_HOME}/spec/14-board-manager.smd`
+> against `~/board_manager/board_manager.py`
+
+---
+
+## Meta
+
+{"type":"meta","id":"gap-analysis-meta","version":"2.0","created":"2026-03-29T17:30:00","product":"board-manager","spec_source":"${COMPOSEIO_HOME}/spec/14-board-manager.smd","spec_files":["14-board-manager.smd"],"impl_source":"~/board_manager/board_manager.py","areas_analyzed":["compliance_items","new_board_creation","edit_task_popup","tab_switching_performance","mcp_parity","multi_tenancy","export_visibility","schema"],"prior_report":null,"reports_dir":"${COMPOSEIO_HOME}/spec-impl-gap-reports/"}
+
+---
+
+## Delta Since Last Analysis
+
+No prior Board Manager gap report found in the reports directory. This is the first run — delta analysis skipped.
+
+---
+
+## Spec Files Analyzed
+
+| File | Entities | Description |
+|------|----------|-------------|
+| 14-board-manager.smd | 42 | Full Board Manager spec: design principles, multi-tenancy model, architecture modules, schema, web UI, MCP interface, bus integration, deployment, 22 compliance items |
+
+---
+
+## Cross-Reference Map
+
+{"type":"cross_ref","spec_id":"BM-SCHEMA","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:163-258"],"impl_status":"full","notes":"All six tables implemented with matching columns and constraints. Performance indexes added (idx_activity_log_created_at, idx_activity_log_task_id, idx_tasks_board_id, idx_tasks_parent_id) — additive, not contradictory. Migration path for OPPM schema is correctly implemented."}
+
+{"type":"cross_ref","spec_id":"BM-ARCH-MODULES","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:504-950","board_manager.py:1993-2380","board_manager.py:2699-2827"],"impl_status":"partial","notes":"All four modules exist: StorageModule, BoardWebModule (extends WebBusModule), ExportModule, McpModule. McpModule is architectural placeholder — MCP is served directly by BoardWebModule on /sse. This is a deliberate single-port design decision, not a bug, but it diverges from the spec's description of McpModule as the SSE endpoint owner."}
+
+{"type":"cross_ref","spec_id":"BM-UI-LAYOUT","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:1374-1847"],"impl_status":"partial","notes":"Board switcher, major/minor accordion, add popups, document badges, reorder, edit icon all present. Edit task navigates to a dedicated page (/rename GET -> _page_edit_task), not an inline popup. Spec says 'popup', impl uses a full-page form. New Board creation is a popup overlay — matches spec. Board tab and Activity tab present."}
+
+{"type":"cross_ref","spec_id":"BM-UI-PERFORMANCE","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:250-257","board_manager.py:482-490","board_manager.py:439-466"],"impl_status":"partial","notes":"Four performance indexes created at init. fetch_activity_counts_for_tasks uses batched IN query. fetch_activity defaults to 24h with 500-row cap for 'all'. Gap: fetch_document_counts is not board-scoped (queries all task_documents cross-tenant on every board page load)."}
+
+{"type":"cross_ref","spec_id":"BM-MCP","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:2381-2463","board_manager.py:2494-2644"],"impl_status":"full","notes":"All 17 MCP tools defined in MCP_TOOLS and implemented in mcp_handle_tool_call. Tool names and purposes match spec table exactly. Ownership enforcement present on all mutating tools."}
+
+{"type":"cross_ref","spec_id":"BM-TENANT","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:2476-2491","board_manager.py:554-607"],"impl_status":"partial","notes":"Ownership enforced via _check_ownership() on MCP mutating operations. StorageModule methods accept owner_id and check against board.owner_id. Web UI hardcodes web_owner='david' (line 2086) — no session-based auth. This is an explicit TODO comment in code ('web auth is a future concern'). BM-C18/C19 are MCP-enforced; web UI does not enforce them."}
+
+{"type":"cross_ref","spec_id":"BM-VISIBILITY","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:358-364","board_manager.py:2633-2642"],"impl_status":"full","notes":"fetch_boards() with owner_id returns own boards plus haven/world boards from others. board_list_boards MCP tool uses this correctly. Visibility badges rendered in board switcher. set_visibility route present in both web UI and MCP."}
+
+{"type":"cross_ref","spec_id":"BM-ARCH-EXPORT","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:2699-2778"],"impl_status":"partial","notes":"ExportModule subscribes to boards with haven/world visibility on startup and on refresh_subscriptions(). refresh_subscriptions() is called when visibility changes from private to haven/world. Gap: no unsubscribe path when a board is changed from haven/world back to private — old subscriptions linger."}
+
+{"type":"cross_ref","spec_id":"BM-BUS-EVENTS","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:518-550","board_manager.py:2745-2778"],"impl_status":"partial","notes":"StorageModule._publish_change emits all 8 event types from spec. ExportModule._on_board_event routes to correct namespace. Gap: _publish_change event schema does not include 'parent', 'field', 'old_value', 'new_value' fields for all events — only task_updated/rename include these. The spec's example JSON event has all fields; the impl is selective."}
+
+{"type":"cross_ref","spec_id":"BM-DEPLOY-MIGRATE","spec_file":"14-board-manager.smd","impl_files":["board_manager.py:262-351"],"impl_status":"full","notes":"Three migration functions implemented: _migrate_add_owner_id, _migrate_tasks_add_board_id, _migrate_tasks_archived. OPPM data preserved with owner_id='david', visibility='private'. Migration is idempotent."}
+
+---
+
+## Findings by Area
+
+### Compliance Items — BM-C1 through BM-C22
+
+{"type":"gap","id":"gap-BM-C1","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C1","spec_file":"14-board-manager.smd","spec_says":"Board fits on one screen — active tasks render without scrolling at reasonable count","impl_has":"No hard enforcement. UI renders all non-archived, non-completed tasks. With a large board this will scroll. This is intentionally not enforced in code — it's a design guideline.","impl_file":"board_manager.py:377-396","recommendation":"Accepted design guideline, not a code bug. Document as enforced-by-convention in spec. No action required.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C2","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C2","spec_file":"14-board-manager.smd","spec_says":"Board switcher changes view, URL param persists selection","impl_has":"Board switcher renders as anchor links with /?board={id}. URL param board persists as GET param on navigation. Board tab switching uses GET /?board=N and /activity?board=N. Compliant.","impl_file":"board_manager.py:1470-1484","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C3","category":"SPEC_IMPL_MISMATCH","priority":"P1","area":"export_visibility","spec_ref":"BM-C3","spec_file":"14-board-manager.smd","spec_says":"Three-tier visibility: haven -> MQTT export. world -> MQTT export + world flag queryable. private -> no export.","impl_has":"Visibility tiers are enforced in storage and MCP. ExportModule forwards haven/world boards to external bus. However: world flag 'queryable by external scrapers' has no implementation — board_list_boards returns visibility field but there is no dedicated scraper endpoint or world-discovery API. The spec acknowledges the scraper is out-of-scope ('world publisher/scraper process is out of scope for this spec'), making this acceptable.","impl_file":"board_manager.py:2699-2778","recommendation":"MQTT export path is implemented. World scraper is explicitly out-of-scope per spec. Downgrade to P3 informational — no action needed on impl. Verify that ExportModule actually publishes over MQTT in integrated mode (standalone mode falls back to no-op at line 2774-2778).","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C4","category":"SPEC_NOT_IMPLEMENTED","priority":"P1","area":"export_visibility","spec_ref":"BM-C4","spec_file":"14-board-manager.smd","spec_says":"Board with visibility=private -> no MQTT messages, not visible to other participants","impl_has":"_on_board_event checks visibility field from event data (line 2749-2751) and skips export if private. board_status MCP gates private boards to owner only (line 2505-2507). Board page GET does NOT enforce visibility — any user with network access to port 8889 can query /?board=N for any board_id regardless of owner or visibility. This is a web UI gap, not MCP.","impl_file":"board_manager.py:2082-2133","recommendation":"Web UI has no visibility enforcement. The board page GET at line 2133 calls render_board_page(db, board_id) with no visibility check — a user can read any board by guessing its integer ID. Add a visibility/ownership check before rendering. Acceptable for single-user standalone mode but breaks multi-tenancy for web UI.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C5","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C5","spec_file":"14-board-manager.smd","spec_says":"Click expand icon -> minor items show/hide","impl_has":"toggleMajorAccordion JS function at line 1820 controls minor item visibility per major task. Compliant.","impl_file":"board_manager.py:1820-1835","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C6","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C6","spec_file":"14-board-manager.smd","spec_says":"Click expand icon -> activity entries show/hide","impl_has":"toggleMinorActivity JS function controls activity entry visibility per minor task. Minor items with activity get expand_circle_down icon. Compliant.","impl_file":"board_manager.py:1327-1330","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C7","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C7","spec_file":"14-board-manager.smd","spec_says":"Click add in header -> popup -> submit -> task created","impl_has":"Add major icon triggers toggleAddMajor() overlay popup. Form POSTs to /add-major. Compliant.","impl_file":"board_manager.py:1480-1762","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C8","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C8","spec_file":"14-board-manager.smd","spec_says":"Click add on major -> popup -> submit -> minor created","impl_has":"Add minor icon per major row opens inline popup with add-minor-form. Form POSTs to /add-minor. Compliant.","impl_file":"board_manager.py:1295-1310","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C9","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C9","spec_file":"14-board-manager.smd","spec_says":"Attach doc -> badge count increments, doc viewable","impl_has":"Document badge rendered on tasks with doc_count > 0. /documents page shows list and attach form. Compliant.","impl_file":"board_manager.py:1255-1259","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C10","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C10","spec_file":"14-board-manager.smd","spec_says":"Click low_priority -> reorder page -> reorder -> persisted","impl_has":"low_priority icon links to /reorder page for both major and minor tasks. /reorder-save POST updates sort_order. Compliant.","impl_file":"board_manager.py:1356-1359","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C11","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"mcp_parity","spec_ref":"BM-C11","spec_file":"14-board-manager.smd","spec_says":"Every UI action has a corresponding MCP tool","impl_has":"17 MCP tools cover all StorageModule operations. Gap 1: Web UI has a /set-visibility POST route and a visibility dropdown directly on the board page, which maps to board_set_visibility MCP tool — this is covered. Gap 2: Web UI 'edit task' action (name + notes) maps to board_rename_task + board_update MCP tools separately, not a single 'board_edit_task' tool. The edit operation is achievable via MCP but requires two calls. Gap 3: board_manage_board action enum is ['create','rename','delete'] but does not include a 'set_visibility' action — that is a separate board_set_visibility tool, which is correct per spec table.","impl_file":"board_manager.py:2381-2463","recommendation":"MCP parity is structurally complete. The two-call workaround for edit (rename + update) is acceptable — document that board_update accepts notes field for this use case. No new tool needed, but the spec could note this equivalence explicitly.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C12","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C12","spec_file":"14-board-manager.smd","spec_says":"All icons render from CDN, no emoji fallbacks","impl_has":"Material Symbols Outlined loaded from fonts.googleapis.com CDN (line 968). All icons use material-symbols-outlined class. No emoji fallbacks present. Compliant.","impl_file":"board_manager.py:968","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C13","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C13","spec_file":"14-board-manager.smd","spec_says":"POST /api/v1/apps/board-manager/deploy -> container running","impl_has":"Deployment via service hub is out of scope for the implementation file — this is a deployment concern. No Dockerfile or compose.yaml visible in this single-file analysis, but the spec references these as separate artifacts. Cannot verify from board_manager.py alone.","impl_file":"N/A","recommendation":"Needs manual review of deployment artifacts (Dockerfile, board-manager.compose.yaml). Out of scope for this analysis.","status":"needs_manual_review","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C14","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"bus_integration","spec_ref":"BM-C14","spec_file":"14-board-manager.smd","spec_says":"Exported board changes -> MQTT messages published","impl_has":"ExportModule._on_board_event calls self.publish_external() at line 2775. In standalone mode (no composeio framework), this is a no-op (AppModule stub at line 66). MQTT connectivity only activates when the real composeio framework is loaded via HAS_COMPOSEIO=True. The create_app() call at line 2834 invokes connect_transport() which is also a stub in standalone mode.","impl_file":"board_manager.py:2774-2778","recommendation":"MQTT export is framework-dependent. In standalone/dev mode, exports silently do nothing. This is by design but should be surfaced in logs. Add a warning log when publish_external is called but HAS_COMPOSEIO is False, so operators know the export layer is inactive.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C15","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C15","spec_file":"14-board-manager.smd","spec_says":"Container restart -> all data intact","impl_has":"DB_PATH defaults to /app/data/board_manager.db. Docker volume mount at /app/data ensures persistence. SQLite WAL mode enabled. Compliant.","impl_file":"board_manager.py:143-147","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C16","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C16","spec_file":"14-board-manager.smd","spec_says":"Log entry via MCP -> entry appears in Activity tab","impl_has":"board_log_activity MCP tool calls storage.log_activity which INSERTs to activity_log. Activity tab at /activity reads from activity_log. Compliant.","impl_file":"board_manager.py:858-874","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C17","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C17","spec_file":"14-board-manager.smd","spec_says":"Visual inspection: charcoal bg, teal/red/amber status","impl_has":"CSS vars: --md-bg:#2b2b2b (charcoal), --md-primary:#4051b5 (indigo), --md-green:#00c853, --md-red:#ff5252, --md-amber:#ffc107. Dark theme is slate/indigo consistent with Material for MkDocs palette. Compliant.","impl_file":"board_manager.py:979-987","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C18","category":"SPEC_IMPL_MISMATCH","priority":"P1","area":"multi_tenancy","spec_ref":"BM-C18","spec_file":"14-board-manager.smd","spec_says":"Intelligence A cannot modify Intelligence B's board via MCP","impl_has":"_check_ownership() enforces board ownership for all MCP mutating tools (board_add_task, board_update, board_rename_task, board_delete_task, board_archive_task, board_set_target_date, board_attach_document, board_detach_document, board_manage_objective, board_log_activity, board_reorder_tasks, board_set_visibility, board_manage_board rename/delete). Gap: _get_caller_identity() defaults to 'david' (line 2478) when no _caller_identity or owner_id is in arguments. This means a caller that omits identity silently succeeds as 'david', not fails. BM-C18 is met only when callers pass identity explicitly.","impl_file":"board_manager.py:2476-2478","recommendation":"The default fallback to 'david' undermines multi-tenancy enforcement. Change the default to None and return a 401-equivalent error if identity is missing and the operation is mutating. Accept the 'david' default only for board_status and board_list_boards (read operations). This is a behavioral gap for BM-C18.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C19","category":"SPEC_IMPL_MISMATCH","priority":"P1","area":"multi_tenancy","spec_ref":"BM-C19","spec_file":"14-board-manager.smd","spec_says":"MCP board_manage_board(create) without Haven identity -> rejected","impl_has":"board_manage_board action=create checks `if not caller:` at line 2604. But _get_caller_identity() never returns None or empty — it defaults to 'david'. So the check `if not caller` will never trigger. A caller that passes no identity at all will create a board under 'david', not be rejected. The rejection only fires if _caller_identity is explicitly set to an empty string.","impl_file":"board_manager.py:2598-2608","recommendation":"Same root cause as gap-BM-C18. Fix _get_caller_identity() to return None when identity is absent, not 'david'. Then the `if not caller` check at line 2604 will work as intended. This is a P1 correctness gap for the stated compliance criterion.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C20","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"export_visibility","spec_ref":"BM-C20","spec_file":"14-board-manager.smd","spec_says":"Board set to haven -> appears on MQTT. Set to private -> disappears from MQTT.","impl_has":"set_visibility calls refresh_subscriptions() when changing from private to haven/world (line 604-606). This adds new subscriptions. Gap: when changing from haven/world BACK to private, no unsubscribe occurs. The ExportModule's _on_board_event does check visibility from event data and skips private boards (line 2749-2751), so events won't be forwarded even if subscription exists. This makes the 'disappears from MQTT' behavior functionally correct but the subscription bookkeeping is leaky.","impl_file":"board_manager.py:596-607","recommendation":"The functional behavior is correct (event data check prevents forwarding). The leaky subscription is cosmetic. Add an unsubscribe path in refresh_subscriptions() to be explicit. Low urgency.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C21","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"compliance","spec_ref":"BM-C21","spec_file":"14-board-manager.smd","spec_says":"board_list_boards returns own boards + haven/world boards from others","impl_has":"fetch_boards(db, owner_id=caller) returns WHERE owner_id=? OR visibility IN ('haven','world'). This is exactly the spec requirement. Compliant.","impl_file":"board_manager.py:358-364","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-C22","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"export_visibility","spec_ref":"BM-C22","spec_file":"14-board-manager.smd","spec_says":"Two owners with 'backlog' board -> separate namespace subtrees on MQTT","impl_has":"ExportModule._on_board_event constructs export_ns = f'board/{owner}/{safe_name}/{category}' using board.owner as namespace prefix. Two owners with same board name produce different namespaces. Compliant.","impl_file":"board_manager.py:2772","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-compliance","area":"compliance_items","total_gaps":10,"by_category":{"SPEC_IMPL_MISMATCH":5,"SPEC_NOT_IMPLEMENTED":5},"by_priority":{"P1":3,"P2":2,"P3":5},"notes":"10 of 22 compliance items have gaps. 12 are compliant and closed. Three P1 issues: web UI visibility not enforced (BM-C4), MCP identity default undermines ownership (BM-C18/C19). Two P2 issues: MCP parity gap on edit-task (BM-C11), MQTT export is no-op in standalone (BM-C14)."}
+
+---
+
+### New Board Creation from Web UI
+
+{"type":"gap","id":"gap-BM-UI-NEW-BOARD","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"new_board_creation","spec_ref":"BM-UI-LAYOUT","spec_file":"14-board-manager.smd","spec_says":"Board creation must be available from the web UI, not only via MCP. Includes a popup to create a board (name, visibility).","impl_has":"Fully implemented. The board switcher has a '+' icon (add, 20px, accent color) that triggers toggleNewBoard(). A full-screen overlay popup (id='new-board-popup') contains a form with name input and visibility select (private/haven/world). Form POSTs to /create-board. On success, board_id is set to the new board's ID and redirects to /?board={new_id}.","impl_file":"board_manager.py:1480-1484, 1762-1819","recommendation":"Fully compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-new-board","area":"new_board_creation","total_gaps":0,"by_category":{},"by_priority":{},"notes":"New board creation from web UI is completely implemented and matches spec intent."}
+
+---
+
+### Edit Task Popup (Name + Notes, Save Button)
+
+{"type":"gap","id":"gap-BM-UI-EDIT-TASK-POPUP","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"edit_task_popup","spec_ref":"BM-UI-LAYOUT","spec_file":"14-board-manager.smd","spec_says":"edit icon opens an 'Edit Task' popup with fields for task name and notes (textarea). Submit button labeled 'Save'. Used for both major and minor tasks.","impl_has":"The edit icon on both major and minor rows links to /rename?id={task_id} (GET). The /rename route calls render_rename_form() which renders _page_edit_task(). This function produces a full page (not an inline popup) with title 'Edit Task', name input, notes textarea, Cancel link, and a 'Save' button (btn-primary). The page navigates away from the board and back. The Save button label is correct. The two fields (name, notes) are correct. The distinction is: spec says 'popup', implementation uses a dedicated page (full navigation).","impl_file":"board_manager.py:1258-1259, 1603-1611, 1907-1923","recommendation":"The edit task form is functionally correct — name, notes, Save button are all present and work. The spec explicitly says 'popup' but the implementation uses a full-page navigation pattern consistent with the rename/delete/reorder pages. This is a presentation gap, not a functional one. Options: (1) Accept the full-page pattern and update spec to say 'dedicated page or popup', or (2) Refactor edit-task to an inline overlay popup like the New Board popup. Given that the spec was written as a target, either is valid. Recommend updating spec to 'dedicated page' for consistency with the rest of the edit flows.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-edit-task","area":"edit_task_popup","total_gaps":1,"by_category":{"SPEC_IMPL_MISMATCH":1},"by_priority":{"P2":1},"notes":"Edit task page is functionally correct (name, notes, Save). Gap is popup-vs-page presentation only. No data correctness issues."}
+
+---
+
+### Tab Switching Performance (BM-UI-PERFORMANCE)
+
+{"type":"gap","id":"gap-BM-UI-PERF-INDEXES","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"tab_switching_performance","spec_ref":"BM-UI-PERFORMANCE","spec_file":"14-board-manager.smd","spec_says":"Optimize by: (1) pre-computing activity counts, (2) limiting default activity query to 24h, (3) using lightweight queries for tab content not immediately visible.","impl_has":"(1) Activity counts are pre-computed with a batched IN query via fetch_activity_counts_for_tasks(db, task_ids) at line 482-490 — not a per-task query, one batch query. (2) render_activity_page defaults to interval='24h' at line 2095 and fetch_activity defaults to 24h. (3) Four performance indexes created at init_db(): idx_activity_log_created_at, idx_activity_log_task_id, idx_tasks_board_id, idx_tasks_parent_id. All three spec recommendations are implemented. Compliant.","impl_file":"board_manager.py:250-257, 482-490, 439-446","recommendation":"Performance optimization points from spec are addressed. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-UI-PERF-DOC-COUNTS","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"tab_switching_performance","spec_ref":"BM-UI-PERFORMANCE","spec_file":"14-board-manager.smd","spec_says":"Tab switching MUST complete in under 500ms — optimize queries.","impl_has":"fetch_document_counts(db) at line 469-473 executes SELECT task_id, COUNT(*) FROM task_documents GROUP BY task_id with NO board_id filter. This scans all task_documents across all tenants on every board page load. In a multi-tenant deployment with many boards and attachments, this becomes a full table scan. The result is returned as a dict keyed by task_id, so only the current board's task IDs will be used — but the query pulls everything.","impl_file":"board_manager.py:469-473","recommendation":"Scope fetch_document_counts to the current board: pass board_id and add JOIN tasks t ON task_documents.task_id=t.id WHERE t.board_id=? This keeps the board page query set fully scoped. Low urgency in single-user mode but becomes meaningful with many tenants.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-performance","area":"tab_switching_performance","total_gaps":1,"by_category":{"SPEC_IMPL_MISMATCH":1},"by_priority":{"P2":1},"notes":"Three of four spec-recommended optimizations are implemented. One residual gap: fetch_document_counts is cross-tenant. Indexes are in place. The 500ms target should be achievable in single-tenant mode; multi-tenant mode may require the scoping fix."}
+
+---
+
+### MCP Parity (BM-C11)
+
+{"type":"gap","id":"gap-BM-MCP-PARITY-FULL","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"mcp_parity","spec_ref":"BM-MCP","spec_file":"14-board-manager.smd","spec_says":"Full MCP parity with all web UI capabilities. 17 tools listed in spec table.","impl_has":"MCP_TOOLS list contains exactly 17 tools matching all names in the spec table. Each tool is implemented in mcp_handle_tool_call. Compliant on tool count and names.","impl_file":"board_manager.py:2381-2463","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-MCP-BOARD-NAME-RESOLVE","category":"UNDERSPECIFIED_NOW_IMPLEMENTED","priority":"P3","area":"mcp_parity","spec_ref":"BM-MCP","spec_file":"14-board-manager.smd","spec_says":"All tools accept board_id or board (name) to target a specific board.","impl_has":"_resolve_board_id() at line 2466-2473 handles both board_id and board (name). If board name not found, defaults to board_id=1 (Maker board). This silent default-to-1 fallback could cause confusing behavior if a tool is called with a board name that doesn't exist — it silently operates on board 1 instead of returning an error.","impl_file":"board_manager.py:2466-2473","recommendation":"The silent fallback to board_id=1 when board name is not found is a latent bug. Return an error if board name is provided but not found, rather than defaulting to board 1. This is especially important in multi-tenant mode where a wrong board name should not silently operate on another owner's board.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-mcp","area":"mcp_parity","total_gaps":1,"by_category":{"UNDERSPECIFIED_NOW_IMPLEMENTED":1},"by_priority":{"P3":1},"notes":"All 17 MCP tools are implemented. One latent issue: board name resolution silently defaults to board 1 on lookup failure."}
+
+---
+
+### Multi-Tenancy Enforcement (BM-C18, BM-C19)
+
+{"type":"gap","id":"gap-BM-TENANT-IDENTITY-DEFAULT","category":"SPEC_IMPL_MISMATCH","priority":"P1","area":"multi_tenancy","spec_ref":"BM-TENANT","spec_file":"14-board-manager.smd","spec_says":"MCP tools enforce ownership: mutating tools check that caller's Haven identity matches board owner.","impl_has":"_get_caller_identity() at line 2476-2478: returns arguments.get('_caller_identity', arguments.get('owner_id', 'david')). The triple-level fallback means an MCP caller that passes no identity fields at all is treated as 'david'. For BM-C18: Intelligence B calling board_add_task on Intelligence A's board will be rejected only if B passes its own identity. If B passes no identity, it silently acts as 'david'. For BM-C19: board_manage_board create checks `if not caller:` but caller is never falsy due to the 'david' default.","impl_file":"board_manager.py:2476-2478, 2598-2608","recommendation":"This is the same root cause as gap-BM-C18 and gap-BM-C19 above. Single fix: remove the 'david' default from _get_caller_identity(). Return arguments.get('_caller_identity') or arguments.get('owner_id') — no fallback. Mutating operations with no identity should return {ok: False, error: 'Haven identity required'}. Read operations (board_status, board_list_boards, board_get_activity, board_get_documents) can continue to accept anonymous callers.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-TENANT-WEB-HARDCODED","category":"UNDERSPECIFIED_NOW_IMPLEMENTED","priority":"P2","area":"multi_tenancy","spec_ref":"BM-TENANT","spec_file":"14-board-manager.smd","spec_says":"Board ownership maps to Haven identity. Access control follows Haven governance.","impl_has":"Web UI hardcodes web_owner='david' at line 2086 with comment 'web auth is a future concern'. This means the web UI is single-tenant by design for now — any web UI user operates as 'david'. The spec states multi-tenant support but the web auth layer is not implemented. This is explicitly acknowledged in the code as technical debt.","impl_file":"board_manager.py:2085-2086","recommendation":"The hardcoded identity is a known gap, acknowledged in code comments. This is acceptable for Phase 1 (single-user deployment). Track as a spec-acknowledged limitation. Document in spec under BM-TENANT that 'web UI identity is fixed in Phase 1; Phase 2 requires session-based Haven authentication'.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-multi-tenancy","area":"multi_tenancy","total_gaps":2,"by_category":{"SPEC_IMPL_MISMATCH":1,"UNDERSPECIFIED_NOW_IMPLEMENTED":1},"by_priority":{"P1":1,"P2":1},"notes":"Multi-tenancy enforcement is structurally in place but has a critical bypass: the identity default to 'david' makes BM-C18 and BM-C19 non-enforceable without explicit caller identity. Web UI hardcoding is acknowledged tech debt."}
+
+---
+
+### Export and Visibility Model (BM-C3, BM-C4, BM-C20)
+
+{"type":"gap","id":"gap-BM-VIS-WEB-UNPROTECTED","category":"SPEC_IMPL_MISMATCH","priority":"P1","area":"export_visibility","spec_ref":"BM-C4","spec_file":"14-board-manager.smd","spec_says":"Private board -> not visible to other participants","impl_has":"Web UI GET / renders any board by integer ID with no visibility or ownership check. A network-accessible user (or Intelligence with HTTP access) can call /?board=2 to read a private board owned by a different user. The MCP board_status correctly gates private boards. The web UI does not.","impl_file":"board_manager.py:2132-2133","recommendation":"Add visibility enforcement in the GET / and GET /activity routes: if board.visibility == 'private' and board.owner_id != web_owner: return 403 page. This is the same fix needed for BM-C4 and BM-C18 web enforcement.","status":"open","delta":"NEW"}
+
+{"type":"gap","id":"gap-BM-EXPORT-BUS-EVENT-SCHEMA","category":"SPEC_IMPL_MISMATCH","priority":"P2","area":"export_visibility","spec_ref":"BM-BUS-EVENTS","spec_file":"14-board-manager.smd","spec_says":"Event schema includes: event, board, owner, task_id, task_name, parent, field, old_value, new_value, timestamp","impl_has":"StorageModule._publish_change produces events with: event_type, board, board_id, owner, visibility, timestamp, plus operation-specific fields. The 'parent' field (parent task name) is not included in any event. 'field', 'old_value', 'new_value' are only included in rename_task and set_target_date events, not in update_task (which logs `fields: list(fields.keys())` instead of per-field old/new values). The spec example JSON shows a single field change with old/new — impl logs a list of changed field names without values.","impl_file":"board_manager.py:518-550","recommendation":"For full spec compliance, update_task should emit per-field old/new events (one event per changed field, or an array of {field, old_value, new_value} objects). The 'parent' field should be populated by joining to the parent task name. This is a data richness gap affecting subscribers that depend on diff-style events. Medium priority — affects external bus consumers, not internal functionality.","status":"open","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-export-visibility","area":"export_visibility","total_gaps":2,"by_category":{"SPEC_IMPL_MISMATCH":2},"by_priority":{"P1":1,"P2":1},"notes":"Export namespace and visibility tiers are correctly implemented. Two gaps: web UI does not enforce visibility for reads (P1), and bus event schema is incomplete (parent field missing, update_task doesn't emit per-field diff)."}
+
+---
+
+### Schema Validation
+
+{"type":"gap","id":"gap-BM-SCHEMA-MATCH","category":"SPEC_NOT_IMPLEMENTED","priority":"P3","area":"schema","spec_ref":"BM-SCHEMA","spec_file":"14-board-manager.smd","spec_says":"boards: UNIQUE(owner_id, name). tasks: no UNIQUE constraint. objectives: UNIQUE(board_id, code).","impl_has":"boards table has UNIQUE(owner_id, name). objectives has UNIQUE(board_id, code). tasks has no UNIQUE constraint. All constraints match spec exactly. CHECK constraints on status and priority fields match spec values exactly. Default values match (visibility='private', status='not_started', priority='medium', notes=''). Compliant.","impl_file":"board_manager.py:163-244","recommendation":"Compliant. Close.","status":"closed","delta":"NEW"}
+
+{"type":"area_summary","id":"summary-schema","area":"schema","total_gaps":0,"by_category":{},"by_priority":{},"notes":"Schema matches spec exactly. All tables, columns, constraints, defaults, and CHECK values are correct."}
+
+---
+
+## Summary
+
+### By Category
+
+| Category | Count | P0 | P1 | P2 | P3 |
+|----------|-------|----|----|----|----|
+| SPEC_IMPL_MISMATCH | 9 | 0 | 4 | 4 | 1 |
+| UNDERSPECIFIED_NOW_IMPLEMENTED | 3 | 0 | 0 | 1 | 2 |
+| SPEC_NOT_IMPLEMENTED | 1 | 0 | 0 | 0 | 1 |
+| **Total open gaps** | **13** | **0** | **4** | **5** | **4** |
+
+**Closed (compliant):** 12 items
+
+### Compliance Item Status
+
+| ID | Status | Priority | Summary |
+|----|--------|----------|---------|
+| BM-C1 | Closed | P3 | Design guideline, no enforcement needed |
+| BM-C2 | Closed | P3 | URL param persistence compliant |
+| BM-C3 | Open | P1 | MQTT export path present; world scraper out-of-scope |
+| BM-C4 | Open | P1 | Web UI does not enforce visibility on board GET |
+| BM-C5 | Closed | P3 | Accordion compliant |
+| BM-C6 | Closed | P3 | Minor activity accordion compliant |
+| BM-C7 | Closed | P3 | Add major popup compliant |
+| BM-C8 | Closed | P3 | Add minor popup compliant |
+| BM-C9 | Closed | P3 | Document badge compliant |
+| BM-C10 | Closed | P3 | Reorder page compliant |
+| BM-C11 | Open | P2 | Edit task requires two MCP calls; board name resolve silently defaults |
+| BM-C12 | Closed | P3 | Material Symbols CDN compliant |
+| BM-C13 | Needs review | P3 | Deployment artifacts not in scope |
+| BM-C14 | Open | P2 | MQTT export is no-op without composeio framework |
+| BM-C15 | Closed | P3 | SQLite persistence compliant |
+| BM-C16 | Closed | P3 | Activity log append-only compliant |
+| BM-C17 | Closed | P3 | Dark theme compliant |
+| BM-C18 | Open | P1 | Identity default to 'david' bypasses ownership enforcement |
+| BM-C19 | Open | P1 | `if not caller` check never fires due to 'david' default |
+| BM-C20 | Open | P3 | Leaky unsubscribe on visibility downgrade (functionally correct) |
+| BM-C21 | Closed | P3 | board_list_boards compliant |
+| BM-C22 | Closed | P3 | Owner-scoped namespaces compliant |
+
+### Gate Assessment
+
+- **P0 issues: 0** — no blocking issues
+- **P1 issues: 4** — recommend fixing before multi-tenant production deployment
+  - gap-BM-C4 / gap-BM-VIS-WEB-UNPROTECTED: web UI reads private boards without auth check
+  - gap-BM-C18 / gap-BM-C19 / gap-BM-TENANT-IDENTITY-DEFAULT: identity default 'david' makes BM-C18/C19 unenforceable
+- **P2 issues: 5** — should address before claiming full spec compliance
+- **P3 issues: 4** — informational, no action required
+
+### Top Recommendations
+
+1. **Fix _get_caller_identity() default** (P1, fixes BM-C18 and BM-C19): Remove the `'david'` fallback. Mutating MCP tools without an explicit identity should return `{ok: False, error: 'Haven identity required'}`. This is a one-line fix with significant compliance implications.
+
+2. **Add visibility enforcement to web UI GET routes** (P1, fixes BM-C4): In `handle_request` GET branch for `/` and `/activity`, check `board.visibility == 'private' and board.owner_id != web_owner` and return a 403 response. This closes the most direct multi-tenancy breach in the web layer.
+
+3. **Scope fetch_document_counts to board** (P2, performance): Add `JOIN tasks t ON task_documents.task_id=t.id WHERE t.board_id=?` to `fetch_document_counts`. This prevents a cross-tenant full-table scan on every board page load.
+
+4. **Fix _resolve_board_id silent fallback** (P3, correctness): Return an error when a board name is provided but not found, rather than silently defaulting to board 1. Prevents confusing cross-board behavior in multi-tenant mode.
+
+5. **Enrich bus event schema** (P2, spec parity): Add `parent` field (parent task name) to all task events in `_publish_change`. For `update_task`, emit per-field `{field, old_value, new_value}` rather than just the list of field names. This makes the external bus events match the spec's example schema.
+
+---
+
+## Decision Log
+
+{Empty section — decisions to be added during human review}
+
+---
+
+**Generated**: 2026-03-29T17:30:00Z
+**Report File**: ${COMPOSEIO_HOME}/spec-impl-gap-reports/gap-analysis-board-manager-2026-03-29T17-30-00.smd
+**Prior Report**: None (first run for Board Manager)
+**Analysis Duration**: Single session

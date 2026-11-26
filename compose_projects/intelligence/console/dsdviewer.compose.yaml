@@ -1,0 +1,89 @@
+# DSD Viewer — a STANDALONE interactive Decision-Support-Doc form window
+# ([SPEC:CXC-DSDV] [DEC-DSD-VIEWER-WIDGET], David).  A SIBLING of the read-only
+# doc-viewer (docviewer.compose.yaml): where that renders a doc as a wall of
+# text, THIS renders a DSD as an INTERACTIVE FORM — one control-group per
+# `### D<n>` decision, the architect's recommendation PRE-SELECTED as a radio,
+# a per-decision comment field, and (on save-close) a write-back of each chosen
+# option + comment into that decision's `Your call:` slot.
+#
+# PER-WINDOW CONTENT: compose_projects/intelligence/tools/dsd_viewer_launcher.py bakes the
+# specific DSD into the `variables:` block below (dsd_path + dsd_name) when it
+# writes the per-open scene, so every spawned window renders ITS DSD
+# independently ([CXC-BIND-VARS]).  This file is BOTH the canonical layout AND a
+# self-contained standalone scene: run it directly (cwd = repo root) and it
+# renders the default DSD, which the headless render test exercises.
+#
+# TRANSPORTS: unlike the pure-read doc-viewer, the DSD form PUBLISHES the
+# `_app/dsd/answered` completion event on save-close ([CXC-DSDV-NOTIFY]), so the
+# launcher spawns this with --transports (and COMPOSEIO_INPROCESS_SOURCES=0, so a
+# spawned viewer never drags up the console data layer).
+app:
+  id: dsd-viewer
+  transports:
+    - type: mqtt
+      broker: 192.0.2.75
+      port: 1883
+
+# RESIZABLE + reflow + persisted geometry ([SPEC:CXC-DSDV] [CXC-DSDV-WINDOW],
+# [SPEC:CXC-RENDER] [CXC-R-WINDOW-RESIZE]): a DSD is often a long multi-decision
+# form, so a maker resizes it exactly like the console.  Same scene-level opt-in
+# the console + Decisions viewer use — NO runtime / binding / notify-path change.
+# min 640×520 keeps one decision group legible; geometry persists under
+# `dsd-viewer` (its own key, distinct from the console's).
+design:
+  title: "DSD · $dsd_name"
+  target: desktop
+  width: 780
+  height: 940
+  resizable: true
+  min_width: 640
+  min_height: 520
+  persist_geometry: true
+  window_key: dsd-viewer
+  theme: dark
+  padding: 0
+  gap: 0
+
+# The completion-event namespace ([CXC-DSDV-NOTIFY], working default); scope
+# global pins it to the MQTT leg so the launcher's notify path receives it.
+namespaces:
+  - {name: _app/dsd/answered, state_engine: json, export: true, scope: global,
+     label: "DSD answered (completion event)"}
+
+# The launcher overrides these two per open; the defaults make the scene render
+# standalone (and drive the headless proof).
+variables:
+  dsd_path: docs/intelligence-console/DECISIONS-2026-07-23-morning-batch.md
+  dsd_name: DECISIONS-2026-07-23-morning-batch.md
+  dsd_correlation: ""
+
+# A flex COLUMN that fills the window ([CXC-DSDV-WINDOW]): header + badge
+# measure to their text; the interactive form grows to consume the rest, so a
+# resize re-lays-out with no clip, overlap, or dead gutter (the fixed x/y/w/h
+# regions migrated to a relative container — layout containers only, the
+# frozen-seam discipline: no widget-binding / notify-path change).
+widgets:
+- type: stack
+  id: frame
+  direction: column
+  align: stretch
+  grow: 1
+  background: '#0A0E17'
+  border: '#1E2B3C'
+  corner_radius: 0
+  clip: true
+  padding: [15, 8, 8, 20]
+  gap: 4
+  children:
+  # ── header: the DSD's filename + an INTERACTIVE-FORM badge ──
+  - {type: label, id: header, text: "$dsd_name",
+     font_size: 14, font_weight: bold, color: '#EAF0F7', font_family: monospace}
+  - {type: label, id: badge,
+     text: "DSD VIEWER · pick · comment · Save Answers",
+     font_size: 9, color: '#5C6E82', font_family: monospace}
+  # ── the interactive DSD form, filling the rest of the window ──
+  - type: dsd_form
+    id: form
+    grow: 1
+    path: "$dsd_path"
+    correlation_id: "$dsd_correlation"

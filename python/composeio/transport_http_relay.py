@@ -2,7 +2,7 @@
 
 Forwards bus messages as HTTP POST to a configurable endpoint.
 Fire-and-forget with optional namespace filtering and batching.
-Used for telemetry, monitoring, and Nexus coordination relay integration.
+Used for telemetry, monitoring, and Haven coordination relay integration.
 
 DP-CIO-6: Transport is an implementation detail, not an architectural decision.
 """

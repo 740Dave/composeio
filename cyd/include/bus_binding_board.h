@@ -1,7 +1,7 @@
 /*
  * bus_binding_board.h — per-board constants for the repoint escape hatch and
  * the captive-portal rescue capability.  [SPEC:CXC-REPOINT]
- * [DEC-SKIPPER-ESCAPE-HATCH-WHERE-GPIO-DECLARED] [DEC-REPOINT-ESCAPE-HATCH-IS-TWO-STAGE]
+ * [DEC-BUILDHOST-ESCAPE-HATCH-WHERE-GPIO-DECLARED] [DEC-REPOINT-ESCAPE-HATCH-IS-TWO-STAGE]
  *
  * These are COMPILE-TIME per-board facts, in the ESPHome mould: exactly one
  * board is linked into a firmware and it declares whether it has a reachable

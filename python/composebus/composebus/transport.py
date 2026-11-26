@@ -192,8 +192,8 @@ def message_type_for_wire_code(code: int) -> MessageType | None:
 #
 # WHY IT EXISTS. Until this table, `ns_hash` occupied the top 16 bits of the id,
 # so arbitration priority was a pseudo-random function of the namespace NAME.
-# `throttle/left` (0x03F6) won everything by luck; `_device/wsc6-6f4ce4/config`
-# (0x8921) outranked `_device/hosyond-d1afe8/config` (0xC6B6) — two transfers of
+# `throttle/left` (0x03F6) won everything by luck; `_device/wsc6-07f199/config`
+# (0x8921) outranked `_device/hosyond-080739/config` (0xC6B6) — two transfers of
 # identical role and urgency, ranked by a MAC suffix; `shields` (0xCC50) was the
 # lowest-priority thing on the bus. Renaming a signal silently re-ranked it.
 #

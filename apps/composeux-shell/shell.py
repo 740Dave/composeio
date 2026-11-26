@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """ComposeUX Shell — a bus-native app launcher / home screen.
 
-Boots a launcher surface (doc://surfaces/launcher) whose DocPicker (launch mode) lists the
-apps registry (doc://apps/*). Selecting an app:
-  - resolves the app's surface (doc://surfaces/<id>) fresh from the bus,
+Boots a launcher surface (bus://surfaces/launcher.json) whose DocPicker (launch mode) lists the
+apps registry (bus://apps/*.json). Selecting an app:
+  - resolves the app's surface (bus://surfaces/<id>.json) fresh from the bus,
   - RESIZES the window to the app's declared size (surface.design.width/height) — different
     apps have different window needs, so size travels with the surface,
   - wires the app's driver (invoke_action + optional feed) imported from the app doc,
@@ -34,7 +34,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]  # .../composeio
 sys.path.insert(0, str(REPO / "python"))
 
-LAUNCHER_SURFACE = "doc://surfaces/launcher"
+LAUNCHER_SURFACE = "bus://surfaces/launcher.json"
 _APP_DEFAULT = (820, 640)
 _LAUNCHER_DEFAULT = (460, 560)
 BACK_NS = "composeux/shell/back"     # a back-button tap lands here; the shell listens
@@ -51,7 +51,7 @@ class ShellLogic:
 
     def resolve_app(self, app_id: str):
         from composeio.resolve import resolve_doc
-        app = _strip(resolve_doc(f"doc://apps/{app_id}"))
+        app = _strip(resolve_doc(f"bus://apps/{app_id}.json"))
         surface = _strip(resolve_doc(app["surface"]))
         d = surface.get("design", {})
         size = (int(d.get("width", _APP_DEFAULT[0])), int(d.get("height", _APP_DEFAULT[1])))

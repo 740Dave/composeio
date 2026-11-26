@@ -1,7 +1,7 @@
 # Carousel Launcher — ComposePlatform Maker launcher
 
 The bus-native replacement for the CTk Maker launcher
-(`~/Dropbox/Maker/launcher`) that runs **fullscreen on pi.example.local**. A
+(`${MAKER_HOME}/launcher`) that runs **fullscreen on display-node.local**. A
 touch-driven cover-flow carousel of app tiles built on the LANDED carousel
 widget (`python/composeio/render/widgets/carousel.py`,
 `engine/swipe_carousel.py`) — no new widget code; every tile composes shipped
@@ -51,7 +51,7 @@ it never spawns — widget-owns-intent / launcher-owns-runtime):
 
 ## Fiat data namespaces — what was found
 
-Investigated `~/Dropbox/Maker/fiat`. **There are no existing ComposeBus
+Investigated `${MAKER_HOME}/fiat`. **There are no existing ComposeBus
 namespaces to reuse.** The CTk `FiatApp` (`fiat/app.py`) is a splash-screen
 stub; the hardware layer (`fiat/hardware/rpi.py`) reads raw CAN frames via
 `python-can` / SocketCAN `can0` and dispatches them to callbacks **by
@@ -75,7 +75,7 @@ absent the backend logs a warning and continues.
 
 ## rpi5 deploy mechanism — BUILT ([`deploy_rpi5.sh`](deploy_rpi5.sh))
 
-pi.example.local runs the carousel from a **file-copy** deploy at `~/maker/composeio`
+display-node.local runs the carousel from a **file-copy** deploy at `~/maker/composeio`
 (NOT a git checkout). The deploy is now a committed, auditable script driven by
 a **manifest** — closing the class of bug where a package-only copy shipped the
 python code but not the `compose_projects/` authoring tree, blanking the CIC nav
@@ -106,7 +106,7 @@ compose_projects/carousel/deploy_rpi5.sh --restart-only   # safe scene-swap only
   is the source of truth; the package's bundled copies cover a store-unreachable
   kiosk (the rows are never blank).
 - **Transport:** per-entry `rsync -aR` (path structure preserved) to
-  `davidleeburnett@pi.example.local:~/maker/composeio/`. **Add/update by default** — no
+  `davidleeburnett@display-node.local:~/maker/composeio/`. **Add/update by default** — no
   `--delete`, because rpi5's `python/` has legitimately diverged (pip
   editable-install `composeio.egg-info/`, a `python/services` dir). `--mirror`
   opts into `--delete` after a `--dry-run` review.
@@ -130,14 +130,14 @@ compose_projects/carousel/deploy_rpi5.sh --restart-only   # safe scene-swap only
 **Deps on the Pi** (provisioned separately, not by this script): the render
 engine's Skia stack + the `.venv` at `~/maker/composeio/.venv`.
 
-**Kiosk facts** (memory): pi.example.local boots NVMe, wayfire `[autostart]` launches
+**Kiosk facts** (memory): display-node.local boots NVMe, wayfire `[autostart]` launches
 `kiosk.py --broker mqtt-broker.local`, HDMI-A-1 rotated 270 — hence the
 portrait **1080×1920** design here. `grim` needs `XDG_RUNTIME_DIR=/run/user/1000
 WAYLAND_DISPLAY=wayland-1` from an ssh session (the script supplies this).
 
 ### History: the CTk launcher deploy (superseded)
 
-The prior CTk launcher deployed via `~/Dropbox/Maker/launcher/deploy.sh`:
+The prior CTk launcher deployed via `${MAKER_HOME}/launcher/deploy.sh`:
 `rsync -avz --delete` of `shared`+`launcher`+`fiat`+`bsg`+`ha` to
 `~/maker/<component>/`, then `DISPLAY=:0 python3 launcher/app.py`. Deps were
 CustomTkinter/evdev/pywebview. The Power tile reproduces its `sudo poweroff`
@@ -192,7 +192,7 @@ app:
   id: maker-launcher
   transports:
     - type: mqtt
-      broker: mqtt-broker.local   # == mqtt-broker.local, the bus master
+      broker: mqtt-broker.local   # == 192.0.2.75, the bus master
       port: 1883
 ```
 

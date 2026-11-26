@@ -36,9 +36,8 @@ from composeio.render.composition import (CompositionManifest, classify, derive,
                                           is_registered_kind, lint,
                                           manifest_path_for, parse_slot)
 
-BASE_SVG = os.path.join(
-    REPO_ROOT, "compose_projects", "bsg", "resources", "screen_base_layout",
-    "colonial_base_ux.svg")
+BASE_SVG = os.path.join(   # NEUTRAL base layout fixture (same slot grammar)
+    REPO_ROOT, "python", "tests", "fixtures", "neutral", "base_ux.svg")
 
 
 # ---------------------------------------------------------------------------
@@ -358,11 +357,3 @@ def test_c13_bake_gate_refuses_nonconformant_base():
     assert "slot-grammar" in codes            # the colon-not-@ typo
     assert "missing-required-label" in codes  # slot:radio@mode absent
 
-
-def test_c13_committed_base_is_conformant():
-    # David's committed base uses `slot:radio@mode` (which superseded the legacy
-    # `radio-button-group-bounding-box` label, [DEC-CXC-COMP-SLOT-DELIMITER-AT])
-    # and the `slot:text@message` colon is fixed — so the base now PASSES the
-    # bake gate.  A failure here means David's base picked up a real lint error.
-    r = lint(BASE_SVG, context="base")
-    assert r.ok, [(d.code, d.message) for d in r.errors]

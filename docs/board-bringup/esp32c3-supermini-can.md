@@ -69,20 +69,20 @@ for w in ['CXC_CAN_BRINGUP_APP','CXC_DEVICE_PREFIX','CXC_CAN_TX_GPIO','CXC_CAN_R
 
 `/dev/cu.usbmodem11301` belonged to a different board an hour before this env was written, and
 mid-session the *other* usbmodem port changed device entirely. **Both C3s on this bench share the
-MAC prefix `AA:BB:CC`** — match the full serial.
+MAC prefix `1C:DB:D4`** — match the full serial.
 
 ```bash
 ioreg -r -c IOUSBHostDevice -l -w0 | awk '/"USB Serial Number"/{sn=$NF} /IOCalloutDevice/{print sn, $NF}'
 ```
 
-Target is `"AA:BB:CC:DD:EE:FF" "/dev/cu.usbmodem11301"`. **`esptool chip-id` is not an identity
+Target is `"00:00:5E:00:53:03" "/dev/cu.usbmodem11301"`. **`esptool chip-id` is not an identity
 check** — it resets the board, which is the harm being prevented.
 
 To reset without esptool (and so without a bootloader entry), pulse RTS on the open port.
 
 ## The namespaces, and the arbitration ids
 
-Every namespace this node speaks is **CAN-only**: nothing on MQTT publishes `_device/c3can-c28020/*`,
+Every namespace this node speaks is **CAN-only**: nothing on MQTT publishes `_device/c3can-047dd8/*`,
 so the bridge's self-populating registry can never learn the names by observation. All nine must
 be in `CAN_BRIDGE_REGISTER` (`deploy/can_mqtt_bridge/composeio-can-bridge.env`) or the bridge drops
 them, correctly and loudly, as unresolvable hashes.
@@ -92,18 +92,18 @@ firmware that writes them:
 
 | namespace | type | ns hash | arbitration id |
 |---|---|---|---|
-| `_device/c3can-c28020/heartbeat` | heartbeat (4) | `0xB000` | `1600090E` |
-| `_device/c3can-c28020/status` | state (0) | `0xB152` | `162A410E` |
-| `_device/c3can-c28020/twai/tx_error_counter` | state | `0x30B9` | `0617210E` |
-| `_device/c3can-c28020/twai/rx_error_counter` | state | `0xF002` | `1E00410E` |
-| `_device/c3can-c28020/twai/tx_failed_count` | state | `0xE1C1` | `1C38210E` |
-| `_device/c3can-c28020/twai/rx_missed_count` | state | `0x40EE` | `081DC10E` |
-| `_device/c3can-c28020/twai/rx_overrun_count` | state | `0x0792` | `00F2410E` |
-| `_device/c3can-c28020/twai/bus_error_count` | state | `0x6FC3` | `0DF8610E` |
-| `_device/c3can-c28020/twai/msgs_to_rx` | state | `0x5227` | `0A44E10E` |
+| `_device/c3can-047dd8/heartbeat` | heartbeat (4) | `0xB000` | `1600090E` |
+| `_device/c3can-047dd8/status` | state (0) | `0xB152` | `162A410E` |
+| `_device/c3can-047dd8/twai/tx_error_counter` | state | `0x30B9` | `0617210E` |
+| `_device/c3can-047dd8/twai/rx_error_counter` | state | `0xF002` | `1E00410E` |
+| `_device/c3can-047dd8/twai/tx_failed_count` | state | `0xE1C1` | `1C38210E` |
+| `_device/c3can-047dd8/twai/rx_missed_count` | state | `0x40EE` | `081DC10E` |
+| `_device/c3can-047dd8/twai/rx_overrun_count` | state | `0x0792` | `00F2410E` |
+| `_device/c3can-047dd8/twai/bus_error_count` | state | `0x6FC3` | `0DF8610E` |
+| `_device/c3can-047dd8/twai/msgs_to_rx` | state | `0x5227` | `0A44E10E` |
 | `throttle/left` *(inbound)* | state | `0x03F6` | `007EC000:1FFFFE00` |
 
-Source field is `namespace_hash("c3can-c28020") & 0x1FF` = `0x10E`.
+Source field is `namespace_hash("c3can-047dd8") & 0x1FF` = `0x10E`.
 
 The heartbeat rides as **`Heartbeat`**, not `State`, on purpose: it is what the message *is*, and
 it puts a non-zero type nibble in the id, so a candump line proves the `[BP-TYPE-CODES]` table
@@ -146,7 +146,7 @@ proof. That claim is withdrawn. **An unrepeatable test is not a measurement.**
 injected `162A410E` on `can1` and the bridge answered:
 
 ```
-CAN->MQTT  _device/c3can-c28020/status = 'ACTIVE'     (type=state)
+CAN->MQTT  _device/c3can-047dd8/status = 'ACTIVE'     (type=state)
 ```
 
 That independently validates the id derivation, `CAN_BRIDGE_REGISTER`, and the CAN→MQTT path.
@@ -293,13 +293,13 @@ production service, and it deserves its own before/after.
 
 ```bash
 # terminal 1 — the independent witness
-ssh pi.example.local 'candump -td -x can1'
+ssh display-node.local 'candump -td -x can1'
 
 # terminal 2
 cd cyd && pio device monitor -e esp32_c3_can_bringup
 ```
 
-Expect `1600090E` at 1 Hz on `can1`, `_device/c3can-c28020/heartbeat` on MQTT, and — as the
+Expect `1600090E` at 1 Hz on `can1`, `_device/c3can-047dd8/heartbeat` on MQTT, and — as the
 physical throttle lever moves — `RX  throttle/left = <value>` on the console. The subscription is
 already registered and the bridge's MQTT→CAN allowlist already carries `throttle/left`, so no
 configuration change is outstanding; only the wire is.

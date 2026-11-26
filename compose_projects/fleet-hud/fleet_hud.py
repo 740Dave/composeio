@@ -4,7 +4,7 @@
 Uses the in-process route the codebase scope recommended: build a ComposeIOBus, register
 the namespaces from fleet-540-soak.compose.yaml, hand the parsed scene to the Skia render
 engine (`composeio.render.engine`), and feed the widgets from a publish loop that pulls the
-live soak telemetry (ginger) + the console observer's semantic events (professor). No MQTT
+live soak telemetry (fleetnode) + the console observer's semantic events (benchnode). No MQTT
 broker required.
 
 Run modes:
@@ -30,11 +30,16 @@ sys.path.insert(0, str(REPO / "python"))
 CONFIG = HERE / "fleet-540-soak.compose.yaml"
 
 # --- live data sources (the running soak) ------------------------------------
-# ginger is behind the 540 NAT: reach it via the reverse tunnel (professor:22222).
-_GINGER = ("ssh -o ProxyCommand='ssh -W %h:%p professor.local' "
+# fleetnode is behind the 540 NAT: reach it via the reverse tunnel (benchnode:22222).
+#: SSH targets are CONFIGURATION: FLEET_BENCH_HOST (neutral default benchnode.local).
+_BENCH_HOST = os.environ.get("FLEET_BENCH_HOST", "benchnode.local")
+#: Remote soak log names carry the node names: CONFIGURATION too (FLEET_SOAK_NODE_NAME, FLEET_BENCH_NAME).
+_SOAK_NODE = os.environ.get("FLEET_SOAK_NODE_NAME", "fleetnode")
+_BENCH_NAME = os.environ.get("FLEET_BENCH_NAME", "benchnode")
+_FLEETNODE = (f"ssh -o ProxyCommand='ssh -W %h:%p {_BENCH_HOST}' "
            "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "
            "-p 22222 davidleeburnett@localhost")
-_PROFESSOR = "ssh -o ConnectTimeout=8 professor.local"
+_BENCHNODE = f"ssh -o ConnectTimeout=8 {_BENCH_HOST}"
 
 
 def _sh(cmd: str, timeout: int = 20) -> str:
@@ -58,14 +63,14 @@ def _last_json(blob: str) -> dict:
 
 def poll() -> dict:
     """Pull current values from the live soak. Returns namespace -> value."""
-    # one ginger round-trip for all three soak logs
-    g = _sh(f"{_GINGER} 'for f in ~/soak/logs/dut_540.jsonl ~/soak/logs/node_ginger.jsonl "
-            f"~/soak/logs/iperf_professor.jsonl; do tail -1 \"$f\" 2>/dev/null; echo; done'")
+    # one fleetnode round-trip for all three soak logs
+    g = _sh(f"{_FLEETNODE} 'for f in ~/soak/logs/dut_540.jsonl ~/soak/logs/node_{_SOAK_NODE}.jsonl "
+            f"~/soak/logs/iperf_{_BENCH_NAME}.jsonl; do tail -1 \"$f\" 2>/dev/null; echo; done'")
     parts = [p for p in g.split("\n") if p.strip().startswith("{")]
     dut = _last_json(parts[0]) if len(parts) > 0 else {}
     node = _last_json(parts[1]) if len(parts) > 1 else {}
     iperf = _last_json(parts[2]) if len(parts) > 2 else {}
-    ev_count = _sh(f"{_PROFESSOR} 'wc -l < /home/davidleeburnett/velo540_console_events.jsonl'").strip()
+    ev_count = _sh(f"{_BENCHNODE} 'wc -l < ~/velo540_console_events.jsonl'").strip()
 
     ports_up = dut.get("ports_up", 0)
     ns = {
@@ -76,7 +81,7 @@ def poll() -> dict:
                         .get("enp2s0", {}).get("tx_mbit_s")),
         "soak_retx": iperf.get("retransmits"),
         "soak_verdict": "yellow",   # pending until Monday collection + power-cycle merge
-        "ginger_temp_c": node.get("temp_c"),
+        os.environ.get("COMPOSEIO_VAR_SOAK_NODE_TEMP_NS", "fleetnode_temp_c"): node.get("temp_c"),
         "console_activity": int(ev_count) if ev_count.isdigit() else None,
     }
     return {k: v for k, v in ns.items() if v is not None}
@@ -90,29 +95,29 @@ def poll() -> dict:
 # the HUD demo); read tools run for real against whatever is currently reachable.
 
 def _act_console_tail(args: dict) -> dict:
-    """Read the 540's semantic console events off professor (up now, no ginger needed)."""
+    """Read the 540's semantic console events off benchnode (up now, no fleetnode needed)."""
     n = int(args.get("n", 5))
-    out = _sh(f"{_PROFESSOR} 'wc -l < /home/davidleeburnett/velo540_console_events.jsonl; "
-              f"tail -{n} /home/davidleeburnett/velo540_console_events.jsonl'")
+    out = _sh(f"{_BENCHNODE} 'wc -l < ~/velo540_console_events.jsonl; "
+              f"tail -{n} ~/velo540_console_events.jsonl'")
     lines = [l for l in out.splitlines() if l.strip()]
     if not lines:
-        return {"ok": False, "summary": "no console events file (professor unreachable?)"}
+        return {"ok": False, "summary": "no console events file (benchnode unreachable?)"}
     total, events = lines[0], lines[1:]
     last = events[-1] if events else "—"
     return {"ok": True, "summary": f"{total} events; last: {last[:90]}", "detail": out}
 
 
 def _act_fw_status(args: dict) -> dict:
-    """Live 540 REST status via ginger. Demonstrates external authority honestly:
-    with ginger down + tunnel dead this returns a real failure, NOT an optimistic green."""
-    out = _sh(f"{_GINGER} 'curl -sk --connect-timeout 6 "
-              f"https://192.0.2.1/api/core/system/status || echo __UNREACHABLE__'",
+    """Live 540 REST status via fleetnode. Demonstrates external authority honestly:
+    with fleetnode down + tunnel dead this returns a real failure, NOT an optimistic green."""
+    out = _sh(f"{_FLEETNODE} 'curl -sk --connect-timeout 6 "
+              f"https://198.51.100.16/api/core/system/status || echo __UNREACHABLE__'",
               timeout=25)
     ok = bool(out.strip()) and "__UNREACHABLE__" not in out and "closed" not in out.lower()
     return {"ok": ok,
             "summary": "540 REST reachable" if ok
-                       else "540 unreachable (ginger down / tunnel dead) — external authority, no fake green",
-            "detail": out or "(no output — ginger tunnel is dead)"}
+                       else "540 unreachable (fleetnode down / tunnel dead) — external authority, no fake green",
+            "detail": out or "(no output — fleetnode tunnel is dead)"}
 
 
 def _act_gated(args: dict) -> dict:

@@ -172,7 +172,7 @@ from .dsd_review import (REPO_ROOT, own_checkout_root,
                          resolve_dsd as resolve_repo_file)
 
 INTENT_NS = "_app/hookup/open"
-DEFAULT_MQTT = "mqtt://mqtt-broker.local:1883"
+DEFAULT_MQTT = os.environ.get("COMPOSEBUS_MQTT", "mqtt://mqtt-broker.local:1883")
 SRC = "hookup-review"
 
 # Rendered artifacts are DERIVED and per-send; they live in a temp dir keyed by
@@ -923,19 +923,19 @@ def _selftest() -> int:
 
             # POSITIVE DIRECTION: a scene with REAL skipped crossings. Not a
             # synthetic fixture — the guide David has open on glass today.
-            skipper = fixture("python/composeio/render/examples/"
+            buildhost = fixture("python/composeio/render/examples/"
                               "tm1637_quad_panel.compose.yaml")
-            if resolve_scene(skipper) is None or load_hookup(
-                    resolve_scene(skipper))[1]:
+            if resolve_scene(buildhost) is None or load_hookup(
+                    resolve_scene(buildhost))[1]:
                 # HARNESS, not behaviour — and a MISSING POSITIVE CONTROL is a
                 # failure, never a silent skip. An instrument proven only on the
                 # passing case is not an instrument.
                 print("HARNESS: the positive control for the crossing gate did "
-                      f"not load: {skipper}. The gate was NOT exercised "
+                      f"not load: {buildhost}. The gate was NOT exercised "
                       "against a real failure.")
                 return 1
             published.clear()
-            r = send_hookup_for_human_review(skipper, publish=fake_publish)
+            r = send_hookup_for_human_review(buildhost, publish=fake_publish)
             check(r["status"] == "error"
                   and r.get("refused_unhopped_crossing") is True,
                   "(19) ⛔ a diagram with un-bridged crossings is REFUSED")

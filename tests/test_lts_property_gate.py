@@ -106,16 +106,39 @@ def test_defective_shape_is_caught_and_named(shape):
     assert line.strip() in rendered, f"{shape}: report did not NAME the line -> {rendered}"
 
 
+def _authored_keys(node) -> list:
+    """The node's AUTHORED property keys: `properties` minus the keys the engine mints itself.
+    The parser adds minted keys (today `normative_effective`) to every node; the engine names
+    them through `minted_keys_in`, the same source as `minted_keys` on every reply. Only a
+    key the ENGINE declares minted is removed, so an authored key can never hide here."""
+    from factlattice.core_keys import minted_keys_in
+    minted = set(minted_keys_in(node.properties))
+    return sorted(k for k in node.properties if k not in minted)
+
+
+def _assert_only_kind_survives(shape: str, line: str) -> None:
+    from factlattice.parser import parse_text
+    parsed = parse_text(_doc(["- kind: finding", line]), "fixture.lts")
+    node = next(n for n in parsed.nodes if n.id == "FIX-A")
+    assert _authored_keys(node) == ["kind"], (
+        f"{shape}: expected only `kind` to survive, got {_authored_keys(node)} "
+        f"(all properties: {sorted(node.properties)})")
+
+
 def test_defective_shapes_really_do_lose_the_field():
     """The premise, proven rather than assumed: each defective line's key is ABSENT from
-    the parsed `properties`. If the parser ever starts accepting one of these, this test
-    fails and the gate's rule is the thing that is now wrong."""
-    from factlattice.parser import parse_text
+    the parsed AUTHORED properties. If the parser ever starts accepting one of these, this
+    test fails and the gate's rule is the thing that is now wrong."""
     for shape, (line, _) in DEFECTIVE.items():
-        parsed = parse_text(_doc(["- kind: finding", line]), "fixture.lts")
-        node = next(n for n in parsed.nodes if n.id == "FIX-A")
-        assert list(node.properties) == ["kind"], (
-            f"{shape}: expected only `kind` to survive, got {sorted(node.properties)}")
+        _assert_only_kind_survives(shape, line)
+
+
+@pytest.mark.parametrize("line", ["- well-formed-key: a value", "- second_key: 42"])
+def test_the_loss_check_fails_on_a_well_formed_shape(line):
+    """NEGATIVE CONTROL for the test above: on a NON-defective line the field lands, so the
+    same check must FAIL. Without this, ignoring minted keys could make the check vacuous."""
+    with pytest.raises(AssertionError):
+        _assert_only_kind_survives("well-formed", line)
 
 
 def test_legitimate_content_is_not_flagged():

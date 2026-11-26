@@ -11,7 +11,7 @@
 The MCP server runs on **port 8433**. This is set via the `MCP_PORT` environment variable in `docker-compose.yml`.
 
 Ports 8420-8425 are used by other ComposeIO services (bus_storage, document_store, etc.).
-Ports 8430-8432 are used by Nexus services.
+Ports 8430-8432 are used by Haven services.
 Port 8433 is the first free port in the ComposeIO range.
 
 If port 8433 is taken, check available ports:

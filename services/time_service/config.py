@@ -1,11 +1,11 @@
 """Endpoint + cadence configuration for time_service — CONFIG, never hardcoded.
 
 time_service is an ordinary ComposeBus client ([CXC-TIME-SERVICE-INTENT], same
-posture as ``bus_storage`` / ``fingerprint_storage``). WHERE it connects and on
+posture as ``bus_storage`` / ``fingerprint_service``). WHERE it connects and on
 WHAT substrate are resolved from the environment with defaults that follow the
 current live bus master — exactly as :mod:`composeio.resolve` and
-``fingerprint_storage/config.py`` do — so the same code follows the broker when
-the cutover to a dedicated Skipper lands, with no edit.
+``fingerprint_service/config.py`` do — so the same code follows the broker when
+the cutover to a dedicated Buildhost lands, with no edit.
 
 ⛔ Nothing here opens a socket and nothing here names a concrete Transport class.
 Resolution is a pure function; the transport is BUILT from a spec by
@@ -19,9 +19,9 @@ from __future__ import annotations
 import os
 
 # The current live bus master (mqtt-broker.local / mqtt-broker.local, MQTT on
-# :1883). The move to a dedicated Skipper is a LOCKED plan but not yet cut over,
+# :1883). The move to a dedicated Buildhost is a LOCKED plan but not yet cut over,
 # so this default follows the broker via env when it does.
-DEFAULT_BROKER_HOST = "mqtt-broker.local"
+DEFAULT_BROKER_HOST = os.environ.get("COMPOSEIO_MQTT_BROKER", "mqtt-broker.local")
 DEFAULT_BROKER_PORT = 1883
 
 #: The DEFAULT substrate — read from the environment exactly like the broker

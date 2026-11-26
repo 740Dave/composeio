@@ -21,8 +21,8 @@
  *            accessor for it on the receive path.  It exists because in v1
  *            `ns_hash` occupied the top 16 bits, so arbitration priority was a
  *            pseudo-random function of the namespace NAME — `throttle/left`
- *            (0x03F6) won everything by luck, `_device/wsc6-6f4ce4/config`
- *            (0x8921) outranked `_device/hosyond-d1afe8/config` (0xC6B6) on a
+ *            (0x03F6) won everything by luck, `_device/wsc6-07f199/config`
+ *            (0x8921) outranked `_device/hosyond-080739/config` (0xC6B6) on a
  *            MAC suffix, and `shields` (0xCC50) was the lowest-priority thing
  *            on the bus.  Renaming a signal silently re-ranked it.
  *

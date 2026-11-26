@@ -160,8 +160,9 @@ def test_yaml_block_round_trips():
                                "out_min": 0, "out_max": 100}
     # The conditioning knobs survive serialization — this emitter used to drop
     # invert/deadband/ema entirely, so the emitted config described a device
-    # that did not exist.
-    assert s0["conditioning"] == {"deadband": 1}
+    # that did not exist.  `step` (output-scale level quantization, wire-declared
+    # step: 10) is a leaf-owned conditioning knob too and must round-trip with them.
+    assert s0["conditioning"] == {"deadband": 1, "step": 10}
     assert s0["sample_hz"] == DEFAULT_SAMPLE_HZ
 
 

@@ -28,7 +28,9 @@
 #include "esp_timer.h"
 #include "mqtt_client.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
+#include "freertos/semphr.h"
+
+#include "bus_mailbox.h"
 
 static const char* TAG = "bus_mqtt";
 
@@ -41,23 +43,53 @@ static const char* TAG = "bus_mqtt";
 #endif
 
 static constexpr int kMaxSubs = 16;
-static constexpr int kQueueDepth = 16;
 
 static esp_mqtt_client_handle_t s_client = nullptr;
-static QueueHandle_t s_queue = nullptr;
-/* esp_timer stamp of the arrival that made the queue non-empty (0 when
- * idle) — the bus->glass latency origin. */
+/* esp_timer stamp of the arrival that made the mailbox non-empty (0 when
+ * idle) — the bus->glass latency origin.  Preserved verbatim from the FIFO
+ * era: written volatile, read without the lock, exactly as before. */
 static volatile int64_t s_pending_since_us = 0;
 static volatile bool s_connected = false;
 static char s_client_id[32] = "cyd-display";
 static char s_subs[kMaxSubs][96];
 static int s_sub_count = 0;
 /* Persistent control-plane subscriptions (the `_device/` restart
- * namespaces) — kept across scene swaps, re-subscribed on reconnect. */
-static constexpr int kMaxPersist = 4;
+ * namespaces) — kept across scene swaps, re-subscribed on reconnect.
+ *
+ * ⛔ SIZED WITH HEADROOM, NOT TO FIT.  4 was the paid-for
+ * `kMaxPersist`-sized-for-today defect ([60-board-hardware-inventory]
+ * firmware-subscription-cap; [insights-and-warts]): "one short the moment a
+ * config namespace joined ... a leaf asking for something it had made itself
+ * structurally unable to receive," whose only symptom was one WARN line at
+ * boot.  That fix reached bus_uart.cpp and bus_can.cpp (now 8) but NOT this
+ * MQTT transport, which was left at 4 while the MQTT control plane ALREADY
+ * subscribes ~9 persistent namespaces (restart x2, transport, announce x2,
+ * config_source, bus_binding x2 + confirm) — so entries past the 4th were being
+ * silently dropped here.  This baseline adds a 10th (the asset-change-notify
+ * event, [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]).  12 = the ~10-namespace MQTT
+ * control plane plus headroom, so the control plane can grow by a namespace per
+ * feature without silently dropping the most important one.  ⚠ BENCH-VERIFY:
+ * confirm on a real MQTT board that every control-plane namespace AND the
+ * asset-change event now actually land (this cap only binds when a real board
+ * subscribes its real set — no host test can catch it). */
+static constexpr int kMaxPersist = 12;
 static char s_persist[kMaxPersist][96];
 static int s_persist_count = 0;
 static uint32_t s_seq = 0;
+
+/* THE COALESCING MAILBOX — replaces the 16-deep FIFO ([bus_mailbox.h]).  CAP
+ * is the SCENE subscription width plus the persistent control-plane set plus
+ * headroom: occupancy can never exceed the number of distinct namespaces this
+ * client subscribes, so the retained-flood width-overflow that silently
+ * dropped the 17th arrival is structurally impossible. */
+static constexpr int kMailboxSlots = kMaxSubs + kMaxPersist + 4;
+static BusMailbox<kMailboxSlots> s_mailbox;
+/* The writer (esp-mqtt event task) and the reader (render loop) shared the
+ * FIFO's built-in sync; the mailbox has none, so this SHORT mutex guards the
+ * slot write and the drain read.  A MUTEX, not a binary semaphore: it carries
+ * priority inheritance, which is what keeps the render task from an unbounded
+ * inversion behind the mqtt task. */
+static SemaphoreHandle_t s_lock = nullptr;
 
 /* ------------------------------------------------------------------ */
 /* Minimal flat-JSON field extraction (BusMessage payloads)            */
@@ -144,6 +176,57 @@ static bool extract_ns(const char* payload, const char* topic, int topic_len,
 #else
 #define BUS_PAYLOAD_CAP 512
 #endif
+
+/* Publish the cumulative genuine-overflow drop count on
+ * `_device/<id>/bus_dropped`.  A drop that only reaches ESP_LOGW is invisible
+ * in the field; a drop that publishes ONCE PER DROP adds bus load to a bus
+ * already congested enough to drop — the "diagnostic that causes the failure
+ * it reports" shape.  So this is RATE-LIMITED to at most one publish / 5 s and
+ * only when the count actually moved, and it rides QoS 0: it is a best-effort
+ * cumulative gauge (a missed sample self-heals on the next), and QoS 0 never
+ * blocks the esp-mqtt event task it is called from. */
+static void publish_drop_count(uint32_t total) {
+    if (!s_client || !s_connected) return;
+    static int64_t last_us = 0;
+    static uint32_t last_total = 0;
+    if (total == last_total) return;
+    int64_t now = esp_timer_get_time();
+    if (last_us && now - last_us < 5 * 1000000LL) return;
+    last_us = now;
+    last_total = total;
+    char ns[96];
+    snprintf(ns, sizeof(ns), "_device/%s/bus_dropped", s_client_id);
+    char payload[192];
+    snprintf(payload, sizeof(payload),
+             "{\"ns\":\"%s\",\"type\":\"state\",\"val\":%lu,"
+             "\"src\":\"%s\",\"scope\":\"global\",\"seq\":%lu}",
+             ns, (unsigned long)total, s_client_id, (unsigned long)++s_seq);
+    char topic[128];
+    snprintf(topic, sizeof(topic), "%s/global/%s", CIO_TOPIC_PREFIX, ns);
+    esp_mqtt_client_publish(s_client, topic, payload, 0, 0, 0);
+}
+
+/* Hand one arrival to the mailbox under the lock, then — OUTSIDE the critical
+ * section — preserve the latency stamp and emit any genuine drop.  The lock
+ * holds only a bounded slot scan plus one BusEvent copy; no parse, no publish,
+ * no log runs inside it. */
+static void mailbox_post(const BusEvent& ev) {
+    if (!s_lock) return;
+    const int64_t now = esp_timer_get_time();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const bool was_empty = (s_mailbox.pending() == 0);
+    const bool stored = s_mailbox.post(ev);
+    const uint32_t drops = s_mailbox.dropped();
+    xSemaphoreGive(s_lock);
+    /* Stamp the arrival that WAKES an idle mailbox — the origin of the
+     * bus->glass latency the render loop reports, unchanged from the FIFO. */
+    if (was_empty && stored) s_pending_since_us = now;
+    if (!stored) {
+        ESP_LOGW(TAG, "bus mailbox full (%d slots) — %s dropped (%lu total)",
+                 kMailboxSlots, ev.ns, (unsigned long)drops);
+        publish_drop_count(drops);
+    }
+}
 
 static void handle_data(const char* topic, int topic_len,
                         const char* data, int data_len) {
@@ -333,15 +416,7 @@ static void handle_data(const char* topic, int topic_len,
         return;
     }
 
-    if (s_queue) {
-        /* Stamp the arrival that WAKES an idle queue: the render loop
-         * reports (paint - this) as the bus->glass latency, which is the
-         * number the operator actually feels. */
-        if (uxQueueMessagesWaiting(s_queue) == 0)
-            s_pending_since_us = esp_timer_get_time();
-        if (xQueueSend(s_queue, &ev, 0) != pdTRUE)
-            ESP_LOGW(TAG, "bus queue full — %s dropped", ev.ns);
-    }
+    mailbox_post(ev);
 }
 
 /* ------------------------------------------------------------------ */
@@ -448,7 +523,7 @@ static bool mqtt_init(const char* client_id) {
     if (client_id && *client_id)
         snprintf(s_client_id, sizeof(s_client_id), "%s", client_id);
 
-    s_queue = xQueueCreate(kQueueDepth, sizeof(BusEvent));
+    if (!s_lock) s_lock = xSemaphoreCreateMutex();
 
     esp_mqtt_client_config_t cfg = {};
     /* [CXC-REPOINT] the broker is the ACTIVE tier's binding (per-device >
@@ -481,14 +556,20 @@ static bool mqtt_init(const char* client_id) {
 static bool mqtt_connected(void) { return s_connected; }
 
 static bool mqtt_poll(BusEvent* out) {
-    if (!s_queue || !out) return false;
-    bool got = xQueueReceive(s_queue, out, 0) == pdTRUE;
-    if (got && uxQueueMessagesWaiting(s_queue) == 0) s_pending_since_us = 0;
+    if (!s_lock || !out) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool got = s_mailbox.poll(out);
+    if (got && s_mailbox.pending() == 0) s_pending_since_us = 0;
+    xSemaphoreGive(s_lock);
     return got;
 }
 
+/* Advisory, and read WITHOUT the lock on purpose: the render loop samples this
+ * every pass to cut a touch-poll burst short, `pending()` is a single aligned
+ * word (an atomic read on this part), and a one-pass-stale count only ever
+ * costs one extra touch poll — never correctness. */
 static size_t mqtt_pending(void) {
-    return s_queue ? (size_t)uxQueueMessagesWaiting(s_queue) : 0;
+    return s_mailbox.pending();
 }
 
 static int64_t mqtt_pending_since_us(void) { return s_pending_since_us; }

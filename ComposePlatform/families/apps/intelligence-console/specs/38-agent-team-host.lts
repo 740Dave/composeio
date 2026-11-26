@@ -1,0 +1,74 @@
+---
+scope: "STUB (PARKED, not yet building — David 2026-07-21). The console as a multi-tenant, heterogeneous agent HOST: it spawns and supervises a TEAM of scoped agents internally, each a (model, profile, brief) member, rendered as subagent chips, feeding briefs and collecting deliverables. The pre-flight of hosting the persistent architect Intelligence itself (spec CXC-TWO-APP-CONSOLIDATION, unwritten). Decision of record: [DEC-CONSOLE-AS-TEAM-HOST] in decisions/decision-graph-composeux-architect.lts."
+audience: "The architect (me.next), when this un-parks; whoever builds slice-1 (console hosts ONE ephemeral render-engineer build end-to-end)."
+boundary: "IN (when built): per-member lifecycle in one supervisor; brief delivery per member; deliverable collection (the 'here is my final text, I am done' signal); heterogeneous members (model + profile per member); the bus-native member addressing. OUT: the persistent-architect hosting itself (that is the full CXC-TWO-APP-CONSOLIDATION, a superset); the render of the team (the subagent-chip UI already exists — reuse, don't rebuild)."
+not-this: "NOT a build order. This is a PARKED STUB — David's explicit priority is FIRST to fully work out the bootstrap-richness elements (the meta-object viewer / config surface, spec/decision work below) so a spawned agent — and the architect itself — wakes with rich context. Do not implement the harness until that lands."
+depends-on: [decisions/decision-graph-composeux-architect.lts]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: stub
+---
+# Agent Team Host [SPEC:CXC-ATH] — PARKED STUB
+
+> **Parked 2026-07-21 by David.** He was "extremely tempted to run ahead and build the agent
+> object/instantiation harness," and deliberately held: the prerequisite is nailing down every element that
+> makes an agent's BOOTSTRAP as rich as possible (so it wakes with rich context), because a team host that
+> instantiates context-poor members is the wrong thing built well. This file exists so the idea is captured
+> in the spec corpus (not only the decision graph) and does not evaporate — it is a skeleton to be filled
+> when the bootstrap-richness work (the console config surface: [DEC-PREFS-META-OBJECT-VIEWER] +
+> [DEC-DELEGATE-ROLES-ROSTER]) is settled.
+
+---
+
+## 1. Intent (the shape, not the build)
+
+### [CXC-ATH-INTENT] The console is an agent HOST, not a passive viewer
+
+- definition: the console spawns and supervises a TEAM of scoped agents internally. Each member is a
+  `(model, profile, brief)` tuple. Members may share a profile with different models (a render-engineer on
+  Fable AND on Opus — depth + breadth in parallel) or differ by profile for role sub-specialization (e.g. a
+  game-mechanics-specialist alongside a render-engineer for the BSG DRADIS game). Profiles are a PALETTE; a
+  team is COMPOSED per task. The host special-cases NO role.
+- why parked: the members (and, ultimately, the architect the host will eventually run) must wake with RICH
+  context. That richness is defined by the meta-object and its bootstrap manifest — which is the config-surface
+  work David chose to settle FIRST. See §4.
+
+## 2. Reuse (do not reinvent when this un-parks)
+
+- **launcher PTY + actuation** (`intelligence/launcher/launcher.py`, [CXC-IC-LIFECYCLE]): a member is a scoped
+  `claude` child; the architect is just the persistent, interactive one. Reuse the spawn + 3-phase inject +
+  the resume/move re-host wholesale.
+- **the subagent-chip UI** (`intelligence_card.py` chips): N hosted members = N chips. The team render surface
+  is already built.
+- **the bus/peer model**: each member is a peer with its own `intelligence/<member>/{in,out}` namespaces; the
+  team is a set of peers on the bus. Same message-passing SHAPE as today's Agent-tool + SendMessage dispatch,
+  moved from the harness transport onto PTY-writes over the bus — "collapse the transport, not the seam."
+
+## 3. The genuinely NEW pieces (what slice-1 must build)
+
+- per-member lifecycle in ONE supervisor (spawn / kill / status over a SET, not the singleton the launcher is).
+- **deliverable collection**: today the launcher only RELAYS a live interactive session; a scoped member needs
+  a terminal "here is my final text, I am done" signal (the harness gives the architect this via the Agent-tool
+  completion notification; the console-hosted equivalent is unbuilt).
+- brief delivery: a bus namespace or file per member.
+- slice-1 = the console hosts ONE ephemeral render-engineer build end-to-end (spawn → brief → activity chips →
+  deliverable). Then generalize to a heterogeneous team. Then the architect becomes a persistent+interactive+
+  self-compacting member = the full CXC-TWO-APP-CONSOLIDATION.
+
+## 4. Blocking prerequisite (why this is parked, not scheduled)
+
+The member/architect bootstrap must be RICH. That richness lives in the meta-object and the config surface that
+views/tunes it — NOT here. Settle those FIRST:
+- [DEC-PREFS-META-OBJECT-VIEWER] — the console config surface as a viewer/editor of the meta-object elements
+  (identity / dusk gifts / channel / lifecycle threshold / delegate roles), extending the existing
+  `registered_checklist` widget family.
+- [DEC-DELEGATE-ROLES-ROSTER] — the Intelligence-owned `delegate_roles` on the meta-object (name → role-def
+  path + model + why); role-aware dispatch resolves a name to a profile. THIS is where the team's member
+  palette actually comes from — the reason the two are coupled.
+- the bootstrap manifest itself (`intelligence/launcher/build_bootstrap_prompt` + `intelligence/meta/*.meta.json`):
+  what a cold member reads to wake rich.
+
+When those are nailed down, this stub gets filled and slice-1 gets a build order. Until then: PARKED.
+
+<!-- re-derive-via [FIXTURE-registration-protocol-P1]: a hosted agent is a peer, the host a supervisor, the
+     bus the contract — the cheapest node fully owns its own behavior. -->

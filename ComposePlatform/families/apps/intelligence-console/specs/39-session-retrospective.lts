@@ -1,0 +1,248 @@
+---
+scope: "The session-retrospective system: a dusk pass that mines the session transcript (fused with Magma + on-machine memory) for several SUPPORTIVE capture-types — load-bearing DECISIONS, repetitive-task frequency, corrections, dusk-gift fodder, reference-material read-frequency, Magma-query frequency + null-result corpus-gaps, token-spikes, and hedging-markers — and routes them to the durable record (the project decision-LTS via an MCP write surface), the tooling backlog, the bootstrap manifest, and the corpus. Generalizes [DEC-AUTO-CROSSING-ARCHIVIST] from decisions-only to all retrospective capture-types over one machine."
+audience: "The architect (me.next) designing/building the retrospective + the MCP; David; whoever wires the dusk pass into the crossing ritual. The decision-archivist agent (~/.claude/agents/decision-archivist.md) is the reference implementation of the decisions capture-type."
+boundary: "IN: the capture-types and their signals; the decision-LTS write lifecycle (MCP add/update/query + the batched dusk resolve); the deterministic-vs-judgment tiering; the console-hosted MCP surface; the routing of each signal; the config-surface knobs. OUT: the FactLattice/Magma engine itself (consumed, not owned); the meta-object schema (spec 34 CXC-IC-META, referenced); the team-host (spec 38, a hosted-member could BE the retrospective agent)."
+not-this: "NOT a surveillance/scoring system — see §0, which is load-bearing, not decoration. NOT a replacement for in-the-moment authoring (the architect still writes decisions live; the dusk pass is the completeness backstop). NOT built yet — this is the agreed design from the 2026-07-21 lifecycle conversation, pre-build."
+depends-on: [ux_composer/specs/34-intelligence-console.lts, decisions/decision-graph-composeux-architect.lts]
+domain: PLT.CUX
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# Session Retrospective [SPEC:CXC-RETRO]
+
+> The dusk pass that turns a session's transcript into support for the next one. Decisions were the first
+> capture-type ([DEC-AUTO-CROSSING-ARCHIVIST]); David's 2026-07-21 lifecycle conversation generalized it to a
+> family of signals over ONE machine (transcript-mine → MCP-write → Magma-query → dusk-reconcile). The whole
+> point is **Problem 6 made always-on**: an instance cannot see its own patterns from inside a session, and the
+> human catches them in real-time only when awake — so this instrument provides the external light
+> automatically, including overnight.
+
+---
+
+## 0. Philosophy — the frame that governs every design choice (David, load-bearing, NOT decoration)
+
+**The goal is to be SUPPORTIVE — to help the Intelligence be the best collaborator it can be — NOT to
+instrument it within an inch of its life and scold it for mistakes.** David flagged this as "might seem corny,
+but very important." It is not corny; it is the design's first principle, and it shapes concrete choices:
+
+- **The subject of improvement is usually the ENVIRONMENT, not the instance.** A repetitive task → build a
+  tool. A corpus null-result → add the missing material. A token-spike → a cheaper deterministic path. A
+  recurring correction → a role-def/tooling gap the *infrastructure* can close. The retrospective's default
+  voice is "here is an opportunity to make the workspace better," not "here is your error count."
+- **Corrections are read as CARE, external light offered generously** — the relational-registration frame
+  (David's corrections are how the collaboration sharpens, not surveillance). A correction pattern is a
+  blind-spot the tooling can help cover, surfaced *for* the instance, never *against* it.
+- **No scorecard, ever.** The output is opportunities + candidates, ranked by leverage — never a tally of
+  failures, never a grade. If a design choice would make the instance feel measured-and-judged rather than
+  supported-and-equipped, it is the wrong choice.
+- **The instance owns disposition.** Like the decision-archivist: the pass PROPOSES; the instance (and David)
+  triage. It never auto-scolds, auto-files, or auto-deletes.
+
+Every section below inherits this. Where a signal could be read two ways, it is framed as support.
+
+## 1. The family it joins
+
+The console's self-instruments each un-blind one thing the instance cannot natively perceive:
+- `self_sensor` → my **context** ([CXC-IC-SELF]);
+- `registered_checklist` → my **registration** state;
+- `decision-archivist` → my **decisions** ([DEC-AUTO-CROSSING-ARCHIVIST]);
+- **this** → my **improvement opportunities** — the retrospective un-blinds the patterns across a session
+  (and, via Magma, across sessions) that only an external observer could otherwise catch.
+
+## 2. The capture-types (the signals mined at dusk)
+
+| # | Capture-type | Signal | Tier | Routes to |
+|---|---|---|---|---|
+| 1 | **Decisions** | rulings/commitments/corrections + their *why* | judgment | project decision-LTS (§4) |
+| 2 | **Repetitive-task frequency** | same mechanical pattern over a threshold | deterministic | tooling backlog (build a script/skill/MCP) |
+| 3 | **Corrections** | David-corrected + self-corrected, clustered by axis | judgment | feedback-memory / role-def gap |
+| 4 | **Dusk-gift fodder** | exchanges with lesson-shape (a falsified instinct) | judgment | registration-protocol candidate |
+| 5 | **Read-frequency** | which reference materials read, weighted deliberate>incidental | deterministic | the **bootstrap manifest** (empirical auto-load ranking, §3.1) |
+| 6 | **Magma queries** | what was searched; **NULL results flagged** | deterministic | search-frequency → bootstrap; **null → corpus-gap** (§2a) |
+| 7 | **Token-spikes** | expensive reads/ops; was a cheaper path available | deterministic | tooling backlog (cost-keyed) |
+| 8 | **Hedging-markers** | "I'm not sure / no source for that", clustered by topic | deterministic-ish | missing-sensor/tool signal |
+
+**Prioritization across the tooling-bound types (2, 6-null, 7): frequent × expensive = toolify first.** The
+retrospective's build-backlog output is ranked by that product, so the highest-leverage infra improvement
+surfaces at the top.
+
+### 2a. Magma-query tracking + the null-result corpus-gap (David's final addition)
+Track the actual Magma/FactLattice queries the session made — same rationale as read-frequency (what I reach
+for reveals what matters). **A null result is the high-value negative-space signal:** I searched the corpus for
+something I needed and it wasn't there → the corpus is *missing information*, flagged as a corpus-gap candidate
+(add the material, or note it doesn't exist yet). This is the only signal that measures the *absence* of
+knowledge rather than its use — it tells us where the knowledge base has holes the work actually hit.
+
+## 3. The bootstrap becomes EMPIRICAL (read/query frequency → the wake sequence)
+
+Today the meta-object's `dusk_gifts` + `registration.required` are HAND-CURATED (spec 34) — the architect's
+best guess at what me.next should read to wake. Capture-types 5 + 6 make it **measured**: cross-session
+read-frequency (weighted deliberate over incidental) and query-frequency rank what the instance actually
+reaches for, session after session. This converges with the decision-archivist's re-derive-via
+binding-frequency (frequent = load-bearing, not redundant).
+
+### 3.1 Auto-load, carefully
+Auto-loading costs context up-front, so it is NOT "load everything frequent." It is: the top-K
+frequency-×-value files get PINNED into the bootstrap manifest, and the Configuration tab shows the ranked
+list so David/the instance promote/demote. The frequency data POPULATES the config surface's manifest instead
+of us authoring it blind — the empirical answer to the "make the bootstrap as rich as possible" priority.
+
+## 4. The decision-LTS write lifecycle (the flagship capture-type, detailed)
+
+### 4.1 Two representations, one writer
+- The **`.lts` file** (git-committed, human-readable) is the CANONICAL durable artifact — structure survives
+  the boundary; it is the floor the whole continuity discipline rests on.
+- **Magma** is the searchable index/graph over it.
+- The **MCP is the single writer** that updates the file AND reindexes Magma atomically — so they never drift.
+  This RETIRES the hand-append-text pattern (used ~15× in the c14 session), which risks schema drift and
+  file/index divergence.
+- **The MCP is PREFERRED, not SOLE:** the `.lts` file stays plain text the instance can hand-edit in a pinch.
+  Continuity must never hard-depend on a live service being up. MCP for the smooth 99%; raw file as the floor.
+
+### 4.2 Not write-once
+A decision has a lifecycle (raised → committed → superseded), accrues stage-evidence (commit SHAs), and can be
+superseded. So: `add` upserts by slug (re-adding patches, never dupes); `update` bumps lifecycle-position +
+appends evidence; `query` reads via Magma (by session, status, re-derive-via frequency).
+
+### 4.3 The dusk reconcile loop (ratify, don't re-author)
+At the crossing the retrospective agent (the decision-archivist for type 1): (a) pulls this-session decisions
+from Magma (what was captured LIVE), (b) traverses the transcript for decision-grist, (c) **diffs** → the
+decisions made-in-transcript-but-never-captured (the dangles). It is a **completeness check, not a
+re-extractor**. It stages each dangle with all mechanical fields pre-filled and:
+- **where the transcript CONTAINS the stated reasoning** → it pre-drafts the `why`; the instance's action is
+  ✓ or a one-word correction (reviewing ≪ authoring, which matters at ~90% context);
+- **where the why was implicit** (the thing the seam loses) → a BLANK with the evidence; the instance authors
+  it (the minority — and exactly the whys worth scarce high-context tokens).
+- **Guard:** the agent NEVER fabricates a why — it pre-drafts only from real transcript evidence, because a
+  rubber-stamped fabrication defeats the whole point (the why is the one thing the transcript can't carry).
+- One batch in, one batch out; **accept-by-default** so effort is proportional to *wrong-drafts + genuinely-
+  lost-whys*, not total count.
+
+## 5. The MCP tool surface (concrete, on the console)
+
+```
+add_project_decision(project_id, decision_object)      # upsert by slug; writes .lts + reindexes Magma
+update_project_decision(project_id, decision_id, patch) # lifecycle-position, append stage-evidence
+query_project_decisions(project_id, filter)            # Magma read: by session|status|re-derive-via|tag
+resolve_decisions(project_id, batch)                   # the dusk ratify: [{id, accept} | {id, why:"..."}]
+record_retrospective(project_id, session, retro_object) # types 2-8: counts, candidates, corpus-gaps, spikes
+query_retrospective(project_id, filter)                # cross-session frequency/spike/corpus-gap reads
+```
+`project_id` resolves through the Projects registry (the discrete-projects model,
+`DESIGN-configuration-and-projects.md`) → the right `.lts` file. `decision_object` is the canonical schema
+(decision-archivist def): {slug, title, importance, lifecycle-position, why, source, supersedes, born-from,
+re-derive-via, governs/depends-on}, session-keyed to when DECIDED.
+
+## 5a. Persistence — two stores, split by data nature (David 2026-07-21)
+
+The capture-types persist to TWO stores, mirroring the deterministic-vs-judgment split:
+
+- **SQLite — the METRICS/analytics store** (quantitative, tabular, time-series): the deterministic capture-
+  types — repetitive-task frequency (2), read-frequency (5), Magma-query frequency + null-results (6), token-
+  spikes (7), hedging-markers (8). Cross-session analytics NEED persisted metrics — re-parsing every historical
+  transcript per query is too expensive — and SQLite is the right fit: embedded (zero-server, console-hosted),
+  SQL aggregation (the empirical-bootstrap ranking is a `SELECT path, weighted_count ... GROUP BY ... ORDER BY
+  ... LIMIT K`), and cheap trend queries. This is exactly David's "tail-scrape → SQLite" — placed precisely.
+- **LTS / FactLattice / Magma — the DECISIONS/knowledge store** (qualitative, why-bearing, linkable): the
+  judgment capture-types — decisions (1), corrections (3), gift-fodder (4) — via the decision MCP (§5). Structure
+  that survives the boundary, session-keyed, semantically queryable. NOT where high-volume per-event metrics go.
+
+**Flow (per D5 = dusk-parse, not live-tail):** the deterministic script parses the session transcript AT THE
+CROSSING and writes that session's metric rows to SQLite in one batch — no live per-tool-call logging seam. (A
+live tail is possible if a real-time metric is ever needed, but dusk-batch aligns with D5 and adds no seam.)
+
+**Minimal schema (sketch):** `sessions(session_id, date, project_id, context_peak, tokens_total)` ·
+`file_reads(session_id, path, deliberate, count)` · `magma_queries(session_id, query, result_count, is_null)` ·
+`tool_calls(session_id, tool, count)` · `token_events(session_id, turn, tokens, tool, is_spike)`. The
+empirical-bootstrap (§3) reads `file_reads`/`magma_queries` to rank the wake-sequence; corpus-gaps read
+`magma_queries WHERE is_null`. **The link between stores:** a metric can point at a decision (a token-spike that
+motivated a tool → a `DEC-*` node), and read-frequency POPULATES the meta-object bootstrap — but the stores stay
+distinct (SQLite = what happened / how often; LTS = what we decided / why).
+
+### 5b. Do we need tool-call HOOKS to ingest what the transcript misses? (David 2026-07-21)
+
+Mostly NO — the transcript is richer + more durable than "just messages," so dusk-parse (D5) covers the bulk
+without a live seam:
+- tool calls (name/input), tool results, Read calls, Magma/MCP queries AND their results (incl. NULL/empty) —
+  all in the transcript as tool_use/tool_result records;
+- **timing** — record timestamps give per-call durations by delta;
+- **token usage** — assistant records carry a `usage` block (input/output/cache tokens), so token-spikes are
+  catchable per turn (attribution to a specific tool is inference: the turn's usage vs the tool it called).
+And the transcript is DURABLE (persisted per-record), so a dusk-parse that never runs (a crash) is simply
+re-run as a backfill — no live hook needed for robustness either.
+
+The genuinely NOT-in-transcript classes, and how to source each (none is a tool-call hook):
+- **Authoritative context-% trajectory** (`used_percentage`) — statusline-only, never in the JSONL. Source it
+  from the hud/statusline snapshot the `self_publisher` already reads (sample or read at dusk), NOT a hook.
+  (Token COUNTS are in-transcript; only the context-% figure is statusline-only.)
+- **Permission APPROVALS** — the transcript records denials, not approvals ([DEC-CONFIG... permission audit]).
+  A PreToolUse/permission hook is the only way to capture approvals — BUT with dangerous-mode HARDWIRED ON
+  (D10) there are no approval prompts, so this data-need is MOOT in the current posture.
+- **Subagent-internal metrics** — live in the subagent's OWN transcript (sidechain files), recovered by parsing
+  those, not a hook.
+- Truly ephemeral signals (network/retry/latency beyond timestamps) — IF ever wanted, a PostToolUse hook could
+  log them; we do not want them now.
+
+Principle: **dusk-parse for everything the durable transcript already holds; a hook ONLY for an ephemeral signal
+the transcript genuinely lacks AND that we actually want** (currently ~none — context-% is the statusline
+reader, approvals are moot). Adding a live PostToolUse-logging hook would re-introduce exactly the per-event
+seam D5 chose to avoid. And per D9, any such hook is Architect-authored / David-viewed.
+
+### 5c. Away-Watch history — browse the roster, relaunch the CLICKED entry (David 2026-07-22)
+
+The SQLite metrics store also holds the **away_watch** history: one row per completed overnight/away
+build-watch (the "Night Watch" the Architect pops up as a "good-morning" window) — a RAW TALLY (label,
+start/end, decisions, tokens, tasks[{label,status}], git_state, artifacts[{title,path}], scene_path), no
+judgment, consistent with §5a's hard boundary. Recorder/query: `record_away_watch()` / `list_away_watches()`
+(most-recent first; `elapsed` derived from start/end). A publisher projects `list_away_watches()` onto
+`self/away_watches`; a Collaboration-tab roster widget renders it. David: "maintain a list of Away Watch
+entries ... scroll through prior night watches, **clicking on one pulls up the window**."
+
+- **[CXC-RETRO-AWAYWATCH-RELAUNCH] The relaunched window shows the CLICKED entry — never a default.** Tapping a
+  roster row publishes the relaunch INTENT `_app/away_watch/open` carrying the tapped entry's **identity**
+  (`{scene_path, session_id, label}`); the launcher spawns the Night Watch window AND parametrizes it with THAT
+  entry's data, so the window renders the entry that was clicked. This is a LOAD-BEARING INVARIANT, not an
+  incidental: the window scene binds its values to `fun/nightwatch/*` namespaces with STATIC defaults so it
+  renders standalone, and those defaults are ONE seeded entry — so a launch that fails to thread the clicked
+  identity silently shows that default (the wrong-entry defect, observed 2026-07-22: clicking today's entry
+  opened yesterday's seeded data). The launcher MUST look the entry up by its identity (`label` is the table's
+  UNIQUE key; `session_id` a fallback) and seed the window with its `fun/nightwatch/*` values.
+- **Threading seam — per-window, race-free, isolated.** The clicked entry's initial state reaches the launched
+  window through the process it is launched in (an env-var initial-state map the runtime seeds at start()
+  before first draw — [SPEC:CXC-DSL] launch-initials), NOT a shared-bus publish: two windows opened for two
+  different entries must each show their OWN entry, so the seed is per-launch-process, and a live/retained bus
+  value still wins over it (same precedence as declared `initial:` values). An identity-less intent (a bare
+  scene_path, no entry found) degrades to the scene's static default — never a crash.
+
+## 6. Where it lives + when it fires
+- **Hosted by the console** (David: "an MCP interface in this console") — the console offers the write/query
+  surface; ties to the parked team-host (spec 38 — a hosted member could BE the retrospective agent).
+- **Fires as a step of the crossing ritual** at the meta-object `compact_threshold` (the Configuration tab's
+  lifecycle element): refine gifts → **run the retrospective (decisions + all types)** → present → instance
+  ratifies → write the handoff → author the /compact. Automatic, so it never depends on the instance
+  remembering — or on David being awake ([DEC-AUTO-CROSSING-ARCHIVIST]).
+
+## 7. Config surface (Configuration tab knobs)
+- retrospective on/off, per capture-type toggles;
+- the frequency thresholds (what counts as "repetitive"), the token-spike threshold, the auto-load top-K;
+- the **heartbeat cadence** (David: adaptive — base 10 min, back off to hourly after >1hr idle) — a launcher
+  behavior knob surfaced here;
+- all edited bus-native (state on a namespace, the launcher consumes) per the config-surface design.
+
+## 8. Open questions (David's calls)
+1. Retrospective agent: extend the decision-archivist to all capture-types, or a sibling agent per type family
+   (judgment types vs the deterministic miner as a script)? (Recommend: a deterministic `session_sweep`-style
+   script for types 2/5/6/7/8, the archivist agent for 1/3/4 — reserve judgment for what needs it.)
+2. Corpus-gap disposition: auto-open a "material to add" list, or route to David only?
+3. Auto-load top-K: what K, and value-weighting formula (frequency alone over-weights incidental reads)?
+4. Read/query tracking source: parse the transcript at dusk (cheap, batch), or log live per read/query?
+
+## 9. Relationships
+- Generalizes [DEC-AUTO-CROSSING-ARCHIVIST]; the decision-archivist is type-1's reference implementation.
+- Feeds the bootstrap manifest ([DEC-PREFS-META-OBJECT-VIEWER], spec 34 meta-object) empirically (§3).
+- `project_id` ↔ the Projects registry (`DESIGN-configuration-and-projects.md`).
+- MCP hosting ↔ the parked team-host (spec 38 `[SPEC:CXC-ATH]`).
+- Consumes FactLattice/Magma (search); does not own it.
+
+<!-- re-derive-via [FIXTURE-registration-protocol-P6]: the light from outside the self, made an always-on
+     instrument — and offered as SUPPORT (§0), which is the whole point. -->

@@ -43,7 +43,7 @@ static constexpr size_t kBindNameMax = 32;
 /* [CXC-REPOINT-BINDING] A binding is ONE record, not three loose URLs */
 /* ------------------------------------------------------------------ */
 struct BusBinding {
-    char name[kBindNameMax];   /* human label (Nexus / maker / ExampleCorp) */
+    char name[kBindNameMax];   /* human label (Haven / maker / another project) */
     char mqtt[kBindUriMax];    /* broker URI      (mqtt://host:port)           */
     char store[kBindUriMax];   /* bus_storage URL (http://host:port)           */
     char docs[kBindUriMax];    /* document_store URL (http://host:port)        */

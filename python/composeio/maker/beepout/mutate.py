@@ -14,7 +14,7 @@ fault injector is part of the instrument, not a test fixture hidden beside it. A
 falsifier is not shipped cannot be re-run by the next reader.
 
 Every function here is a pure text transform over ``.kicad_pcb`` source. Nothing under
-``~/Dropbox/Maker/pcb/`` is ever written — the mutants are materialised in a temp dir.
+``${MAKER_HOME}/pcb/`` is ever written — the mutants are materialised in a temp dir.
 """
 
 from __future__ import annotations

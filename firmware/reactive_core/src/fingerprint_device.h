@@ -185,6 +185,26 @@ public:
     const std::map<Slot, BridgeEntry>& bridge() const { return nvs_->bridge; }
     void set_hardware_present(bool present) { hardware_present_ = present; }
 
+    /* --- CHANGE-1 live-rebind + fail-loud (DEFECT-ARMED-ROSTER-LOADED-...-78C389) ---
+     * The firmware binds this device to a HAL ONCE at construction. When the
+     * real sensor answers only AFTER boot, the firmware repoints the HAL here
+     * instead of leaving the match path stranded on the mock. */
+    void rebind_hal(FingerprintHAL* hal) { hal_ = hal; }
+
+    /* FAIL-LOUD INVARIANT (load-bearing): while a real sensor is deployed but
+     * this device is still bound to the mock (HAL not confirmed live), the
+     * device MUST NOT publish template_set_loaded / fingerprint_ready-as-armed.
+     * current_heartbeat_state() then reads INOPERABLE and receive_push() is
+     * refused with fingerprint_inoperable — never a silent impersonation. */
+    void set_hal_confirmed_live(bool live) { hal_confirmed_live_ = live; }
+    bool hal_confirmed_live() const { return hal_confirmed_live_; }
+
+    /* On a mock->real rebind the persisted bridge maps MOCK slots, meaningless
+     * against the real sensor just bound. Drop it, force PUSH_NEEDED, and demand
+     * a fresh push so templates re-DownChar into REAL flash and the slot->person
+     * bridge is rebuilt against real slots. Reuses the escalation idiom. */
+    void invalidate_roster_request_push();
+
     /* [CXC-FPBUS-PUSH-SEQUENCE] receive a template-set push; returns a status. */
     std::string receive_push(const TemplatePush& push);
 
@@ -219,6 +239,7 @@ private:
     std::function<std::string()> event_id_factory_;
     TemplateResolver template_resolver_;
     bool hardware_present_ = true;
+    bool hal_confirmed_live_ = true;   /* CHANGE-1a: false == mock bound, real present */
     std::optional<HeartbeatState> escalation_state_;
     uint64_t event_seq_ = 0;   /* backs the default event_id_factory */
 };

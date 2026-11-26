@@ -39,6 +39,7 @@
 #include "freshness.h"
 #include "config_chunk.h"      /* config_content_hash() — the scene fingerprint */
 #include "config_fetch.h"
+#include "asset_reload_bus.h"    /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] */
 #include "capture_http_fb.h"
 #include "bus_transport.h"
 #include "config_bus.h"
@@ -83,6 +84,15 @@ static void reboot_now(void) {
     vTaskDelay(pdMS_TO_TICKS(250));
     esp_restart();
 }
+
+/* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] reload seam + backstop cadence — the
+ * shared header-based asset-change consumer, wired identically to main.cpp
+ * (the device never computes sha256; held is the server's GET-header hash). */
+static void asset_reload_reboot(void* /*user*/, const char* reason) {
+    ESP_LOGW(TAG, "[CXC-ACN] %s -> reload (esp_restart -> boot fetch)", reason);
+    reboot_now();
+}
+static const uint32_t kAssetBackstopMs = 300000;   /* 5 min */
 
 /* ------------------------------------------------------------------ */
 /* Device self-telemetry: true CPU load (FreeRTOS run-time stats).     */
@@ -293,6 +303,12 @@ static char* config_obtain(size_t* out_len) {
                 config_cache_store(text, len);
                 config_set_stale(false);
                 bus_binding_note_store_ok();   /* [CXC-REPOINT-CONFIRM] store plane */
+                /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] hold the server's
+                 * GET-header content-hash; SHOUT while it is not yet served. */
+                if (!asset_reload_bus_note_held(config_fetch_last_content_hash()))
+                    ESP_LOGW(TAG, "[CXC-ACN] no server content-hash on GET — "
+                             "asset-change self-select INERT until served; "
+                             "restart floor still recovers");
                 if (out_len) *out_len = len;
             }
             return text;
@@ -412,6 +428,11 @@ static uint32_t drain_bus(Scene* scene, int* arrivals) {
         if (freshness_consume_heartbeat(ev.ns, (int)ev.kind, ev.num, ev.str,
                                         now_ms))
             continue;
+        /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] asset-change-notify event —
+         * self-select by held hash, reload-via-restart if ours changed. */
+        if (asset_reload_bus_consume(ev.ns, (int)ev.kind, ev.str,
+                                     asset_reload_reboot, nullptr))
+            continue;
         if (scene)
             dirty |= scene_on_bus_value(scene, ev.ns, (int)ev.kind, ev.num,
                                         ev.b, ev.str, t);
@@ -494,7 +515,7 @@ extern "C" void app_main(void) {
      * slaved board the human tier is the ONLY rendering verification. */
     /* [CXC-REPOINT] resolve the binding + arm the revert timer + read the
      * escape hatch BEFORE the network and before the transport reads the broker
-     * URI (ordering-is-load-bearing).  120 s = [DEC-SKIPPER-COMMIT-CONFIRM-
+     * URI (ordering-is-load-bearing).  120 s = [DEC-BUILDHOST-COMMIT-CONFIRM-
      * WINDOW-120S]. */
     bus_binding_boot_init(device_id(), 120);
     if (config_source() != ConfigSource::Http)
@@ -549,7 +570,7 @@ extern "C" void app_main(void) {
     /* Remote-restart control plane ([CXC-ER-REMOTE-RESTART]): install the
      * handler and subscribe the two exact `_device/` restart namespaces
      * persistently.  A truthy command re-runs the boot-fetch — the path
-     * that stranded qualia-6c9d0c (no OTA, not USB-tethered) now reloads
+     * that stranded qualia-004df8 (no OTA, not USB-tethered) now reloads
      * live.  The boot-guard is time-based so a config-LESS boot (idling
      * on the splash) still honors a remote restart. */
     restart_init(device_id(), bus_publish_state, reboot_now,
@@ -560,6 +581,14 @@ extern "C" void app_main(void) {
         bus.subscribe(rns[i]);
         ESP_LOGI(TAG, "[CXC-ER-RESTART-BUS] restart namespace: %s", rns[i]);
     }
+
+    /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] arm the consumer (clears held)
+     * BEFORE the boot fetch set held, then subscribe the retained
+     * asset-change-notify (composeio/+/bus_storage/asset/changed). */
+    asset_reload_bus_init();
+    bus.subscribe(asset_reload_bus_namespace());
+    ESP_LOGI(TAG, "[CXC-ACN] asset-change namespace: %s",
+             asset_reload_bus_namespace());
 
     /* Transport control plane ([CXC-BOARD-HW-UART-SLAVE] bootstrap-trap) —
      * see main.cpp. */
@@ -573,7 +602,7 @@ extern "C" void app_main(void) {
     }
 
     /* SELF-ANNOUNCEMENT (workstream 0.2) — the twin of main.cpp's.  This
-     * board in particular is why it exists: qualia-6c9d0c has no OTA and is
+     * board in particular is why it exists: qualia-004df8 has no OTA and is
      * not USB-tethered, so "which binary is it running" has been an
      * unanswerable question about it for a day. */
     announce_init(device_id(), cxc_build_fingerprint());
@@ -660,6 +689,31 @@ extern "C" void app_main(void) {
     bool bg_valid = false;
 
     while (true) {
+        /* [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] periodic backstop, OUTSIDE the
+         * capture lock — re-GET config and compare the server's fresh hash to
+         * held (HTTP source only; device never hashes).  See main.cpp. */
+        {
+            static uint32_t s_backstopNext = 0;
+            static bool s_backstopArmed = false;
+            const uint32_t nowb = (uint32_t)(esp_timer_get_time() / 1000);
+            if (!s_backstopArmed) {
+                s_backstopNext = nowb + kAssetBackstopMs;
+                s_backstopArmed = true;
+            } else if (scene && config_source() == ConfigSource::Http &&
+                       asset_reload_bus_held()[0] &&
+                       asset_backstop_due(nowb, s_backstopNext)) {
+                s_backstopNext = nowb + kAssetBackstopMs;
+                size_t blen = 0;
+                char* bt = config_fetch(&blen);
+                if (bt) {
+                    asset_reload_bus_backstop("timer",
+                                              config_fetch_last_content_hash(),
+                                              asset_reload_reboot, nullptr);
+                    free(bt);
+                }
+            }
+        }
+
         capture_http_fb_lock();
 
         int arrivals = 0;

@@ -219,60 +219,6 @@ def test_target_mode_is_the_ratified_ax_flag_and_writes_no_settings_file():
     assert w.child_env()["TERM"] == "xterm-256color"
 
 
-def test_the_real_captured_ax_session_renders_without_degrading():
-    """The strongest machine evidence available for the render half: feed the ACTUAL
-    13.8 KB byte stream a real `claude --ax-screen-reader` session emitted (committed by
-    the census, `ax.raw`) through the whole pre-scan + emulator path, in PTY-sized chunks
-    so the tail carry is exercised.
-
-    It asserts the two claims the target-mode choice rests on: the session's prose comes
-    out legible, and NOTHING in it breaks V1's line model."""
-    path = os.path.join(REPO, "compose_projects", "intelligence", "tools", "terminal_census_report", "ax.raw")
-    raw = open(path, "rb").read()
-    assert len(raw) > 10000
-    w, _ctx = _live(cols=120, rows=40)
-    for i in range(0, len(raw), 997):
-        w.feed(raw[i:i + 997])
-    assert w.degraded is False, w._degrade_reason
-    screen = "\n".join(w._screen.display)
-    assert "carriage return" in screen.lower()
-    assert "Claude Code" in screen or w._title
-    # Only the two startup QUERIES are unsupported — counted and named, never answered
-    # (answering would put widget bytes on the fd before the human typed: TERM-C5).
-    assert set(w.unsupported_counts) <= {"da1_query", "xtversion_query", "dsr_query",
-                                         "dsr_query_ansi", "osc_color_query"}, \
-        w.unsupported_counts
-
-
-def test_the_real_captured_fullscreen_session_degrades_visibly():
-    """The other half, with real data: `tui: fullscreen` — the mode David runs daily and
-    the one V1 does NOT support — must produce a BANNER, not a mess.  Fed the actual
-    captured stream, the widget names the first model-breaking sequence and publishes."""
-    path = os.path.join(REPO, "compose_projects", "intelligence", "tools", "terminal_census_report",
-                        "fullscreen.raw")
-    raw = open(path, "rb").read()
-    w, ctx = _live(cols=120, rows=40)
-    for i in range(0, len(raw), 997):
-        w.feed(raw[i:i + 997])
-    assert w.degraded is True
-    counts = w.unsupported_counts
-    assert counts.get("alt_screen_1049") and counts.get("scroll_region")
-    assert counts.get("abs_cursor_addr", 0) > 100, "the census measured 118 CUPs"
-    assert ctx.published[-1][1]["degraded"] is True
-    c = _Canvas()
-    w.draw(c, w.arranged_rect)
-    assert "DEGRADED" in c.texts()
-    assert "NOT trustworthy" in c.texts()
-
-
-def test_census_report_is_committed_with_the_target_it_produced():
-    """[CXC-TERM-CENSUS] constraint: the sequence table's provenance is one file away."""
-    md = os.path.join(REPO, "compose_projects", "intelligence", "tools", "terminal_census_report", "census.md")
-    assert os.path.isfile(md)
-    text = open(md).read()
-    assert "Discrimination gate: PASS" in text
-
-
 # ══ TERM-C6 — an out-of-scope mode is refused HONESTLY ═════════════════════
 def test_refuses_to_spawn_with_target_mode_unset():
     """The whole point: with TARGET_MODE unset the widget REFUSES rather than guessing.

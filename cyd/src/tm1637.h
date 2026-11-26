@@ -101,8 +101,24 @@
 #include <cstdint>
 
 /* ------------------------------------------------------------------
- * Pin seams.  Open-drain semantics: low() sinks, release() floats and
- * lets the module's 10K pull-up take the line high.  read() samples DIO.
+ * Pin seams.  low() sinks; release() presents a HIGH; read() samples DIO.
+ *
+ * ⛔ HOW release() PRESENTS HIGH IS A BOARD DECISION, AND Hi-Z IS THE WRONG
+ * DEFAULT FOR THE CHEAP 3.3 V BREAKOUTS THIS FLEET USES.  The original seams
+ * implemented release() as pinMode(INPUT) — a true open-drain float that
+ * trusts the module's pull-up to raise the line.  On the common 4-digit
+ * breakout at 3.3 V (weak/absent pull-up, marginal breadboard link) the line
+ * never reaches a valid HIGH: no clean CLK edge, no START, nothing latches,
+ * 0 ACK, dark.  This was the root cause of every dark tube
+ * (DEFECT-TM1637-ALL-FOUR-7-SEGMENT-E11525): NOT the protocol — the protocol
+ * here is byte-identical to two known-good libraries — but the SEAM.
+ *
+ * Both trusted references (RobTillaart/TM1637_RT and the classic SeeedStudio
+ * Grove <TM1637.h>) drive release() PUSH-PULL (actively HIGH) and float DIO
+ * to INPUT only inside read().  Use the shared push-pull seam
+ * cyd/src/tm1637_arduino_seam.h on every Arduino board; do NOT re-introduce a
+ * Hi-Z release.  The 5 V / real-10K-pull-up analysis further below is still
+ * correct FOR THAT topology, but it is not the fleet's topology.
  * ------------------------------------------------------------------ */
 struct Tm1637Bus {
     void (*clk_low)(void* ctx);

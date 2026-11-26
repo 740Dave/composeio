@@ -26,6 +26,8 @@ REPO_ROOT = os.path.abspath(os.path.join(_HERE, os.pardir, os.pardir, os.pardir)
 # The runtime code surface the invariant governs (dirs of .py under the repo).
 _CODE_ROOTS = [
     os.path.join(REPO_ROOT, "python", "composeio"),
+    # the composebus kernel composeio aliases ([SPEC:CXC-COMPOSEBUS-KERNEL] §7)
+    os.path.join(REPO_ROOT, "python", "composebus", "composebus"),
     os.path.join(REPO_ROOT, "intelligence"),
 ]
 

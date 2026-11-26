@@ -36,13 +36,13 @@
 
 ## 0.1 Step 0 — the board flashed in error
 
-Research doc §0.1 concerns an ESP32-C3 with MAC `AA:BB:CC:DD:EE:FF`.
+Research doc §0.1 concerns an ESP32-C3 with MAC `00:00:5e:00:53:02`.
 
 | | |
 |---|---|
 | Was David asked what he wanted done with it? | **Not by me.** He was out of office. The launching context stated he had already authorised free flashing of the single board now on the bench, and that board is **not** the §0.1 board |
 | His decision | n/a for the §0.1 board |
-| Restore performed? | **No — the §0.1 board is NOT PRESENT.** Only one board is on USB and its MAC is `AA:BB:CC:DD:EE:FF`, which is a different physical board. There was nothing to restore |
+| Restore performed? | **No — the §0.1 board is NOT PRESENT.** Only one board is on USB and its MAC is `00:00:5e:00:53:03`, which is a different physical board. There was nothing to restore |
 | Were the backups still present? | **Not checked / not needed.** The board they belong to is not attached. If David wants that board restored, it must be plugged in first and its MAC re-confirmed against `SER=` before any write |
 
 > **The MAC in research doc §0.1 and §2.1 is stale with respect to today's bench.** Do not
@@ -69,20 +69,20 @@ Research doc §0.1 concerns an ESP32-C3 with MAC `AA:BB:CC:DD:EE:FF`.
 
 | Role | Chip | Rev | MAC | Port | `stamp=` | Flash |
 |---|---|---|---|---|---|---|
-| receiver under test **and** transmitter (Track A loopback) | **ESP32-C3** | **v0.4** (`rev=4`) | **`AA:BB:CC:DD:EE:FF`** | `/dev/cu.usbmodem31101` | `c8c58d8b` | 4 MB, mfr `0x46`, dev `0x4016` |
+| receiver under test **and** transmitter (Track A loopback) | **ESP32-C3** | **v0.4** (`rev=4`) | **`00:00:5e:00:53:03`** | `/dev/cu.usbmodem31101` | `c8c58d8b` | 4 MB, mfr `0x46`, dev `0x4016` |
 
 Full inventory readings, verbatim:
 
 ```
 $ python -c "from serial.tools import list_ports; ..."
-/dev/cu.usbmodem31101 | USB VID:PID=303A:1001 SER=AA:BB:CC:DD:EE:FF LOCATION=3-1.1
+/dev/cu.usbmodem31101 | USB VID:PID=303A:1001 SER=00:00:5E:00:53:03 LOCATION=3-1.1
 
 $ esptool --port /dev/cu.usbmodem31101 --no-stub chip_id
 Detecting chip type... ESP32-C3
 Chip is ESP32-C3 (revision v0.4)
 Features: WiFi, BLE
 Crystal is 40MHz
-MAC: AA:BB:CC:DD:EE:FF
+MAC: 00:00:5e:00:53:03
 Warning: ESP32-C3 has no Chip ID. Reading MAC instead.
 
 $ esptool --port /dev/cu.usbmodem31101 --no-stub flash_id
@@ -562,7 +562,7 @@ STAT hw state=RUNNING tec=0 rec=0 msgs_to_tx=0 msgs_to_rx=0 tx_failed=0 rx_misse
 | **Do ComposeBus CAN leaves need one accept pattern or two?** | Decides whether E1d's dual-mode finding constrains the layout at all. One pattern → single mode → position irrelevant → the decision rests wholly on E1b. Two → dual mode → only `ID[28:13]` is comparable → L1 matches exactly, L2 matches a 10-bit hash prefix admitting 64 unrelated namespaces (§6) |
 | **Is software rejection of a second subscription acceptable?** | The bench can now price the middle option — one exact hardware pattern plus software filtering for the rest. Whether that fits the CPU budget of a leaf is a system question, not a silicon one (§6) |
 | **Should the bench jumper be moved to GPIO3, or should `TWAI_TX_GPIO` become 2?** | I ran on GPIO2 because that is where the wire is. Moving the wire is the right fix — GPIO2 is a strapping pin. But it is his bench and his wire (§10, W1) |
-| **Does the §0.1 board (`AA:BB:CC:DD:EE:FF`) still need restoring?** | It is not attached, so I could not act. If it matters, it must be plugged in and MAC-verified first (§0.1) |
+| **Does the §0.1 board (`00:00:5e:00:53:02`) still need restoring?** | It is not attached, so I could not act. If it matters, it must be plugged in and MAC-verified first (§0.1) |
 
 ### Anything that surprised you
 
@@ -599,7 +599,7 @@ Five items. Two are consequential.
 | **W2** | Research doc §5.7 and `tools/bench.py::wirecheck` | The `RXPULL` rehearsal "reproduces both 'the wire is wrong' shapes... in about thirty seconds" and is "worth doing **even on Track A**" | **It reproduces neither once the Track A jumper is fitted.** Measured: `RXPULL down` → frame transmits and is *received normally* (`accepted=2, tec=0, bus_error=0`); `RXPULL up` → total silence, `bus_error=0`, `lines_suppressed=0`, no storm. An internal pull cannot override the far end's push-pull driver. The signatures printed in §5.7 were necessarily captured with **no jumper fitted** — which matches §0.2's note that no CAN hardware was wired on 2026-08-10. **The rehearsal is only valid with the wire removed, and the doc should say so** |
 | **W3** | `tools/bench.py::wirecheck` | Issues `DEINIT` → `RXPULL <mode>` → `INIT` | The ESP-IDF legacy TWAI driver reconfigures the RX pad when the driver installs, so a pull set **before** `INIT` may not survive it. Any future fault-injection must apply `RXPULL` **after** `INIT`. (Even applied after, it still loses to the jumper — W2.) Not fixed in this run; recorded |
 | **W4** | `tools/bench.py::control` report string | `"accepted=6 across 5 distinct ids"` | **Four** distinct ids, not five: `0x12345678`, `0x12345679`, `0x024694a0`×2, `0x02468b40`×2. Research doc §7's own prediction table lists four. Cosmetic, but it is a predicted value printed next to an observed one, which is exactly where an off-by-one is most likely to be copied into a conclusion |
-| **W5** | Research doc §0.1 / §2.1 | ESP32-C3 at `/dev/cu.usbmodem31101` has MAC `AA:BB:CC:DD:EE:FF`; an ESP32-C6 sits at `/dev/cu.usbmodem31201` | Neither is present. `/dev/cu.usbmodem31101` is now a **different** ESP32-C3, MAC `AA:BB:CC:DD:EE:FF`. No second board is attached. §2.1 is correctly labelled an anecdote — but §0.1 is *not* so labelled and reads as current fact, and a reader following §0.1 literally would flash a 4 MB backup onto the wrong physical board. **§0.1 needs the same "verify the MAC first" hazard framing that §4.2 has** |
+| **W5** | Research doc §0.1 / §2.1 | ESP32-C3 at `/dev/cu.usbmodem31101` has MAC `00:00:5e:00:53:02`; an ESP32-C6 sits at `/dev/cu.usbmodem31201` | Neither is present. `/dev/cu.usbmodem31101` is now a **different** ESP32-C3, MAC `00:00:5e:00:53:03`. No second board is attached. §2.1 is correctly labelled an anecdote — but §0.1 is *not* so labelled and reads as current fact, and a reader following §0.1 literally would flash a 4 MB backup onto the wrong physical board. **§0.1 needs the same "verify the MAC first" hazard framing that §4.2 has** |
 
 **On W1, and how it should be caught next time.** The failure mode deserves promotion into
 research doc §10's table, because it defeats the existing gates. The doc's §10 item 5
@@ -765,7 +765,7 @@ Everything below is the unedited output of
 python3 firmware/can_filter_bench/tools/bench.py --loop /dev/cu.usbmodem31101 --pins 2,10 --exp all
 ```
 
-on firmware `stamp=c8c58d8b`, board MAC `AA:BB:CC:DD:EE:FF`, 2026-08-10. `L<` is a command
+on firmware `stamp=c8c58d8b`, board MAC `00:00:5e:00:53:03`, 2026-08-10. `L<` is a command
 sent to the board; `L|` is a line the board emitted.
 ```
 

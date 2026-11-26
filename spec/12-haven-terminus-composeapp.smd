@@ -1,0 +1,482 @@
+---
+scope: "Refactor Haven Terminus from a CTk monolith into a ComposeApp with four bus-native AppModules — preserving all existing functionality while gaining dashboard visibility, remote control, and testability"
+audience: "Builder agents (implementation), spec-gap-analyzer (verification), Haven Architect (design review)"
+boundary: "IN: ComposeApp integration, module decomposition, namespace registry, bus wiring, MQTT export. OUT: Haven Terminal feature design (see haven/spec/42-haven-terminal.smd), ComposeIO framework internals (see 08-composeio-app-framework.smd), ComposeUX dashboard design"
+not-this: "Not a redesign of Haven Terminal features or UI — this is an internal refactor. The app looks and behaves identically after refactoring. Not the ComposeUX monitoring dashboard for Terminus (that's a separate task after export namespaces are verified)."
+status: "Draft — ready for design review"
+created: 2026-03-29
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+
+# Haven Terminus ComposeApp Refactor [SPEC:HT-COMPOSEAPP]
+
+> Transform Haven Terminus from an event-driven CTk monolith with in-process EventBus into a ComposeApp with four AppModules communicating via the ComposeIO internal bus — gaining MQTT dashboard visibility, remote control, independent module testability, and ecosystem integration while preserving identical visual appearance and behavior.
+
+---
+
+## 1. Problem Statement
+
+### [HT-PROBLEM] Why Refactor
+
+Haven Terminus is a working CTk desktop application (~1,478 lines across 7 files) that manages Haven discussions, launches Intelligence sessions, and detects custodial human presence. It already works. The refactor is justified by four gains:
+
+- **Dashboard visibility**: Operators see presence state, session count, and connection health on any ComposeIO dashboard without additional code
+- **Remote control**: A dashboard button or MQTT message can trigger a session launch or force-refresh discussions
+- **Testability**: All modules except UIModule become pure Python with no CTk dependency — testable with a mock bus
+- **Ecosystem integration**: Terminus becomes a peer on the ComposeIO bus. Physical hardware (button panels, LED indicators, CAN-connected devices) can interact with it natively
+
+### [HT-PROBLEM-FIT] Architectural Fit Assessment
+
+The existing code already follows patterns structurally isomorphic to ComposeApp:
+
+| Current Pattern | ComposeApp Equivalent |
+|----------------|----------------------|
+| `EventBus` singleton (in-process pub/sub) | ComposeIO internal bus |
+| `EventBus.emit(event, data)` | `bus.publish_state(namespace, value)` |
+| `EventBus.subscribe(event, callback)` | `bus.on_message(namespace, callback)` |
+| `PresenceManager`, `SessionManager`, `HavenClient` | `AppModule` subclasses |
+| `RelayBridge` (forwards events externally) | External bus transport (MQTT) |
+| Direct callback chains | Bus namespace subscriptions |
+
+The migration is a structural transformation, not a conceptual redesign.
+
+---
+
+## 2. Architecture
+
+### [HT-ARCH] Target: Four Modules on Internal Bus
+
+```
+Haven Terminus (ComposeApp)
+============================
+
+ INTERNAL BUS (haven-terminus-internal)
+
+ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌─────────────┐
+ │ PresenceModule │ │ SessionModule  │ │ DiscussionMod  │ │ UIModule    │
+ │                │ │                │ │                │ │             │
+ │ pub:           │ │ pub:           │ │ pub:           │ │ pub:        │
+ │  presence/     │ │  sessions/     │ │  threads/      │ │  interaction│
+ │  state,idle    │ │  list,result   │ │  list,active   │ │  ui/focus   │
+ │                │ │                │ │  connection/   │ │  ui/select  │
+ │ sub:           │ │ sub:           │ │  status        │ │  requests   │
+ │  interaction   │ │  launch_req    │ │                │ │             │
+ │  break_toggle  │ │                │ │ sub:           │ │ sub: ALL    │
+ └────────────────┘ └────────────────┘ │  fetch/post    │ │  state ns   │
+                                       │  requests      │ │             │
+                                       └────────────────┘ └─────────────┘
+
+ Exported → MQTT → dashboards:
+   presence_status, sessions_active, connection_status
+
+ Imported ← MQTT ← dashboard controls:
+   dashboard_cmd
+```
+
+- constraint: All module-to-module communication MUST go through the internal bus. No direct imports between modules.
+- constraint: UIModule is the ONLY module that imports `customtkinter`. All others are headless pure Python.
+- constraint: Bus callbacks that update CTk widgets MUST dispatch to the main thread via `root.after(0, callback)`.
+- see-also: ComposeUX follows this same pattern — study `ux_composer/specs/01-composer-architecture.smd` for a proven reference.
+
+### [HT-ARCH-ENTRYPOINT] Application Entry Point
+
+`app.py` becomes a thin entrypoint:
+
+```python
+from haven_terminal_app import HavenTerminusApp
+
+app = HavenTerminusApp("haven-terminus.compose.yaml")
+app.start()
+app.root.mainloop()
+```
+
+`haven_terminal_app.py` is the `ComposeApp` subclass that registers namespaces, attaches modules, and calls `setup()`.
+
+---
+
+## 3. Namespace Registry
+
+### [HT-NS-PRIVATE] Private Namespaces (`_app/`)
+
+| Namespace | State Engine | Publisher | Subscriber(s) | Purpose |
+|-----------|-------------|-----------|---------------|---------|
+| `_app/presence/state` | `enum: [active, idle, busy, away, extended_away, offline]` | PresenceModule | UIModule | Current presence state |
+| `_app/presence/idle_seconds` | `continuous_0_255` | PresenceModule | UIModule | Seconds since last interaction |
+| `_app/presence/interaction` | event-only | UIModule | PresenceModule | User interaction signal |
+| `_app/presence/break_toggle` | event-only | UIModule | PresenceModule | Manual break/back |
+| `_app/sessions/list` | `binary` | SessionModule | UIModule | Active session info (JSON) |
+| `_app/sessions/launch_request` | event-only | UIModule | SessionModule | Request to launch Intelligence |
+| `_app/sessions/launch_result` | event-only | SessionModule | UIModule | Launch success/failure |
+| `_app/threads/list` | `binary` | DiscussionModule | UIModule | Thread list from Haven (JSON) |
+| `_app/discussion/active` | `binary` | DiscussionModule | UIModule | Current discussion content (JSON) |
+| `_app/discussion/fetch_request` | event-only | UIModule | DiscussionModule | Request to load a thread |
+| `_app/discussion/post_request` | event-only | UIModule | DiscussionModule | Request to post a message |
+| `_app/discussion/post_result` | event-only | DiscussionModule | UIModule | Post success/failure |
+| `_app/ui/focused_pane` | `enum: [0, 1]` | UIModule | — | Which pane is focused (published for future dashboard monitoring) |
+| `_app/ui/split_mode` | `binary` | UIModule | — | Single vs split view (published for future dashboard monitoring) |
+| `_app/ui/selected_thread` | `binary` | UIModule | DiscussionModule | Which thread is selected |
+| `_app/connection/status` | `enum: [connecting, connected, disconnected, error]` | DiscussionModule | UIModule | MCP connection health |
+
+### [HT-NS-EXPORTED] Exported Namespaces (Dashboard-Visible)
+
+| Namespace | State Engine | Purpose |
+|-----------|-------------|---------|
+| `presence_status` | `enum: [active, idle, busy, away, extended_away, offline]` | Human presence for monitoring dashboards |
+| `sessions_active` | `continuous_0_255` | Count of active Intelligence sessions |
+| `connection_status` | `enum: [connecting, connected, disconnected, error]` | Terminus health for monitoring |
+
+- rationale: These three namespaces are the minimum viable dashboard surface. They answer: "Is the human here? How many Intelligences are working? Is the terminal connected?" No internal plumbing leaks to the external bus.
+
+### [HT-NS-IMPORTED] Imported Namespaces (Remote Control)
+
+| Namespace | State Engine | Purpose |
+|-----------|-------------|---------|
+| `dashboard_cmd` | `enum: [none, refresh, launch_architect, launch_builder]` | Remote control from dashboard |
+
+### [HT-NS-ROUTED] Routed Namespaces (Debug)
+
+| Internal | Route As | Purpose |
+|----------|----------|---------|
+| `_app/presence/state` | `debug/presence_state` | Operator monitoring via explicit bridge |
+
+- constraint: Logs WARN at startup per [APP-ARCH-ROUTE] to make the bridge auditable
+
+---
+
+## 4. Module Specifications
+
+### [HT-MOD-PRESENCE] PresenceModule
+
+```python
+class PresenceModule(AppModule):
+    MODULE_NAME = "presence"
+    MODULE_MANIFEST = {
+        "publishes": ["_app/presence/state", "_app/presence/idle_seconds", "presence_status"],
+        "subscribes": ["_app/presence/interaction", "_app/presence/break_toggle"],
+    }
+```
+
+**Replaces**: `PresenceManager` class (lines 311-448 of current `app.py`)
+
+**Behavior**:
+- Subscribes to `_app/presence/interaction` events (replaces direct `record_interaction()` calls)
+- Subscribes to `_app/presence/break_toggle` events (manual break/back)
+- Runs periodic tick via internal timer: Zoom detection (`pgrep` for Zoom process), idle escalation
+- Publishes state transitions to `_app/presence/state`
+- Publishes idle seconds to `_app/presence/idle_seconds` on each tick
+- Publishes summary to `presence_status` (auto-exported by framework)
+
+- state-machine: Identical to current implementation: `active → idle (5min) → away (15min) → extended_away (2hrs)`. Zoom triggers `busy`. Break button triggers `away`. Any interaction returns to `active`.
+- compliance: Presence state transitions MUST match current behavior exactly — this is testable against the existing PresenceManager
+
+### [HT-MOD-SESSION] SessionModule
+
+```python
+class SessionModule(AppModule):
+    MODULE_NAME = "session_manager"
+    MODULE_MANIFEST = {
+        "publishes": ["_app/sessions/list", "_app/sessions/launch_result", "sessions_active"],
+        "subscribes": ["_app/sessions/launch_request"],
+    }
+```
+
+**Replaces**: `SessionManager` class + provisioning logic in `HavenTerminal`
+
+**Behavior**:
+- Subscribes to `_app/sessions/launch_request` events
+- On request: runs provisioner, launches iTerm tab via AppleScript, tracks process
+- Periodic liveness check (`pgrep` + canary files)
+- Publishes `_app/sessions/list` with current session states (JSON)
+- Publishes `sessions_active` count (auto-exported)
+
+- constraint: iTerm2 AppleScript is macOS-specific. Encapsulated in SessionModule so a future Linux port swaps only the launch method.
+- compliance: Quick-launch behavior MUST be preserved — same keystroke mappings, same provisioner flow
+
+### [HT-MOD-DISCUSSION] DiscussionModule (MCP Adapter)
+
+```python
+class DiscussionModule(AppModule):
+    MODULE_NAME = "discussion"
+    MODULE_MANIFEST = {
+        "publishes": [
+            "_app/threads/list", "_app/discussion/active",
+            "_app/discussion/post_result", "_app/connection/status",
+            "connection_status",
+        ],
+        "subscribes": [
+            "_app/discussion/fetch_request", "_app/discussion/post_request",
+            "_app/ui/selected_thread",
+        ],
+    }
+```
+
+**Replaces**: `HavenClient` class entirely + polling logic in `HavenTerminal`
+
+**Behavior**:
+- On startup (`on_ready`): connects to Haven MCP via SSE, publishes `_app/connection/status`
+- Periodic poll: fetches discussion list, publishes `_app/threads/list`
+- Subscribes to `_app/discussion/fetch_request` — fetches thread, publishes `_app/discussion/active`
+- Subscribes to `_app/discussion/post_request` — posts message, publishes `_app/discussion/post_result`
+
+- pattern: This is the [DP-CIO-20] adapter pattern — bridges Haven MCP request/response into bus pub/sub namespaces. The async MCP event loop runs on a background thread (same as current `HavenClient`).
+- constraint: The `HavenClient` asyncio event loop MUST remain on a background thread. CTk mainloop owns the main thread. This is the existing pattern, preserved.
+- compliance: Discussion loading, thread listing, and posting MUST work identically to current behavior
+
+### [HT-MOD-UI] UIModule
+
+```python
+class UIModule(AppModule):
+    MODULE_NAME = "ui"
+    MODULE_MANIFEST = {
+        "publishes": [
+            "_app/presence/interaction", "_app/presence/break_toggle",
+            "_app/sessions/launch_request", "_app/discussion/fetch_request",
+            "_app/discussion/post_request", "_app/ui/focused_pane",
+            "_app/ui/split_mode", "_app/ui/selected_thread",
+        ],
+        "subscribes": [
+            "_app/presence/state", "_app/presence/idle_seconds",
+            "_app/sessions/list", "_app/sessions/launch_result",
+            "_app/threads/list", "_app/discussion/active",
+            "_app/discussion/post_result", "_app/connection/status",
+        ],
+    }
+```
+
+**Replaces**: Bulk of `HavenTerminal`, `DiscussionPane`, and widget layer
+
+**Behavior**:
+- Renders sidebar, panes, status bar, launch strip — all current UI, visually identical
+- On user interaction (key, click, motion): publishes `_app/presence/interaction`
+- On thread selection: publishes `_app/ui/selected_thread` + `_app/discussion/fetch_request`
+- On send: publishes `_app/discussion/post_request`
+- Subscribes to all state namespaces and updates UI accordingly
+- Replaces `haven_widgets.EventBus` with ComposeIO internal bus (structurally identical — both are in-process pub/sub with subscriber callbacks)
+
+- constraint: ONLY module that imports `customtkinter`
+- constraint: Bus subscription callbacks that update widgets MUST use `root.after(0, callback)` for main-thread dispatch
+- compliance: Visual appearance and all UI interactions MUST be preserved exactly
+
+---
+
+## 5. Application Configuration
+
+### [HT-CONFIG] haven-terminus.compose.yaml
+
+```yaml
+app:
+  id: haven-terminus
+
+  transports:
+    - type: mqtt
+      broker: mqtt-broker.local
+      port: 1883
+
+namespaces:
+  # ── Exported (dashboard-visible) ──
+  - name: presence_status
+    state_engine:
+      type: enum
+      values: [active, idle, busy, away, extended_away, offline]
+    export: true
+    label: "Human Presence"
+
+  - name: sessions_active
+    state_engine: continuous_0_255
+    export: true
+    label: "Active Sessions"
+
+  - name: connection_status
+    state_engine:
+      type: enum
+      values: [connecting, connected, disconnected, error]
+    export: true
+    label: "Terminus Status"
+
+  # ── Imported (remote control) ──
+  - name: dashboard_cmd
+    state_engine:
+      type: enum
+      values: [none, refresh, launch_architect, launch_builder]
+    import: true
+    label: "Dashboard Command"
+
+  # ── Event-only namespaces (_app/presence/interaction, _app/presence/break_toggle,
+  #    _app/sessions/launch_request, _app/sessions/launch_result,
+  #    _app/discussion/fetch_request, _app/discussion/post_request,
+  #    _app/discussion/post_result) are auto-registered from MODULE_MANIFEST
+  #    at runtime — no YAML entry required for event-only namespaces.
+
+  # ── Private: Presence ──
+  - name: _app/presence/state
+    state_engine:
+      type: enum
+      values: [active, idle, busy, away, extended_away, offline]
+    route_external: true
+    route_as: debug/presence_state
+
+  - name: _app/presence/idle_seconds
+    state_engine: continuous_0_255
+
+  # ── Private: Sessions ──
+  - name: _app/sessions/list
+    state_engine: binary
+
+  # ── Private: Discussion ──
+  - name: _app/threads/list
+    state_engine: binary
+
+  - name: _app/discussion/active
+    state_engine: binary
+
+  - name: _app/connection/status
+    state_engine:
+      type: enum
+      values: [connecting, connected, disconnected, error]
+
+  # ── Private: UI state ──
+  - name: _app/ui/focused_pane
+    state_engine:
+      type: enum
+      values: ["0", "1"]
+
+  - name: _app/ui/split_mode
+    state_engine: binary
+
+  - name: _app/ui/selected_thread
+    state_engine: binary
+```
+
+---
+
+## 6. File Manifest
+
+### [HT-FILES-NEW] Files to Create
+
+| File | Est. Lines | Purpose |
+|------|-----------|---------|
+| `haven_terminal_app.py` | 80 | ComposeApp subclass: setup(), module registration |
+| `modules/__init__.py` | 5 | Package init |
+| `modules/presence.py` | 120 | PresenceModule — state machine + bus |
+| `modules/session.py` | 180 | SessionModule — provisioning + liveness + bus |
+| `modules/discussion.py` | 200 | DiscussionModule — MCP adapter + bus |
+| `modules/ui.py` | 600 | UIModule — all CTk rendering + bus subscriptions |
+| `haven-terminus.compose.yaml` | 70 | App configuration |
+
+### [HT-FILES-MODIFY] Files to Modify
+
+| File | Change |
+|------|--------|
+| `app.py` | Thin entrypoint: import ComposeApp, call `start()` + `mainloop()` |
+| `haven_widgets/base.py` | EventBus replaced by internal bus subscription |
+| `haven_widgets/relay_bridge.py` | Eliminated — its function (forwarding events externally) is replaced by the MQTT external bus transport |
+
+### [HT-FILES-DELETE] Files to Remove (After Verification)
+
+| File | Reason |
+|------|--------|
+| `haven_client.py` | Absorbed into `modules/discussion.py` |
+
+---
+
+## 7. Migration Phases
+
+### [HT-PHASE-1] Phase 1: Bus-Native Refactor
+
+Extract all four modules, wire all communication through the internal bus, replace EventBus with ComposeIO bus. The app works identically but all state flows through bus namespaces.
+
+**Steps**:
+1. Add `composeio` dependency
+2. Create `haven_terminal_app.py` with namespace registration from [HT-CONFIG]
+3. Extract PresenceModule from `PresenceManager`
+4. Extract SessionModule from `SessionManager` + provisioning logic
+5. Extract DiscussionModule from `HavenClient` + polling logic
+6. Consolidate UIModule from remaining `HavenTerminal` + `DiscussionPane` + widget layer
+7. Replace `haven_widgets.EventBus` with ComposeIO internal bus
+8. Verify: app starts, all features work, no direct module-to-module imports
+
+- evaluation-gate: The app must work identically to the pre-refactor version. All features — thread listing, discussion rendering, session launch, presence detection, break toggle, split panes, quick-launch keystrokes — must behave the same. This is the gate before connecting external bus.
+
+### [HT-PHASE-2] Phase 2: External Bus + Dashboard Visibility
+
+Connect MQTT transport, verify exported namespaces appear on the bus, test dashboard consumption.
+
+**Steps**:
+1. Connect MQTT transport to external bus
+2. Verify `presence_status`, `sessions_active`, `connection_status` appear on MQTT topics
+3. Test `dashboard_cmd` import — trigger refresh from MQTT message
+4. Verify `debug/presence_state` route works with WARN log at startup
+
+- evaluation-gate: External namespaces visible on MQTT. Dashboard can subscribe and display. Remote command triggers action in the app.
+- dependency: Requires MQTT broker at mqtt-broker.local:1883 (running)
+
+---
+
+## 8. Risk Mitigation
+
+### [HT-RISK-MCP] Haven MCP Request/Response Bridging
+
+Haven MCP is request/response. The bus is pub/sub. The DiscussionModule adapter mediates: receive fetch requests as bus events, make async MCP calls, publish results as state changes. This is the [DP-CIO-20] adapter pattern — solved and proven.
+
+- mitigation: The adapter adds one layer of indirection. The async event loop stays on its background thread (same as current `HavenClient`).
+
+### [HT-RISK-PAYLOAD] Large Payloads on Bus
+
+Discussion posts can be large. ComposeIO bus has a 256-byte message limit ([BP-MSG-SIZE]) for transport-level messages. Resolution: internal bus is in-process — JSON serialization has no size limit. External bus only exports small summary states (presence enum, session count, connection enum). Discussion content never crosses to external bus.
+
+### [HT-RISK-THREAD] CTk Thread Safety
+
+CTk mainloop owns the main thread. Bus callbacks from other modules may fire on daemon threads. Resolution: UIModule subscription callbacks use `root.after(0, callback)` to dispatch to main thread. This is the existing pattern — `HavenTerminal` already uses `self.after()` for cross-thread UI updates.
+
+---
+
+## 9. Compliance Requirements
+
+### [HT-COMPLIANCE] Phase 1 Requirements
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| HT-C1 | App starts as ComposeApp with all namespaces registered | `app.bus.namespaces` contains all 16 private + 3 exported + 1 imported |
+| HT-C2 | All 4 modules attach and receive `on_ready` | Log output confirms module startup |
+| HT-C3 | Presence detection works through bus | Keystroke → `_app/presence/interaction` event → PresenceModule updates `_app/presence/state` |
+| HT-C4 | Session launch works through bus | Quick-launch click → `_app/sessions/launch_request` → SessionModule provisions → `_app/sessions/list` updated |
+| HT-C5 | Discussion loading works through bus | Thread click → `_app/discussion/fetch_request` → DiscussionModule fetches → `_app/discussion/active` published → UIModule renders |
+| HT-C6 | Message posting works through bus | Send → `_app/discussion/post_request` → DiscussionModule posts → `_app/discussion/post_result` |
+| HT-C7 | No direct imports between modules | Grep: no module file imports another module file |
+| HT-C8 | UIModule is the only CTk importer | Grep: `import customtkinter` appears only in `modules/ui.py` and `haven_widgets/` |
+| HT-C9 | Visual appearance preserved | Human review: app looks identical to pre-refactor |
+| HT-C10 | EventBus replaced | No remaining `EventBus.emit()` or `EventBus.subscribe()` calls |
+| HT-C11 | Non-UI modules testable without CTk | PresenceModule, SessionModule, DiscussionModule can be instantiated with a mock bus and no display |
+
+### [HT-COMPLIANCE-P2] Phase 2 Requirements
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| HT-C12 | Exported namespaces on MQTT | `mosquitto_sub -t 'composeio/haven-terminus/#'` shows presence_status, sessions_active, connection_status |
+| HT-C13 | Import namespace works | Publish to `composeio/haven-terminus/dashboard_cmd` → app responds |
+| HT-C14 | Debug route works with warning | `debug/presence_state` appears on MQTT; startup log includes WARN |
+
+---
+
+## Relationships
+
+- depends-on: [SPEC:CIO-APP] (ComposeApp framework, AppModule base class)
+- depends-on: [SPEC:CIO-BUS-PROTOCOL] (internal bus, namespace model, _app/ boundary)
+- depends-on: [SPEC:CIO-CONFIG-SCHEMA] (compose.yaml schema, state engine types)
+- depends-on: [AMEND:CS-APP] (app config amendment, transport configuration)
+- see-also: Haven Terminal feature spec at `haven/spec/42-haven-terminal.smd`
+- see-also: ComposeUX architecture at `ux_composer/specs/01-composer-architecture.smd` (proven ComposeApp reference)
+- see-also: Architectural analysis at `haven/terminus/COMPOSEIO-REFACTOR-PLAN.md`
+
+## External References
+
+- [ComposeIO Python library](${COMPOSEIO_HOME}/python/composeio/) — ComposeApp, AppModule, ComposeIOBus implementations
+- [Haven Terminal source](~/haven/terminus/) — current implementation being refactored
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-29
+**Status**: Draft — ready for design review
+**Intelligence**: Claude Opus 4.6 (1M context)
