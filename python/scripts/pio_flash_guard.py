@@ -9,7 +9,8 @@
 #                                      port's serial; unset = REFUSE
 #        custom_flash_port_env = V     (per env) the port comes from $V (via
 #                                      upload_port = ${sysenv.V}); unset = REFUSE
-#      Auto-detect (no explicit port) and port-less protocols are refused.  The logic
+#      Auto-detect (no explicit port) and every protocol except esptool are refused
+#      (an allowlist: only a write through the checked port is guardable).  The logic
 #      lives in python/composeio/flash_guard.py, loaded BY PATH (no package import).
 #
 #   2. LIVE-BUILD ENV.  `custom_fw_required_env = A B` (per env) names host-overlay
@@ -91,7 +92,7 @@ def run(env, targets, environ):
             env.subst("$UPLOAD_PORT"), environ,
             expect_var=_opt(env, "custom_flash_expect_env") or None,
             port_var=_opt(env, "custom_flash_port_env") or None,
-            protocol=env.subst("$UPLOAD_PROTOCOL"))
+            protocol=_protocol(env))
     except lib.FlashRefused as exc:
         sys.stderr.write("flash_guard: env:%s: %s\n" % (pioenv, exc))
         return 2
@@ -100,9 +101,22 @@ def run(env, targets, environ):
     return 0
 
 
+def _protocol(env):
+    """The upload protocol this env will use: the explicit option, else the board
+    manifest's default (PlatformIO resolves the same way). An empty result refuses."""
+    proto = (env.subst("$UPLOAD_PROTOCOL") or "").strip()
+    if not proto:
+        try:
+            proto = (env.BoardConfig().get("upload.protocol", "") or "").strip()
+        except Exception:
+            proto = ""
+    return proto
+
+
 def _is_write_target(name):
+    # Same set as flash_guard.is_flash_target; `__debug` is a build, not a write.
     import re
-    return bool(re.search(r"(upload|erase|flash|program|bootloader|fuses|debug)", name or "", re.I))
+    return bool(re.search(r"(upload|erase|flash|program|bootloader|fuses)", name or "", re.I))
 
 
 if "Import" in globals():  # under SCons; a test imports this file and calls run()

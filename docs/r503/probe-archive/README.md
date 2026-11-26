@@ -100,7 +100,7 @@ Requires `pyserial`. Nothing else.
 ## Rules this code enforces structurally, not by convention
 
 ⛔ **A device path is a LEASE, not an identity.** Every command resolves
-`/dev/cu.*` from the USB **serial number** `00:00:5E:00:53:06` **at use time**. The
+`/dev/cu.*` from the USB **serial number** of the board named by `R503_EXPECT_SERIAL` **at use time**. The
 path is never cached, never iterated over, and never written into a config.
 `esptool chip-id` is **not** used for identification — it *resets the board*, which
 is the exact harm an identity check is run to avoid. The USB descriptor read has no
@@ -147,7 +147,7 @@ a loud `NO MODULE EVER ANSWERED — DO NOT USE THIS SESSION TO FILL AN EVIDENCE 
 
 ```bash
 firmware/r503_probe/build.sh          # build
-firmware/r503_probe/build.sh upload   # build + flash 00:00:5E:00:53:06 ONLY
+firmware/r503_probe/build.sh upload   # build + flash ONLY the board named by R503_EXPECT_SERIAL
 ```
 
 ⛔ **`build.sh` is not convenience.** This repo lives under `.../Data Sheets/R503`

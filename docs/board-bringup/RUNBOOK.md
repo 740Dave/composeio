@@ -53,7 +53,9 @@ mid-bring-up: the boards you'd regress are usually not on the bench.
    ⛔ **There is NO override.** Reflashing a board on the deny list — the live dual-throttle
    controller is the case that matters — means deliberately removing its serial from
    `FLASH_DENY_SERIALS` for that one run, then putting it back. The friction is the point: an
-   override is easy to add later and hard to take back (ruling 2026-11-26, recorded for HoP review).
+   override is easy to add later and hard to take back.
+   **UNGUARDED: manual; check identity first.** Nothing can enforce a hand-typed command: the
+   `check` line below is the only gate, and only if you run it.
    ```bash
    python3 python/composeio/flash_guard.py check --port <port> || exit 1   # [--expect-var <BOARD>_EXPECT_SERIAL]
    esptool.py --port <port> flash-id                       # get the size first
@@ -69,7 +71,9 @@ mid-bring-up: the boards you'd regress are usually not on the bench.
 
 ## Phase 1 — Identify the silicon, then decide the tier
 
+**UNGUARDED: manual; check identity first.**
 ```bash
+python3 python/composeio/flash_guard.py check --port <port> || exit 1
 esptool.py --port <port> flash-id     # chip revision, features, crystal, flash size, MAC
 ```
 

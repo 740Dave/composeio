@@ -86,7 +86,7 @@ no flash) AND the **executable reference** the C++ realization is parity-tested 
 The de-risking milestone. `firmware/reactive_core/src/`: `fingerprint_hal.h` (interface, mirroring
 `actuator_hal.h`), `mock_r503_hal.cpp` (in-memory slots + fault injection — the C++ twin of Phase 1's mock),
 the C++ device-logic (`fingerprint_device_canonical.cpp`, the C73 behavior), and the bus client. **Host-test it
-green first** (`pio run -e native_test`, the existing harness) — then flash **00:00:5E:00:53:06**. The S3 is now
+green first** (`pio run -e native_test`, the existing harness) — then flash **the board named by `R503_EXPECT_SERIAL`** (host overlay). The S3 is now
 a **real bus citizen speaking the full contract with a faked sensor**: it boots, joins the real transport,
 announces, emits the heartbeats, accepts a push, runs the receipt algorithm against the mock HAL, and answers
 with the semantic messages. **This proves firmware + transport + contract with the sensor still out of the
@@ -110,7 +110,7 @@ event-driven, no busy-wait; C70's hardware truths — **WAKEUP tracks 3.3VT, tie
 **seven** colours; the stray `0x55` after power-on; AutoEnroll/AutoIdentify **ack-streams** that desync a
 one-response-per-command assumption) **replaces the mock HAL under the unchanged device-logic.** Because
 everything else was proven in Phases 2–3, the sensor is the sole new variable. **Done when:** a real finger
-enrolls and matches on `00:00:5E:00:53:06`, with eyes on the AuraLed — machine-green is not glass-green.
+enrolls and matches on the board named by `R503_EXPECT_SERIAL`, with eyes on the AuraLed — machine-green is not glass-green.
 
 ## 4. Critical path & what can start now
 
@@ -149,7 +149,7 @@ Python one, and host-tests assert identical behavior against shared fixtures. Ap
   (`assurance: experiential`); rigor appropriate to a car or aircraft is a category error here. Every failure
   test is **mock-injected**; no overvoltage, no corrupted-template-to-real-silicon, no fault injection on the part.
 - **No hashing anywhere** — identity is `template_set_uuid`, completeness is `entry_count`.
-- **Silicon safety (Phase 5):** flash **only** `00:00:5E:00:53:06`; resolve its port via `ioreg` /
+- **Silicon safety (Phase 5):** flash **only** the board named by `R503_EXPECT_SERIAL`; resolve its port via `ioreg` /
   `system_profiler` every time (paths are a lease); **never `esptool chip-id`** (it resets the board); do not
   touch the two C3s (`1C:DB:D4:…`) or the FTDI. Tie **3.3VT → 3V3** before power. Two rails on this board
   (R503 3.3 V, TM1637 white tubes 5 V) — re-derive back-drive under two rails, don't inherit the C3 single-rail argument.

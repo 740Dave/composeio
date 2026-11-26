@@ -1,7 +1,7 @@
 # R503 bring-up wiring — six wires to an ESP32-S3 SuperMini
 
 **Date:** 2026-08-16
-**Host:** ESP32-S3 SuperMini, USB serial number `00:00:5E:00:53:06`
+**Host:** ESP32-S3 SuperMini, USB serial number = `$R503_EXPECT_SERIAL` (host overlay)
 **Firmware:** `firmware/r503_probe` — UART1 @ **57600 8N1**, never changed
 **Purpose:** the first measurements ever taken of this part in this project —
 `[CXC-R503-EV-25]`, `[CXC-R503-EV-03]` / `[CXC-R503-EV-15]`, and `[CXC-R503-EV-02]`.

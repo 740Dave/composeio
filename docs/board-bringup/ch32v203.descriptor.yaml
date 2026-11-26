@@ -22,6 +22,10 @@ connect:
 
 flash:
   tool: wchisp                # the app's dispatch key — a Rust CLI, NOT esptool/idf.py; no DTR/RTS auto-reset
+  # UNGUARDED: manual; check identity first. `wchisp flash` writes whatever WCH chip is in
+  # ISP mode on USB; it has no serial port the flash guard could check, and `pio run -t upload`
+  # for this board is refused for that reason. Before running it, confirm by eye which board
+  # is strapped into ISP and that nothing else WCH is attached.
   cmd: "cd firmware/ch32v203_bringup && pio run -e <env> && wchisp flash .pio/build/<env>/firmware.bin"
   enter_bootloader: boot0-reset-manual   # physical strap every reflash; no software trick on this board (automatable:false)
   retries: []                 # wchisp flash write+verify+reset is atomic; no retry pattern

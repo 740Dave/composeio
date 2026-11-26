@@ -1,4 +1,4 @@
-"""Slice 7d — the flash identity gate fails CLOSED and names no device.
+"""The flash identity gate fails CLOSED and names no device.
 
 No hardware: every port list is a fake, and the passive enumerator is patched so a
 test can never touch the USB stack. Nothing here opens a serial port or runs pio.
@@ -73,7 +73,7 @@ def test_denied_serial_refused_other_allowed(fg, ports):
     env = {"FLASH_DENY_SERIALS": TEST_DENIED}
     with pytest.raises(fg.FlashRefused, match="never flash") as exc:
         fg.check_flash("/dev/cu.usbmodemDENY", env, ports=ports)
-    # ruling 2026-11-26: no override; the refusal names the variable AND the act
+    # no override: the refusal names the variable AND the act
     assert "no override" in str(exc.value)
     assert "remove its serial from FLASH_DENY_SERIALS for this one run" in str(exc.value)
     assert fg.check_flash("/dev/cu.usbmodemOK", env, ports=ports) == TEST_OTHER
@@ -123,11 +123,68 @@ def test_port_var_unset_refused(fg, ports):
                        port_var="OFFICE_RELAY_SERIAL_PORT")
 
 
-@pytest.mark.parametrize("proto", ["wchisp", "esp-builtin", "stlink"])
-def test_portless_protocol_refused(fg, ports, proto):
-    with pytest.raises(fg.FlashRefused, match="identity-checked"):
+# Protocol ALLOWLIST. Names from the tree: esptool (every espressif32 env, the platform
+# default), isp (firmware/ftl_jump_button: wchisp over USB), wch-link (the ch32v203
+# board default). The rest are real PlatformIO names a future env might use, plus an
+# unknown name and the empty string.
+@pytest.mark.parametrize("proto", ["isp", "wch-link", "wchisp", "wlink", "minichlink",
+                                   "esp-builtin", "esp-prog", "stlink", "jlink", "custom",
+                                   "espota", "esp-bridge", "olimex-arm-usb-tiny-h",
+                                   "frobnicate-unknown", "", "   "])
+def test_non_serial_protocol_refused_as_unguarded(fg, ports, proto):
+    with pytest.raises(fg.FlashRefused, match="NOT guarded") as exc:
         fg.check_flash("/dev/cu.usbmodemOK", {"FLASH_DENY_SERIALS": TEST_DENIED},
                        ports=ports, protocol=proto)
+    assert "UNGUARDED: manual; check identity first" in str(exc.value)
+
+
+@pytest.mark.parametrize("proto", ["esptool", "ESPTOOL", " esptool "])
+def test_esptool_is_the_allowed_serial_protocol(fg, ports, proto):
+    assert fg.SERIAL_PROTOCOLS == frozenset({"esptool"})
+    assert fg.check_flash("/dev/cu.usbmodemOK", {"FLASH_DENY_SERIALS": TEST_DENIED},
+                          ports=ports, protocol=proto) == TEST_OTHER
+
+
+# Serial normalisation: ONE function, BOTH sides. Every format the review listed.
+FORMATS = [
+    lambda s: s,                                   # AA:BB:CC:00:00:01
+    lambda s: s.lower(),                           # lower case
+    lambda s: s.replace(":", ""),                  # no separators
+    lambda s: s.replace(":", "").lower(),          # no separators, lower case
+    lambda s: s.replace(":", "-"),                 # dashes
+    lambda s: s.replace(":", "."),                 # dots
+    lambda s: '"%s"' % s,                          # double-quoted
+    lambda s: "'%s'" % s,                          # single-quoted
+    lambda s: "0x" + s.replace(":", ""),           # 0x prefix
+    lambda s: "  %s\t" % s,                        # surrounding whitespace
+]
+
+
+@pytest.mark.parametrize("fmt", range(len(FORMATS)))
+@pytest.mark.parametrize("port_fmt", range(len(FORMATS)))
+def test_deny_list_matches_every_format_on_both_sides(fg, fmt, port_fmt):
+    ports = [fg.PortInfo("/dev/cu.usbmodemDENY", FORMATS[port_fmt](TEST_DENIED).strip())]
+    env = {"FLASH_DENY_SERIALS": "other1, " + FORMATS[fmt](TEST_DENIED) + " ; other2"}
+    with pytest.raises(fg.FlashRefused, match="never flash"):
+        fg.check_flash("/dev/cu.usbmodemDENY", env, ports=ports)
+
+
+@pytest.mark.parametrize("fmt", range(len(FORMATS)))
+@pytest.mark.parametrize("port_fmt", range(len(FORMATS)))
+def test_expect_var_matches_every_format_on_both_sides(fg, fmt, port_fmt):
+    ports = [fg.PortInfo("/dev/cu.usbmodemOK", FORMATS[port_fmt](TEST_OTHER).strip())]
+    env = {"FLASH_DENY_SERIALS": TEST_DENIED, "B": FORMATS[fmt](TEST_OTHER)}
+    assert fg.check_flash("/dev/cu.usbmodemOK", env, ports=ports, expect_var="B")
+    env["B"] = FORMATS[fmt]("AA:BB:CC:00:00:09")
+    with pytest.raises(fg.FlashRefused, match="different board"):
+        fg.check_flash("/dev/cu.usbmodemOK", env, ports=ports, expect_var="B")
+
+
+def test_symlinked_port_refused_with_a_reason(fg, ports, tmp_path):
+    link = tmp_path / "cu.mylink"
+    link.symlink_to("/dev/null")
+    with pytest.raises(fg.FlashRefused, match="is a symlink"):
+        fg.check_flash(str(link), {"FLASH_DENY_SERIALS": TEST_DENIED}, ports=ports)
 
 
 def test_resolve_port(fg, ports):
@@ -143,7 +200,7 @@ def test_resolve_port(fg, ports):
 
 @pytest.mark.parametrize("target,guarded", [
     ("upload", True), ("uploadfs", True), ("uploadfsota", True), ("erase", True),
-    ("erase_upload", True), ("program", True), ("__debug", True),
+    ("erase_upload", True), ("program", True), ("__debug", False),
     ("buildprog", False), ("checkprogsize", False), ("size", False), ("buildfs", False),
     ("__test", False), ("compiledb", False), ("monitor", False)])
 def test_flash_target_classification(fg, target, guarded):
@@ -161,10 +218,15 @@ def test_cli_refuses_with_deny_list_unset():
 # --------------------------------------------------------------------------- PIO hook
 
 class FakeEnv:
-    def __init__(self, project_dir, options=None, upload_port="", protocol="", pioenv="e"):
+    def __init__(self, project_dir, options=None, upload_port="", protocol="esptool",
+                 pioenv="e", board_protocol=""):
         self.vars = {"$PROJECT_DIR": str(project_dir), "$UPLOAD_PORT": upload_port,
                      "$UPLOAD_PROTOCOL": protocol, "$PIOENV": pioenv}
         self.options = options or {}
+        self.board_protocol = board_protocol
+
+    def BoardConfig(self):
+        return {"upload.protocol": self.board_protocol}
 
     def subst(self, s):
         return self.vars.get(s, "")
@@ -226,6 +288,29 @@ def test_hook_expect_and_port_vars(hook, fake_comports, capsys):
     e = FakeEnv(PROJ, {"custom_flash_port_env": "OFFICE_RELAY_SERIAL_PORT"})
     assert hook.run(e, ["upload"], env) != 0
     assert "OFFICE_RELAY_SERIAL_PORT" in capsys.readouterr().err
+
+
+def test_hook_refuses_the_real_isp_env(hook, fake_comports, capsys):
+    """firmware/ftl_jump_button sets upload_protocol = isp (wchisp over USB): even with the
+    deny list set and its pinned port present, the write is not through that port."""
+    cp = _parse(REPO / "firmware" / "ftl_jump_button" / "platformio.ini")
+    proto = _opt(cp, "env:ch32v003", "upload_protocol").strip()
+    assert proto == "isp"
+    e = FakeEnv(REPO / "firmware" / "ftl_jump_button", upload_port="/dev/cu.usbmodemOK",
+                protocol=proto)
+    assert hook.run(e, ["upload"], {"FLASH_DENY_SERIALS": TEST_DENIED}) != 0
+    assert "NOT guarded" in capsys.readouterr().err
+
+
+def test_hook_uses_board_default_protocol_when_unset(hook, fake_comports, capsys):
+    env = {"FLASH_DENY_SERIALS": TEST_DENIED}
+    e = FakeEnv(PROJ, upload_port="/dev/cu.usbmodemOK", protocol="", board_protocol="wch-link")
+    assert hook.run(e, ["upload"], env) != 0
+    assert "wch-link" in capsys.readouterr().err
+    e = FakeEnv(PROJ, upload_port="/dev/cu.usbmodemOK", protocol="", board_protocol="esptool")
+    assert hook.run(e, ["upload"], env) == 0
+    e = FakeEnv(PROJ, upload_port="/dev/cu.usbmodemOK", protocol="", board_protocol="")
+    assert hook.run(e, ["upload"], env) != 0
 
 
 def test_hook_leaves_plain_build_alone(hook):
@@ -469,3 +554,13 @@ def test_r503probe_refuses_without_overlay():
     assert r.returncode == 2 and "FLASH_DENY_SERIALS" in r.stderr, r
     r = _probe({"R503_EXPECT_SERIAL": TEST_DENIED, "FLASH_DENY_SERIALS": TEST_DENIED})
     assert r.returncode == 2 and "FLASH_DENY_SERIALS" in r.stderr, r
+
+
+def test_r503probe_uses_the_shared_normaliser():
+    pytest.importorskip("serial")
+    src = R503PROBE.read_text()
+    assert "fg.parse_serial_list" in src and "fg.normalize_serial" in src
+    assert 'replace(",", " ")' not in src, "r503probe grew its own deny-list parser again"
+    dashed = TEST_DENIED.replace(":", "-").lower()
+    r = _probe({"R503_EXPECT_SERIAL": TEST_DENIED, "FLASH_DENY_SERIALS": '"' + dashed + '"'})
+    assert r.returncode == 2 and "is on FLASH_DENY_SERIALS" in r.stderr, r

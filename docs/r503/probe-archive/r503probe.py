@@ -41,7 +41,23 @@ except ImportError:
 #    serial on FLASH_DENY_SERIALS is refused even if named with --serial. Public code
 #    names no device: unset = refuse (main()), never a made-up default.
 import os  # noqa: E402
+import importlib.util  # noqa: E402
 DEFAULT_SERIAL = os.environ.get("R503_EXPECT_SERIAL", "").strip()
+
+
+def _load_flash_guard():
+    """The ONE serial parser/normaliser (python/composeio/flash_guard.py), loaded by
+    path so both sides of every comparison here are normalised exactly as the flash
+    guard does it. Missing = refuse: a second, local parser is how the two drift."""
+    lib = pathlib.Path(__file__).resolve().parents[3] / "python" / "composeio" / "flash_guard.py"
+    if not lib.is_file():
+        sys.stderr.write("refusing: cannot find %s (the shared serial normaliser)\n" % lib)
+        raise SystemExit(2)
+    spec = importlib.util.spec_from_file_location("composeio_flash_guard", lib)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["composeio_flash_guard"] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SESSIONS = REPO / "probe" / "sessions"
@@ -76,8 +92,9 @@ def resolve_port(want_serial):
        which is the exact harm an identity check is run to avoid. This reads the USB
        descriptor, which has no side effects at all.
     """
+    norm = _load_flash_guard().normalize_serial
     matches = [p for p in serial.tools.list_ports.comports()
-               if p.serial_number == want_serial]
+               if p.serial_number and norm(p.serial_number) == norm(want_serial)]
     if not matches:
         seen = [(p.device, p.serial_number) for p in serial.tools.list_ports.comports()]
         raise SystemExit(
@@ -804,8 +821,8 @@ def main():
     p.set_defaults(fn=cmd_listen)
 
     args = ap.parse_args()
-    deny = {t.strip().upper() for t in
-            os.environ.get("FLASH_DENY_SERIALS", "").replace(",", " ").split() if t.strip()}
+    fg = _load_flash_guard()
+    deny = fg.parse_serial_list(os.environ.get("FLASH_DENY_SERIALS"))
     if not args.serial:
         sys.stderr.write("refusing: R503_EXPECT_SERIAL is unset and no --serial was given "
                          "(set it in the host overlay)\n")
@@ -814,7 +831,7 @@ def main():
         sys.stderr.write("refusing: FLASH_DENY_SERIALS is unset or empty "
                          "(set it in the host overlay)\n")
         raise SystemExit(2)
-    if args.serial.strip().upper() in deny:
+    if fg.normalize_serial(args.serial) in deny:
         sys.stderr.write("refusing: --serial is on FLASH_DENY_SERIALS\n")
         raise SystemExit(2)
     rc = args.fn(args)
