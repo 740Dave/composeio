@@ -163,8 +163,9 @@ def check_flash(port: Optional[str], environ: Mapping[str, str],
     serial = normalize_serial(serial_for_port(port, ports))
     if serial in deny:
         raise FlashRefused(
-            "refusing to flash: %s has USB serial %s, which is on %s (never flash)."
-            % (port, serial, DENY_VAR))
+            "refusing to flash: %s has USB serial %s, which is on %s (never flash). "
+            "There is no override: to reflash this board deliberately, remove its serial "
+            "from %s for this one run, then put it back." % (port, serial, DENY_VAR, DENY_VAR))
     if expect is not None and serial != expect:
         raise FlashRefused(
             "refusing to flash: %s has USB serial %s, but %s names a different board."

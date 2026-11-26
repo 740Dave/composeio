@@ -71,8 +71,11 @@ def test_unset_or_empty_deny_list_refuses_before_enumerating(fg, monkeypatch, de
 
 def test_denied_serial_refused_other_allowed(fg, ports):
     env = {"FLASH_DENY_SERIALS": TEST_DENIED}
-    with pytest.raises(fg.FlashRefused, match="never flash"):
+    with pytest.raises(fg.FlashRefused, match="never flash") as exc:
         fg.check_flash("/dev/cu.usbmodemDENY", env, ports=ports)
+    # ruling 2026-11-26: no override; the refusal names the variable AND the act
+    assert "no override" in str(exc.value)
+    assert "remove its serial from FLASH_DENY_SERIALS for this one run" in str(exc.value)
     assert fg.check_flash("/dev/cu.usbmodemOK", env, ports=ports) == TEST_OTHER
 
 
@@ -326,6 +329,50 @@ def test_no_broker_placeholder_baked_into_firmware():
         if re.search(r"(MQTT_BROKER|BUS_STORAGE_URL)=\\?\"[^$]", flags):
             bad.append(f"{ini.relative_to(REPO)} [{sec}]")
     assert not bad, "literal broker/storage URL baked in:\n" + "\n".join(bad)
+
+
+_PLACEHOLDER_DEFAULT = re.compile(
+    r'^#ifndef (\w+)\s*\n#define \1 "[^"]*(?:\.local|://)[^"]*"', re.M)
+
+
+def _compiled_sources(src_dir: Path, filt: str):
+    """PlatformIO build_src_filter, in order: +<pat> adds, -<pat> removes."""
+    files = {p.relative_to(src_dir).as_posix() for p in src_dir.rglob("*")
+             if p.suffix in (".c", ".cpp")}
+    chosen = set()
+    for sign, pat in re.findall(r"([+-])<([^>]*)>", filt or "+<*>"):
+        pat = pat.rstrip("/")
+        hit = {f for f in files if pat == "*" or f == pat or f.startswith(pat + "/")}
+        chosen = chosen | hit if sign == "+" else chosen - hit
+    return chosen
+
+
+def test_every_compiled_network_default_is_baked_from_the_overlay():
+    """A compiled `#ifndef X / #define X "<host or URL>"` default is a placeholder in
+    public code (no mDNS on the boards), so every device env that compiles one must
+    bake X from ${sysenv.*} — which the required-env test then forces to be set."""
+    bad, checked = [], 0
+    for ini, cp, sec in _device_envs():
+        src = ini.parent / "src"
+        if not src.is_dir():
+            continue
+        flags = _opt(cp, sec, "build_flags") or ""
+        defined = set(re.findall(r"-D\s*(\w+)", flags))
+        for f in _compiled_sources(src, _opt(cp, sec, "build_src_filter")):
+            text = (src / f).read_text(errors="replace")
+            # a whole-file selector guard (`#ifdef CONTROLLER_CONFIG_FETCH` ... EOF)
+            # compiles the defaults only when the selector matches this env's flags
+            first = re.search(r"^#(ifdef|ifndef) (\w+)", text, re.M)
+            if first and re.search(r"^#endif\s*/\*\s*!?%s\s*\*/\s*\Z" % first.group(2), text, re.M):
+                on = first.group(2) in defined
+                if (first.group(1) == "ifdef") != on:
+                    continue
+            for macro in _PLACEHOLDER_DEFAULT.findall(text):
+                checked += 1
+                if not re.search(r"-D\s*%s=\\?\"\$\{sysenv\.\w+\}" % macro, flags):
+                    bad.append(f"{ini.relative_to(REPO)} [{sec}]: {macro} (default in src/{f})")
+    assert checked >= 15, f"only {checked} defaults checked — scan is not reading the sources"
+    assert not bad, "placeholder network default compiled in:\n" + "\n".join(bad)
 
 
 # --------------------------------------------------------------------------- no identities

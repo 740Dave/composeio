@@ -50,6 +50,10 @@ mid-bring-up: the boards you'd regress are usually not on the bench.
    first, every time. It reads the USB serial passively and refuses unless the host overlay sets
    `FLASH_DENY_SERIALS` and the port is not on it (`pio run -t upload` runs the same gate itself,
    through `python/scripts/pio_flash_guard.py`). Public code names no device identity.
+   ⛔ **There is NO override.** Reflashing a board on the deny list — the live dual-throttle
+   controller is the case that matters — means deliberately removing its serial from
+   `FLASH_DENY_SERIALS` for that one run, then putting it back. The friction is the point: an
+   override is easy to add later and hard to take back (ruling 2026-11-26, recorded for HoP review).
    ```bash
    python3 python/composeio/flash_guard.py check --port <port> || exit 1   # [--expect-var <BOARD>_EXPECT_SERIAL]
    esptool.py --port <port> flash-id                       # get the size first
