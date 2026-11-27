@@ -228,15 +228,30 @@ _CLIENT_ATTR_RE = __import__("re").compile(r"\b(?:mqtt|paho)\.Client\s*\(")
 
 def _paho_constructions(src: str) -> int:
     """How many paho ``Client(...)`` constructions `src` makes. Two detectors, and
-    the larger count wins:
+    the larger count wins.
 
-      * AST, which follows the IMPORT: ``import paho.mqtt.client as X`` then
-        ``X.Client(``; ``from paho.mqtt import client as X``; ``from
-        paho.mqtt.client import Client [as Y]`` (or ``*``) then ``Y(``; and the
-        full dotted ``paho.mqtt.client.Client(``. Nested (lazy) imports count.
-      * the original ``(mqtt|paho).Client(`` regex over code with comments and
-        strings blanked, which catches a module reached some other way (a
-        parameter, as inside the helper itself, or importlib).
+    WHAT IT CATCHES:
+      * (AST, following the import) ``import paho.mqtt.client as X`` then
+        ``X.Client(...)``; ``from paho.mqtt import client [as X]`` then
+        ``X.Client(...)``; ``from paho.mqtt.client import Client [as Y]`` or
+        ``import *`` then ``Y(...)``; and the full dotted
+        ``paho.mqtt.client.Client(...)`` after ``import paho...``. Imports nested
+        in functions (lazy imports) count.
+      * (regex, over code with comments and strings blanked) any
+        ``mqtt.Client(`` or ``paho.Client(`` call, whatever the name is bound to.
+        That covers a module passed in as a parameter named ``mqtt`` (the helper
+        itself), and a module from importlib or ``__import__`` ONLY when it is
+        bound to a name spelled ``mqtt`` or ``paho``.
+
+    WHAT IT DOES NOT CATCH (candidate review R2-N2; the ratchet was deliberately
+    not extended to these):
+      * attribute aliasing: ``C = mqtt.Client`` then ``C(...)``;
+      * ``getattr(mqtt, "Client")(...)``;
+      * a module from importlib or ``__import__`` bound to any other name, for
+        example ``m = importlib.import_module("paho.mqtt.client"); m.Client()``;
+      * submodule-alias attribute chains: ``import paho.mqtt as pm`` then
+        ``pm.client.Client(...)``;
+      * subclassing: ``class Mine(mqtt.Client): ...`` then ``Mine(...)``.
 
     Candidate review note 5: the regex alone missed ``from paho.mqtt.client
     import Client`` and every alias; `test_the_detector_*` below is its
@@ -307,6 +322,28 @@ DETECTOR_CASES = [
     ("# mqtt.Client() in a comment\ns = 'paho.Client()'\n", 0),
     ("from paho.mqtt.client import MQTTv5\nx = MQTTv5\n", 0),
 ]
+
+
+KNOWN_MISSES = [
+    # The forms the docstring says it does NOT catch, pinned so the docstring
+    # stays true: if the detector is ever widened, this test says to update it.
+    ("import paho.mqtt.client as mqtt\nC = mqtt.Client\nC()\n", "attribute aliasing"),
+    ("import paho.mqtt.client as mq\ngetattr(mq, 'Client')()\n", "getattr"),
+    ("import importlib\nm = importlib.import_module('paho.mqtt.client')\nm.Client()\n", "importlib, other name"),
+    ("m = __import__('paho.mqtt.client', fromlist=['Client'])\nm.Client()\n", "__import__, other name"),
+    ("import paho.mqtt as pm\npm.client.Client()\n", "submodule-alias chain"),
+    ("import paho.mqtt.client as mq\nclass Mine(mq.Client):\n    pass\nMine()\n", "subclassing"),
+]
+
+
+@pytest.mark.parametrize("src,form", KNOWN_MISSES)
+def test_the_documented_blind_spots_are_exactly_as_documented(src, form):
+    assert _paho_constructions(src) == 0, f"{form} is now caught: update the docstring"
+
+
+def test_importlib_is_caught_only_when_bound_to_mqtt_or_paho():
+    src = "import importlib\nmqtt = importlib.import_module('paho.mqtt.client')\nmqtt.Client()\n"
+    assert _paho_constructions(src) == 1
 
 
 @pytest.mark.parametrize("src,want", DETECTOR_CASES)
