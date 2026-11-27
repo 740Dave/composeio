@@ -411,6 +411,62 @@ def _connack_reason(rc) -> str:
     return f"0x{code:02X} ({code}) {text}"
 
 
+def new_paho_client(*, protocol, mqtt=None, **kwargs):
+    """Build a paho ``Client`` on paho 1.x AND 2.x. Every paho client in
+    ``python/`` is built here (pinned by test_paho2_and_bus_client_backoff.py).
+
+    WHY. ``pyproject.toml`` allows ``paho-mqtt>=1.6.0``, so 2.x installs. paho
+    2.0.0 made ``callback_api_version`` the REQUIRED first parameter of
+    ``Client.__init__``, so the 1.x call ``Client(client_id=..., protocol=...)``
+    is a TypeError there; 2.1.0 defaults it to VERSION1 with a
+    DeprecationWarning. When the module has ``CallbackAPIVersion`` this passes
+    ``VERSION1``, which keeps every callback in this repo on the signatures it
+    was written for (``on_connect(client, userdata, flags, rc, properties)``
+    under v5, ``on_connect_fail(client, userdata)``). Without the enum (1.x) it
+    is the old call, unchanged. Moving to VERSION2 is a separate change: it
+    rewrites every callback signature.
+
+    ``protocol`` is REQUIRED, keyword-only: the generic ``mqtt.Client(`` call
+    below is invisible to the v5 grep guard in test_mqtt5_negotiation.py, so the
+    "no client takes paho's 3.1.1 default by omission" rule lives in this
+    signature instead. ``mqtt`` is the paho client module, injectable for tests.
+    """
+    if mqtt is None:
+        import paho.mqtt.client as mqtt
+    api = getattr(mqtt, "CallbackAPIVersion", None)
+    if api is None:
+        return mqtt.Client(protocol=protocol, **kwargs)
+    return mqtt.Client(callback_api_version=api.VERSION1, protocol=protocol,
+                       **kwargs)
+
+
+def connect_with_backoff(client, host, port, *, keepalive=60, min_delay=None,
+                         max_delay=None, **connect_kwargs) -> None:
+    """Start ``client`` connecting to ``host:port`` and keep it trying.
+
+    The sequence ``MQTTTransport.start()`` has used since PR #16, factored out
+    so ``bus_client`` runs the same one instead of a copy: bounded backoff via
+    ``reconnect_delay_set`` (defaults: ``MQTTTransport.RECONNECT_MIN_DELAY_S`` /
+    ``RECONNECT_MAX_DELAY_S``, read at call time), then ``connect_async`` (which
+    records the target and does no I/O) and ``loop_start``. paho's loop thread
+    makes the first attempt and every later one, so "broker down at start" and
+    "broker dropped mid-run" are the same case and neither raises to the
+    caller. The caller re-subscribes in ``on_connect``: a ``subscribe()`` made
+    before the CONNACK is not sent (paho returns MQTT_ERR_NO_CONN with no socket).
+
+    Raises only for a malformed target or an unusable client, never for an
+    unreachable broker. ``connect_kwargs`` (for example ``clean_start``,
+    ``properties``) pass through to ``connect_async`` untouched.
+    """
+    if min_delay is None:
+        min_delay = MQTTTransport.RECONNECT_MIN_DELAY_S
+    if max_delay is None:
+        max_delay = MQTTTransport.RECONNECT_MAX_DELAY_S
+    client.reconnect_delay_set(min_delay=min_delay, max_delay=max_delay)
+    client.connect_async(host, port, keepalive=keepalive, **connect_kwargs)
+    client.loop_start()
+
+
 class MQTTTransport(Transport):
     """MQTT transport binding using paho-mqtt."""
 
@@ -806,8 +862,11 @@ class MQTTTransport(Transport):
         # with CONNACK properties [ReceiveMaximum: 20, TopicAliasMaximum: 10],
         # and the broker decrements Message Expiry Interval on retained
         # delivery (sent 120, a subscriber 9 s later received 111).
-        self._client = mqtt.Client(client_id=self._client_id,
-                                   protocol=mqtt.MQTTv5)
+        #
+        # Built through `new_paho_client` so paho 2.x constructs too (it
+        # requires a CallbackAPIVersion; see the helper).
+        self._client = new_paho_client(mqtt=mqtt, client_id=self._client_id,
+                                       protocol=mqtt.MQTTv5)
         if self._username:
             self._client.username_pw_set(self._username, self._password)
 
@@ -817,8 +876,6 @@ class MQTTTransport(Transport):
         self._client.on_connect_fail = self._on_connect_fail
         self._client.on_message = self._on_message
         self._client.on_disconnect = self._on_disconnect
-        self._client.reconnect_delay_set(min_delay=self.RECONNECT_MIN_DELAY_S,
-                                         max_delay=self.RECONNECT_MAX_DELAY_S)
 
         # A host that can never resolve: one loud, recorded error, no loop
         # thread. It cannot become valid without a config change, so retrying
@@ -851,10 +908,14 @@ class MQTTTransport(Transport):
             # thread makes the first attempt and every later one with the
             # backoff above, so "down at start" and "dropped mid-run" are now
             # the same case, and `on_connect` re-subscribes + flushes on each.
-            self._client.connect_async(self._broker, self._port, keepalive=60,
-                                       clean_start=True,
-                                       properties=_connect_properties())
-            self._client.loop_start()
+            # The sequence (backoff, connect_async, loop_start) is
+            # `connect_with_backoff`, shared with `bus_client`.
+            connect_with_backoff(self._client, self._broker, self._port,
+                                 keepalive=60,
+                                 min_delay=self.RECONNECT_MIN_DELAY_S,
+                                 max_delay=self.RECONNECT_MAX_DELAY_S,
+                                 clean_start=True,
+                                 properties=_connect_properties())
         except Exception as e:
             # Only a malformed target reaches here (connect_async does no I/O);
             # an unreachable broker is retried by the loop thread instead.

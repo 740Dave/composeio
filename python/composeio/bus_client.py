@@ -38,6 +38,26 @@ viewer launchers) still need a topic-dispatch ROUTER — one `on_message` fannin
 out to registered handlers by topic filter. That is step 2b, deliberately NOT
 smuggled in here: it changes delivery semantics for every consumer and deserves
 its own commit and its own rollback point.
+
+CONNECTING — THE CALLER-VISIBLE CONTRACT (w-26, 2026-11-27)
+----------------------------------------------------------
+`acquire()` and `subscribe()` used to call paho's BLOCKING `connect()`: a broker
+that was down at start raised `ConnectionRefusedError` (or another `OSError`) to
+the caller, and nothing ever retried. They now start the client through
+`transport_mqtt.connect_with_backoff`, the same backoff + `connect_async` +
+`loop_start` sequence `MQTTTransport.start()` uses since PR #16. So:
+
+  * they return a client whose connection is IN PROGRESS, not established, and
+    they do not raise for an unreachable broker; paho's loop thread retries with
+    `MQTTTransport`'s bounded backoff, at start and after any drop;
+  * a filter registered with `subscribe()` is (re)issued on EVERY CONNACK by the
+    router, so a subscription made while the broker is down, or lost in a drop,
+    becomes live when the broker is reachable;
+  * a `publish()` before the connection is up follows paho: QoS 0 is DROPPED
+    (rc MQTT_ERR_NO_CONN), QoS 1/2 is held by paho and sent on connect.
+
+Clients are built with `transport_mqtt.new_paho_client`, so paho 1.x and 2.x
+both construct (2.x gets CallbackAPIVersion.VERSION1).
 """
 from __future__ import annotations
 
@@ -68,7 +88,11 @@ def parse_mqtt_url(url: str) -> Tuple[str, int]:
 
 def acquire(mqtt_url: str, *, label: str, will_subscribe: bool = False,
             keepalive: int = 60, client_factory=None):
-    """The shared PUBLISH-ONLY client for `mqtt_url`, connected and looping.
+    """The shared PUBLISH-ONLY client for `mqtt_url`, looping and connecting.
+
+    Does not raise when the broker is unreachable: the connection is made, and
+    re-made after a drop, by paho's loop thread with backoff (see the module
+    docstring, "CONNECTING"). A QoS-0 publish before it is up is dropped.
 
     `label` identifies the caller in logs and in the shared client-id — it is
     NOT a separate connection; the first caller wins the id and the rest join it.
@@ -101,20 +125,34 @@ def acquire(mqtt_url: str, *, label: str, will_subscribe: bool = False,
         if client_factory is not None:
             client = client_factory()
         else:
-            import paho.mqtt.client as mqtt
             # A STABLE shared client-id: one connection means one id, so the
             # rc=7 collision [DEC-BUS-ENVELOPE-RAW-PAHO] worked around is now
             # structurally impossible rather than merely avoided.
-            client = mqtt.Client(client_id=f"composeio-shared-pub-{host}",
-                                 protocol=mqtt.MQTTv5)
-        client.connect(host, port, keepalive=keepalive)
-        client.loop_start()
+            client = _new_client(f"composeio-shared-pub-{host}")
+        _start(client, host, port, keepalive)
         _SHARED[key] = client
         _REFCOUNT[key] = 1
         sys.stderr.write(
             f"[bus_client] {label} opened THE shared publish connection to "
             f"{host}:{port} (1 socket for all publish-only sources)\n")
         return client
+
+
+def _new_client(client_id: str):
+    """A real v5 paho client, built at the paho seam (paho 1.x and 2.x)."""
+    import paho.mqtt.client as mqtt
+    from composeio.transport_mqtt import new_paho_client
+    return new_paho_client(mqtt=mqtt, client_id=client_id, protocol=mqtt.MQTTv5)
+
+
+def _start(client, host: str, port: int, keepalive: int) -> None:
+    """Connect with the transport's backoff; never raises for a down broker.
+
+    Imported lazily: `transport_mqtt` imports `topic_matches` from this module
+    at import time, so a top-level import here would be circular.
+    """
+    from composeio.transport_mqtt import connect_with_backoff
+    connect_with_backoff(client, host, port, keepalive=keepalive)
 
 
 # --------------------------------------------------------------------------- #
@@ -159,11 +197,33 @@ class _Router:
     def __init__(self, label: str):
         self.label = label
         self._routes: list[tuple[str, object]] = []
+        #: filter -> the highest QoS any subscriber asked for; what is
+        #: (re)issued to the broker on every CONNACK.
+        self._filters: dict[str, int] = {}
         self._lock = threading.RLock()
 
-    def add(self, topic_filter: str, handler) -> None:
+    def add(self, topic_filter: str, handler, qos: int = 0) -> None:
         with self._lock:
             self._routes.append((topic_filter, handler))
+            self._filters[topic_filter] = max(qos, self._filters.get(topic_filter, 0))
+
+    def resubscribe(self, client, userdata, flags, rc, properties=None) -> None:
+        """`on_connect`: issue every registered filter on each successful CONNACK.
+
+        The connection is made by paho's loop thread (connect_async), so a
+        `subscribe()` that ran before it found no socket and sent nothing, and
+        a reconnect starts a fresh session (no session expiry is requested).
+        Either way the broker holds none of our filters until this runs.
+        """
+        code = getattr(rc, "value", rc)
+        if code != 0:
+            sys.stderr.write(
+                f"[bus_client] connect refused for {self.label}: rc={rc!r}\n")
+            return
+        with self._lock:
+            filters = dict(self._filters)
+        for filt, qos in filters.items():
+            client.subscribe(filt, qos)
 
     def route_count(self) -> int:
         with self._lock:
@@ -198,8 +258,11 @@ def subscribe(mqtt_url: str, topic_filter: str, handler, *, label: str,
               qos: int = 0, keepalive: int = 60, client_factory=None):
     """Register `handler` for `topic_filter` on the shared SUBSCRIBER client.
 
-    Returns the shared client, already connected and looping, so the caller can
-    also publish on it.
+    Returns the shared client, looping and connecting (it does not raise for a
+    down broker), so the caller can also publish on it. The filter is
+    re-issued on every CONNACK, so it survives a broker that is down at start
+    and any later drop. The router owns `on_connect` and `on_message`; do not
+    reassign either.
 
     IMPORTANT — the caller must NOT call `loop_forever()` on the returned client.
     The shared client already runs `loop_start()`, and a second loop would
@@ -216,19 +279,17 @@ def subscribe(mqtt_url: str, topic_filter: str, handler, *, label: str,
         if first:
             router = _Router(label)
             _ROUTERS[key] = router
-        router.add(topic_filter, handler)
+        router.add(topic_filter, handler, qos)
 
         client = _SHARED.get(key)
         if client is None:
             if client_factory is not None:
                 client = client_factory()
             else:
-                import paho.mqtt.client as mqtt
-                client = mqtt.Client(client_id=f"composeio-shared-{host}",
-                                     protocol=mqtt.MQTTv5)
+                client = _new_client(f"composeio-shared-{host}")
             client.on_message = router.dispatch
-            client.connect(host, port, keepalive=keepalive)
-            client.loop_start()
+            client.on_connect = router.resubscribe
+            _start(client, host, port, keepalive)
             _SHARED[key] = client
             _REFCOUNT[key] = 0
         elif first or getattr(client, "on_message", None) is not router.dispatch:
@@ -236,8 +297,11 @@ def subscribe(mqtt_url: str, topic_filter: str, handler, *, label: str,
             # first subscriber arrives, so publishers and subscribers share ONE
             # socket rather than splitting into two.
             client.on_message = router.dispatch
+            client.on_connect = router.resubscribe
         _REFCOUNT[key] = _REFCOUNT.get(key, 0) + 1
 
+    # Sent now if the connection is already up; otherwise paho returns
+    # MQTT_ERR_NO_CONN and `router.resubscribe` issues it on the CONNACK.
     client.subscribe(topic_filter, qos)
     sys.stderr.write(
         f"[bus_client] {label} subscribed {topic_filter!r} on the shared "
@@ -282,6 +346,8 @@ def _selftest() -> int:
     class _Fake:
         def __init__(self): self.connected = None; self.looping = False; self.sent = []
         def connect(self, h, p, keepalive=60): self.connected = (h, p)
+        def connect_async(self, h, p, keepalive=60): self.connected = (h, p)
+        def reconnect_delay_set(self, min_delay=1, max_delay=120): pass
         def loop_start(self): self.looping = True
         def publish(self, t, p, qos=0, retain=False): self.sent.append((t, p, qos))
 

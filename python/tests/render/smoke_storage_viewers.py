@@ -120,12 +120,17 @@ def leg_live_mqtt(mqtt_url):
     host, port = al._parse_mqtt_url(mqtt_url)
     got = []
     try:
-        sub = mqtt.Client(client_id="smoke-storage-sub")
+        # Built at the paho seam so paho 2.x constructs too; the protocol is
+        # the 3.1.1 these clients always took by default, now written down.
+        from composeio.transport_mqtt import new_paho_client
+        sub = new_paho_client(mqtt=mqtt, client_id="smoke-storage-sub",
+                              protocol=mqtt.MQTTv311)
         sub.on_message = lambda c, u, m: got.append(m.topic)
         sub.connect(host, port, keepalive=10)
         sub.subscribe("composeio/global/_app/#", 0)
         sub.loop_start()
-        pub = mqtt.Client(client_id="smoke-storage-pub")
+        pub = new_paho_client(mqtt=mqtt, client_id="smoke-storage-pub",
+                              protocol=mqtt.MQTTv311)
         pub.connect(host, port, keepalive=10)
         pub.loop_start()
         import time

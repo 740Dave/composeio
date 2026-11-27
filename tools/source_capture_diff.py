@@ -106,8 +106,13 @@ class RecordingPahoClient:
         if self.on_connect is not None:
             self.on_connect(self, None, {}, 0)
 
-    def connect_async(self, host, port=1883, keepalive=60):
+    # MQTTTransport.start() and bus_client both start through
+    # transport_mqtt.connect_with_backoff: reconnect_delay_set, then
+    # connect_async with clean_start/properties keywords (PR #16, w-26).
+    def connect_async(self, host, port=1883, keepalive=60, **_kw):
         self.connect(host, port, keepalive)
+
+    def reconnect_delay_set(self, min_delay=1, max_delay=120): pass
 
     def reconnect(self): pass
     def loop_start(self): self._looping = True

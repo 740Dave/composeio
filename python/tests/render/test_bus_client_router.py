@@ -46,6 +46,13 @@ class _FakeClient:
     def connect(self, h, p, keepalive=60):
         self.connected = (h, p)
 
+    # bus_client starts through transport_mqtt.connect_with_backoff (w-26).
+    def connect_async(self, h, p, keepalive=60):
+        self.connected = (h, p)
+
+    def reconnect_delay_set(self, min_delay=1, max_delay=120):
+        pass
+
     def loop_start(self):
         self.looping = True
 
