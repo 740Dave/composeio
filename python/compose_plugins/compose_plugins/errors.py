@@ -8,6 +8,7 @@ digests) as data, and its text says the same thing for a human.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -133,6 +134,24 @@ class PromptStale(PluginContractRefusal):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(f"record_decline REFUSED: the prompt is stale: {reason}")
+
+
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: the token recorded for a class whose name is not an identifier (candidate
+#: review A1, ruled: type("x y", (Exception,), {}) makes one)
+NON_IDENTIFIER_CLASS = "NonIdentifierException"
+
+
+def safe_class_name(exc: BaseException) -> str:
+    """The exception's class name for install-log text
+    ([CXC-PC-V02-INSTALL-LOG-FAILURE-TEXT]): ``type(exc).__name__`` when it is an
+    identifier (cut to 200 characters), else ``NonIdentifierException``, so
+    no other text of the class can reach the log, a finding or a message,
+    and an abort event can always be written."""
+    name = type(exc).__name__
+    if not isinstance(name, str) or _IDENTIFIER_RE.fullmatch(name) is None:
+        return NON_IDENTIFIER_CLASS
+    return name[:200]
 
 
 class InstallLogRefused(PluginContractRefusal):

@@ -359,15 +359,17 @@ class PluginManagerApp:
             m.uninstall(domain)
 
     def _consent_records(self, prefix: str) -> str:
+        # (0.2) [CXC-PC-V02-EULA-HASH-RECORD] verify-human: the EULA digest beside
+        # a record made with a EULA, nothing for a record made without
         rows = "".join(
             "<tr>" + "".join(f"<td>{e(str(v))}</td>" for v in (
                 r.domain, r.version, r.decision, r.decided_by, r.decided_at, r.host,
-                ", ".join(r.granted))) + "</tr>"
+                ", ".join(r.granted), r.eula_sha256 or "")) + "</tr>"
             for r in self.manager.consent.records())
         return self._page(prefix, "Consent records",
                           "<table><tr><th>plug-in</th><th>version</th><th>decision</th>"
                           "<th>decided by</th><th>decided at</th><th>host</th>"
-                          f"<th>granted</th></tr>{rows}</table>")
+                          f"<th>granted</th><th>EULA sha256</th></tr>{rows}</table>")
 
 
 def make_app(manager: PluginManager) -> PluginManagerApp:

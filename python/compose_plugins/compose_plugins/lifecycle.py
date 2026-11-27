@@ -57,7 +57,7 @@ from .consent import (
 from .derive import DriftRefused, check_drift, drift_from, resolve_entry
 from .errors import (
     EulaShaMismatch, InstallLogRefused, ManifestRefused, PluginContractRefusal,
-    PromptNotPrepared, PromptStale, Refusal,
+    PromptNotPrepared, PromptStale, Refusal, safe_class_name,
 )
 from .host import ConsentRequest, Host
 from .manifest import ISOLATION_LEVELS, Manifest, validate_manifest
@@ -430,7 +430,7 @@ class PluginManager:
         except InstallLogRefused:
             raise
         except Exception as exc:
-            raise InstallLogRefused(self.install_log.path, type(exc).__name__) from exc
+            raise InstallLogRefused(self.install_log.path, safe_class_name(exc)) from exc
 
     @contextmanager
     def _write_ahead(self, seq: int, domain: str, from_state: str, to_state: str,
@@ -447,7 +447,7 @@ class PluginManager:
                     "at": _now(), "host": self.host.name, "event": "abort", "domain": domain,
                     "from_state": from_state, "to_state": to_state, "version": version,
                     "manifest_sha256": sha256, "consent": None, "consent_basis": "none",
-                    "aborts_seq": seq, "reason": type(exc).__name__[:200]})
+                    "aborts_seq": seq, "reason": safe_class_name(exc)})
             except BaseException:        # noqa: BLE001 - the original error wins
                 pass
             raise
@@ -565,16 +565,15 @@ class PluginManager:
                                   consented=rec.get("consented_runs_as"))
         config = self.configs.get(domain)
         code_root = str(self._code_root(rec))
+        undo = None
         if level == "inprocess":
             snap = _snapshot()                         # r18: enable is ATOMIC
             prev_loaded = self._loaded.get(domain)
-            try:
-                cls = self._import_inprocess(rec, code_root)
-                self._loaded[domain] = rec
-                _HOLDERS[import_package(rec["manifest"])] = self._key(domain)
-                check_drift(rec["manifest"], cls)      # refuses; state stays put
-                errs = config_errors(cls.Config, config)
-            except BaseException:
+
+            def undo() -> None:
+                """Put _loaded, _HOLDERS, sys.path and sys.modules back exactly
+                as they were before this attempt (base r24 CXC-PC-RUN
+                import-package-name-rule: for ANY failure)."""
                 if prev_loaded is None:
                     self._loaded.pop(domain, None)
                     if _HOLDERS.get(import_package(rec["manifest"])) == self._key(domain):
@@ -582,6 +581,14 @@ class PluginManager:
                 else:
                     self._loaded[domain] = prev_loaded
                 _restore(snap)
+            try:
+                cls = self._import_inprocess(rec, code_root)
+                self._loaded[domain] = rec
+                _HOLDERS[import_package(rec["manifest"])] = self._key(domain)
+                check_drift(rec["manifest"], cls)      # refuses; state stays put
+                errs = config_errors(cls.Config, config)
+            except BaseException:
+                undo()
                 raise
         else:
             probe = self._probe(rec, code_root, config)
@@ -595,12 +602,17 @@ class PluginManager:
             errs = probe["config_errors"]
         rec["state"] = "enabled"
         rec["runs_as"] = level
-        seq = self._event("enable", domain, was, "enabled", rec["version"],
-                          rec["manifest_sha256"])
-        with self._write_ahead(seq, domain, was, "enabled", rec["version"],
-                               rec["manifest_sha256"]):
-            rec["event_seq"] = seq
-            self.installs.put(domain, rec)
+        try:   # (0.2) the SAME undo covers the event append and the snapshot write
+            seq = self._event("enable", domain, was, "enabled", rec["version"],
+                              rec["manifest_sha256"])
+            with self._write_ahead(seq, domain, was, "enabled", rec["version"],
+                                   rec["manifest_sha256"]):
+                rec["event_seq"] = seq
+                self.installs.put(domain, rec)
+        except BaseException:
+            if undo is not None:
+                undo()
+            raise
         if errs:
             self._set_status(domain, f"parked({'; '.join(errs)})")
             return self.status(domain)

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .errors import InstallLogRefused
+from .errors import InstallLogRefused, safe_class_name
 
 
 def _atomic_write(path: Path, data: Any) -> None:
@@ -183,7 +183,7 @@ class InstallLog:
         try:
             fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         except Exception as exc:
-            raise InstallLogRefused(self.path, type(exc).__name__) from exc
+            raise InstallLogRefused(self.path, safe_class_name(exc)) from exc
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
@@ -204,7 +204,7 @@ class InstallLog:
         except InstallLogRefused:
             raise
         except Exception as exc:
-            raise InstallLogRefused(self.path, type(exc).__name__) from exc
+            raise InstallLogRefused(self.path, safe_class_name(exc)) from exc
         finally:
             os.close(fd)
 
@@ -248,11 +248,13 @@ def install_log_findings(log_path: Path, installs_path: Path) -> "tuple[InstallL
     afresh; write nothing; never raise ([CXC-PC-V02-INSTALL-LOG-DIVERGENCE],
     -MALFORMED-LINES, -FINDINGS-METHOD)."""
     out: "list[InstallLogFinding]" = []
+    raw: "bytes | None"
     try:
         raw = log_path.read_bytes() if log_path.exists() or log_path.is_symlink() else b""
     except Exception as exc:                   # noqa: BLE001 - never raises
-        return (InstallLogFinding("unreadable", None, None, None, None,
-                                  f"installs.jsonl cannot be read ({type(exc).__name__})"),)
+        out.append(InstallLogFinding("unreadable", None, None, None, None,
+                                     f"installs.jsonl cannot be read ({safe_class_name(exc)})"))
+        raw = None                             # and installs.json is still read
     try:
         records = json.loads(installs_path.read_text(encoding="utf-8")) \
             if installs_path.exists() else {}
@@ -260,8 +262,10 @@ def install_log_findings(log_path: Path, installs_path: Path) -> "tuple[InstallL
             raise ValueError("installs.json is not an object")
     except Exception as exc:                   # noqa: BLE001 - never raises
         out.append(InstallLogFinding("unreadable", None, None, None, None,
-                                     f"installs.json cannot be read ({type(exc).__name__})"))
+                                     f"installs.json cannot be read ({safe_class_name(exc)})"))
         records = None
+    if raw is None:      # no log to compare: only the unreadable finding(s)
+        return tuple(out)
     events, problems, gaps = _scan_bytes(raw)
     for n, code in problems:
         out.append(InstallLogFinding("malformed-line", None, None, n, code,
