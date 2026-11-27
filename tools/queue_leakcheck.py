@@ -3,6 +3,10 @@
 
     queue_leakcheck.py --head SHA (--pr N --repo OWNER/NAME | --pr-text FILE) [--private-dir DIR] [--output FILE] [--local-probe]
         exit 0 every check passed; 1 a check failed or refused; 2 a check could not run
+    queue_leakcheck.py --print-digest (--pr N --repo OWNER/NAME | --pr-text FILE)
+        exit 0 and print ONLY the sha256 of the PR text read now; 3 (EXIT_UNREADABLE) the text could not be read, and
+        nothing is printed on stdout. The status job's re-read; it sends GH_TOKEN when set (a hosted runner's
+        unauthenticated read can fail). The PR text itself is never printed.
 
 Every tool it runs is MAIN's copy (this checkout), never the PR's: the PR head is only fetched and read as data, so a PR that
 edits tools/ci_gitleaks.py, tools/leakcheck.py, the guard or the negative control does not decide its own result. In order:
@@ -36,8 +40,11 @@ MAIN = pathlib.Path(__file__).resolve().parents[1]
 TOOLS = MAIN / "tools"
 
 
-def say(msg):
-    print(f"[queue-leakcheck] {msg}", flush=True)
+EXIT_UNREADABLE = 3  # --print-digest only: the PR text could not be read (argparse's own usage error is 2)
+
+
+def say(msg, file=None):
+    print(f"[queue-leakcheck] {msg}", file=file or sys.stdout, flush=True)
 
 
 def run(*cmd, cwd=MAIN):
@@ -45,10 +52,15 @@ def run(*cmd, cwd=MAIN):
     return subprocess.run([str(c) for c in cmd], cwd=cwd).returncode
 
 
-def pr_text_from_api(repo, number):
-    """-> 'title\\n\\nbody\\n' read from the public REST API without a token (the repository is public)."""
+def pr_text_from_api(repo, number, token=None):
+    """-> 'title\\n\\nbody\\n' read from the public REST API. The leakcheck job passes no token (the repository is public);
+    the status job's re-read (--print-digest) passes GH_TOKEN, because a hosted runner's unauthenticated read can fail."""
     url = f"https://api.github.com/repos/{repo}/pulls/{int(number)}"
-    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "composeio-queue-leakcheck"})
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "composeio-queue-leakcheck"}
+    req = urllib.request.Request(url, headers=headers)
+    if token:
+        # unredirected: urllib copies ordinary headers onto a redirected request (even to another host); never this one
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(req, timeout=30) as r:
         pr = json.load(r)
     return pr_text(pr)
@@ -57,6 +69,14 @@ def pr_text_from_api(repo, number):
 def pr_text(pr):
     """The ONE rendering of a PR's text, shared with the status job (pr_text_digest)."""
     return (pr.get("title") or "") + "\n\n" + (pr.get("body") or "") + "\n"
+
+
+def read_pr_text(pr_text_file, repo, number):
+    """The leakcheck job's read (steps 3 and 7): a --pr-text file, or the public API with NO token, even when GH_TOKEN is
+    in the environment. The self-hosted runner holds no token for this read, and must not start sending one."""
+    if pr_text_file:
+        return pathlib.Path(pr_text_file).read_text(encoding="utf-8")
+    return pr_text_from_api(repo, number)
 
 
 def digest(text):
@@ -78,11 +98,16 @@ def main(argv=None):
     if not a.pr_text and not (a.pr and a.repo):
         ap.error("--pr and --repo, or --pr-text, are required")
     if a.print_digest:
+        # Any failure to read is EXIT_UNREADABLE with nothing on stdout, so the caller can never take an error message (or
+        # PR text) for a digest, nor a failed read for a changed text. Only the exception's class name is logged, on stderr.
         try:
-            t = pathlib.Path(a.pr_text).read_text(encoding="utf-8") if a.pr_text else pr_text_from_api(a.repo, a.pr)
-        except (OSError, urllib.error.URLError, ValueError) as e:
-            say(f"COULD NOT RUN: cannot read the PR text ({type(e).__name__})")
-            return 2
+            if a.pr_text:
+                t = pathlib.Path(a.pr_text).read_text(encoding="utf-8")
+            else:
+                t = pr_text_from_api(a.repo, a.pr, token=os.environ.get("GH_TOKEN") or None)
+        except Exception as e:  # noqa: BLE001 -- every read failure is the same answer: unreadable
+            say(f"COULD NOT READ the PR text ({type(e).__name__}): unreadable, not known to have changed", file=sys.stderr)
+            return EXIT_UNREADABLE
         print(digest(t))
         return 0
     if not a.head:
@@ -105,9 +130,7 @@ def main(argv=None):
         return 1
 
     def read_text():
-        if a.pr_text:
-            return pathlib.Path(a.pr_text).read_text(encoding="utf-8")
-        return pr_text_from_api(a.repo, a.pr)
+        return read_pr_text(a.pr_text, a.repo, a.pr)
 
     try:
         text = read_text()

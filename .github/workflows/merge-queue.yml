@@ -149,6 +149,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read
       statuses: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -158,19 +159,29 @@ jobs:
       - id: text
         name: re-read the PR title and body now; they must be the text the leakcheck job scanned last
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ needs.plan.outputs.number }}
           REPO: ${{ github.repository }}
           SCANNED: ${{ needs.leakcheck.outputs.pr_text_sha256 }}
-        # Three answers, never two: `true` the text re-read now is the text scanned last; `false` it changed (or could
-        # not be re-read); `not-scanned` the leakcheck job stopped before its scan finished, so there is nothing to
-        # compare and no claim about the text is made. (Run 45816157425 printed "changed" for a PR nobody edited,
-        # because a refused leakcheck job writes no digest.)
+        # Four answers, never two: `true` the text re-read now is the text scanned last; `false` it CHANGED after the scan;
+        # `unreadable` it could not be re-read (the tool exited non-zero, 3 for a failed read, or its whole output is not
+        # one lowercase sha256 hex digest) or the scanned digest itself is malformed, so nothing is claimed about whether it
+        # changed; only two well-formed digests are ever compared; `not-scanned` the leakcheck job stopped before its scan finished, so
+        # there is nothing to compare. (Run 45816157425 printed "changed" for a PR nobody edited, because a refused
+        # leakcheck job writes no digest; run 45867021900 printed "changed" because a tokenless read failed. The read now
+        # carries GH_TOKEN, and job permissions give it pull-requests: read only.)
         run: |
           if [ -z "$SCANNED" ]; then
             echo "merge-queue: no PR text digest from the leakcheck job: it stopped before scanning (see its log)"; echo "same=not-scanned" >> "$GITHUB_OUTPUT"; exit 0; fi
-          now="$(python3 -I tools/queue_leakcheck.py --print-digest --pr "$NUMBER" --repo "$REPO")" || now=unreadable
-          if [ "$now" = "$SCANNED" ]; then echo "same=true" >> "$GITHUB_OUTPUT"; else
-            echo "merge-queue: the PR title or body changed after the scan (or could not be read: $now): re-queue"; echo "same=false" >> "$GITHUB_OUTPUT"; fi
+          hex='^[0-9a-f]{64}$'
+          if ! [[ $SCANNED =~ $hex ]]; then
+            echo "merge-queue: the leakcheck job's PR text digest is malformed: unreadable, NOT known to have changed: re-queue"; echo "same=unreadable" >> "$GITHUB_OUTPUT"; exit 0; fi
+          rc=0; now="$(python3 -I tools/queue_leakcheck.py --print-digest --pr "$NUMBER" --repo "$REPO")" || rc=$?
+          if [ "$rc" -ne 0 ] || ! [[ $now =~ $hex ]]; then
+            echo "merge-queue: the PR title and body could not be re-read (exit $rc): unreadable, NOT known to have changed: re-queue"; echo "same=unreadable" >> "$GITHUB_OUTPUT"
+          elif [ "$now" = "$SCANNED" ]; then echo "same=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "merge-queue: the PR title or body changed after the scan: re-queue"; echo "same=false" >> "$GITHUB_OUTPUT"; fi
       - name: post merge-queue/tested on the tested head
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -182,6 +193,13 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$SUITE" = success ] && [ "$LEAK" = success ] && [ "$TEXT_SAME" = true ]; then state=success; else state=failure; fi
+          case "$TEXT_SAME" in
+            true) text="unchanged" ;;
+            false) text="changed after the scan" ;;
+            unreadable) text="unreadable on re-read (not known to have changed)" ;;
+            not-scanned) text="not scanned (leakcheck stopped first)" ;;
+            *) text="no answer" ;;
+          esac
           gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context=merge-queue/tested \
-            -f description="suite: $SUITE; leakcheck (main's checks): $LEAK; PR text unchanged: $TEXT_SAME" -f target_url="$RUN_URL"
+            -f description="suite: $SUITE; leakcheck (main's checks): $LEAK; PR text: $text" -f target_url="$RUN_URL"
           test "$state" = success
