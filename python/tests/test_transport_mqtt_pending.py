@@ -103,12 +103,79 @@ def test_a_failed_connect_does_not_flush():
     assert len(fake.published) == 1
 
 
-def test_send_before_start_is_dropped_not_queued():
-    """No client at all means the transport was never started — queueing there
-    would hide a configuration error behind a growing list."""
+def test_send_before_start_is_held_then_flushed_on_first_connect():
+    """[CXC-SOB-PRE-START-HOLD] "not started" is held exactly like "not yet
+    connected". This used to assert the OPPOSITE (dropped, on the premise that a
+    send with no client is a configuration error); the injected-bus seam
+    ([CXC-SOB-HANDLE]) made pre-start publishing the console's normal startup
+    path, and 20 first values were lost on every console start."""
     t = MQTTTransport(broker="test.local", client_id="t")
-    t.send(_msg("_bus/time", 1))
+    t.send(_msg("fleet/roster", [{"id": "architect"}]))
+    t.send(_msg("self/daemons", {"n": 21}))
+    assert len(t._pending) == 2                     # held, not dropped
+    assert t.health()["started"] is False           # visible, not hidden
+    assert t.health()["pending"] == 2
+
+    fake = FakeClient()
+    t._client = fake                                # as start() leaves it
+    assert fake.published == []                     # still nothing before CONNACK
+    t._on_connect(fake, None, {}, 0)
+    assert [p[0] for p in fake.published] == [
+        "composeio/global/fleet/roster", "composeio/global/self/daemons"]
     assert t._pending == []
+
+
+def test_pre_start_hold_is_the_same_bounded_queue():
+    """One queue, one cap ([DX-NARROW-WAIST]): a transport that is never
+    started cannot grow without bound, and the overflow is COUNTED."""
+    t = MQTTTransport(broker="test.local", client_id="t")
+    for i in range(t.PENDING_MAX + 5):
+        t.send(_msg("self/n", i))
+    assert len(t._pending) == t.PENDING_MAX
+    assert t._pending_dropped == 5
+    assert json.loads(json.dumps(t._pending[0].value)) == 5   # oldest dropped
+
+
+class _FakePahoModuleClient(FakeClient):
+    """Just enough paho surface for MQTTTransport.start() to run offline."""
+
+    def __init__(self, *a, **kw):
+        super().__init__()
+
+    def __getattr__(self, name):            # username_pw_set, will_set, ...
+        return lambda *a, **kw: None
+
+
+def test_bus_publish_before_start_reaches_the_wire(monkeypatch):
+    """The CONSOLE ORDERING, end to end through the bus: a source publishes on
+    the injected bus BEFORE bus.start() (runtime.main starts the in-process
+    sources before app.run()), then the bus starts and the broker connects.
+    The first value must be on the wire. The local bus holding it is not
+    enough: peers and the broker's retained copy only see the wire."""
+    import composeio.transport_mqtt as tm
+    from composeio.bus import ComposeIOBus
+
+    made: list[_FakePahoModuleClient] = []
+
+    def _fake_new_client(**kw):
+        c = _FakePahoModuleClient()
+        made.append(c)
+        return c
+
+    monkeypatch.setattr(tm, "new_paho_client", _fake_new_client)
+    monkeypatch.setattr(tm, "connect_with_backoff", lambda *a, **kw: None)
+
+    t = MQTTTransport(broker="test.local", client_id="console")
+    bus = ComposeIOBus(bus_id="console", global_transport=t)
+    bus.publish_state("self/projects", {"ok": 3}, source="project-validator")
+    assert bus.get_state("self/projects") == {"ok": 3}   # local copy: always fine
+
+    bus.start(announce_time=False)
+    assert len(made) == 1
+    t._on_connect(made[0], None, {}, 0)                  # the CONNACK lands
+
+    topics = [p[0] for p in made[0].published]
+    assert "composeio/global/self/projects" in topics, topics
 
 
 def test_disconnect_then_reconnect_holds_the_gap():

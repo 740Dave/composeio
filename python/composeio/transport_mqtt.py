@@ -746,13 +746,22 @@ class MQTTTransport(Transport):
 
         Before the connect callback lands, messages are QUEUED (not dropped)
         and flushed in order on connect — see [DEC-CONSOLE-MQTT-STARTUP-RACE].
+
+        BEFORE `start()` TOO ([SPEC:CXC-SOURCES-ON-BUS] [CXC-SOB-PRE-START-HOLD]).
+        This branch used to DROP a send with no client, on the premise that it
+        meant a configuration error. The injected-bus seam ([CXC-SOB-HANDLE])
+        made it the console's normal startup: `runtime.main()` starts the
+        in-process sources before `app.run()` starts the bus, and every source
+        publishes NOW, then parks, so 20 first values were dropped per start.
+        The same bounded queue holds them; a never-started transport is visible
+        through the cap, the counted overflow and `health()` (`started: False`,
+        `pending: N`), not by discarding data.
         """
         if not self._connected or self._client is None:
-            if self._client is None:
-                logger.warning(
-                    f"MQTT transport not started, dropping message to "
-                    f"'{message.namespace}'")
-                return
+            if self._client is None and not self._pending:
+                logger.info(
+                    f"MQTT transport not started yet; holding messages until "
+                    f"the first connect (first: '{message.namespace}')")
             self._pending.append(message)
             if len(self._pending) > self.PENDING_MAX:
                 self._pending.pop(0)
