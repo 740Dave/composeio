@@ -144,11 +144,12 @@ class _MqttCollector:
     def __init__(self, port: int, topic: str):
         import paho.mqtt.client as mqtt
 
+        from composeio.paho_compat import new_paho_client  # paho 1.x and 2.x
+
         self.msgs: list[dict] = []
-        if hasattr(mqtt, "CallbackAPIVersion"):
-            self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        else:
-            self._client = mqtt.Client()
+        # 3.1.1, as this collector always took by default; the on_message
+        # signature below is the same under VERSION1 (what the helper uses on 2.x).
+        self._client = new_paho_client(mqtt=mqtt, protocol=mqtt.MQTTv311)
         self._client.on_message = lambda _c, _u, msg: self.msgs.append(
             json.loads(msg.payload.decode()))
         self._client.connect("127.0.0.1", port, keepalive=5)

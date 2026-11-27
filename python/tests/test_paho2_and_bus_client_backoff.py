@@ -222,23 +222,125 @@ def _code_only(src: str) -> str:
     return "".join(out)
 
 
+_CLIENT_ATTR_RE = __import__("re").compile(r"\b(?:mqtt|paho)\.Client\s*\(")
+
+
+def _paho_constructions(src: str) -> int:
+    """How many paho ``Client(...)`` constructions `src` makes. Two detectors, and
+    the larger count wins:
+
+      * AST, which follows the IMPORT: ``import paho.mqtt.client as X`` then
+        ``X.Client(``; ``from paho.mqtt import client as X``; ``from
+        paho.mqtt.client import Client [as Y]`` (or ``*``) then ``Y(``; and the
+        full dotted ``paho.mqtt.client.Client(``. Nested (lazy) imports count.
+      * the original ``(mqtt|paho).Client(`` regex over code with comments and
+        strings blanked, which catches a module reached some other way (a
+        parameter, as inside the helper itself, or importlib).
+
+    Candidate review note 5: the regex alone missed ``from paho.mqtt.client
+    import Client`` and every alias; `test_the_detector_*` below is its
+    negative-control fixture.
+    """
+    import ast
+
+    regex_n = len(_CLIENT_ATTR_RE.findall(_code_only(src)))
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return regex_n
+    modules, classes, dotted_root = set(), set(), False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "paho.mqtt.client" and a.asname:
+                    modules.add(a.asname)
+                elif a.name.startswith("paho") and not a.asname:
+                    dotted_root = True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "paho.mqtt":
+                for a in node.names:
+                    if a.name == "client":
+                        modules.add(a.asname or "client")
+            elif node.module == "paho.mqtt.client":
+                for a in node.names:
+                    if a.name in ("Client", "*"):
+                        classes.add(a.asname or "Client")
+
+    def dotted(expr) -> str:
+        parts = []
+        while isinstance(expr, ast.Attribute):
+            parts.append(expr.attr)
+            expr = expr.value
+        if isinstance(expr, ast.Name):
+            parts.append(expr.id)
+        return ".".join(reversed(parts))
+
+    ast_n = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in classes:
+            ast_n += 1
+        elif isinstance(f, ast.Attribute) and f.attr == "Client":
+            owner = dotted(f.value)
+            if owner in modules or (dotted_root and owner == "paho.mqtt.client"):
+                ast_n += 1
+    return max(ast_n, regex_n)
+
+
+DETECTOR_CASES = [
+    # (source, constructions) -- the aliased forms are the ones the regex missed
+    ("from paho.mqtt.client import Client\nc = Client()\n", 1),
+    ("from paho.mqtt.client import Client as PC\nc = PC('x')\n", 1),
+    ("from paho.mqtt.client import *\nc = Client()\n", 1),
+    ("import paho.mqtt.client as broker\nc = broker.Client()\n", 1),
+    ("from paho.mqtt import client as pm\nc = pm.Client()\n", 1),
+    ("from paho.mqtt import client\nc = client.Client()\n", 1),
+    ("import paho.mqtt.client\nc = paho.mqtt.client.Client()\n", 1),
+    ("def f():\n    import paho.mqtt.client as mqtt\n    return mqtt.Client(protocol=5)\n", 1),
+    ("def f(mqtt):\n    return mqtt.Client(protocol=5)\n", 1),          # the regex leg
+    # CONTROLS: no paho construction here
+    ("from composeio.paho_compat import new_paho_client\nc = new_paho_client(mqtt=m, protocol=5)\n", 0),
+    ("class Client:\n    pass\nc = Client()\n", 0),
+    ("# mqtt.Client() in a comment\ns = 'paho.Client()'\n", 0),
+    ("from paho.mqtt.client import MQTTv5\nx = MQTTv5\n", 0),
+]
+
+
+@pytest.mark.parametrize("src,want", DETECTOR_CASES)
+def test_the_detector_counts_every_construction_form(src, want):
+    assert _paho_constructions(src) == want, src
+
+
+def test_the_old_regex_alone_missed_the_aliased_forms():
+    """CONTROL for the widening: proves the gap note 5 named was real, so the
+    cases above are not passing for a reason that was already true."""
+    aliased = [s for s, n in DETECTOR_CASES[:7]]
+    assert [len(_CLIENT_ATTR_RE.findall(_code_only(s))) for s in aliased] == [0] * 7
+
+
+def _scan(root: Path, skip_top=None) -> tuple[dict, int]:
+    this = Path(__file__).resolve()
+    hits, scanned = {}, 0
+    for path in root.rglob("*.py"):
+        if path.resolve() == this:
+            continue
+        rel = path.relative_to(root)
+        if (skip_top and rel.parts[0] == skip_top) or set(rel.parts) & {
+                ".git", "build", "site", "node_modules", "backups", ".venv"}:
+            continue
+        scanned += 1
+        n = _paho_constructions(path.read_text(errors="ignore"))
+        if n:
+            hits[str(rel)] = n
+    return hits, scanned
+
+
 def test_every_paho_construction_under_python_goes_through_the_helper():
     """The helper only helps if it is the ONLY way a paho client gets built.
     The two calls inside `new_paho_client` itself are the sole allowed ones."""
-    import re
-    pat = re.compile(r"\b(?:mqtt|paho)\.Client\s*\(")
-    this = Path(__file__).resolve()
-    hits, scanned = {}, 0
-    for path in PYTHON_ROOT.rglob("*.py"):
-        if path.resolve() == this:
-            continue
-        rel = path.relative_to(PYTHON_ROOT)
-        if set(rel.parts) & {".git", "build", "site", "node_modules"}:
-            continue
-        scanned += 1
-        n = len(pat.findall(_code_only(path.read_text(errors="ignore"))))
-        if n:
-            hits[str(rel)] = n
+    hits, scanned = _scan(PYTHON_ROOT)
     assert scanned > 100, f"scan covered only {scanned} files"
     assert hits == {"composeio/paho_compat.py": 2}, (
         "paho clients built outside paho_compat.new_paho_client: "
@@ -534,24 +636,10 @@ def test_bus_client_and_the_transport_expose_the_same_health_structure(broker):
     assert isinstance(t._link, tm.LinkHealth), "one structure, not two"
 
 
-def test_every_paho_construction_in_the_repo_is_version_aware():
-    """The same rule as above, over the WHOLE repository: outside python/,
-    the launcher, the CAN bridge and the change-notify test now use the
-    helper. The one other site already branches on CallbackAPIVersion itself."""
-    import re
-    pat = re.compile(r"\b(?:mqtt|paho)\.Client\s*\(")
-    repo = PYTHON_ROOT.parent
-    hits, scanned = {}, 0
-    for path in repo.rglob("*.py"):
-        rel = path.relative_to(repo)
-        if rel.parts[0] == "python" or set(rel.parts) & {
-                ".git", "build", "site", "node_modules", "backups", ".venv"}:
-            continue
-        scanned += 1
-        n = len(pat.findall(_code_only(path.read_text(errors="ignore"))))
-        if n:
-            hits[str(rel)] = n
+def test_every_paho_construction_in_the_repo_goes_through_the_helper():
+    """The same rule over the WHOLE repository, with NO allowed exception:
+    outside python/, the launcher, the CAN bridge, the change-notify test and
+    (candidate review F3) the storage bring-up collector all use the helper."""
+    hits, scanned = _scan(PYTHON_ROOT.parent, skip_top="python")
     assert scanned > 100, f"scan covered only {scanned} files"
-    assert hits == {"tests/test_storage_consolidation_bringup.py": 2}, hits
-    src = (repo / "tests/test_storage_consolidation_bringup.py").read_text()
-    assert "CallbackAPIVersion" in src, "the allowed site must stay version-aware"
+    assert hits == {}, hits
