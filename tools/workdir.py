@@ -15,8 +15,12 @@ THE RULES (modelled on FactLattice's ci_gitleaks/ci_smoke fix, factlattice-inter
     one string is used for every check and for the removal;
   - before removing, `remove_work` checks that the path is NOT a symlink, that it is a DIRECT child of tempfile.gettempdir(), and
     that its name starts with the expected prefix. If any check fails it refuses, says why on stderr, and deletes nothing;
-  - read-only entries (a git clone's objects can be) are made writable and the removal retried once; a removal that still fails
-    is reported on stderr and never replaces the tool's own exit code;
+  - the guard (`check_removable`) is explicit checks that RAISE, never `assert`, so `python -O` keeps it; the leaf is
+    judged with islink on the normalised path, the parent by realpath (a symlinked TMPDIR, the macOS default, still matches);
+  - read-only folders (a git clone's objects can be) are made writable and the removal retried once, but only REAL folders
+    whose realpath is inside the work folder's realpath: never the temp root, a symlink, its target, or a file;
+  - a removal that fails for any Exception is reported in ONE line (folder and exception class) and never replaces the
+    tool's own exit code; KeyboardInterrupt and SystemExit still propagate;
   - COMPOSEIO_KEEP_WORK=1 (or the caller's own keep flag, such as leakcheck's --keep) keeps the folder and prints its path once.
 
 Each tool loads this file by path from its own folder (`load_workdir()` below, copied as four lines), because the gates run
@@ -54,46 +58,84 @@ def normalise(work) -> str:
     return os.path.abspath(stripped)
 
 
-def refusal(work, prefix):
-    """-> None when `work` may be removed, else the reason it may not. Judges `normalise(work)`."""
+class WorkDirRefused(ValueError):
+    """The guard refused to remove a path. An explicit raise, so `python -O` cannot strip it."""
+
+
+def check_removable(work, prefix) -> str:
+    """The guard. -> the normalised path when it may be removed; RAISES WorkDirRefused otherwise.
+
+    Explicit checks that raise, never `assert` (which `python -O` removes). The LEAF is judged
+    on the one normalised string with no trailing separator (`os.path.islink`, an lstat), so a
+    symlinked leaf is refused. The PARENT is compared by realpath, so a TMPDIR that is itself a
+    symlink to the real temp folder (the default macOS shape: /var -> /private/var) still matches.
+    """
     work = normalise(work)
     if os.path.islink(work):
-        return "it is a symlink"
+        raise WorkDirRefused("it is a symlink")
     parent, name = os.path.split(work)
     if os.path.realpath(parent) != os.path.realpath(tempfile.gettempdir()):
-        return f"it is not a direct child of the temp folder {tempfile.gettempdir()!r}"
+        raise WorkDirRefused(f"it is not a direct child of the temp folder {tempfile.gettempdir()!r}")
     if not name.startswith(prefix):
-        return f"its name does not start with {prefix!r}"
+        raise WorkDirRefused(f"its name does not start with {prefix!r}")
     if not os.path.isdir(work):
-        return "it is not a folder"
+        raise WorkDirRefused("it is not a folder")
+    return work
+
+
+def refusal(work, prefix):
+    """-> None when `work` may be removed, else the reason `check_removable` refuses it."""
+    try:
+        check_removable(work, prefix)
+    except WorkDirRefused as e:
+        return str(e)
     return None
 
 
 def remove_work(work, prefix, tool="workdir") -> bool:
-    """Remove `work` if `refusal` allows it. -> True when removed. Never raises for a refusal or a failed removal.
+    """Remove `work` if the guard allows it. -> True when removed.
 
-    The string checked and the string removed are the same one, `normalise(work)`.
+    A refusal or a failed removal is logged as ONE line on stderr and returns False; it never
+    raises (KeyboardInterrupt and SystemExit still propagate). The string checked and the string
+    removed are the same one, `normalise(work)`.
     """
     given = os.fspath(work)
-    work = normalise(given)
-    why = refusal(work, prefix)
-    if why is not None:
-        _say(tool, f"REFUSED to remove the work folder {given!r}: {why}; nothing was deleted")
+    try:
+        work = check_removable(given, prefix)
+    except WorkDirRefused as e:
+        _say(tool, f"REFUSED to remove the work folder {given!r}: {e}; nothing was deleted")
         return False
+    real = os.path.realpath(work)
 
-    def writable(func, path, _exc):  # make the entry and its folder writable, then retry once
-        try:
-            os.chmod(os.path.dirname(path), 0o700)
-            os.chmod(path, 0o700)
-        except OSError:
-            pass
+    def inside(p):
+        """A real FOLDER (not a symlink) at or below the work folder's real path."""
+        if os.path.islink(p) or not os.path.isdir(p):
+            return False
+        rp = os.path.realpath(p)
+        return rp == real or rp.startswith(real + os.sep)
+
+    def writable(func, path, exc):
+        """Read-only retry: make the failing entry's folder (and the entry, if it is a folder)
+        writable, then retry once. Only real folders inside the work folder are ever chmodded:
+        never the temp root, never a symlink or its target, and never a file (unlinking a file
+        needs only its folder's permission, and a file may be a hard link to one outside)."""
+        fixed = False
+        for p in (os.path.dirname(path), path):
+            if inside(p):
+                try:
+                    os.chmod(p, 0o700)
+                    fixed = True
+                except OSError:
+                    pass
+        if not fixed:
+            raise exc if isinstance(exc, BaseException) else exc[1]
         func(path)
 
     kw = {"onexc": writable} if sys.version_info >= (3, 12) else {"onerror": writable}
     try:
         shutil.rmtree(work, **kw)
-    except OSError as e:
-        _say(tool, f"WARNING: could not remove the work folder {work!r}: {type(e).__name__}: {e}")
+    except Exception as e:  # a failed cleanup is said, in one line, and never replaces the tool's result
+        _say(tool, f"could not remove the work folder {work!r}: {type(e).__name__}: {e}")
         return False
     return True
 
@@ -147,4 +189,7 @@ def run_in_work_dir(prefix, tool, fn, keep=False):
             why = "--keep" if keep else f"{KEEP_ENV}=1"
             print(f"[{tool}] work folder kept ({why}): {work}", flush=True)
         else:
-            remove_work(work, prefix, tool)
+            try:
+                remove_work(work, prefix, tool)
+            except Exception as e:  # belt and braces: cleanup must never replace fn's result
+                _say(tool, f"could not remove the work folder {work!r}: {type(e).__name__}")

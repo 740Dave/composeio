@@ -386,3 +386,162 @@ def test_off_the_main_thread_nothing_is_installed(wd, tmpdir_iso):
     t.join(10)
     assert out["rc"] is before
     assert left(tmpdir_iso) == []
+
+
+# --------------------------------------------------------------------------- #
+# Matching FactLattice PR #98 as merged (de896c0) and its two reviews
+# --------------------------------------------------------------------------- #
+
+def test_a_cleanup_error_never_replaces_the_result(wd, tmpdir_iso, monkeypatch, capsys):
+    """Any Exception in cleanup: ONE line naming the folder and the exception
+    class, and fn's own result is returned."""
+    def broken_rmtree(*a, **k):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(wd.shutil, "rmtree", broken_rmtree)
+    seen = []
+    assert wd.run_in_work_dir("x-", "t", lambda w: seen.append(w) or 7) == 7
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if seen[0] in ln]
+    assert len(lines) == 1 and "RuntimeError" in lines[0], lines
+
+
+def test_a_guard_that_itself_fails_never_replaces_the_result(wd, tmpdir_iso, monkeypatch, capsys):
+    def broken_guard(*a, **k):
+        raise RuntimeError("guard exploded")
+    monkeypatch.setattr(wd, "check_removable", broken_guard)
+    assert wd.run_in_work_dir("x-", "t", lambda w: 3) == 3
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 1 and "RuntimeError" in err[0], err
+
+
+def test_keyboardinterrupt_in_cleanup_still_propagates(wd, tmpdir_iso, monkeypatch):
+    def ki(*a, **k):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(wd.shutil, "rmtree", ki)
+    with pytest.raises(KeyboardInterrupt):
+        wd.run_in_work_dir("x-", "t", lambda w: 0)
+
+
+def test_a_tools_exit_code_survives_a_cleanup_failure(gl, tmp_path, tmpdir_iso, monkeypatch, capsys):
+    import shutil as _shutil
+    tree, base = git_repo(tmp_path)
+    def broken_rmtree(*a, **k):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(_shutil, "rmtree", broken_rmtree)
+    assert gl.main(["--tree", str(tree)]) == 0, "a clean scan must still exit 0"
+    err = [ln for ln in capsys.readouterr().err.splitlines() if "could not remove" in ln]
+    assert len(err) == 1 and "PermissionError" in err[0]
+
+
+def test_the_guard_is_an_explicit_raise(wd, tmpdir_iso, tmp_path):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    link = tmpdir_iso / "x-link"
+    link.symlink_to(victim, target_is_directory=True)
+    with pytest.raises(wd.WorkDirRefused):
+        wd.check_removable(link, "x-")
+
+
+def test_the_guard_still_refuses_under_python_O(tmp_path, tmpdir_iso):
+    """`assert` is stripped by -O. In a real `python -O -I` child the symlinked
+    leaf is still refused and its target survives."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep").write_text("x")
+    link = tmpdir_iso / "x-link"
+    link.symlink_to(victim, target_is_directory=True)
+    code = ("import importlib.util,sys\n"
+            "s=importlib.util.spec_from_file_location('wd',sys.argv[1]);wd=importlib.util.module_from_spec(s);s.loader.exec_module(wd)\n"
+            "assert not __debug__\n"
+            "print(wd.remove_work(sys.argv[2],'x-','t'))\n"
+            "try:\n wd.check_removable(sys.argv[2],'x-'); print('NOT-REFUSED')\n"
+            "except wd.WorkDirRefused: print('REFUSED')\n")
+    p = subprocess.run([sys.executable, "-O", "-I", "-c", code, str(TOOLS / "workdir.py"), str(link)],
+                       capture_output=True, text=True, env=dict(os.environ, TMPDIR=str(tmpdir_iso)), timeout=30)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.split() == ["False", "REFUSED"], p.stdout
+    assert (victim / "keep").exists()
+
+
+def _ro_tree_with(wd, tmpdir_iso, entry_maker):
+    work = pathlib.Path(tempfile.mkdtemp(prefix="x-"))
+    ro = work / "ro"
+    ro.mkdir()
+    entry_maker(ro)
+    ro.chmod(0o555)
+    return work
+
+
+def test_the_retry_never_chmods_a_symlinks_target(wd, tmpdir_iso, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x")
+    outside.chmod(0o444)
+    work = _ro_tree_with(wd, tmpdir_iso, lambda ro: (ro / "link").symlink_to(outside))
+    assert wd.remove_work(work, "x-", "t") is True
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o444, "the symlink's target was chmodded"
+
+
+def test_the_retry_never_chmods_a_hard_linked_file(wd, tmpdir_iso, tmp_path):
+    """DIAMOND delta P3-3: a file inside the folder can share an inode with one
+    outside; only folders are ever chmodded, so its mode is untouched."""
+    outside = tmpdir_iso / "outside-hard.txt"           # same filesystem as the work folder
+    outside.write_text("x")
+    outside.chmod(0o444)
+    work = _ro_tree_with(wd, tmpdir_iso, lambda ro: os.link(outside, ro / "hard"))
+    assert wd.remove_work(work, "x-", "t") is True
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o444
+    outside.chmod(0o644)
+    outside.unlink()
+
+
+def test_the_retry_never_chmods_the_temp_root(wd, tmpdir_iso, capsys):
+    """A temp root that is not writable: removal fails, ONE line, the result is
+    kept, and the temp root keeps its mode (it used to be chmodded to 0700)."""
+    seen = []
+
+    def body(w):
+        seen.append(w)
+        tmpdir_iso.chmod(0o555)
+        return 5
+    try:
+        assert wd.run_in_work_dir("x-", "t", body) == 5
+        assert stat.S_IMODE(tmpdir_iso.stat().st_mode) == 0o555, "the temp root was chmodded"
+    finally:
+        tmpdir_iso.chmod(0o755)
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if seen[0] in ln]
+    assert len(lines) == 1 and "PermissionError" in lines[0], lines
+
+
+@pytest.fixture
+def tmpdir_link(tmp_path, monkeypatch):
+    """TMPDIR is a SYMLINK to a real folder: the default macOS shape (/var -> /private/var)."""
+    real = tmp_path / "real-tmp"
+    real.mkdir()
+    link = tmp_path / "tmp-link"
+    link.symlink_to(real, target_is_directory=True)
+    monkeypatch.setenv("TMPDIR", str(link))
+    monkeypatch.setattr(tempfile, "tempdir", str(link))
+    return link
+
+
+def test_a_symlinked_temp_folder_still_has_its_work_folder_removed(wd, tmpdir_link, tmp_path):
+    seen = []
+    wd.run_in_work_dir("x-", "t", seen.append)
+    assert seen[0].startswith(str(tmpdir_link)), seen
+    assert left(tmpdir_link) == []
+
+
+def test_a_symlinked_temp_folder_with_a_real_tool(gl, tmpdir_link, tmp_path):
+    tree, base = git_repo(tmp_path)
+    assert gl.main(["--tree", str(tree), "--history-base", base]) == 0
+    assert left(tmpdir_link) == []
+
+
+def test_a_symlinked_leaf_is_still_refused_under_a_symlinked_temp_folder(wd, tmpdir_link, tmp_path):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep").write_text("x")
+    leaf = tmpdir_link / "x-leaf"
+    leaf.symlink_to(victim, target_is_directory=True)
+    assert wd.remove_work(leaf, "x-", "t") is False
+    assert wd.remove_work(str(leaf) + "/", "x-", "t") is False
+    assert (victim / "keep").exists()
