@@ -2,14 +2,14 @@
 scope: "ComposeIO's spec checklist: the standing rules a ComposeIO spec change must satisfy, starting with spec 95's rule that a host-side change cites the contract version it implements, then the candidate rules the 2026-11-26 audit of spec 95 derived from the extension points that spec creates."
 audience: "composeux-architect (creates and owns this checklist, ratifies each proposed rule); composeio-expert and gnomon-architect (apply it to host-side changes); the spec-auditor (PROC-SPEC-AUDIT product-checklists, where this checklist is registered by the approver of development procedures)."
 boundary: "IN: one rule per node, each a single checkable sentence with its verify-machine. OUT: the contents of any rule's subject (spec 95 owns them); Gnomon's own checklist GM-SPEC-CHECKLIST, which is not edited here; registering this checklist in PROC-SPEC-AUDIT, which is not done by this file."
-not-this: "Not ratified: only rule 1 is decided; every other rule is proposed (architect-synthesis) until composeux-architect ratifies it. Not a claim that any rule has been applied or run: every verify-machine is a check to write, not a result."
+not-this: "Not all ratified. As of 2026-11-27, of the 31 rule nodes (CXC-SCL-* with a rule, excluding the placement note CXC-SCL-PLACEMENT): 1 is decided (CXC-SCL-HOST-CITES-VERSION), 9 are ratified by composeux-architect (CXC-SCL-VOCAB-COPIES-PINNED, CXC-SCL-VOCAB-CLASSES, CXC-SCL-SPLIT-KEEPS-ORIGINALS, CXC-SCL-EDGES-WITH-MULTIPLICITY, CXC-SCL-ID-COLLISION-ACROSS-ROOTS, CXC-SCL-COMMIT-CLAIMS-TRUE, CXC-SCL-SELF-SAFE-PROCESS-PATTERNS, CXC-SCL-PUSHED-RANGE-SECRET-GATE, CXC-SCL-RELEASE-GATE-STOP-ON-QUEUE-EVIDENCE) and 21 are still proposed (architect-synthesis; the rest of CXC-SCL-*). Not a claim that any rule has been applied or run: every verify-machine is a check to write, not a result, and each ratified rule still carries evidence: EMPTY."
 depends-on: [95-plugin-contract.lts]
 domain: plt.cux
 confidentiality: internal-only
 artifact-readiness: design-review
 status: draft
 created: 2026-11-26
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 # ComposeIO Spec Checklist — standing rules for ComposeIO spec changes [SPEC:CXC-SPEC-CHECKLIST]
 
@@ -289,6 +289,112 @@ updated: 2026-11-26
 - provenance: architect-synthesis: rule text composed by corpus-editor (Sonnet) from composeux-architect's brief under ruling-one-text-author-per-spec-2026-11-26
 - part-of: [SPEC:CXC-SPEC-CHECKLIST]
 
+## Rule: Every copy of the publish vocabulary is listed with its sha256, and a change updates all copies and reads each hash back [CXC-SCL-VOCAB-COPIES-PINNED]
+
+- rule: Every copy of the private publish vocabulary and denylist is listed in one place: the build copy, the deploy overlay, the shared-workflow deploy repo, and each self-hosted runner's home, each with its expected sha256. A vocabulary change updates every listed copy in the same change and reads each copy's hash back at the object. The merge queue's leakcheck log line ("vocabulary: rules=N ... sha256=...") is compared with the expected hash on the first PR after a change.
+- tell: The queue's green result gives no sign that it gated on an older, smaller vocabulary; only the logged rule count and hash differ.
+- source: Measured failure (2026-11-27 specs move): a vocabulary was extended but two copies kept the older file; the merge queue then gated on fewer rules for several PRs, and its green result could not show that.
+- verify-machine: a listing names every copy with its expected sha256; a check reads each copy's hash at the copy itself and fails on any difference; and the rules count and hash in the leakcheck line of the first PR after a change equal the listed values.
+- status: ratified
+- status-detail: ratified 2026-11-27 by composeux-architect; evidence: EMPTY (no tool enforces this rule yet and no run is recorded; the sentinel stays until a tool runs the check, per DX-SPEC-CARRIES-ITS-EVIDENCE)
+- provenance: architect-synthesis: rule text composed by factlattice-editor (Sonnet) from composeux-architect's narrative of 2026-11-27
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-SCL-SCRUB-OVERLAY-PARITY], [CXC-SCL-VOCAB-CLASSES]
+
+## Rule: The vocabulary covers the identity classes, and a repo test with its own pattern stays beside it as a second gate [CXC-SCL-VOCAB-CLASSES]
+
+- rule: The vocabulary covers, as classes (private terms are never listed in public text): bare and separated MAC forms, home and session-tree path prefixes, the local user name, private host names, device ids and private address ranges. A repo test with its own pattern stays alongside it as a second, independent gate; neither replaces the other.
+- tell: A class has no rule in the vocabulary, so a leak of that class passes the vocabulary gate and is caught, if at all, by the other gate or by a person's review.
+- source: Measured failure (2026-11-27 specs move): a device-MAC test caught a bare 12-hex-digit MAC the vocabulary missed, and session-tree paths and the local user name were caught only by a person's review.
+- verify-machine: for each listed class, a planted sample of that class is flagged by the vocabulary gate and, where the class has a repo test, by that test as well; a class with no flag fails the check.
+- status: ratified
+- status-detail: ratified 2026-11-27 by composeux-architect; evidence: EMPTY (no tool enforces this rule yet and no run is recorded)
+- provenance: architect-synthesis: rule text composed by factlattice-editor (Sonnet) from composeux-architect's narrative of 2026-11-27
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-SCL-NO-DEVICE-IDENTITIES-IN-PUBLIC], [CXC-SCL-VOCAB-COPIES-PINNED]
+
+## Rule: A split into public and companion keeps every original line, checked per line and per node, not by count [CXC-SCL-SPLIT-KEEPS-ORIGINALS]
+
+- rule: When content is split into a public part and a private companion, the no-loss gate is line-level and node-aware. Every source line is present verbatim in the public part or in the companion, under its own node id. The one exception is a line rewritten in public, whose verbatim original must then be in the companion as a real, queryable line. Counting lines is not enough.
+- tell: A line-count check reports no loss while rewritten lines have their originals in neither copy.
+- source: Measured failure (2026-11-27 specs move): a scrub rewrote tokens in place, and a count-based check reported no loss while the originals were in neither copy.
+- verify-machine: for each source node, every source line is found verbatim, under the same node id, in the public part or the companion; each line rewritten in public has its verbatim original found as a queryable line in the companion; a planted rewrite with its original removed fails the check.
+- status: ratified
+- status-detail: ratified 2026-11-27 by composeux-architect; evidence: EMPTY (no tool enforces this rule yet and no run is recorded)
+- provenance: architect-synthesis: rule text composed by factlattice-editor (Sonnet) from composeux-architect's narrative of 2026-11-27
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-SCL-EDGES-WITH-MULTIPLICITY], [CXC-SCL-ID-COLLISION-ACROSS-ROOTS]
+
+## Rule: An edge no-loss check compares (source, type, target) triples with multiplicity, not as sets [CXC-SCL-EDGES-WITH-MULTIPLICITY]
+
+- rule: An edge no-loss check compares the (source, type, target) triples of the result against the source WITH multiplicity, not as sets.
+- tell: A set comparison passes while a doubly minted edge has been reduced to one.
+- source: Measured failure (2026-11-27 specs move): an edge minted twice in the source (once from a property and once from a relationships line) survived once, and a set comparison passed.
+- verify-machine: the check counts each (source, type, target) triple in the source and in the result and fails when any count differs; a fixture with one edge minted twice, reduced to one, fails the check.
+- status: ratified
+- status-detail: ratified 2026-11-27 by composeux-architect; evidence: EMPTY (no tool enforces this rule yet and no run is recorded)
+- provenance: architect-synthesis: rule text composed by factlattice-editor (Sonnet) from composeux-architect's narrative of 2026-11-27
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-SCL-SPLIT-KEEPS-ORIGINALS]
+
+## Rule: A companion that reuses public node ids is its own corpus, never a second root of the same corpus [CXC-SCL-ID-COLLISION-ACROSS-ROOTS]
+
+- rule: A companion that reuses public node ids is registered as its own corpus, never as a second root of the same corpus. The engine's merge behaviour for a repeated id is measured before any design relies on it.
+- tell: Two roots of one corpus hold the same id, the engine reports a collision, and one file's properties are missing from the query result.
+- source: Measured failure (2026-11-27 specs move): two roots holding one id produced a collision in which one file's properties were dropped.
+- verify-machine: the companion is listed in the corpus registry under its own corpus id; a check over the registry fails when two roots of one corpus define the same node id; the measured merge behaviour is recorded beside the registration.
+- status: ratified
+- status-detail: ratified 2026-11-27 by composeux-architect; evidence: EMPTY (no tool enforces this rule yet and no run is recorded)
+- provenance: architect-synthesis: rule text composed by factlattice-editor (Sonnet) from composeux-architect's narrative of 2026-11-27
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-SCL-SPLIT-KEEPS-ORIGINALS]
+
+## Rule: Every claim in a public commit message or PR body is true and checkable from the tree or the named gates [CXC-SCL-COMMIT-CLAIMS-TRUE]
+
+- rule: Every claim in a public commit message or PR body is true and checkable from the tree or from the gates named there. Counts are re-checked against the commit before it is pushed, and a gate is cited by its relative file name and sha256.
+- tell: A message states a count or a gate result that the tree or the named gate file does not show.
+- source: Measured failures (2026-11-27 specs move): a PR body once carried private absolute paths, and a brief once carried a mistyped commit sha. Both were caught only after the fact, which is why gates are now cited by relative file name and sha256, and shas are copied from command output.
+- verify-machine: for each count in a commit message or PR body, a recount against the commit gives the stated number; each cited gate resolves to a relative file name whose sha256 equals the cited one.
+- status: ratified
+- status-detail: ratified 2026-11-27 by composeux-architect; evidence: EMPTY (no tool enforces this rule yet and no run is recorded)
+- provenance: architect-synthesis: rule text composed by factlattice-editor (Sonnet) from composeux-architect's narrative of 2026-11-27
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+
+## Rule: Process checks use self-safe patterns, and a stack member is identified by its own lock [CXC-SCL-SELF-SAFE-PROCESS-PATTERNS]
+
+- rule: Process checks use self-safe patterns (for example a bracketed first letter), so the check's own command line cannot match. A stack member is identified by its own lock, never by matching a command line.
+- tell: A process check finds itself, or a stack member is judged running or stopped by a command-line match that hits something else.
+- source: Measured failures (2026-11-27 specs move): an architect's own process check named the module it was looking for, so it matched itself, and a member guard keyed on command lines misidentified a stack member. The guard now asks each member's own lock.
+- verify-machine: each process check run with no target process present reports none found; each stack member's status is read from its own lock, and a check fails when a command-line match is used to identify a member.
+- status: ratified
+- status-detail: ratified 2026-11-27 by composeux-architect; evidence: EMPTY (no tool enforces this rule yet and no run is recorded)
+- provenance: architect-synthesis: rule text composed by factlattice-editor (Sonnet) from composeux-architect's narrative of 2026-11-27
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+
+## Rule: A push's secret-scan gate is the scan of the pushed range, with a planted control that must be found [CXC-SCL-PUSHED-RANGE-SECRET-GATE]
+
+- rule: A push's secret-scan gate is the scan of the pushed range, run with a planted control that must be found. A whole-tree scan runs for information only. A known pre-existing hit is recorded with its location, never waived.
+- tell: A gate reports no findings, but the scan did not cover the pushed range, or a scan that cannot find a planted secret was trusted.
+- source: Measured failure (2026-11-27 specs move): a whole-tree secret scan failed on a hit that was already on the remote and outside the push. The first response waived the gate. It was corrected to cite the pushed-range scan as the gate and to record the old hit.
+- verify-machine: the gate's scan range equals the range being pushed; the planted control is reported found, and a run that does not find it fails the gate; each pre-existing hit in the whole-tree scan appears in a record with its location.
+- status: ratified
+- status-detail: ratified 2026-11-27 by composeux-architect; evidence: EMPTY (no tool enforces this rule yet and no run is recorded)
+- provenance: architect-synthesis: rule text composed by factlattice-editor (Sonnet) from composeux-architect's narrative of 2026-11-27
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-SCL-NO-DEVICE-IDENTITIES-IN-PUBLIC], [CXC-SCL-RELEASE-GATE-STOP-ON-QUEUE-EVIDENCE]
+
+## Rule: A landing stops before the fast-forward when the queue-log evidence its brief names is absent, even if every job is green [CXC-SCL-RELEASE-GATE-STOP-ON-QUEUE-EVIDENCE]
+
+- rule: A landing brief may name queue-log evidence that must hold before main moves (for example the vocabulary line). The absence of that evidence is a stop before the fast-forward, even when every job is green.
+- tell: Main moves on green jobs while the queue log lacks the line the brief named.
+- source: Measured failure (2026-11-27 specs move): a merge queue passed every job while loading an older, smaller vocabulary. A brief that required the vocabulary log line stopped the fast-forward, and main did not move.
+- verify-machine: before the fast-forward, a check searches the queue log for each line the brief names and refuses the landing when one is missing; a run with all jobs green and one named line removed from the log refuses.
+- status: ratified
+- status-detail: ratified 2026-11-27 by composeux-architect; evidence: EMPTY (no tool enforces this rule yet and no run is recorded)
+- provenance: architect-synthesis: rule text composed by factlattice-editor (Sonnet) from composeux-architect's narrative of 2026-11-27
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-SCL-VOCAB-COPIES-PINNED], [CXC-SCL-PUSHED-RANGE-SECRET-GATE]
+
 
 ---
 
@@ -336,8 +442,27 @@ updated: 2026-11-26
 - [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-PROVENANCE-CLASSES]
 - [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-CONSOLIDATION]
 - [CXC-SCL-PROVENANCE-CLASSES] RELATED_TO [CXC-PC-ARCHITECT-PROPOSALS]
+- [CXC-SCL-VOCAB-COPIES-PINNED] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-VOCAB-CLASSES] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-SPLIT-KEEPS-ORIGINALS] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-EDGES-WITH-MULTIPLICITY] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-ID-COLLISION-ACROSS-ROOTS] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-COMMIT-CLAIMS-TRUE] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-SELF-SAFE-PROCESS-PATTERNS] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-PUSHED-RANGE-SECRET-GATE] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-RELEASE-GATE-STOP-ON-QUEUE-EVIDENCE] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-VOCAB-COPIES-PINNED]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-VOCAB-CLASSES]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-SPLIT-KEEPS-ORIGINALS]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-EDGES-WITH-MULTIPLICITY]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-ID-COLLISION-ACROSS-ROOTS]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-COMMIT-CLAIMS-TRUE]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-SELF-SAFE-PROCESS-PATTERNS]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-PUSHED-RANGE-SECRET-GATE]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-RELEASE-GATE-STOP-ON-QUEUE-EVIDENCE]
 
 ---
 
+**Version**: 0.2 — 2026-11-27, nine rules added (composed by factlattice-editor from composeux-architect's narrative of the 2026-11-27 specs move) and ratified by composeux-architect the same day; evidence EMPTY for each until a tool enforces it: vocabulary copies pinned, vocabulary classes, split keeps originals, edges with multiplicity, id collision across roots, commit claims true, self-safe process patterns, pushed range as the secret gate, release gate stops on queue evidence.
 **Version**: 0.1 — 2026-11-26, created by factlattice-editor at the composeux-architect's request, because spec 95's `CXC-PC-STANDING-HOST-CITES-VERSION` says the architect creates ComposeIO's spec checklist before the build.
-**Status**: Draft. Rule 1 is decided; the other rules are proposed until composeux-architect ratifies them. Registering this checklist in PROC-SPEC-AUDIT product-checklists is NOT done by this file.
+**Status**: Draft. As of 2026-11-27: 1 rule decided (CXC-SCL-HOST-CITES-VERSION), 9 rules ratified (the nine added in version 0.2, CXC-SCL-VOCAB-COPIES-PINNED through CXC-SCL-RELEASE-GATE-STOP-ON-QUEUE-EVIDENCE) and 21 rules proposed until composeux-architect ratifies them (the other CXC-SCL-* rules). Registering this checklist in PROC-SPEC-AUDIT product-checklists is NOT done by this file.
