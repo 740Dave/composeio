@@ -903,8 +903,11 @@ class CANMQTTBridge:
             # A BRIDGE IS THE WORST PLACE TO LOSE IT: everything CAN-side is
             # already un-ageable, so this hop is the first one that CAN date a
             # value.
-            self._mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID,
-                                            protocol=mqtt.MQTTv5)
+            # Built at the paho seam so paho 2.x constructs too.
+            from composeio.transport_mqtt import new_paho_client
+            self._mqtt_client = new_paho_client(mqtt=mqtt,
+                                                client_id=MQTT_CLIENT_ID,
+                                                protocol=mqtt.MQTTv5)
             self._mqtt_client.on_connect = self._on_mqtt_connect
             self._mqtt_client.on_message = self._on_mqtt_message
             self._mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)

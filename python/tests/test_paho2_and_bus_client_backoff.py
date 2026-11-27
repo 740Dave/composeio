@@ -533,3 +533,25 @@ def test_bus_client_and_the_transport_expose_the_same_health_structure(broker):
     assert shared <= set(t.health())
     assert isinstance(t._link, tm.LinkHealth), "one structure, not two"
 
+
+def test_every_paho_construction_in_the_repo_is_version_aware():
+    """The same rule as above, over the WHOLE repository: outside python/,
+    the launcher, the CAN bridge and the change-notify test now use the
+    helper. The one other site already branches on CallbackAPIVersion itself."""
+    import re
+    pat = re.compile(r"\b(?:mqtt|paho)\.Client\s*\(")
+    repo = PYTHON_ROOT.parent
+    hits, scanned = {}, 0
+    for path in repo.rglob("*.py"):
+        rel = path.relative_to(repo)
+        if rel.parts[0] == "python" or set(rel.parts) & {
+                ".git", "build", "site", "node_modules", "backups", ".venv"}:
+            continue
+        scanned += 1
+        n = len(pat.findall(_code_only(path.read_text(errors="ignore"))))
+        if n:
+            hits[str(rel)] = n
+    assert scanned > 100, f"scan covered only {scanned} files"
+    assert hits == {"tests/test_storage_consolidation_bringup.py": 2}, hits
+    src = (repo / "tests/test_storage_consolidation_bringup.py").read_text()
+    assert "CallbackAPIVersion" in src, "the allowed site must stay version-aware"

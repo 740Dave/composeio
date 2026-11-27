@@ -599,8 +599,15 @@ class Launcher:
         # MQTT 5, EXPLICITLY — see [DEC-IMPLEMENT-MQTT-RETAIN-WITH-AN-AGE-CONTRACT].
         # paho's default is MQTTv311 and an omitted `protocol=` is invisible at
         # the call site.
-        client = mqtt.Client(client_id=f"intelligence-launcher-{self.id}",
-                             protocol=mqtt.MQTTv5)
+        #
+        # Built at the paho seam so paho 2.x constructs too (it requires a
+        # CallbackAPIVersion). Lazy, like every composeio import here.
+        if _PY_ROOT not in sys.path:
+            sys.path.insert(0, _PY_ROOT)
+        from composeio.transport_mqtt import new_paho_client
+        client = new_paho_client(mqtt=mqtt,
+                                 client_id=f"intelligence-launcher-{self.id}",
+                                 protocol=mqtt.MQTTv5)
         client.on_message = self._paho_on_message
 
         # `properties` DEFAULTS so BOTH arities work: MQTT 5 passes a 5th
