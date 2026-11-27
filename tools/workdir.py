@@ -10,6 +10,8 @@ a copy of the scanned tree, which is private-derived, so a leftover folder is a 
 THE RULES (modelled on FactLattice's ci_gitleaks/ci_smoke fix, factlattice-internal-dev PR #98, with one shared copy here):
   - the folder is removed in a `finally`, by the exact path mkdtemp returned, so a clean run, a finding, an early return and
     an exception (KeyboardInterrupt included) all clean up;
+  - the path is normalised ONCE (`normalise`: trailing separators stripped, made absolute, links not resolved) and that
+    one string is used for every check and for the removal;
   - before removing, `remove_work` checks that the path is NOT a symlink, that it is a DIRECT child of tempfile.gettempdir(), and
     that its name starts with the expected prefix. If any check fails it refuses, says why on stderr, and deletes nothing;
   - read-only entries (a git clone's objects can be) are made writable and the removal retried once; a removal that still fails
@@ -33,12 +35,28 @@ def _say(tool, msg):
     print(f"[{tool}] {msg}", file=sys.stderr, flush=True)
 
 
+def normalise(work) -> str:
+    """The ONE spelling of `work` that every check and the removal use.
+
+    Trailing separators are stripped and the path is made absolute (which also
+    collapses `//`, `./` and `..` lexically). Links are NOT resolved: the leaf
+    must stay a link if it is one, so `islink` can see it. This matters because
+    a link spelled `<tmp>/x-link/` passes `islink` (lstat follows a trailing
+    slash) while `abspath` strips the slash for the name checks; checking one
+    spelling and deleting another let rmtree walk into the link's target
+    (candidate review F1, 2026-11-27).
+    """
+    s = os.fspath(work)
+    stripped = s.rstrip(os.sep) or os.sep
+    return os.path.abspath(stripped)
+
+
 def refusal(work, prefix):
-    """-> None when `work` may be removed, else the reason it may not."""
-    work = os.fspath(work)
+    """-> None when `work` may be removed, else the reason it may not. Judges `normalise(work)`."""
+    work = normalise(work)
     if os.path.islink(work):
         return "it is a symlink"
-    parent, name = os.path.split(os.path.abspath(work))
+    parent, name = os.path.split(work)
     if os.path.realpath(parent) != os.path.realpath(tempfile.gettempdir()):
         return f"it is not a direct child of the temp folder {tempfile.gettempdir()!r}"
     if not name.startswith(prefix):
@@ -49,10 +67,15 @@ def refusal(work, prefix):
 
 
 def remove_work(work, prefix, tool="workdir") -> bool:
-    """Remove `work` if `refusal` allows it. -> True when removed. Never raises for a refusal or a failed removal."""
+    """Remove `work` if `refusal` allows it. -> True when removed. Never raises for a refusal or a failed removal.
+
+    The string checked and the string removed are the same one, `normalise(work)`.
+    """
+    given = os.fspath(work)
+    work = normalise(given)
     why = refusal(work, prefix)
     if why is not None:
-        _say(tool, f"REFUSED to remove the work folder {os.fspath(work)!r}: {why}; nothing was deleted")
+        _say(tool, f"REFUSED to remove the work folder {given!r}: {why}; nothing was deleted")
         return False
 
     def writable(func, path, _exc):  # make the entry and its folder writable, then retry once
@@ -67,7 +90,7 @@ def remove_work(work, prefix, tool="workdir") -> bool:
     try:
         shutil.rmtree(work, **kw)
     except OSError as e:
-        _say(tool, f"WARNING: could not remove the work folder {os.fspath(work)!r}: {type(e).__name__}: {e}")
+        _say(tool, f"WARNING: could not remove the work folder {work!r}: {type(e).__name__}: {e}")
         return False
     return True
 

@@ -116,6 +116,38 @@ def test_helper_refuses_a_symlink(wd, tmpdir_iso, tmp_path, capsys):
     assert "REFUSED" in err and "symlink" in err
 
 
+@pytest.mark.parametrize("spelling", [
+    "{link}/",          # F1: lstat follows a trailing slash, so islink said False
+    "{link}//",
+    "{link}/./",
+    "{tmp}//{name}",
+    "{tmp}/./{name}/",
+])
+def test_helper_refuses_a_symlink_however_it_is_spelled(wd, tmpdir_iso, tmp_path, spelling):
+    """Candidate review F1: `<tmp>/x-link/` passed every check and rmtree
+    deleted the link's TARGET, a folder outside the temp folder."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep").write_text("x")
+    link = tmpdir_iso / "x-link"
+    link.symlink_to(victim, target_is_directory=True)
+    path = spelling.format(link=link, tmp=tmpdir_iso, name=link.name)
+    assert wd.remove_work(path, "x-", "t") is False
+    assert (victim / "keep").exists(), "the symlink's target was deleted"
+    assert link.is_symlink()
+
+
+@pytest.mark.parametrize("spelling", ["{d}/", "{d}//", "{tmp}/./{name}/", "{tmp}//{name}"])
+def test_helper_removes_a_real_work_folder_however_it_is_spelled(wd, tmpdir_iso, spelling):
+    """CONTROL for the test above: the same spellings of a REAL folder are
+    removed, so the refusal there is about the link, not the spelling."""
+    d = tmpdir_iso / "x-real"
+    d.mkdir()
+    (d / "f").write_text("x")
+    assert wd.remove_work(spelling.format(d=d, tmp=tmpdir_iso, name=d.name), "x-", "t") is True
+    assert not d.exists()
+
+
 def test_helper_refuses_a_wrong_prefix_and_a_path_outside_the_temp_folder(wd, tmpdir_iso, tmp_path, capsys):
     wrong = tmpdir_iso / "other-x"
     wrong.mkdir()
