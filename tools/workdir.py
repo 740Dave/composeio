@@ -9,8 +9,10 @@ a copy of the scanned tree, which is private-derived, so a leftover folder is a 
 
 THE RULES (modelled on FactLattice's ci_gitleaks/ci_smoke fix, factlattice-internal-dev PR #98, with one shared copy here):
   - the folder is removed in a `finally`, by the exact path mkdtemp returned, so a clean run, a finding, an early return and
-    an exception (KeyboardInterrupt included) all clean up, and so does SIGTERM on the main thread (while the folder is
-    live a handler that raises SystemExit is installed, chained to any Python handler already set, then restored);
+    an exception (KeyboardInterrupt included) all clean up, and so does SIGTERM on the main thread: while the folder is
+    live a handler is installed (chained to any Python handler already set). During fn it raises SystemExit so the
+    `finally` runs; during the removal it only RECORDS the signal, which is re-delivered once the folder is gone and
+    the previous handler is restored (`_SigtermGuard`);
   - the path is normalised ONCE (`normalise`: trailing separators stripped, made absolute, links not resolved) and that
     one string is used for every check and for the removal;
   - before removing, `remove_work` checks that the path is NOT a symlink, that it is a DIRECT child of tempfile.gettempdir(), and
@@ -140,56 +142,93 @@ def remove_work(work, prefix, tool="workdir") -> bool:
     return True
 
 
-def _sigterm_guard():
-    """While a work folder is live, make SIGTERM unwind the stack so the `finally` runs.
+class _SigtermGuard:
+    """While a work folder is live, including while it is being REMOVED, a SIGTERM must
+    not end the process with the folder (or half of it) left behind.
 
     SIGTERM's default action ends the process WITHOUT unwinding, so a CI cancel, a job
-    timeout or a plain `kill` left the folder behind (candidate review F2). Rules:
+    timeout or a plain `kill` left the folder behind (candidate review F2). Two phases:
+      - RUNNING (fn is working): a SIGTERM is DELIVERED at once, so it interrupts fn and
+        the `finally` runs the removal;
+      - REMOVING (`defer()` called): a SIGTERM is RECORDED, not raised, so the delete is
+        never cut off half-way (candidate review R2-N1: a 40,000-file folder was left at
+        40,000, 38,433 and 34,922 files). `release()` restores the previous handler, then
+        re-delivers a recorded SIGTERM.
+    Delivering means: call the previous Python handler if there is one (CHAIN), then, if it
+    returned, raise SystemExit(128 + SIGTERM), the status the default action reports.
+    Rules:
       - main thread only (Python delivers signals there, and signal.signal refuses
         elsewhere); off the main thread nothing is installed;
-      - previous handler SIG_DFL (or not set from Python): install one that raises
-        SystemExit(128 + SIGTERM), the exit status the default action would report;
-      - previous handler SIG_IGN: leave it; SIGTERM is ignored on purpose, nothing dies;
-      - previous handler a Python callable: CHAIN, do not replace. Ours calls it first;
-        if it raises (SystemExit included) that propagates through the `finally`; if
-        it returns, ours raises SystemExit(128 + SIGTERM) so the folder is still removed.
-    -> a restore() callable that puts the previous handler back.
+      - previous handler SIG_IGN: left alone; SIGTERM is ignored on purpose;
+      - previous handler SIG_DFL, not set from Python, or a Python callable: ours is
+        installed, chaining to the callable as above.
+    Known limit: between fn returning and `defer()` there are a few bytecodes in which a
+    SIGTERM still raises; and SIGKILL cannot be guarded at all.
     """
-    if threading.current_thread() is not threading.main_thread():
-        return lambda: None
-    prev = signal.getsignal(signal.SIGTERM)
-    if prev is signal.SIG_IGN:
-        return lambda: None
-    status = 128 + int(signal.SIGTERM)
 
-    def on_term(signum, frame):
-        if callable(prev):
-            prev(signum, frame)
-        raise SystemExit(status)
+    def __init__(self):
+        self.active = False
+        self.deferring = False
+        self.pending = None
+        self.prev = None
+        self.status = 128 + int(signal.SIGTERM)
+        if threading.current_thread() is not threading.main_thread():
+            return
+        prev = signal.getsignal(signal.SIGTERM)
+        if prev is signal.SIG_IGN:
+            return
+        self.prev = prev
+        signal.signal(signal.SIGTERM, self._on_term)
+        self.active = True
 
-    signal.signal(signal.SIGTERM, on_term)
+    def _deliver(self, signum, frame):
+        if callable(self.prev):
+            self.prev(signum, frame)
+        raise SystemExit(self.status)
 
-    def restore():
-        signal.signal(signal.SIGTERM, prev if prev is not None else signal.SIG_DFL)
-    return restore
+    def _on_term(self, signum, frame):
+        if self.deferring:
+            self.pending = (signum, frame)
+            return
+        self._deliver(signum, frame)
+
+    def defer(self):
+        """From now on, record a SIGTERM instead of raising it (the removal is running)."""
+        self.deferring = True
+
+    def release(self):
+        """Put the previous handler back, then re-deliver a SIGTERM recorded meanwhile."""
+        if not self.active:
+            return
+        self.active = False
+        signal.signal(signal.SIGTERM, self.prev if self.prev is not None else signal.SIG_DFL)
+        if self.pending is not None:
+            signum, frame = self.pending
+            self.pending = None
+            self._deliver(signum, frame)
 
 
 def run_in_work_dir(prefix, tool, fn, keep=False):
     """Make a work folder, call fn(work) and return its result; remove the folder on every exit unless asked to keep it.
 
-    "Every exit" includes SIGTERM on the main thread: see `_sigterm_guard`.
+    "Every exit" includes SIGTERM on the main thread, during fn AND during the removal:
+    see `_SigtermGuard`. A SIGTERM that lands during the removal is held until the folder
+    is gone, then delivered (the process still ends with status 143).
     """
     work = tempfile.mkdtemp(prefix=prefix)
-    restore = _sigterm_guard()
+    guard = _SigtermGuard()
     try:
         return fn(work)
     finally:
-        restore()
-        if keep or os.environ.get(KEEP_ENV) == "1":
-            why = "--keep" if keep else f"{KEEP_ENV}=1"
-            print(f"[{tool}] work folder kept ({why}): {work}", flush=True)
-        else:
-            try:
-                remove_work(work, prefix, tool)
-            except Exception as e:  # belt and braces: cleanup must never replace fn's result
-                _say(tool, f"could not remove the work folder {work!r}: {type(e).__name__}")
+        guard.defer()
+        try:
+            if keep or os.environ.get(KEEP_ENV) == "1":
+                why = "--keep" if keep else f"{KEEP_ENV}=1"
+                print(f"[{tool}] work folder kept ({why}): {work}", flush=True)
+            else:
+                try:
+                    remove_work(work, prefix, tool)
+                except Exception as e:  # belt and braces: cleanup must never replace fn's result
+                    _say(tool, f"could not remove the work folder {work!r}: {type(e).__name__}")
+        finally:
+            guard.release()

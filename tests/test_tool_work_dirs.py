@@ -545,3 +545,96 @@ def test_a_symlinked_leaf_is_still_refused_under_a_symlinked_temp_folder(wd, tmp
     assert wd.remove_work(leaf, "x-", "t") is False
     assert wd.remove_work(str(leaf) + "/", "x-", "t") is False
     assert (victim / "keep").exists()
+
+
+# --------------------------------------------------------------------------- #
+# SIGTERM DURING THE REMOVAL (candidate review R2-N1). The handler used to be
+# restored BEFORE remove_work, so a SIGTERM mid-delete killed the process with
+# the folder partly deleted (QA: 40,000 files left at 40,000, 38,433, 34,922).
+# A real child builds a large folder, announces when rmtree starts, and is sent
+# SIGTERM at three points into the delete.
+# --------------------------------------------------------------------------- #
+
+BIG_CHILD = r'''
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("wd", sys.argv[1])
+wd = importlib.util.module_from_spec(spec); spec.loader.exec_module(wd)
+N = int(sys.argv[2])
+real_rmtree = wd.shutil.rmtree
+def announced_rmtree(path, *a, **k):
+    print("RMTREE-START", path, flush=True)
+    real_rmtree(path, *a, **k)
+    print("RMTREE-END", flush=True)
+wd.shutil.rmtree = announced_rmtree
+def body(work):
+    for d in range(N // 1000):
+        sub = os.path.join(work, f"d{d}")
+        os.mkdir(sub)
+        for f in range(1000):
+            with open(os.path.join(sub, f"f{f}"), "w") as fh:
+                fh.write("x")
+    print("BUILT", work, flush=True)
+wd.run_in_work_dir("x-", "t", body)
+print("RETURNED", flush=True)
+'''
+
+BIG_N = 40_000
+
+
+@pytest.mark.parametrize("delay_s", [0.0, 0.05, 0.2])
+def test_a_sigterm_during_the_removal_still_removes_the_whole_folder(tmp_path, tmpdir_iso, delay_s):
+    import time
+    script = tmp_path / "big_child.py"
+    script.write_text(BIG_CHILD)
+    env = dict(os.environ, TMPDIR=str(tmpdir_iso))
+    p = subprocess.Popen([sys.executable, "-I", str(script), str(TOOLS / "workdir.py"), str(BIG_N)],
+                         stdout=subprocess.PIPE, text=True, env=env)
+    try:
+        built = p.stdout.readline().split()
+        assert built[:1] == ["BUILT"], built
+        work = built[1]
+        start = p.stdout.readline().split()
+        assert start[:1] == ["RMTREE-START"], start
+        time.sleep(delay_s)
+        still_there = os.path.isdir(work)
+        p.send_signal(signal.SIGTERM)
+        rest = p.stdout.read()
+        rc = p.wait(timeout=60)
+    finally:
+        if p.poll() is None:
+            p.kill()
+    assert still_there, "the delete finished before the signal: grow BIG_N, the test measured nothing"
+    assert not os.path.exists(work), "a SIGTERM during the delete left (part of) the folder"
+    assert "RMTREE-END" in rest, "the delete was cut off"
+    assert "RETURNED" not in rest, "the recorded SIGTERM was not re-delivered"
+    assert rc == 128 + signal.SIGTERM, rc
+    assert left(tmpdir_iso) == []
+
+
+def test_a_sigterm_recorded_during_removal_is_chained_to_the_previous_handler(wd, tmpdir_iso, monkeypatch):
+    """In-process: a SIGTERM that lands while the folder is being removed is
+    held, the folder is removed, the previous handler is restored, and only
+    then is the signal re-delivered, through the previous Python handler."""
+    calls = []
+
+    def mine(signum, frame):
+        calls.append("prev")
+    old = signal.signal(signal.SIGTERM, mine)
+    try:
+        real = wd.shutil.rmtree
+
+        def rmtree_with_signal(path, *a, **k):
+            os.kill(os.getpid(), signal.SIGTERM)       # lands during the removal
+            calls.append("rmtree-continues")
+            real(path, *a, **k)
+            calls.append("rmtree-done")
+        monkeypatch.setattr(wd.shutil, "rmtree", rmtree_with_signal)
+        seen = []
+        with pytest.raises(SystemExit) as ei:
+            wd.run_in_work_dir("x-", "t", seen.append)
+        assert ei.value.code == 128 + signal.SIGTERM
+        assert calls == ["rmtree-continues", "rmtree-done", "prev"], calls
+        assert not os.path.exists(seen[0])
+        assert signal.getsignal(signal.SIGTERM) is mine, "the previous handler was not restored"
+    finally:
+        signal.signal(signal.SIGTERM, old)
