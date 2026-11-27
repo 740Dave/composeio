@@ -56,19 +56,45 @@ the caller, and nothing ever retried. They now start the client through
   * a `publish()` before the connection is up follows paho: QoS 0 is DROPPED
     (rc MQTT_ERR_NO_CONN), QoS 1/2 is held by paho and sent on connect.
 
+AN OUTAGE IS LOUD, NOT A QUIET RETRY. Retrying is not hiding: a broker that is
+unreachable or refuses us is a misconfiguration somebody must see (the old
+broker was taken offline ON PURPOSE so that anything not yet repointed fails
+loudly, DEC-HOP-OLD-BROKER-OFFLINE-ON-PURPOSE-2026-11-27). So, per broker:
+
+  * the FIRST failed connect logs at ERROR on the `composeio.bus_client`
+    logger and names the broker host:port exactly as configured;
+  * repeats log at WARNING with the attempt count, thinned: on the 2nd and
+    4th consecutive failure, then at most once per REPEAT_EVERY_S (60 s);
+  * a refused CONNACK logs at ERROR with its reason, thinned the same way;
+  * the first successful connect after failures logs the recovery once, at
+    INFO, with the number of failed attempts; a new outage logs its ERROR again;
+  * `health(mqtt_url)` returns the same structure `MQTTTransport.health()`
+    does (both read a `transport_mqtt.LinkHealth`): `connected`, `started`,
+    `broker`, `connect_failures` (consecutive, since the last success),
+    `last_error` and `last_success` (epoch seconds, None if never).
+
 Clients are built with `transport_mqtt.new_paho_client`, so paho 1.x and 2.x
 both construct (2.x gets CallbackAPIVersion.VERSION1).
 """
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 from typing import Optional, Tuple
+
+logger = logging.getLogger("composeio.bus_client")
+
+#: thinning of repeated connect-failure lines (see the module docstring).
+REPEAT_AT_ATTEMPTS = (2, 4)
+REPEAT_EVERY_S = 60
 
 # (host, port) -> the one live client for this process.
 _SHARED: dict[Tuple[str, int], object] = {}
 _LOCK = threading.RLock()
 _REFCOUNT: dict[Tuple[str, int], int] = {}
+# (host, port) -> the LinkHealth of that shared connection.
+_HEALTH: dict[Tuple[str, int], object] = {}
 
 
 def parse_mqtt_url(url: str) -> Tuple[str, int]:
@@ -92,7 +118,9 @@ def acquire(mqtt_url: str, *, label: str, will_subscribe: bool = False,
 
     Does not raise when the broker is unreachable: the connection is made, and
     re-made after a drop, by paho's loop thread with backoff (see the module
-    docstring, "CONNECTING"). A QoS-0 publish before it is up is dropped.
+    docstring, "CONNECTING"). The outage is not silent: the first failure logs
+    at ERROR naming host:port, and `health(mqtt_url)` counts it. A QoS-0
+    publish before the connection is up is dropped.
 
     `label` identifies the caller in logs and in the shared client-id — it is
     NOT a separate connection; the first caller wins the id and the rest join it.
@@ -146,13 +174,89 @@ def _new_client(client_id: str):
 
 
 def _start(client, host: str, port: int, keepalive: int) -> None:
-    """Connect with the transport's backoff; never raises for a down broker.
+    """Wire the health callbacks, then connect with the transport's backoff.
 
+    Never raises for a down broker; the outage is logged and counted instead.
     Imported lazily: `transport_mqtt` imports `topic_matches` from this module
     at import time, so a top-level import here would be circular.
     """
     from composeio.transport_mqtt import connect_with_backoff
+    _wire_health(client, host, port)
     connect_with_backoff(client, host, port, keepalive=keepalive)
+
+
+def _wire_health(client, host: str, port: int) -> None:
+    """Install on_connect / on_connect_fail / on_disconnect for (host, port).
+
+    `on_connect` records the success (or the refusal) and then has the
+    router, if one exists for this broker by then, re-issue every filter.
+    """
+    from composeio.transport_mqtt import LinkHealth, MQTTTransport, _connack_reason
+
+    key = (host, port)
+    target = f"{host}:{port}"
+    link = LinkHealth(target, log=logger, summary_every_s=REPEAT_EVERY_S,
+                      repeat_level=logging.WARNING,
+                      repeat_at_attempts=REPEAT_AT_ATTEMPTS)
+    _HEALTH[key] = link
+    backoff = (f"{MQTTTransport.RECONNECT_MIN_DELAY_S}-"
+               f"{MQTTTransport.RECONNECT_MAX_DELAY_S}s")
+
+    def on_connect_fail(client, userdata):
+        link.record_failure(
+            "connection attempt failed",
+            f"MQTT connect to {target} FAILED (bus_client shared connection); "
+            f"is this the broker this process should use? Retrying with "
+            f"backoff {backoff}",
+            f"MQTT connect to {target} still failing (bus_client)")
+
+    def on_connect(client, userdata, flags, rc, properties=None):
+        code = getattr(rc, "value", rc)
+        if code != 0:
+            reason = _connack_reason(rc)
+            link.record_failure(
+                f"CONNACK refused: {reason}",
+                f"MQTT connection to {target} REFUSED (bus_client): {reason}",
+                f"MQTT connection to {target} still refused (bus_client)")
+            return
+        failed = link.record_success()
+        if failed:
+            logger.info(f"MQTT connection to {target} RECOVERED after "
+                        f"{failed} failed attempt(s) (bus_client)")
+        router = _ROUTERS.get(key)
+        if router is not None:
+            router.resubscribe(client)
+
+    def on_disconnect(client, userdata, rc, properties=None):
+        link.connected = False
+        if rc != 0:
+            link.throttled_log(
+                logging.WARNING, f"disconnect rc={rc}",
+                f"MQTT unexpected disconnect from {target} (rc={rc}, "
+                f"bus_client), will auto-reconnect",
+                f"MQTT disconnects from {target} (rc={rc}) repeating")
+
+    client.on_connect = on_connect
+    client.on_connect_fail = on_connect_fail
+    client.on_disconnect = on_disconnect
+
+
+def health(mqtt_url: str) -> dict:
+    """The shared connection's link state: the `MQTTTransport.health()` structure.
+
+    `connected`, `started`, `broker`, `connect_failures`, `last_error`,
+    `last_success`. A broker this process never started a connection to reads
+    `started: False, connected: False`.
+    """
+    host, port = parse_mqtt_url(mqtt_url)
+    with _LOCK:
+        link = _HEALTH.get((host, port))
+        started = (host, port) in _SHARED
+    if link is None:
+        return {"connected": False, "broker": f"{host}:{port}",
+                "connect_failures": 0, "last_error": None,
+                "last_success": None, "started": started}
+    return {**link.snapshot(), "started": started}
 
 
 # --------------------------------------------------------------------------- #
@@ -207,19 +311,14 @@ class _Router:
             self._routes.append((topic_filter, handler))
             self._filters[topic_filter] = max(qos, self._filters.get(topic_filter, 0))
 
-    def resubscribe(self, client, userdata, flags, rc, properties=None) -> None:
-        """`on_connect`: issue every registered filter on each successful CONNACK.
+    def resubscribe(self, client) -> None:
+        """Issue every registered filter; called on each successful CONNACK.
 
         The connection is made by paho's loop thread (connect_async), so a
         `subscribe()` that ran before it found no socket and sent nothing, and
         a reconnect starts a fresh session (no session expiry is requested).
         Either way the broker holds none of our filters until this runs.
         """
-        code = getattr(rc, "value", rc)
-        if code != 0:
-            sys.stderr.write(
-                f"[bus_client] connect refused for {self.label}: rc={rc!r}\n")
-            return
         with self._lock:
             filters = dict(self._filters)
         for filt, qos in filters.items():
@@ -261,8 +360,8 @@ def subscribe(mqtt_url: str, topic_filter: str, handler, *, label: str,
     Returns the shared client, looping and connecting (it does not raise for a
     down broker), so the caller can also publish on it. The filter is
     re-issued on every CONNACK, so it survives a broker that is down at start
-    and any later drop. The router owns `on_connect` and `on_message`; do not
-    reassign either.
+    and any later drop. bus_client owns `on_connect`, `on_connect_fail`,
+    `on_disconnect` and `on_message`; do not reassign any of them.
 
     IMPORTANT — the caller must NOT call `loop_forever()` on the returned client.
     The shared client already runs `loop_start()`, and a second loop would
@@ -288,7 +387,6 @@ def subscribe(mqtt_url: str, topic_filter: str, handler, *, label: str,
             else:
                 client = _new_client(f"composeio-shared-{host}")
             client.on_message = router.dispatch
-            client.on_connect = router.resubscribe
             _start(client, host, port, keepalive)
             _SHARED[key] = client
             _REFCOUNT[key] = 0
@@ -296,8 +394,9 @@ def subscribe(mqtt_url: str, topic_filter: str, handler, *, label: str,
             # An existing publish-only client gains the router the moment the
             # first subscriber arrives, so publishers and subscribers share ONE
             # socket rather than splitting into two.
+            # Its on_connect (wired by `_start`) already re-issues this
+            # router's filters, looked up by broker at each CONNACK.
             client.on_message = router.dispatch
-            client.on_connect = router.resubscribe
         _REFCOUNT[key] = _REFCOUNT.get(key, 0) + 1
 
     # Sent now if the connection is already up; otherwise paho returns
@@ -334,6 +433,7 @@ def _reset_for_tests() -> None:
         _SHARED.clear()
         _REFCOUNT.clear()
         _ROUTERS.clear()
+        _HEALTH.clear()
 
 
 def _selftest() -> int:

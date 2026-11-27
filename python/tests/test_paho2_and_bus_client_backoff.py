@@ -418,13 +418,118 @@ def test_real_paho_acquire_against_a_closed_port_returns_and_retries(monkeypatch
     monkeypatch.setattr(MQTTTransport, "RECONNECT_MIN_DELAY_S", 0.05)
     monkeypatch.setattr(MQTTTransport, "RECONNECT_MAX_DELAY_S", 0.1)
     port = _closed_port()
-    c = bc.acquire(f"mqtt://127.0.0.1:{port}", label="real")
-    fails = []
-    c.on_connect_fail = lambda client, userdata: fails.append(1)
+    url = f"mqtt://127.0.0.1:{port}"
+    c = bc.acquire(url, label="real")
     try:
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and len(fails) < 2:
+        while time.monotonic() < deadline and bc.health(url)["connect_failures"] < 2:
             time.sleep(0.05)
-        assert len(fails) >= 2, "paho's loop thread did not retry"
+        h = bc.health(url)
+        assert h["connect_failures"] >= 2, "paho's loop thread did not retry"
+        assert h["connected"] is False and h["started"] is True
     finally:
         c.loop_stop()
+
+
+# --------------------------------------------------------------------------- #
+# 3. An outage is LOUD (DEC-HOP-OLD-BROKER-OFFLINE-ON-PURPOSE-2026-11-27): the
+#    old broker was taken offline on purpose so anything not repointed fails
+#    loudly, so a quiet retry would hide exactly that misconfiguration.
+# --------------------------------------------------------------------------- #
+import logging                                                  # noqa: E402
+
+import composeio.transport_mqtt as tm                           # noqa: E402
+
+BC_LOGGER = "composeio.bus_client"
+
+
+def _bc_records(caplog, level=None):
+    return [r for r in caplog.records if r.name == BC_LOGGER
+            and (level is None or r.levelno == level)]
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(tm, "_monotonic", lambda: now[0])
+    return now
+
+
+def test_a_down_broker_logs_ERROR_naming_the_configured_target(broker, caplog):
+    caplog.set_level(logging.INFO, logger=BC_LOGGER)
+    bc.acquire("mqtt://old-broker.example:1884", label="pub",
+               client_factory=BackoffFake)
+    _pump(1)
+    errors = _bc_records(caplog, logging.ERROR)
+    assert len(errors) == 1, [r.getMessage() for r in caplog.records]
+    assert "old-broker.example:1884" in errors[0].getMessage()
+
+
+def test_repeats_are_WARNINGs_with_a_count_and_do_not_flood(broker, caplog, clock):
+    caplog.set_level(logging.INFO, logger=BC_LOGGER)
+    bc.acquire("mqtt://h:1883", label="pub", client_factory=BackoffFake)
+    _pump(10)                                  # 10 failures inside one second
+    assert [r.levelno for r in _bc_records(caplog)] == [
+        logging.ERROR, logging.WARNING, logging.WARNING], \
+        "expected ERROR on attempt 1, WARNING on attempts 2 and 4, then quiet"
+    warn = _bc_records(caplog, logging.WARNING)
+    assert "2 failed attempts in total" in warn[0].getMessage()
+    assert "4 failed attempts in total" in warn[1].getMessage()
+    clock[0] += bc.REPEAT_EVERY_S + 1
+    _pump(1)
+    warn = _bc_records(caplog, logging.WARNING)
+    assert len(warn) == 3 and "11 failed attempts in total" in warn[2].getMessage()
+
+
+def test_health_reports_not_connected_with_a_growing_failure_count(broker):
+    url = "mqtt://h:1883"
+    assert bc.health(url)["started"] is False
+    bc.acquire(url, label="pub", client_factory=BackoffFake)
+    _pump(1)
+    h1 = bc.health(url)
+    _pump(2)
+    h3 = bc.health(url)
+    assert h1["connected"] is False and h1["started"] is True
+    assert (h1["connect_failures"], h3["connect_failures"]) == (1, 3)
+    assert h3["last_error"] == "connection attempt failed"
+    assert h3["last_success"] is None and h3["broker"] == "h:1883"
+
+
+def test_the_first_successful_connect_logs_recovery_once(broker, caplog):
+    caplog.set_level(logging.INFO, logger=BC_LOGGER)
+    url = "mqtt://h:1883"
+    c = bc.acquire(url, label="pub", client_factory=BackoffFake)
+    _pump(3)
+    broker.up = True
+    _pump(3)
+    rec = [r for r in _bc_records(caplog, logging.INFO) if "RECOVERED" in r.getMessage()]
+    assert len(rec) == 1 and "after 3 failed attempt(s)" in rec[0].getMessage()
+    h = bc.health(url)
+    assert h["connected"] is True and h["connect_failures"] == 0
+    assert h["last_error"] is None and h["last_success"] is not None
+    # a NEW outage logs its ERROR again (the throttle was cleared)
+    c.drop()
+    broker.up = False
+    _pump(1)
+    assert len(_bc_records(caplog, logging.ERROR)) == 2
+
+
+def test_a_refused_connack_is_an_ERROR_with_its_reason(broker, caplog):
+    caplog.set_level(logging.INFO, logger=BC_LOGGER)
+    url = "mqtt://h:1883"
+    c = bc.acquire(url, label="pub", client_factory=BackoffFake)
+    c.on_connect(c, None, {}, 0x87, None)          # Not authorized
+    (err,) = _bc_records(caplog, logging.ERROR)
+    assert "h:1883" in err.getMessage() and "REFUSED" in err.getMessage()
+    assert bc.health(url)["connect_failures"] == 1
+
+
+def test_bus_client_and_the_transport_expose_the_same_health_structure(broker):
+    bc.acquire("mqtt://h:1883", label="pub", client_factory=BackoffFake)
+    t = MQTTTransport(broker="h", port=1883, client_id="probe")
+    shared = {"connected", "started", "broker", "connect_failures",
+              "last_error", "last_success"}
+    assert shared <= set(bc.health("mqtt://h:1883"))
+    assert shared <= set(t.health())
+    assert isinstance(t._link, tm.LinkHealth), "one structure, not two"
+

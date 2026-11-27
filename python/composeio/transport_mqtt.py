@@ -467,6 +467,89 @@ def connect_with_backoff(client, host, port, *, keepalive=60, min_delay=None,
     client.loop_start()
 
 
+class LinkHealth:
+    """The connection state of one MQTT link, and its failure log, in ONE place.
+
+    Used by `MQTTTransport` and by `bus_client`, so an outage reads the same
+    through either: `connected`, `connect_failures` (consecutive failed
+    attempts since the last success), `last_error`, and `last_success`
+    (wall-clock epoch seconds of the last successful CONNACK, None if never).
+    `snapshot()` is the health() structure both expose.
+
+    LOGGING. The first failure of each KIND is logged at once, at the level the
+    caller gives (ERROR for a failed connect), and names `target`, the broker
+    host:port as configured. Repeats are thinned: one summary line, with the
+    counts, when the consecutive-failure count reaches a number in
+    `repeat_at_attempts`, or when `summary_every_s` has passed since that kind
+    was last reported. `repeat_level` sets the summary's level (None: the
+    first line's level). The counts are never thinned. A success clears the
+    throttle, so a new outage always logs its first line, and `record_success`
+    returns how many attempts had failed so the caller can log the recovery.
+
+    The clock is this module's `_monotonic`, read at each call, so tests can
+    drive it.
+    """
+
+    def __init__(self, target: str, *, log, summary_every_s: float,
+                 repeat_level=None, repeat_at_attempts=()):
+        self.target = target
+        self.connected = False
+        self.failures = 0
+        self.last_error: "str | None" = None
+        self.last_success: "float | None" = None
+        self.log = log
+        self.summary_every_s = summary_every_s
+        self.repeat_level = repeat_level
+        self.repeat_at_attempts = frozenset(repeat_at_attempts)
+        #: kind -> [monotonic time of the last line, repeats since it]
+        self.fail_log: dict[str, list] = {}
+
+    def throttled_log(self, level: int, kind: str, first_line: str,
+                      summary: str, extra=None) -> None:
+        now = _monotonic()
+        state = self.fail_log.get(kind)
+        if state is None:
+            self.log.log(level, first_line)
+            self.fail_log[kind] = [now, 0]
+            return
+        state[1] += 1
+        if (self.failures in self.repeat_at_attempts
+                or now - state[0] >= self.summary_every_s):
+            self.log.log(
+                self.repeat_level if self.repeat_level is not None else level,
+                f"{summary}: {state[1]} more since the last report, "
+                f"{self.failures} failed attempts in total"
+                f"{extra() if extra else ''}")
+            state[0], state[1] = now, 0
+
+    def record_failure(self, kind: str, first_line: str, summary: str,
+                       level: int = logging.ERROR, extra=None) -> None:
+        """One failed attempt: count it, keep the reason, log it thinned."""
+        self.connected = False
+        self.failures += 1
+        self.last_error = kind
+        self.throttled_log(level, kind, first_line, summary, extra)
+
+    def record_success(self) -> int:
+        """A successful CONNACK. -> the number of attempts that had failed."""
+        before = self.failures
+        self.connected = True
+        self.failures = 0
+        self.last_error = None
+        self.last_success = time.time()
+        self.fail_log.clear()
+        return before
+
+    def snapshot(self) -> dict:
+        return {
+            "connected": self.connected,
+            "broker": self.target,
+            "connect_failures": self.failures,
+            "last_error": self.last_error,
+            "last_success": self.last_success,
+        }
+
+
 class MQTTTransport(Transport):
     """MQTT transport binding using paho-mqtt."""
 
@@ -511,16 +594,15 @@ class MQTTTransport(Transport):
         self._password = password
         self._topic_prefix = topic_prefix
         self._client = None
-        self._connected = False
-        #: consecutive failed connect attempts since the last CONNACK Success.
-        #: Counted from paho's on_connect_fail, so an outage is a NUMBER a
-        #: health check can read, not a log line nobody does.
-        self._connect_failures = 0
-        self._last_connect_error: str | None = None
-        # failure log throttle, PER KIND (see _throttled_log): kind ->
-        # [monotonic time of the last line, repeats since it]. Cleared on a
-        # successful CONNACK, so a new outage always logs its first line.
-        self._fail_log: dict[str, list] = {}
+        #: connected flag, consecutive failed connect attempts since the last
+        #: CONNACK Success (counted from paho's on_connect_fail, so an outage
+        #: is a NUMBER a health check can read, not a log line nobody does),
+        #: last error, last success, and the failure-log throttle. Shared with
+        #: `bus_client` through `LinkHealth`; the `_connected`,
+        #: `_connect_failures`, `_last_connect_error` and `_fail_log`
+        #: properties below read and write it.
+        self._link = LinkHealth(f"{broker}:{port}", log=logger,
+                                summary_every_s=self.FAILURE_LOG_SUMMARY_S)
         self._subscribers: dict[str, list[Callable[[BusMessage], None]]] = defaultdict(list)
         self._all_subscribers: list[Callable[[BusMessage], None]] = []
         # [CXC-FL-PATTERN] wildcard topic filters (deduped), re-subscribed
@@ -977,6 +1059,36 @@ class MQTTTransport(Transport):
     def is_connected(self) -> bool:
         return self._connected
 
+    # The link state lives in `self._link` (a `LinkHealth`, shared with
+    # bus_client); these keep the names the rest of this class uses.
+    @property
+    def _connected(self) -> bool:
+        return self._link.connected
+
+    @_connected.setter
+    def _connected(self, value: bool) -> None:
+        self._link.connected = value
+
+    @property
+    def _connect_failures(self) -> int:
+        return self._link.failures
+
+    @_connect_failures.setter
+    def _connect_failures(self, value: int) -> None:
+        self._link.failures = value
+
+    @property
+    def _last_connect_error(self):
+        return self._link.last_error
+
+    @_last_connect_error.setter
+    def _last_connect_error(self, value) -> None:
+        self._link.last_error = value
+
+    @property
+    def _fail_log(self) -> dict:
+        return self._link.fail_log
+
     def health(self) -> dict:
         """The link state behind `is_connected`, for a health check to read.
 
@@ -985,11 +1097,8 @@ class MQTTTransport(Transport):
         since the last success and with what error.
         """
         return {
-            "connected": self._connected,
+            **self._link.snapshot(),
             "started": self._client is not None,
-            "broker": f"{self._broker}:{self._port}",
-            "connect_failures": self._connect_failures,
-            "last_error": self._last_connect_error,
             "pending": len(self._pending),
         }
 
@@ -1005,11 +1114,10 @@ class MQTTTransport(Transport):
 
     def _record_failure(self, kind: str, first_line: str) -> None:
         """Count one failed attempt, and log it through the throttle."""
-        self._connect_failures += 1
-        self._last_connect_error = kind
-        self._throttled_log(logging.ERROR, kind, first_line,
-                            f"MQTT connect to {self._broker}:{self._port} "
-                            f"still failing ({kind})")
+        self._link.record_failure(
+            kind, first_line,
+            f"MQTT connect to {self._broker}:{self._port} still failing ({kind})",
+            extra=lambda: f", {len(self._pending)} message(s) held")
 
     def _throttled_log(self, level: int, kind: str, first_line: str,
                        summary: str) -> None:
@@ -1022,19 +1130,9 @@ class MQTTTransport(Transport):
         socket) is two kinds thinned independently rather than two kinds
         that keep resetting each other.
         """
-        now = _monotonic()
-        state = self._fail_log.get(kind)
-        if state is None:
-            logger.log(level, first_line)
-            self._fail_log[kind] = [now, 0]
-            return
-        state[1] += 1
-        if now - state[0] >= self.FAILURE_LOG_SUMMARY_S:
-            logger.log(level,
-                       f"{summary}: {state[1]} more since the last report, "
-                       f"{self._connect_failures} failed attempts in total, "
-                       f"{len(self._pending)} message(s) held")
-            state[0], state[1] = now, 0
+        self._link.throttled_log(
+            level, kind, first_line, summary,
+            extra=lambda: f", {len(self._pending)} message(s) held")
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         # `properties` DEFAULTS so both callback arities work: MQTT 5 passes a
@@ -1047,13 +1145,9 @@ class MQTTTransport(Transport):
         # `ReasonCodes` whose __eq__ compares against an int by value, so
         # Success (0) still tests equal. Verified against paho 1.6.1.
         if rc == 0:
-            self._connected = True
-            if self._connect_failures:
-                logger.info(f"MQTT connected after {self._connect_failures} "
-                            f"failed attempt(s)")
-            self._connect_failures = 0
-            self._last_connect_error = None
-            self._fail_log.clear()
+            failed = self._link.record_success()
+            if failed:
+                logger.info(f"MQTT connected after {failed} failed attempt(s)")
             logger.info(f"MQTT connected to {self._broker}:{self._port} "
                         f"(MQTT 5)")
             opts = self._subscribe_options()
