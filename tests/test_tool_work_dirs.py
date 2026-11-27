@@ -425,11 +425,13 @@ def test_a_tools_exit_code_survives_a_cleanup_failure(gl, tmp_path, tmpdir_iso, 
     import shutil as _shutil
     tree, base = git_repo(tmp_path)
     def broken_rmtree(*a, **k):
-        raise PermissionError(13, "Permission denied")
+        # NOT an OSError (candidate review R2-N3): the old `except OSError` caught a
+        # PermissionError, so injecting one could not see the change.
+        raise RuntimeError("cleanup broke")
     monkeypatch.setattr(_shutil, "rmtree", broken_rmtree)
     assert gl.main(["--tree", str(tree)]) == 0, "a clean scan must still exit 0"
     err = [ln for ln in capsys.readouterr().err.splitlines() if "could not remove" in ln]
-    assert len(err) == 1 and "PermissionError" in err[0]
+    assert len(err) == 1 and "RuntimeError" in err[0], err
 
 
 def test_the_guard_is_an_explicit_raise(wd, tmpdir_iso, tmp_path):
