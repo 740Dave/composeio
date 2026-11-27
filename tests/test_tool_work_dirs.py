@@ -201,6 +201,9 @@ def test_ci_gitleaks_leaves_nothing_after_a_run_a_refusal_and_an_exception(gl, t
 
 
 def test_ci_gitleaks_keep_work(gl, tmp_path, tmpdir_iso, monkeypatch):
+    """CONTROL (accepted as A2): KEEP_WORK keeps the folder. Main kept every
+    folder, so this passes there by construction; it pins that the opt-out
+    survives the fix."""
     tree, base = git_repo(tmp_path)
     monkeypatch.setenv("COMPOSEIO_KEEP_WORK", "1")
     assert gl.main(["--tree", str(tree)]) == 0
@@ -238,6 +241,9 @@ def test_leakcheck_leaves_nothing_after_a_run_and_an_exception(lc, tmp_path, tmp
 
 
 def test_leakcheck_keep_flag_keeps_the_scan_tree(lc, tmp_path, tmpdir_iso, synthetic_private):
+    """CONTROL (accepted as A2): --keep keeps the scan tree. Main kept every
+    folder, so this passes there by construction; it pins that --keep still
+    works through the helper."""
     tree, base = git_repo(tmp_path)
     assert lc.main(["diff", "--repo", str(tree), "--base", base, "--private-dir", str(synthetic_private), "--keep"]) == 0
     kept = [n for n in left(tmpdir_iso) if n.startswith("leakcheck-")]

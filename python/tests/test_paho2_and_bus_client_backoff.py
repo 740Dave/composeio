@@ -169,8 +169,9 @@ def test_helper_requires_an_explicit_protocol():
 
 
 def test_the_fake_2x_shape_rejects_the_old_call():
-    """Negative control: if the 2.0 fake accepted the 1.x call, the site tests
-    below would pass on the unfixed code and measure nothing."""
+    """CONTROL (accepted as A2), a negative control of the fake itself: if the
+    2.0 fake accepted the 1.x call, the site tests below would pass on the
+    unfixed code and measure nothing. It passes on main by design."""
     with pytest.raises(TypeError):
         Paho20Client(client_id="x", protocol=5)
 
@@ -577,10 +578,44 @@ def test_repeats_are_WARNINGs_with_a_count_and_do_not_flood(broker, caplog, cloc
     warn = _bc_records(caplog, logging.WARNING)
     assert "2 failed attempts in total" in warn[0].getMessage()
     assert "4 failed attempts in total" in warn[1].getMessage()
-    clock[0] += bc.REPEAT_EVERY_S + 1
+    clock[0] += 61                              # the OLD 60 s cadence: still quiet
+    _pump(1)
+    assert len(_bc_records(caplog, logging.WARNING)) == 2, \
+        "after attempts 2 and 4 the summary interval is 600 s, not 60 s"
+    clock[0] += tm.LinkHealth.SUMMARY_EVERY_S
     _pump(1)
     warn = _bc_records(caplog, logging.WARNING)
-    assert len(warn) == 3 and "11 failed attempts in total" in warn[2].getMessage()
+    assert len(warn) == 3 and "12 failed attempts in total" in warn[2].getMessage()
+
+
+def test_the_summary_interval_is_the_transports_one_throttle():
+    assert tm.LinkHealth.SUMMARY_EVERY_S == 600
+    assert MQTTTransport.FAILURE_LOG_SUMMARY_S == tm.LinkHealth.SUMMARY_EVERY_S
+
+
+def test_a_refusing_broker_logs_ONE_line_per_report(broker, caplog, clock):
+    """Candidate review note 2: each refused CONNACK is followed by paho's
+    disconnect, and both were logged. Four refused attempts must give exactly
+    the ERROR plus the attempt-2 and attempt-4 WARNINGs."""
+    caplog.set_level(logging.INFO, logger=BC_LOGGER)
+    c = bc.acquire("mqtt://h:1883", label="pub", client_factory=BackoffFake)
+    for _ in range(4):
+        c.on_connect(c, None, {}, 0x87, None)
+        c.on_disconnect(c, None, 0x87, None)
+    assert [r.levelno for r in _bc_records(caplog)] == [
+        logging.ERROR, logging.WARNING, logging.WARNING], \
+        [r.getMessage() for r in _bc_records(caplog)]
+
+
+def test_a_drop_after_a_good_connection_is_still_logged(broker, caplog):
+    """CONTROL for the test above: only a refusal's disconnect is silenced."""
+    caplog.set_level(logging.INFO, logger=BC_LOGGER)
+    broker.up = True
+    c = bc.acquire("mqtt://h:1883", label="pub", client_factory=BackoffFake)
+    _pump(1)
+    c.on_disconnect(c, None, 7, None)
+    assert any("unexpected disconnect" in r.getMessage()
+               for r in _bc_records(caplog, logging.WARNING))
 
 
 def test_health_reports_not_connected_with_a_growing_failure_count(broker):
@@ -627,12 +662,14 @@ def test_a_refused_connack_is_an_ERROR_with_its_reason(broker, caplog):
 
 
 def test_bus_client_and_the_transport_expose_the_same_health_structure(broker):
+    """Key-set EQUALITY (candidate review note 3), for a started link and for
+    a broker never started, which used to be a hand-written fallback dict."""
     bc.acquire("mqtt://h:1883", label="pub", client_factory=BackoffFake)
     t = MQTTTransport(broker="h", port=1883, client_id="probe")
-    shared = {"connected", "started", "broker", "connect_failures",
-              "last_error", "last_success"}
-    assert shared <= set(bc.health("mqtt://h:1883"))
-    assert shared <= set(t.health())
+    want = set(t.health())
+    assert set(bc.health("mqtt://h:1883")) == want
+    assert set(bc.health("mqtt://never-started:1883")) == want
+    assert bc.health("mqtt://never-started:1883")["started"] is False
     assert isinstance(t._link, tm.LinkHealth), "one structure, not two"
 
 

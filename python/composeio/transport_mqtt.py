@@ -448,14 +448,16 @@ class LinkHealth:
     through either: `connected`, `connect_failures` (consecutive failed
     attempts since the last success), `last_error`, and `last_success`
     (wall-clock epoch seconds of the last successful CONNACK, None if never).
-    `snapshot()` is the health() structure both expose.
+    `health(started=, pending=)` builds the ONE health() structure both
+    expose, so the two key sets cannot drift apart.
 
     LOGGING. The first failure of each KIND is logged at once, at the level the
     caller gives (ERROR for a failed connect), and names `target`, the broker
     host:port as configured. Repeats are thinned: one summary line, with the
     counts, when the consecutive-failure count reaches a number in
-    `repeat_at_attempts`, or when `summary_every_s` has passed since that kind
-    was last reported. `repeat_level` sets the summary's level (None: the
+    `repeat_at_attempts`, or when `summary_every_s` (default
+    SUMMARY_EVERY_S, 600 s, for both users) has passed since that kind was
+    last reported. `repeat_level` sets the summary's level (None: the
     first line's level). The counts are never thinned. A success clears the
     throttle, so a new outage always logs its first line, and `record_success`
     returns how many attempts had failed so the caller can log the recovery.
@@ -464,7 +466,11 @@ class LinkHealth:
     drive it.
     """
 
-    def __init__(self, target: str, *, log, summary_every_s: float,
+    #: the one summary interval for repeated failures (MQTTTransport's
+    #: FAILURE_LOG_SUMMARY_S is this value).
+    SUMMARY_EVERY_S = 600
+
+    def __init__(self, target: str, *, log, summary_every_s: float = SUMMARY_EVERY_S,
                  repeat_level=None, repeat_at_attempts=()):
         self.target = target
         self.connected = False
@@ -522,6 +528,10 @@ class LinkHealth:
             "last_error": self.last_error,
             "last_success": self.last_success,
         }
+
+    def health(self, *, started: bool, pending) -> dict:
+        """The health() structure of MQTTTransport and bus_client, key for key."""
+        return {**self.snapshot(), "started": started, "pending": pending}
 
 
 class MQTTTransport(Transport):
@@ -621,7 +631,7 @@ class MQTTTransport(Transport):
     #: repeated IDENTICAL connect failures are logged once, then summarised
     #: at most once per this many seconds. A new kind of failure is logged at
     #: once. The count in health() is never thinned.
-    FAILURE_LOG_SUMMARY_S = 600
+    FAILURE_LOG_SUMMARY_S = LinkHealth.SUMMARY_EVERY_S
 
     #: Message Expiry Interval for a retained message whose namespace declares
     #: NO refresh interval. 24 hours.
@@ -1070,11 +1080,8 @@ class MQTTTransport(Transport):
         says why it is false: never started, or how many attempts have failed
         since the last success and with what error.
         """
-        return {
-            **self._link.snapshot(),
-            "started": self._client is not None,
-            "pending": len(self._pending),
-        }
+        return self._link.health(started=self._client is not None,
+                                 pending=len(self._pending))
 
     def _on_connect_fail(self, client, userdata):
         """paho could not open the connection; its loop thread will retry."""

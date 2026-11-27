@@ -64,17 +64,23 @@ loudly, DEC-HOP-OLD-BROKER-OFFLINE-ON-PURPOSE-2026-11-27). So, per broker:
   * the FIRST failed connect logs at ERROR on the `composeio.bus_client`
     logger and names the broker host:port exactly as configured;
   * repeats log at WARNING with the attempt count, thinned: on the 2nd and
-    4th consecutive failure, then at most once per REPEAT_EVERY_S (60 s);
-  * a refused CONNACK logs at ERROR with its reason, thinned the same way;
+    4th consecutive failure, then at most once per 600 s, the SAME summary
+    interval MQTTTransport uses (one throttle: `LinkHealth.SUMMARY_EVERY_S`);
+  * a refused CONNACK logs at ERROR with its reason, thinned the same way, and
+    the disconnect paho reports after each refusal adds NO line of its own,
+    so each report is one line, not two;
   * the first successful connect after failures logs the recovery once, at
     INFO, with the number of failed attempts; a new outage logs its ERROR again;
-  * `health(mqtt_url)` returns the same structure `MQTTTransport.health()`
-    does (both read a `transport_mqtt.LinkHealth`): `connected`, `started`,
+  * `health(mqtt_url)` returns exactly `MQTTTransport.health()`'s keys, built
+    by the same `transport_mqtt.LinkHealth.health()`: `connected`, `started`,
     `broker`, `connect_failures` (consecutive, since the last success),
-    `last_error` and `last_success` (epoch seconds, None if never).
+    `last_error`, `last_success` (epoch seconds, None if never) and
+    `pending`, which is None here: bus_client keeps no queue of its own, and
+    the QoS 1/2 messages paho holds are not counted by paho's API.
 
-Clients are built with `transport_mqtt.new_paho_client`, so paho 1.x and 2.x
-both construct (2.x gets CallbackAPIVersion.VERSION1).
+Clients are built with `paho_compat.new_paho_client` (re-exported by
+`transport_mqtt`), so paho 1.x and 2.x both construct (2.x gets
+CallbackAPIVersion.VERSION1).
 """
 from __future__ import annotations
 
@@ -85,9 +91,9 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger("composeio.bus_client")
 
-#: thinning of repeated connect-failure lines (see the module docstring).
+#: extra early WARNINGs for repeated connect failures; after them the
+#: summary interval is LinkHealth.SUMMARY_EVERY_S (see the module docstring).
 REPEAT_AT_ATTEMPTS = (2, 4)
-REPEAT_EVERY_S = 60
 
 # (host, port) -> the one live client for this process.
 _SHARED: dict[Tuple[str, int], object] = {}
@@ -191,13 +197,11 @@ def _wire_health(client, host: str, port: int) -> None:
     `on_connect` records the success (or the refusal) and then has the
     router, if one exists for this broker by then, re-issue every filter.
     """
-    from composeio.transport_mqtt import LinkHealth, MQTTTransport, _connack_reason
+    from composeio.transport_mqtt import MQTTTransport, _connack_reason
 
     key = (host, port)
     target = f"{host}:{port}"
-    link = LinkHealth(target, log=logger, summary_every_s=REPEAT_EVERY_S,
-                      repeat_level=logging.WARNING,
-                      repeat_at_attempts=REPEAT_AT_ATTEMPTS)
+    link = _new_link(target)
     _HEALTH[key] = link
     backoff = (f"{MQTTTransport.RECONNECT_MIN_DELAY_S}-"
                f"{MQTTTransport.RECONNECT_MAX_DELAY_S}s")
@@ -229,6 +233,11 @@ def _wire_health(client, host: str, port: int) -> None:
 
     def on_disconnect(client, userdata, rc, properties=None):
         link.connected = False
+        # After a refused CONNACK paho drops the socket and reports it here.
+        # The refusal is already logged (and thinned) by on_connect, so a line
+        # here would double every report (candidate review note 2).
+        if (link.last_error or "").startswith("CONNACK refused"):
+            return
         if rc != 0:
             link.throttled_log(
                 logging.WARNING, f"disconnect rc={rc}",
@@ -241,22 +250,27 @@ def _wire_health(client, host: str, port: int) -> None:
     client.on_disconnect = on_disconnect
 
 
-def health(mqtt_url: str) -> dict:
-    """The shared connection's link state: the `MQTTTransport.health()` structure.
+def _new_link(target: str):
+    from composeio.transport_mqtt import LinkHealth
+    return LinkHealth(target, log=logger, repeat_level=logging.WARNING,
+                      repeat_at_attempts=REPEAT_AT_ATTEMPTS)
 
-    `connected`, `started`, `broker`, `connect_failures`, `last_error`,
-    `last_success`. A broker this process never started a connection to reads
-    `started: False, connected: False`.
+
+def health(mqtt_url: str) -> dict:
+    """The shared connection's link state, with exactly `MQTTTransport.health()`'s keys.
+
+    Built by `LinkHealth.health()`, the one builder both use. A broker this
+    process never started a connection to reads from a fresh LinkHealth:
+    `started: False, connected: False`. `pending` is None (see the module
+    docstring).
     """
     host, port = parse_mqtt_url(mqtt_url)
     with _LOCK:
         link = _HEALTH.get((host, port))
         started = (host, port) in _SHARED
     if link is None:
-        return {"connected": False, "broker": f"{host}:{port}",
-                "connect_failures": 0, "last_error": None,
-                "last_success": None, "started": started}
-    return {**link.snapshot(), "started": started}
+        link = _new_link(f"{host}:{port}")
+    return link.health(started=started, pending=None)
 
 
 # --------------------------------------------------------------------------- #
