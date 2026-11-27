@@ -9,7 +9,8 @@ a copy of the scanned tree, which is private-derived, so a leftover folder is a 
 
 THE RULES (modelled on FactLattice's ci_gitleaks/ci_smoke fix, factlattice-internal-dev PR #98, with one shared copy here):
   - the folder is removed in a `finally`, by the exact path mkdtemp returned, so a clean run, a finding, an early return and
-    an exception (KeyboardInterrupt included) all clean up;
+    an exception (KeyboardInterrupt included) all clean up, and so does SIGTERM on the main thread (while the folder is
+    live a handler that raises SystemExit is installed, chained to any Python handler already set, then restored);
   - the path is normalised ONCE (`normalise`: trailing separators stripped, made absolute, links not resolved) and that
     one string is used for every check and for the removal;
   - before removing, `remove_work` checks that the path is NOT a symlink, that it is a DIRECT child of tempfile.gettempdir(), and
@@ -25,8 +26,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import sys
 import tempfile
+import threading
 
 KEEP_ENV = "COMPOSEIO_KEEP_WORK"
 
@@ -95,12 +98,51 @@ def remove_work(work, prefix, tool="workdir") -> bool:
     return True
 
 
+def _sigterm_guard():
+    """While a work folder is live, make SIGTERM unwind the stack so the `finally` runs.
+
+    SIGTERM's default action ends the process WITHOUT unwinding, so a CI cancel, a job
+    timeout or a plain `kill` left the folder behind (candidate review F2). Rules:
+      - main thread only (Python delivers signals there, and signal.signal refuses
+        elsewhere); off the main thread nothing is installed;
+      - previous handler SIG_DFL (or not set from Python): install one that raises
+        SystemExit(128 + SIGTERM), the exit status the default action would report;
+      - previous handler SIG_IGN: leave it; SIGTERM is ignored on purpose, nothing dies;
+      - previous handler a Python callable: CHAIN, do not replace. Ours calls it first;
+        if it raises (SystemExit included) that propagates through the `finally`; if
+        it returns, ours raises SystemExit(128 + SIGTERM) so the folder is still removed.
+    -> a restore() callable that puts the previous handler back.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+    prev = signal.getsignal(signal.SIGTERM)
+    if prev is signal.SIG_IGN:
+        return lambda: None
+    status = 128 + int(signal.SIGTERM)
+
+    def on_term(signum, frame):
+        if callable(prev):
+            prev(signum, frame)
+        raise SystemExit(status)
+
+    signal.signal(signal.SIGTERM, on_term)
+
+    def restore():
+        signal.signal(signal.SIGTERM, prev if prev is not None else signal.SIG_DFL)
+    return restore
+
+
 def run_in_work_dir(prefix, tool, fn, keep=False):
-    """Make a work folder, call fn(work) and return its result; remove the folder on every exit unless asked to keep it."""
+    """Make a work folder, call fn(work) and return its result; remove the folder on every exit unless asked to keep it.
+
+    "Every exit" includes SIGTERM on the main thread: see `_sigterm_guard`.
+    """
     work = tempfile.mkdtemp(prefix=prefix)
+    restore = _sigterm_guard()
     try:
         return fn(work)
     finally:
+        restore()
         if keep or os.environ.get(KEEP_ENV) == "1":
             why = "--keep" if keep else f"{KEEP_ENV}=1"
             print(f"[{tool}] work folder kept ({why}): {work}", flush=True)

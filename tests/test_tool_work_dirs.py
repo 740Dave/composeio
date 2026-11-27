@@ -303,3 +303,80 @@ def test_source_capture_diff_leaves_no_lock_folder(tmp_path, tmpdir_iso, monkeyp
     with pytest.raises(ModuleNotFoundError):
         scd.capture("w26_no_such_source_module", [], 0.05)
     assert left(tmpdir_iso) == [], "a capture that raises"
+
+
+# --------------------------------------------------------------------------- #
+# SIGTERM (candidate review F2): a REAL child process is sent SIGTERM while its
+# work folder is live. The default action ends a process without unwinding the
+# stack, so before the fix the `finally` never ran and the folder was left.
+# --------------------------------------------------------------------------- #
+import signal                                                    # noqa: E402
+
+CHILD = r'''
+import importlib.util, signal, sys, time
+spec = importlib.util.spec_from_file_location("wd", sys.argv[1])
+wd = importlib.util.module_from_spec(spec); spec.loader.exec_module(wd)
+if sys.argv[2] == "chain":
+    def mine(signum, frame):
+        open(sys.argv[3], "w").write("called")
+    signal.signal(signal.SIGTERM, mine)
+def body(work):
+    print(work, flush=True)
+    time.sleep(30)
+wd.run_in_work_dir("x-", "t", body)
+'''
+
+
+def _term_child(tmp_path, tmpdir_iso, mode, marker=None):
+    script = tmp_path / "child.py"
+    script.write_text(CHILD)
+    env = dict(os.environ, TMPDIR=str(tmpdir_iso))
+    p = subprocess.Popen([sys.executable, "-I", str(script), str(TOOLS / "workdir.py"), mode,
+                          str(marker or "")], stdout=subprocess.PIPE, text=True, env=env)
+    try:
+        work = p.stdout.readline().strip()
+        assert work and os.path.isdir(work), f"child did not report a live work folder: {work!r}"
+        p.send_signal(signal.SIGTERM)
+        rc = p.wait(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+    return work, rc
+
+
+def test_a_sigterm_killed_run_removes_its_work_folder(tmp_path, tmpdir_iso):
+    work, rc = _term_child(tmp_path, tmpdir_iso, "plain")
+    assert not os.path.exists(work), "SIGTERM left the work folder behind"
+    assert rc == 128 + signal.SIGTERM, rc
+    assert left(tmpdir_iso) == []
+
+
+def test_sigterm_chains_to_a_handler_already_set(tmp_path, tmpdir_iso):
+    marker = tmp_path / "handler-ran"
+    work, rc = _term_child(tmp_path, tmpdir_iso, "chain", marker)
+    assert marker.read_text() == "called", "the caller's own SIGTERM handler was not called"
+    assert not os.path.exists(work)
+    assert left(tmpdir_iso) == []
+
+
+def test_the_previous_sigterm_handler_is_restored(wd):
+    before = signal.getsignal(signal.SIGTERM)
+    during = []
+    wd.run_in_work_dir("x-", "t", lambda w: during.append(signal.getsignal(signal.SIGTERM)))
+    assert signal.getsignal(signal.SIGTERM) is before
+    assert during[0] is not before, "no SIGTERM handler was installed while the folder was live"
+
+
+def test_off_the_main_thread_nothing_is_installed(wd, tmpdir_iso):
+    import threading
+    out = {}
+
+    def run():
+        out["rc"] = wd.run_in_work_dir("x-", "t", lambda w: signal.getsignal(signal.SIGTERM))
+
+    before = signal.getsignal(signal.SIGTERM)
+    t = threading.Thread(target=run)
+    t.start()
+    t.join(10)
+    assert out["rc"] is before
+    assert left(tmpdir_iso) == []
