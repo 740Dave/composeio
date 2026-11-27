@@ -125,9 +125,25 @@ def test_CXC_PC_V02_T_RD_INSTALLED_DOMAIN_UNCHANGED(tmp_path, enabled):
 # =========================================================================== #
 # Test 3 [CXC-PC-V02-T-RD-CONCURRENT-WITH-UPGRADE]
 # =========================================================================== #
-def test_CXC_PC_V02_T_RD_CONCURRENT_WITH_UPGRADE(tmp_path):
+def test_CXC_PC_V02_T_RD_CONCURRENT_WITH_UPGRADE(tmp_path, monkeypatch):
+    """The interleavings are RANDOMISED: besides the random start order, the
+    decline thread sleeps a random 0 to 3 ms inside its record construction
+    (between the staleness check and the append) and the upgrade thread a
+    random 0 to 3 ms at its gate, after random start delays, so the window a missing lock would open is
+    actually exercised (a mutation that drops the per-domain lock fails here)."""
+    import time
+    import compose_plugins.lifecycle as lc
     PromptStale = cp().PromptStale
     rng = random.Random(20261127)
+    delays = {}
+    real_make_record = lc.make_record
+
+    def jittered_make_record(**kw):
+        d = delays.get(threading.current_thread().name)
+        if d:
+            time.sleep(d)
+        return real_make_record(**kw)
+    monkeypatch.setattr(lc, "make_record", jittered_make_record)
     v1 = fixture_copy(tmp_path, "v1")
     v2 = fixture_copy(tmp_path, "v2")
     outcomes = {"A": set(), "B": set()}
@@ -141,6 +157,7 @@ def test_CXC_PC_V02_T_RD_CONCURRENT_WITH_UPGRADE(tmp_path):
 
         def decline():
             barrier.wait()
+            time.sleep(starts["decline"])
             try:
                 pm.record_decline(q, decided_by="op-a")
                 errors["decline"] = None
@@ -149,13 +166,18 @@ def test_CXC_PC_V02_T_RD_CONCURRENT_WITH_UPGRADE(tmp_path):
 
         def upgrade():
             barrier.wait()
+            time.sleep(starts["upgrade"])
             try:
                 pm.upgrade(v2, consented_sha256=q.manifest_sha256, operator="op",
                            accepted=(variant == "B"))
                 errors["upgrade"] = None
             except ConsentDenied as exc:
                 errors["upgrade"] = exc
-        threads = [threading.Thread(target=decline), threading.Thread(target=upgrade)]
+        delays["decline"] = rng.uniform(0, 0.003)
+        delays["upgrade"] = rng.uniform(0, 0.003)
+        starts = {"decline": rng.uniform(0, 0.012), "upgrade": rng.uniform(0, 0.002)}
+        threads = [threading.Thread(target=decline, name="decline"),
+                   threading.Thread(target=upgrade, name="upgrade")]
         rng.shuffle(threads)
         for t in threads:
             t.start()
@@ -179,6 +201,7 @@ def test_CXC_PC_V02_T_RD_CONCURRENT_WITH_UPGRADE(tmp_path):
             outcomes["B"].add("decline-lost" if errors["decline"] else "decline-first")
         pm.close()
     print("variant B orders seen:", sorted(outcomes["B"]))
+    assert outcomes["B"] == {"decline-first", "decline-lost"}   # both orders happened
 
 
 # =========================================================================== #
