@@ -160,36 +160,20 @@ created: 2026-08-08
 - relates-to: [CXC-SOB-STANDALONE], [DD-SOB-HANDLE-SEAM]
 - part-of: [SPEC:CXC-SOURCES-ON-BUS]
 
-### [CXC-SOB-PRE-START-HOLD] A publish made before the injected bus's transport is started is HELD and sent on first connect, never dropped
+### A publish made before the injected bus's transport is started is HELD and sent on first connect, never dropped [CXC-SOB-PRE-START-HOLD]
 
-- requirement: an in-process source publishes on the INJECTED `app.bus` ([CXC-SOB-HANDLE]), and
-  `runtime.main()` starts the sources (`_maybe_start_inprocess_sources`) BEFORE `app.run()` reaches
-  `RenderApp.start()` → `self.bus.start()`. Every source publishes NOW, then parks, so each source's
-  FIRST value is sent to a global transport that does not exist on the wire yet. A global transport
-  MUST treat "not started" exactly like "started, not yet connected": the message is HELD in the same
-  bounded, order-preserving queue and flushed on the first successful connect. It MUST NOT be dropped.
-- requirement: the hold is the SAME queue as the pre-connect hold (`MQTTTransport._pending`, cap
-  `PENDING_MAX`, oldest dropped and COUNTED, reported on flush and in `health()["pending"]`). A second
-  queue for the pre-start case is the fork-divergence class ([DX-NARROW-WAIST]) and is a review reject.
-- constraint: the "never started is a configuration error, queueing would hide it" premise (MQTT
-  commit of 2026-07-21, the pre-connect queue) is WITHDRAWN. Injection made pre-start publishing the
-  normal path, not an error. Visibility of a transport that is never started is carried by the bound,
-  the counted overflow and `health()` (`started: False`, `pending: N`), not by discarding data.
-- rationale: the local bus already holds the value (`Namespace.publish_state` stores it and notifies
-  in-process subscribers whether or not any transport has started), so the console's own widgets are
-  unaffected. The loss is the WIRE copy: peers, and the broker's retained copy, see the PREVIOUS
-  process's value (or nothing on a first boot) until the source's next tick. A change-only source
-  (`fleet_roster`: `if force or current != last`) does not re-send until its content changes. This is
-  a wire delta NOT on [CXC-SOB-WIRE-DELTAS]'s list, and that node says such a delta is a DEFECT.
-- evidence: measured 2026-11-27 on a console restart at 825ae016: 20 lines `MQTT transport not
-  started, dropping message to '<ns>'`, all STATE, all during startup; the previous run (older code)
-  logged the same 20. `send()` is byte-identical from the public beta (d856590) through 825ae016.
-- verify-machine: `python/tests/test_transport_mqtt_pending.py::test_send_before_start_is_held_then_flushed_on_first_connect`
-  and `::test_bus_publish_before_start_reaches_the_wire` (the console ordering: `bus.publish_state`
-  before `bus.start()`, then a connect; the value MUST be on the fake broker's wire).
+- requirement: an in-process source publishes on the INJECTED `app.bus` ([CXC-SOB-HANDLE]), and `runtime.main()` starts the sources (`_maybe_start_inprocess_sources`) BEFORE `app.run()` reaches `RenderApp.start()` and so `self.bus.start()`. Every source publishes NOW, then parks, so each source's FIRST value is sent to a global transport that is not on the wire yet. A global transport MUST treat "not started" exactly like "started, not yet connected": the message is HELD in the same bounded, order-preserving queue and flushed on the first successful connect. It MUST NOT be dropped.
+- requirement: the hold is the SAME queue as the pre-connect hold (`MQTTTransport._pending`, cap `PENDING_MAX`, oldest dropped and COUNTED, reported on flush and in `health()["pending"]`). A second queue for the pre-start case is the fork-divergence class ([DX-NARROW-WAIST]) and is a review reject.
+- requirement: the queue is appended from every source thread and flushed on the transport's network thread, so "check the link, then hold" in `send()` and "mark connected, then flush" in the connect callback MUST each run under ONE lock. Without it a send can read "not connected", lose the CPU, and append to the fresh queue after the flush swapped the old one out: that message is then held while the link is up, and the sender's next message overtakes it. Under concurrent senders and flushes no message is lost or duplicated, and each thread's messages reach the wire in the order that thread sent them ([CXC-SOB-THREAD-SAFETY]).
+- requirement: a change-only source (`fleet_roster` publishes only `if force or current != last`) records a value as published when `publish_state` returns. The hold is what makes that record TRUE: the forced first roster MUST reach the wire on the first connect, with no content change in between.
+- constraint: the "never started is a configuration error, queueing would hide it" premise (the MQTT pre-connect queue of 2026-07-21) is WITHDRAWN. Injection made pre-start publishing the normal path, not an error. A transport that is never started stays visible through `health()` (`started: False`, `pending: N`), the queue cap and the counted overflow, not by discarding data.
+- rationale: the local bus already holds the value (`publish_state` stores it and notifies in-process subscribers whether or not any transport has started), so the console's own widgets are unaffected. What a drop loses is the WIRE copy: peers, and the broker's retained copy, see the PREVIOUS process's value (or nothing on a first boot) until the source's next tick, and a change-only source does not re-send until its content changes. That is a wire delta NOT on [CXC-SOB-WIRE-DELTAS]'s list, and that node says such a delta is a DEFECT.
+- evidence: measured 2026-11-27 on a console restart at 825ae016: 20 lines `MQTT transport not started, dropping message to '<ns>'`, all STATE, all during startup; the previous run (older code) logged the same 20. `send()` is byte-identical from the public beta (d856590) through 825ae016.
+- verify-machine: `python/tests/test_transport_mqtt_pending.py`: `::test_send_before_start_is_held_then_flushed_on_first_connect`, `::test_pre_start_hold_is_the_same_bounded_queue`, `::test_bus_publish_before_start_reaches_the_wire` (the console ordering: `bus.publish_state` before `bus.start()`, then a connect; the value MUST be on the fake broker's wire), `::test_a_send_racing_the_connect_is_never_stranded_or_reordered` (deterministic: the race window is forced open), `::test_concurrent_senders_and_flushes_lose_nothing_and_keep_per_thread_order` (stress, fixed seeds), `::test_fleet_roster_first_publish_reaches_the_wire_after_connect`.
 - verify-machine-result: EMPTY
 - verify-human: EMPTY (no glass component; a peer-visible check is `mosquitto_sub -t 'composeio/global/fleet/roster' -C 1` within one second of a console restart)
-- relates-to: [CXC-SOB-HANDLE], [CXC-SOB-WIRE-DELTAS], [CXC-SOB-RUN-BLOCKS]
+- relates-to: [CXC-SOB-HANDLE], [CXC-SOB-WIRE-DELTAS], [CXC-SOB-RUN-BLOCKS], [CXC-SOB-THREAD-SAFETY]
+- see-also: [CXC-SOB-THREAD-SAFETY], [DX-NARROW-WAIST]
 - part-of: [SPEC:CXC-SOURCES-ON-BUS]
 
 ### [CXC-SOB-STANDALONE] Standalone runnability is a first-class acceptance criterion, not a side effect
@@ -298,6 +282,7 @@ created: 2026-08-08
   fan-out rather than trusted from the doc.
 - verify-machine: `python/tests/test_bus_concurrent_publish.py`.
 - part-of: [SPEC:CXC-SOURCES-ON-BUS]
+- see-also: [CXC-SOB-PRE-START-HOLD] (the transport's pre-connect queue is the other shared structure on this fan-out: appended from every source thread, flushed on the network thread, and locked)
 
 ### [CXC-SOB-LOG-NOISE] The 256-byte guideline must not turn the console log into a warning storm
 
