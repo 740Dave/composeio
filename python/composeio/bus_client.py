@@ -75,8 +75,9 @@ loudly, DEC-HOP-OLD-BROKER-OFFLINE-ON-PURPOSE-2026-11-27). So, per broker:
     by the same `transport_mqtt.LinkHealth.health()`: `connected`, `started`,
     `broker`, `connect_failures` (consecutive, since the last success),
     `last_error`, `last_success` (epoch seconds, None if never) and
-    `pending`, which is None here: bus_client keeps no queue of its own, and
-    the QoS 1/2 messages paho holds are not counted by paho's API.
+    `pending` and `pending_dropped`, both None here: bus_client keeps no
+    queue of its own, and the QoS 1/2 messages paho holds are not counted by
+    paho's API.
 
 Clients are built with `paho_compat.new_paho_client` (re-exported by
 `transport_mqtt`), so paho 1.x and 2.x both construct (2.x gets
@@ -261,8 +262,8 @@ def health(mqtt_url: str) -> dict:
 
     Built by `LinkHealth.health()`, the one builder both use. A broker this
     process never started a connection to reads from a fresh LinkHealth:
-    `started: False, connected: False`. `pending` is None (see the module
-    docstring).
+    `started: False, connected: False`. `pending` and `pending_dropped` are
+    None (see the module docstring).
     """
     host, port = parse_mqtt_url(mqtt_url)
     with _LOCK:
@@ -270,7 +271,7 @@ def health(mqtt_url: str) -> dict:
         started = (host, port) in _SHARED
     if link is None:
         link = _new_link(f"{host}:{port}")
-    return link.health(started=started, pending=None)
+    return link.health(started=started, pending=None, pending_dropped=None)
 
 
 # --------------------------------------------------------------------------- #

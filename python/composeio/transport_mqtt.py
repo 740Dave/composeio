@@ -530,9 +530,17 @@ class LinkHealth:
             "last_success": self.last_success,
         }
 
-    def health(self, *, started: bool, pending) -> dict:
-        """The health() structure of MQTTTransport and bus_client, key for key."""
-        return {**self.snapshot(), "started": started, "pending": pending}
+    def health(self, *, started: bool, pending, pending_dropped) -> dict:
+        """The health() structure of MQTTTransport and bus_client, key for key.
+
+        `pending` is how many messages are held for the first (or next)
+        connect; `pending_dropped` is how many older held messages were
+        dropped at the cap since the queue was last flushed
+        ([CXC-SOB-PRE-START-HOLD]). Both are None for a link that keeps no
+        queue (bus_client).
+        """
+        return {**self.snapshot(), "started": started, "pending": pending,
+                "pending_dropped": pending_dropped}
 
 
 class MQTTTransport(Transport):
@@ -778,6 +786,21 @@ class MQTTTransport(Transport):
                 if len(self._pending) > self.PENDING_MAX:
                     self._pending.pop(0)
                     self._pending_dropped += 1
+                    # VISIBLE, not per message: the first drop at the cap is
+                    # one WARNING, repeats are thinned on the same throttle as
+                    # connect failures (LinkHealth, SUMMARY_EVERY_S), and the
+                    # count is in health()["pending_dropped"]. A transport that
+                    # never connects would otherwise drop silently.
+                    self._link.throttled_log(
+                        logging.WARNING, "pre-connect queue overflow",
+                        f"MQTT pre-connect queue is full (cap "
+                        f"{self.PENDING_MAX}, transport "
+                        f"{'not started' if self._client is None else 'not connected'}); "
+                        f"dropping the oldest held message, first: "
+                        f"'{message.namespace}'",
+                        "MQTT pre-connect queue still full, dropping the oldest",
+                        extra=lambda: (f", {self._pending_dropped} dropped "
+                                       f"since the last flush"))
                 hold = True
             else:
                 hold = False
@@ -1110,7 +1133,8 @@ class MQTTTransport(Transport):
         since the last success and with what error.
         """
         return self._link.health(started=self._client is not None,
-                                 pending=len(self._pending))
+                                 pending=len(self._pending),
+                                 pending_dropped=self._pending_dropped)
 
     def _on_connect_fail(self, client, userdata):
         """paho could not open the connection; its loop thread will retry."""

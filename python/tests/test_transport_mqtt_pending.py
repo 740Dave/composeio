@@ -12,6 +12,7 @@ the failure a code-shaped test misses.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import sys
@@ -341,6 +342,68 @@ def test_concurrent_senders_and_flushes_lose_nothing_and_keep_per_thread_order(s
         assert got == list(range(per_thread)), (
             f"thread {k}: order broken at index "
             f"{next(i for i, v in enumerate(got) if v != i)}")
+
+
+# ── overflow is VISIBLE on a transport that never connects ──────────────────
+
+def _overflow_warnings(caplog):
+    return [r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "pre-connect queue" in r.getMessage()]
+
+
+def test_overflow_before_start_is_counted_in_health_and_warned_once(caplog):
+    """A transport that is never started (or never connects) must not drop
+    past the cap silently. health() carries the count, and the FIRST drop is
+    one WARNING, not one per message."""
+    caplog.set_level(logging.INFO, logger="composeio.transport_mqtt")
+    t = MQTTTransport(broker="test.local", client_id="t")
+    for i in range(t.PENDING_MAX):
+        t.send(_msg("self/n", i))
+    assert _overflow_warnings(caplog) == []          # at the cap, nothing dropped
+    assert t.health()["pending_dropped"] == 0
+
+    t.send(_msg("self/n", t.PENDING_MAX))            # the first drop
+    assert len(_overflow_warnings(caplog)) == 1
+
+    for i in range(t.PENDING_MAX + 1, t.PENDING_MAX + 50):
+        t.send(_msg("self/n", i))                    # 114 sends in total
+    h = t.health()
+    assert h["started"] is False
+    assert h["pending"] == t.PENDING_MAX
+    assert h["pending_dropped"] == 50
+    assert len(_overflow_warnings(caplog)) == 1      # thinned, not per message
+
+
+def test_overflow_repeats_are_summarised_on_the_link_throttle(monkeypatch, caplog):
+    """Repeats go through LinkHealth's throttle: one summary line once
+    SUMMARY_EVERY_S has passed, carrying the count."""
+    import composeio.transport_mqtt as tm
+    now = [1000.0]
+    monkeypatch.setattr(tm, "_monotonic", lambda: now[0])
+    caplog.set_level(logging.INFO, logger="composeio.transport_mqtt")
+    t = MQTTTransport(broker="test.local", client_id="t")
+    for i in range(t.PENDING_MAX + 10):
+        t.send(_msg("self/n", i))
+    assert len(_overflow_warnings(caplog)) == 1
+    now[0] += tm.LinkHealth.SUMMARY_EVERY_S + 1
+    t.send(_msg("self/n", -1))
+    w = _overflow_warnings(caplog)
+    assert len(w) == 2
+    assert "11 dropped since the last flush" in w[1].getMessage()
+
+
+def test_dropped_count_resets_on_flush_and_bus_client_carries_the_same_key():
+    from composeio import bus_client as bc
+    t, fake = _wired()
+    for i in range(t.PENDING_MAX + 3):
+        t.send(_msg("self/n", i))
+    assert t.health()["pending_dropped"] == 3
+    t._on_connect(fake, None, {}, 0)
+    assert t.health()["pending_dropped"] == 0 and t.health()["pending"] == 0
+    other = bc.health("mqtt://never-started.invalid:1883")
+    assert set(other) == set(t.health())
+    assert other["pending_dropped"] is None
 
 
 # ── fleet_roster: its "last published" becomes true with the hold ───────────
