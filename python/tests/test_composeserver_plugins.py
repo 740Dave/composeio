@@ -248,7 +248,9 @@ def test_tenant_manifest_domain_with_an_install_record_is_enabled(tmp_path, leve
         assert wait_for(lambda: bus.get_state("plugins/hello_world/greeting")
                         == "from tenant manifest")
         status = bus.get_state("_server/plugins/hello_world/status")
-        assert status["status"] == "running" and status["contract"] == "0.1"
+        # the host reports the contract its compose_plugins implements: 0.2
+        # since compose-plugins 0.2.0 ([CXC-PC-V02-VERSION-0-2] rule (1))
+        assert status["status"] == "running" and status["contract"] == "0.2"
     finally:
         host.manager.disable("hello_world")
 
@@ -269,7 +271,7 @@ def test_conformance_passes_on_composeserver(tmp_path, level):
     assert rc == 0, text
     # spec 95 r24: foreign_host "gnomon", and no host_section, so every manifest
     # the runner installs carries hosts.composeio == {}
-    assert f"isolation={level} contract=0.1 foreign_host=gnomon " in text
+    assert f"isolation={level} contract=0.2 foreign_host=gnomon " in text
     written = [ln for ln in text.splitlines() if "observed hosts.composeio written" in ln]
     assert written and all(ln.endswith(": {}") for ln in written), written
     assert "unknown key in hosts.gnomon -> state: installed" in text
@@ -336,3 +338,31 @@ def test_tick_hook_seam_runs_hooks_and_survives_a_bad_one(tmp_path):
         assert calls == [1]
     finally:
         server._remove_announce_tick(tenant)
+
+
+# ---- contract 0.2: the EULA host obligation on ComposeIO's screen ---------- #
+def test_CXC_PC_V02_T_EULA_HOST_OBLIGATION_composeio_web_manager(tmp_path):
+    """[CXC-PC-V02-EULA-HOST-OBLIGATION]: ComposeIO's consent screen (the
+    library's web manager, mounted by this host) shows the `hello-world-eula`
+    fixture's EULA exactly and in full: ``eula_text_shown`` is True."""
+    import shutil
+    from urllib.parse import urlencode
+
+    import compose_plugins
+    host = CP.ComposeIOPluginHost(state_root=tmp_path / "state", auth_hook=lambda env: "op")
+    app = PluginManagerApp(host.manager)
+    src = tmp_path / "pkg"
+    shutil.copytree(package_dir("hello-world-eula"), src,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    prompt = host.manager.prepare_install(src)
+    assert prompt.content.eula is not None
+    body = urlencode({"source": str(src), "csrf": app.csrf_token("op")}).encode()
+    environ = {"REQUEST_METHOD": "POST", "SCRIPT_NAME": "/plugins",
+               "PATH_INFO": "/install/prepare", "CONTENT_LENGTH": str(len(body)),
+               "wsgi.input": io.BytesIO(body), "REMOTE_ADDR": "127.0.0.1",
+               "wsgi.url_scheme": "http", "HTTP_HOST": "127.0.0.1:8080"}
+    status = {}
+    page = b"".join(app(environ, lambda s, h: status.update(s=s))).decode()
+    assert status["s"] == "200 OK", page
+    assert compose_plugins.eula_text_shown(page, prompt) is True
+    host.manager.close()
