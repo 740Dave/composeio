@@ -514,3 +514,103 @@ def test_CXC_PC_V02_T_EULA_RECONSENT_TABLE_refused_changes_nothing(tmp_path):
     assert pm.running("hello_world") is running and pm.status("hello_world") == "running"
     last = consent_lines(pm)[-1]
     assert last["decision"] == "refused" and last["eula_sha256"] == sha(B_TEXT.encode())
+
+
+# =========================================================================== #
+# Candidate review c48ab58, F2: [CXC-PC-V02-EULA-HASH-RECORD] verify-human,
+# "the consent-records panel shows the EULA digest beside a record made with a
+# EULA, and nothing for a record made without".
+# =========================================================================== #
+def test_CXC_PC_V02_T_EULA_HASH_BINDING_consent_records_panel(tmp_path):
+    from html.parser import HTMLParser
+    host, pm, app = web_app(tmp_path)
+    install(pm, fixture_copy(tmp_path, "v1"))                 # a record without a EULA
+    host2, pm2, app2 = web_app(tmp_path / "e")
+    install_eula(pm2, eula_package(tmp_path))
+    digest = consent_lines(pm2)[-1]["eula_sha256"]
+
+    class Rows(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.rows, self._row, self._cell = [], None, None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "tr":
+                self._row = []
+            if tag in ("td", "th"):
+                self._cell = ""
+
+        def handle_data(self, data):
+            if self._cell is not None:
+                self._cell += data
+
+        def handle_endtag(self, tag):
+            if tag in ("td", "th") and self._row is not None:
+                self._row.append(self._cell)
+                self._cell = None
+            if tag == "tr":
+                self.rows.append(self._row)
+                self._row = None
+
+    def table(a):
+        st, h, page = wsgi(a, "", "/consent")
+        assert st == "200 OK"
+        r = Rows()
+        r.feed(page)
+        return r.rows
+    with_rows, without_rows = table(app2), table(app)
+    head = with_rows[0]
+    col = head.index("EULA sha256")
+    assert without_rows[0] == head
+    assert [row[col] for row in with_rows[1:]] == [digest]
+    assert [row[col] for row in without_rows[1:]] == [""]
+
+
+# =========================================================================== #
+# [CXC-PC-V02-T-SCHEMA-FILES], by its own procedure: hash the two shipped
+# files and the schema inside the published 0.1.0 wheel; check the fields and
+# the version per file; validate the eight manifests of the version table and
+# the 0.1 and 0.2 manifests with `eula` against the schema their contract
+# selects.
+# =========================================================================== #
+SCHEMA_ROWS = [  # (id, contract, license, eula, passes its selected schema)
+    ("0.1-plain", "0.1", False, False, True), ("0.1-license", "0.1", True, False, False),
+    ("0.1-eula", "0.1", False, True, False), ("0.2-plain", "0.2", False, False, True),
+    ("0.2-license", "0.2", True, False, True), ("0.2-eula", "0.2", False, True, True),
+    ("0.2-both", "0.2", True, True, True), ("0.3-plain", "0.3", False, False, False),
+]
+
+
+def test_CXC_PC_V02_T_SCHEMA_FILES():
+    import hashlib
+    import zipfile
+    from importlib import resources
+    jsonschema = pytest.importorskip("jsonschema")
+    import compose_plugins.manifest as M
+    from conftest import valid_manifest
+    files = {c: resources.files("compose_plugins.schema").joinpath(n).read_bytes()
+             for c, n in M.SCHEMA_RESOURCES.items()}
+    for contract, raw in files.items():
+        s = json.loads(raw)
+        assert s["x-compose-plugins-contract"] == contract
+        has = (b'"license"' in raw, b'"eula"' in raw)
+        assert has == ((False, False) if contract == "0.1" else (True, True)), contract
+    for rid, contract, lic, eula, ok in SCHEMA_ROWS:
+        m = valid_manifest()
+        m["contract"] = contract
+        if lic:
+            m["license"] = "MIT"
+        if eula:
+            m["eula"] = "EULA.txt"
+        s = M.schema_for(m)
+        errs = list(jsonschema.Draft202012Validator(s).iter_errors(m))
+        assert (errs == []) is ok, (rid, s["x-compose-plugins-contract"],
+                                    [e.message for e in errs])
+    whl = os.environ.get("COMPOSE_PLUGINS_V010_WHEEL")
+    if not whl:
+        pytest.skip("COMPOSE_PLUGINS_V010_WHEEL is not set: the digest check against the "
+                    "published 0.1.0 wheel's schema was NOT exercised (the rest ran)")
+    with zipfile.ZipFile(whl) as zf:
+        published = zf.read("compose_plugins/schema/manifest-0.1.schema.json")
+    print("0.1 schema sha256", hashlib.sha256(published).hexdigest())
+    assert files["0.1"] == published

@@ -672,3 +672,111 @@ def test_CXC_PC_V02_T_STORES_COMPAT_e_the_0_1_0_wheel_refuses_loudly(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "compose_plugins 0.1.0" in r.stdout and ".whl" in r.stdout
     assert "REFUSED: consent record REFUSED: keys must be exactly" in r.stdout
+
+
+# =========================================================================== #
+# Candidate review c48ab58, F1 (base r24 CXC-PC-RUN import-package-name-rule,
+# still binding: in-process enable MUST be atomic). 0.2 added two failure
+# points after the import, the event append and the snapshot write; each must
+# leave sys.path, sys.modules, _HOLDERS, the manager's loaded set, the state
+# and installs.json exactly as before the attempt.
+# =========================================================================== #
+@pytest.mark.parametrize("where", ["append", "snapshot", "drift-control"])
+def test_CXC_PC_V02_T_INSTALL_LOG_ORDER_AND_FAULTS_enable_is_atomic(tmp_path, monkeypatch, where):
+    import compose_plugins.lifecycle as lc
+    InstallLogRefused = cp().InstallLogRefused
+    host, pm = _installed(tmp_path)
+    path0, mods0 = list(sys.path), dict(sys.modules)
+    holders0, loaded0 = dict(lc._HOLDERS), dict(pm._loaded)
+    snap0 = (host.state_root / "installs.json").read_bytes()
+    if where == "append":
+        monkeypatch.setattr(pm.install_log, "append",
+                            lambda ev: (_ for _ in ()).throw(OSError("append failed")))
+        exc = InstallLogRefused
+    elif where == "snapshot":
+        monkeypatch.setattr(pm.installs, "put",
+                            lambda *a, **k: (_ for _ in ()).throw(PlantedError("put failed")))
+        exc = PlantedError
+    else:                       # a failure inside the 0.1 restore scope (control)
+        monkeypatch.setattr(lc, "check_drift",
+                            lambda *a, **k: (_ for _ in ()).throw(PlantedError("drift")))
+        exc = PlantedError
+    with pytest.raises(exc):
+        pm.enable(D)
+    assert list(sys.path) == path0
+    assert set(sys.modules) == set(mods0)
+    assert all(sys.modules[k] is v for k, v in mods0.items())
+    assert dict(lc._HOLDERS) == holders0 and lc.holder_of(D) is None
+    assert pm._loaded == loaded0 and pm.running(D) is None
+    assert pm.state(D) == "installed"
+    assert (host.state_root / "installs.json").read_bytes() == snap0
+    if where == "snapshot":     # the write-ahead abort is still written
+        assert log_lines(pm)[-1]["event"] == "abort"
+    # and the plug-in can then be enabled normally, by this or another manager
+    monkeypatch.undo()
+    pm.enable(D)
+    assert pm.state(D) == "enabled"
+
+
+# =========================================================================== #
+# Candidate review c48ab58, F3: both files unreadable, both reported.
+# =========================================================================== #
+def test_CXC_PC_V02_T_INSTALL_LOG_FINDINGS_METHOD_both_unreadable(tmp_path):
+    host, pm = _installed(tmp_path)
+    log, snap = host.state_root / "installs.jsonl", host.state_root / "installs.json"
+    log.chmod(0)
+    snap.chmod(0)
+    try:
+        got = pm.install_log_findings()
+        assert got == pm.install_log_findings()
+        assert [(f.kind, f.message) for f in got] == [
+            ("unreadable", "installs.jsonl cannot be read (PermissionError)"),
+            ("unreadable", "installs.json cannot be read (PermissionError)")]
+    finally:
+        log.chmod(0o600)
+        snap.chmod(0o644)
+    # each alone is reported alone
+    snap.chmod(0)
+    try:
+        assert [f.message for f in pm.install_log_findings()] == [
+            "installs.json cannot be read (PermissionError)"]
+    finally:
+        snap.chmod(0o644)
+
+
+# =========================================================================== #
+# Candidate review c48ab58, A1 (ruled): a class name that is not an
+# identifier is recorded as a safe token, so an abort is ALWAYS written and no
+# text of the class name reaches the log, a finding or InstallLogRefused.
+# =========================================================================== #
+def test_CXC_PC_V02_T_INSTALL_LOG_FAILURE_TEXT_non_identifier_class(tmp_path, monkeypatch):
+    InstallLogRefused = cp().InstallLogRefused
+    Weird = type("x y", (Exception,), {})
+    Marked = type(f"x {MARKER} y", (Exception,), {})
+    host, pm = _installed(tmp_path)
+    monkeypatch.setattr(pm.installs, "put", lambda *a, **k: (_ for _ in ()).throw(Weird("m")))
+    with pytest.raises(Weird):
+        pm.enable(D)
+    abort = log_lines(pm)[-1]
+    assert abort["event"] == "abort" and abort["reason"] == "NonIdentifierException"
+    assert abort["aborts_seq"] == log_lines(pm)[-2]["seq"]
+    assert pm.install_log_findings() == ()     # aborted, so no silent gap
+    monkeypatch.undo()
+    # the class name itself carries the marker, in the abort and in the append
+    host2, pm2 = _installed(tmp_path, "marked")
+    monkeypatch.setattr(pm2.installs, "put",
+                        lambda *a, **k: (_ for _ in ()).throw(Marked("m")))
+    with pytest.raises(Marked):
+        pm2.enable(D)
+    monkeypatch.undo()
+    monkeypatch.setattr(pm2.install_log, "append",
+                        lambda ev: (_ for _ in ()).throw(Marked("m")))
+    with pytest.raises(InstallLogRefused) as ei:
+        pm2.enable(D)
+    assert "NonIdentifierException" in str(ei.value) and "PLANTED" not in str(ei.value)
+    assert "PLANTED" not in (host2.state_root / "installs.jsonl").read_text()
+    assert log_lines(pm2)[-1]["reason"] == "NonIdentifierException"
+    from compose_plugins.errors import safe_class_name
+    assert safe_class_name(OSError("x")) == "OSError"
+    assert safe_class_name(Weird()) == "NonIdentifierException"
+    assert safe_class_name(type("A" * 300, (Exception,), {})()) == "A" * 200
