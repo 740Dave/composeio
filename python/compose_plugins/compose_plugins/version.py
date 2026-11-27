@@ -12,7 +12,7 @@ import re
 from .errors import ContractVersionRefused
 
 #: The ONE contract version this library (and so a host built on it) implements.
-HOST_CONTRACT = "0.1"
+HOST_CONTRACT = "0.2"
 
 _CONTRACT_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 

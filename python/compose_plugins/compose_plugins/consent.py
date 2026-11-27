@@ -18,6 +18,7 @@ their grant strings; that is all it does with them.
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -197,6 +198,24 @@ class ConsentLine:
         return f"{mark}{self.value}"
 
 
+#: [CXC-PC-V02-EULA-DISPLAY] the EULA block's heading and hash line (0.2)
+EULA_HEADING = "License agreement (EULA) declared by the plug-in"
+EULA_CHANGED = "EULA changed"
+#: [CXC-PC-CONSENT-CONTENT] license-line (0.2)
+LICENSE_SUFFIX = " (declared by the plug-in; not verified)"
+
+
+@dataclass(frozen=True)
+class ConsentEula:
+    """A declared EULA in the consent content ([CXC-PC-V02-EULA-DISPLAY]):
+    ``text`` is the file's bytes decoded as UTF-8 with NO change, ``sha256``
+    the digest of those exact bytes."""
+
+    path: str
+    text: str
+    sha256: str
+
+
 @dataclass(frozen=True)
 class ConsentContent:
     domain: str
@@ -211,22 +230,53 @@ class ConsentContent:
     widens: bool = False
     #: the dialog title ([CXC-PC-CONSENT-CONTENT] dialog-title, r21)
     title: str = ""
+    #: (0.2) the declared EULA, or None ([CXC-PC-V02-EULA-DISPLAY])
+    eula: "ConsentEula | None" = None
+    #: (0.2) True iff this upgrade's EULA differs from the consented one
+    #: ([CXC-PC-V02-EULA-RECONSENT] screen)
+    eula_changed: bool = False
 
     def text(self) -> str:
-        """The title, then the manifest summary below it, one line each."""
-        return "\n".join([self.title] + [line.text() for line in self.lines])
+        """The title, then the manifest summary below it, one line each; then,
+        when a EULA is declared, its block: the heading, the text exactly as in
+        the file, and the hash line ([CXC-PC-V02-EULA-DISPLAY])."""
+        out = "\n".join([self.title] + [line.text() for line in self.lines])
+        if self.eula is not None:
+            changed = f"[ADDED] {EULA_CHANGED}\n" if self.eula_changed else ""
+            out += (f"\n{changed}{EULA_HEADING}:\n{self.eula.text}"
+                    f"\nEULA sha256: {self.eula.sha256}")
+        return out
+
+
+def eula_text_shown(rendered: str, prompt: Any) -> bool:
+    """[CXC-PC-V02-EULA-HOST-OBLIGATION] conformance-helper: True only if
+    ``prompt.content.eula.text`` occurs in ``rendered`` as ONE contiguous,
+    unaltered substring, after HTML unescaping when ``rendered`` is an HTML
+    document. A truncated, summarised or re-flowed text gives False; so does a
+    prompt that declares no EULA (there is nothing to show)."""
+    eula = getattr(getattr(prompt, "content", None), "eula", None)
+    if eula is None or not isinstance(rendered, str):
+        return False
+    head = rendered.lstrip()[:15].lower()
+    if head.startswith("<!doctype html") or head.startswith("<html"):
+        rendered = html.unescape(rendered)
+    return eula.text in rendered
 
 
 def render_consent(manifest: Manifest, *, host: str, runs_as: str,
                    render_host_section: HostSectionRenderer,
                    previous_granted: "Iterable[str] | None" = None,
-                   previous_runs_as: "str | None" = None) -> ConsentContent:
+                   previous_runs_as: "str | None" = None,
+                   eula: "ConsentEula | None" = None,
+                   eula_changed: bool = False) -> ConsentContent:
     """Render the consent content from the manifest ALONE.
 
     ``runs_as`` is the ACTUAL isolation level the host will use; it may not be
     below the manifest's ``isolation_floor``. ``render_host_section`` renders
     THIS host's own section. With ``previous_granted`` (an upgrade), lines whose
-    grant is new are marked ``added`` and ``widens`` is computed.
+    grant is new are marked ``added`` and ``widens`` is computed. ``eula`` is
+    the declared EULA as the package reader read it (0.2); ``eula_changed``
+    marks it as changed on a re-consent screen.
 
     Makes no network call and imports nothing from the plug-in.
     """
@@ -262,6 +312,8 @@ def render_consent(manifest: Manifest, *, host: str, runs_as: str,
         out.append(line("code owners", ", ".join(owners)
                         + " (as declared by the package; not a verified publisher identity)"))
     out.append(line("documentation", data["documentation"]))
+    if "license" in data:      # 0.2 license-line: no line at all when not declared
+        out.append(line("license", data["license"] + LICENSE_SUFFIX))
     out.append(line("run form", data["run"]["form"]))
     dropped = prev is not None and level_drops(previous_runs_as, runs_as)
     out.append(ConsentLine("runs as", runs_as if not dropped else
@@ -303,7 +355,7 @@ def render_consent(manifest: Manifest, *, host: str, runs_as: str,
         domain=manifest.domain, version=manifest.version, host=host,
         runs_as=runs_as, lines=tuple(out), granted=tuple(granted), added=added,
         widens=prev is not None and upgrade_widens(prev, granted, previous_runs_as, runs_as),
-        title=dialog_title(manifest))
+        title=dialog_title(manifest), eula=eula, eula_changed=bool(eula and eula_changed))
 
 
 # --------------------------------------------------------------------------- #
@@ -312,6 +364,9 @@ def render_consent(manifest: Manifest, *, host: str, runs_as: str,
 DECISIONS = ("granted", "refused")
 RECORD_KEYS = ("domain", "version", "manifest_sha256", "granted", "decided_by",
                "decided_at", "host", "decision")
+#: (0.2) [CXC-PC-CONSENT-RECORD] optional-keys: present only for a manifest that
+#: declares ``eula``, never null
+OPTIONAL_RECORD_KEYS = ("eula_sha256",)
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -381,9 +436,16 @@ class ConsentRecord:
     decided_at: str
     host: str
     decision: str
+    #: (0.2) the sha256 of the EULA the operator was shown; None = no EULA
+    #: declared (the key is then OMITTED from the JSON, never null)
+    eula_sha256: "str | None" = None
 
     def __post_init__(self) -> None:
         problems = []
+        if self.eula_sha256 is not None and (not isinstance(self.eula_sha256, str)
+                                             or _SHA_RE.fullmatch(self.eula_sha256) is None):
+            problems.append(f"eula_sha256 must be 64 lowercase hex characters "
+                            f"(got {self.eula_sha256!r})")
         for k in RECORD_TEXT_FIELDS:
             p = text_field_problem(k, getattr(self, k))
             if p is not None:
@@ -415,21 +477,34 @@ class ConsentRecord:
     def to_json(self) -> dict:
         d = {k: getattr(self, k) for k in RECORD_KEYS}
         d["granted"] = list(self.granted)
+        if self.eula_sha256 is not None:
+            d["eula_sha256"] = self.eula_sha256
         return d
 
     @classmethod
     def from_json(cls, d: Any) -> "ConsentRecord":
-        if not isinstance(d, dict) or set(d) != set(RECORD_KEYS):
+        keys = set(d) if isinstance(d, dict) else None
+        if keys is None or not set(RECORD_KEYS) <= keys \
+                or not keys <= set(RECORD_KEYS) | set(OPTIONAL_RECORD_KEYS):
             got = sorted(d) if isinstance(d, dict) else type(d).__name__
+            extra = sorted(keys - set(RECORD_KEYS) - set(OPTIONAL_RECORD_KEYS)) if keys else []
             raise ConsentRefused(f"consent record REFUSED: keys must be exactly "
-                                 f"{list(RECORD_KEYS)} (got {got})")
+                                 f"{list(RECORD_KEYS)}, plus optionally "
+                                 f"{list(OPTIONAL_RECORD_KEYS)} (got {got}"
+                                 + (f"; unknown key(s) {extra}" if extra else "") + ")")
+        if "eula_sha256" in d and (not isinstance(d["eula_sha256"], str)
+                                   or _SHA_RE.fullmatch(d["eula_sha256"]) is None):
+            raise ConsentRefused(f"consent record REFUSED: eula_sha256 must be 64 lowercase "
+                                 f"hex characters when present, never null "
+                                 f"(got {d['eula_sha256']!r})")
         g = d["granted"]
         return cls(**{**d, "granted": tuple(g) if isinstance(g, list) else g})
 
 
 def make_record(*, manifest: Manifest, manifest_sha256: str, granted: Iterable[str],
                 decided_by: str, host: str, decision: str,
-                clock: Callable[[], datetime] = utc_now) -> ConsentRecord:
+                clock: Callable[[], datetime] = utc_now,
+                eula_sha256: "str | None" = None) -> ConsentRecord:
     """Build a record; ``decided_at`` is taken from ``clock`` (UTC, ISO 8601)."""
     now = clock()
     if now.tzinfo is None:
@@ -439,7 +514,8 @@ def make_record(*, manifest: Manifest, manifest_sha256: str, granted: Iterable[s
     return ConsentRecord(
         domain=manifest.domain, version=manifest.version,
         manifest_sha256=manifest_sha256, granted=tuple(sorted(set(granted))),
-        decided_by=decided_by, decided_at=decided_at, host=host, decision=decision)
+        decided_by=decided_by, decided_at=decided_at, host=host, decision=decision,
+        eula_sha256=eula_sha256)
 
 
 class ConsentStore:
@@ -489,6 +565,8 @@ class ConsentStore:
 __all__ = [
     "DIALOG_TITLE_SUFFIX", "FILESYSTEM_GRANT_PREFIX", "NETWORK_GRANT_PREFIX",
     "PERMISSIONS_HEADING", "dialog_title", "filesystem_grant", "network_grant",
+    "ConsentEula", "EULA_CHANGED", "EULA_HEADING", "LICENSE_SUFFIX", "OPTIONAL_RECORD_KEYS",
+    "eula_text_shown",
     "ABSENT", "ConsentContent", "ConsentLine", "ConsentRecord", "ConsentStore",
     "DECISIONS", "HostPermission", "HostSectionRenderer", "NONE_DECLARED",
     "RECORD_KEYS", "RECORD_TEXT_FIELDS", "added_grants", "bus_publish_grant", "bus_subscribe_grant",

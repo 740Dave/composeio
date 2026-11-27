@@ -29,7 +29,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .errors import ManifestShaMismatch, ManifestUnreadable, PackageSourceRefused
+from .errors import (
+    ManifestRefused, ManifestShaMismatch, ManifestUnreadable, PackageSourceRefused, Refusal,
+)
 
 MANIFEST_NAME = "manifest.json"
 #: qa-wave1-rulings N1: manifest.json is at most 256 KiB (on disk or
@@ -338,7 +340,164 @@ def verify_manifest_sha256(consented_sha256: str, fetched: "ManifestFile | bytes
                                   location=location)
 
 
+# --------------------------------------------------------------------------- #
+# The EULA file (contract 0.2, [CXC-PC-V02-EULA-FIELD]): read like the manifest,
+# by this package reader, importing and running nothing and making no network
+# call. The path rule, the file rule, the size rule and the content rule.
+# --------------------------------------------------------------------------- #
+#: [CXC-PC-V02-EULA-FIELD] size-rule: 1 to 262144 bytes (256 KiB)
+MAX_EULA_BYTES = 256 * 1024
+#: [CXC-PC-V02-EULA-FIELD] path-rule: at most 255 bytes in UTF-8
+EULA_PATH_MAX_UTF8_BYTES = 255
+#: the bidirectional controls a EULA may not hold (the Trojan Source set)
+EULA_BIDI_CONTROLS = frozenset(chr(c) for c in (*range(0x202A, 0x202F),
+                                                *range(0x2066, 0x206A)))
+_EULA_ALLOWED_CC = frozenset("\t\n\r")
+
+
+def _is_cc(ch: str) -> bool:
+    """Unicode general category Cc: C0, DEL and C1."""
+    c = ord(ch)
+    return c <= 0x1F or 0x7F <= c <= 0x9F
+
+
+@dataclass(frozen=True)
+class EulaFile:
+    """The EULA as read: its package-relative path, exact bytes, the text
+    (the bytes decoded as UTF-8 with NO change) and the sha256 of the bytes."""
+
+    path: str
+    raw: bytes
+    text: str
+    sha256: str
+
+
+def eula_path_problem(value: object) -> "str | None":
+    """Why an ``eula`` path is refused by SHAPE, or None
+    ([CXC-PC-V02-EULA-FIELD] path-rule; agrees with ``PATTERNS['eula']``)."""
+    if not isinstance(value, str):
+        return f"{value!r} must be a string path"
+    if value == "":
+        return "'' is empty"
+    if value.startswith("/"):
+        return f"{value!r} is absolute (it must be a relative path inside the package)"
+    if re.match(r"[A-Za-z]:", value):
+        return f"{value!r} has a drive prefix (it must be a relative path inside the package)"
+    if "\\" in value:
+        return f"{value!r} contains a backslash (segments are separated by a single '/')"
+    if any(_is_cc(ch) for ch in value):
+        return f"{value!r} contains a NUL or other control character"
+    if value.endswith("/"):
+        return f"{value!r} has a trailing '/' (it must name a file)"
+    segments = value.split("/")
+    if any(seg == "" for seg in segments):
+        return f"{value!r} has an empty segment (segments are separated by a single '/')"
+    if any(seg in (".", "..") for seg in segments):
+        return f"{value!r} contains a '.' or '..' segment (it must stay inside the package)"
+    if len(value.encode("utf-8")) > EULA_PATH_MAX_UTF8_BYTES:
+        return f"{value!r} is longer than {EULA_PATH_MAX_UTF8_BYTES} bytes in UTF-8"
+    return None
+
+
+def eula_text_problem(raw: bytes) -> "str | None":
+    """Why the EULA's bytes are refused, or None ([CXC-PC-V02-EULA-FIELD]
+    size-rule and content-rule)."""
+    if len(raw) == 0:
+        return "is empty (a EULA holds 1 to 262144 bytes)"
+    if len(raw) > MAX_EULA_BYTES:
+        return (f"is too large (more than {MAX_EULA_BYTES} bytes; a EULA holds at most "
+                f"{MAX_EULA_BYTES} bytes, 256 KiB)")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return "is not valid UTF-8"
+    if text.startswith("\ufeff"):
+        return "begins with a byte-order mark (U+FEFF): the bytes hashed must be the text shown"
+    if "\x00" in text:
+        return "contains NUL"
+    for ch in text:
+        if _is_cc(ch) and ch not in _EULA_ALLOWED_CC:
+            return (f"contains the control character U+{ord(ch):04X} (only tab, line feed "
+                    "and carriage return are allowed; this refuses terminal escapes)")
+        if ch in EULA_BIDI_CONTROLS:
+            return (f"contains the bidirectional control character U+{ord(ch):04X} (it can "
+                    "make the shown text read differently from what it says)")
+    if text.isspace():
+        return "is whitespace-only"
+    return None
+
+
+def _eula_refused(relpath: str, why: str) -> ManifestRefused:
+    return ManifestRefused([Refusal("eula", f"{relpath!r} {why}")])
+
+
+_SYMLINK = "is a symlink or passes through one (a EULA must be a regular file inside the package)"
+_MISSING = "does not exist inside the package (names are matched exactly, case-sensitively)"
+
+
+def read_eula(pkg: PackageSource, relpath: str) -> EulaFile:
+    """Read the EULA that ``relpath`` (relative to the directory holding
+    ``manifest.json``) names, by the package reader: nothing is imported or run.
+    Refuses naming ``eula`` and the reason ([CXC-PC-V02-EULA-FIELD])."""
+    problem = eula_path_problem(relpath)
+    if problem is not None:
+        raise ManifestRefused([Refusal("eula", problem)])
+    parts = relpath.split("/")
+    if pkg.kind == "directory":
+        cur = pkg.path
+        st = None
+        for i, part in enumerate(parts):
+            try:
+                names = os.listdir(cur)
+            except OSError:
+                raise _eula_refused(relpath, _MISSING) from None
+            if part not in names:
+                raise _eula_refused(relpath, _MISSING)
+            cur = cur / part
+            st = os.lstat(cur)
+            if stat.S_ISLNK(st.st_mode):
+                raise _eula_refused(relpath, _SYMLINK)
+            if i < len(parts) - 1 and not stat.S_ISDIR(st.st_mode):
+                raise _eula_refused(relpath, _MISSING)
+        assert st is not None
+        if stat.S_ISDIR(st.st_mode):
+            raise _eula_refused(relpath, "names a directory, not a file")
+        if not stat.S_ISREG(st.st_mode):
+            raise _eula_refused(relpath, "is not a regular file")
+        if st.st_size > MAX_EULA_BYTES:
+            raise _eula_refused(relpath, eula_text_problem(b"x" * (MAX_EULA_BYTES + 1)))
+        with open(cur, "rb") as fh:
+            raw = fh.read(MAX_EULA_BYTES + 1)
+    else:
+        base = pkg.import_package or ""
+        with zipfile.ZipFile(pkg.path) as zf:
+            infos = {i.filename: i for i in zf.infolist()}
+            for k in range(1, len(parts)):
+                parent = infos.get(f"{base}/" + "/".join(parts[:k]))
+                if parent is not None and _is_zip_symlink(parent):
+                    raise _eula_refused(relpath, _SYMLINK)
+            name = f"{base}/{relpath}"
+            info = infos.get(name)
+            if info is None:
+                if any(n.startswith(name + "/") for n in infos):
+                    raise _eula_refused(relpath, "names a directory, not a file")
+                raise _eula_refused(relpath, _MISSING)
+            if _is_zip_symlink(info):
+                raise _eula_refused(relpath, _SYMLINK)
+            if info.file_size > MAX_EULA_BYTES:
+                raise _eula_refused(relpath, eula_text_problem(b"x" * (MAX_EULA_BYTES + 1)))
+            with zf.open(info) as fh:      # the header may lie: cap the read too
+                raw = fh.read(MAX_EULA_BYTES + 1)
+    problem = eula_text_problem(raw)
+    if problem is not None:
+        raise _eula_refused(relpath, problem)
+    return EulaFile(path=relpath, raw=raw, text=raw.decode("utf-8"),
+                    sha256=hashlib.sha256(raw).hexdigest())
+
+
 __all__ = [
+    "EULA_BIDI_CONTROLS", "EULA_PATH_MAX_UTF8_BYTES", "EulaFile", "MAX_EULA_BYTES",
+    "eula_path_problem", "eula_text_problem", "read_eula",
     "MANIFEST_NAME", "MAX_MANIFEST_BYTES", "MAX_NESTING_DEPTH", "ManifestFile", "PackageSource", "manifest_sha256",
     "open_package", "parse_manifest_bytes", "read_manifest",
     "verify_manifest_sha256",

@@ -46,7 +46,8 @@ from composebus.bus import validate_pattern
 from composebus.transport import MessageType
 
 from .errors import ContractVersionRefused, HostNameRefused, ManifestRefused, Refusal
-from .version import HOST_CONTRACT, check_contract
+from .package import eula_path_problem, read_eula
+from .version import HOST_CONTRACT, check_contract, parse_contract
 
 # --------------------------------------------------------------------------- #
 # The field set ([CXC-PC-MANIFEST-FIELDS]).
@@ -54,7 +55,13 @@ from .version import HOST_CONTRACT, check_contract
 REQUIRED_FIELDS = ("contract", "domain", "name", "version", "description",
                    "documentation", "requirements", "run", "hosts")
 OPTIONAL_FIELDS = ("issue_tracker", "codeowners", "isolation_floor", "bus",
-                   "standard_questions", "permissions")
+                   "standard_questions", "permissions", "license", "eula")
+#: [CXC-PC-V02-VERSION-0-2] rule (3): fields defined from contract 0.2. A
+#: manifest is read by the contract it STATES, so one that states an earlier
+#: contract and carries any of these is refused naming the key.
+FIELDS_FROM_0_2 = ("license", "eula")
+#: [CXC-PC-V02-LICENSE-FIELD] length: 1 to 256 ASCII characters
+LICENSE_MAX_CHARS = 256
 GENERATED_FIELDS = ("config_schema",)
 CORE_FIELDS = REQUIRED_FIELDS + OPTIONAL_FIELDS + GENERATED_FIELDS
 
@@ -191,6 +198,7 @@ _PORT = (r"(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}"
 CONTROL_RANGES = ((0x0, 0x1f), (0x7f, 0x9f))
 _CC = _cls(CONTROL_RANGES)
 _FS_SEGMENT = rf"(?!\.\.?(?:/|{_END}))[^/~*?\[{_CC}]+"
+_EULA_SEG = rf"(?!\.\.?(?:/|{_END}))[^/\\{_CC}]+"
 _PIN_VERSION = r"[A-Za-z0-9][A-Za-z0-9.+!_-]*"
 # PEP 503 spellings of the host-provided names (case-insensitive by hand)
 _HOST_PROVIDED_LOOKAHEAD = (
@@ -223,6 +231,10 @@ PATTERNS = {
     "permission_path": rf"^/(?:{_FS_SEGMENT}(?:/{_FS_SEGMENT})*)?{_END}",
     # non-empty and one line, exactly as `description` (readings (12), N3)
     "permission_purpose": rf"^[^{_LB}]*[^{_BLANK}][^{_LB}]*{_END}",
+    # [CXC-PC-V02-EULA-FIELD] path-rule: single-'/' separated segments, none
+    # empty, '.' or '..'; no leading '/', drive prefix, backslash, control
+    # character or trailing '/' (the 255-byte limit is the validator's alone)
+    "eula": rf"^(?![A-Za-z]:)(?:{_EULA_SEG}/)*{_EULA_SEG}{_END}",
     "standard_questions": (r"^(?![/\\])(?![A-Za-z]:)"
                            r"(?!(?:[\s\S]*[/\\])?\.\.(?:[/\\]|(?![\s\S])))[\s\S]+" + _END),
 }
@@ -303,6 +315,95 @@ def _sq_path_problem(value: str) -> "str | None":
         return "is absolute (it must be a relative path inside the package)"
     if ".." in re.split(r"[/\\]", value):
         return "contains '..' (it must stay inside the package)"
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# `license` ([CXC-PC-V02-LICENSE-FIELD], contract 0.2): an SPDX license
+# expression, SHAPE-checked only. No id is looked up in the SPDX License List
+# (a copy goes stale and would refuse a valid new id); the field is
+# informational: shown at consent, never verified, never part of a grant.
+# --------------------------------------------------------------------------- #
+_LICENSE_ID_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-")
+#: an idstring equal to one of these is refused (NONE and NOASSERTION describe
+#: an absent declaration, which is written by leaving the field out)
+LICENSE_RESERVED_WORDS = ("AND", "OR", "WITH", "NONE", "NOASSERTION")
+
+
+class _LicenseShape(Exception):
+    pass
+
+
+class _LicenseParser:
+    """expression = term ((" AND " | " OR ") term)*; term = "(" expression ")"
+    | simple [" WITH " idstring]; simple = idstring ["+"] | "LicenseRef-"
+    idstring | "DocumentRef-" idstring ":LicenseRef-" idstring."""
+
+    def __init__(self, text: str):
+        self.t, self.i = text, 0
+
+    def parse(self) -> None:
+        self.expression()
+        if self.i != len(self.t):
+            raise _LicenseShape(f"unexpected text at character {self.i + 1}")
+
+    def _eat(self, token: str) -> bool:
+        if self.t.startswith(token, self.i):
+            self.i += len(token)
+            return True
+        return False
+
+    def expression(self) -> None:
+        self.term()
+        while self._eat(" AND ") or self._eat(" OR "):
+            self.term()
+
+    def term(self) -> None:
+        if self._eat("("):
+            self.expression()
+            if not self._eat(")"):
+                raise _LicenseShape("unbalanced parentheses (a '(' is not closed)")
+            return
+        self.simple()
+        if self._eat(" WITH "):
+            self.idstring("the exception id after WITH")
+
+    def idstring(self, what: str) -> str:
+        start = self.i
+        while self.i < len(self.t) and self.t[self.i] in _LICENSE_ID_CHARS:
+            self.i += 1
+        word = self.t[start:self.i]
+        if not word:
+            raise _LicenseShape(f"{what} is missing at character {start + 1}")
+        if word in LICENSE_RESERVED_WORDS:
+            raise _LicenseShape(f"{word!r} is an operator or a reserved word, not an id")
+        return word
+
+    def simple(self) -> None:
+        word = self.idstring("a license id")
+        if word.startswith("DocumentRef-") and self._eat(":LicenseRef-"):
+            self.idstring("the LicenseRef id after ':LicenseRef-'")
+            return
+        self._eat("+")
+
+
+def license_problem(value: object) -> "str | None":
+    """Why a ``license`` value is refused, or None ([CXC-PC-V02-LICENSE-FIELD])."""
+    if not isinstance(value, str):
+        return f"{value!r} must be a string (an SPDX license expression)"
+    if value == "":
+        return "'' is empty (leave the field out to declare no licence)"
+    if len(value) > LICENSE_MAX_CHARS:
+        return f"is {len(value)} characters; at most {LICENSE_MAX_CHARS} are allowed"
+    if not value.isascii():
+        return f"{value!r} is not ASCII"
+    try:
+        _LicenseParser(value).parse()
+    except _LicenseShape as exc:
+        return (f"{value!r} is not an SPDX license expression: {exc} (operators are "
+                "AND, OR and WITH, upper-case, with one space on each side)")
+    except RecursionError:
+        return f"{value!r} nests parentheses too deeply"
     return None
 
 
@@ -425,6 +526,17 @@ def validate_manifest(manifest: Any, *, host: str,
 
     def refuse(field: str, message: str) -> None:
         out.append(Refusal(field, message))
+
+    # 1b. [CXC-PC-V02-VERSION-0-2] rule (3): a manifest is read by the contract
+    # it STATES, so a 0.2 key in a manifest that states an earlier contract is
+    # refused naming the key (its value is then not checked).
+    stated = manifest.get("contract")
+    from_0_2 = parse_contract(stated) >= (0, 2) if stated is not None else False
+    for key in FIELDS_FROM_0_2:
+        if key in manifest and not from_0_2:
+            refuse(key, f"defined from contract 0.2; this manifest states contract "
+                        f"{stated!r}, which does not define it (a manifest is read by "
+                        "the contract it states)")
 
     # 2. Unknown / reserved top-level keys.
     for key in manifest:
@@ -568,6 +680,25 @@ def validate_manifest(manifest: Any, *, host: str,
 
     if "permissions" in manifest:
         _validate_permissions(manifest["permissions"], refuse)
+
+    if "license" in manifest and from_0_2:
+        problem = license_problem(manifest["license"])
+        if problem is not None:
+            refuse("license", problem)
+
+    if "eula" in manifest and from_0_2:
+        v = manifest["eula"]
+        problem = eula_path_problem(v)
+        if problem is not None:
+            refuse("eula", problem)
+        elif package is NO_PACKAGE:
+            refuse("eula", f"{v!r} cannot be checked without the package (validate with "
+                   "the PackageSource it came from)")
+        else:
+            try:
+                read_eula(package, v)
+            except ManifestRefused as exc:
+                out.extend(exc.refusals)
 
     if "hosts" in manifest:
         v = manifest["hosts"]
@@ -855,6 +986,17 @@ SCHEMA_INEXPRESSIBLE = (
     "counts code points)",
     "no duplicate permissions entry (the same direction and target within "
     "network; the same path, whatever its access, within filesystem)",
+    "license and eula are defined from contract 0.2: a manifest that states an "
+    "earlier contract and carries either is refused naming the key (a cross-field "
+    "rule)",
+    "license holding an SPDX license expression of ASCII characters (the "
+    "expression grammar is a function, not one pattern; ids are not looked up in "
+    "the SPDX License List)",
+    "eula naming, in at most 255 bytes of UTF-8, a regular file inside the package, "
+    "not a symlink and not reached through one, holding 1 to 262144 bytes of UTF-8 "
+    "text with no byte-order mark, no control character other than tab, line feed "
+    "and carriage return, no bidirectional control character, and not only "
+    "whitespace (needs the package)",
 )
 
 
@@ -919,6 +1061,8 @@ def build_schema() -> dict:
                     "properties": {"publishes": {"$ref": "#/$defs/busList"},
                                    "subscribes": {"$ref": "#/$defs/busList"}}},
             "standard_questions": pat("standard_questions"),
+            "license": {"type": "string", "minLength": 1, "maxLength": LICENSE_MAX_CHARS},
+            "eula": pat("eula"),
             "permissions": {"type": "object", "additionalProperties": False,
                             "properties": {
                                 "network": {"type": "array",
@@ -948,6 +1092,7 @@ def schema() -> dict:
 __all__ = [
     "BUS_TYPES_ALLOWED", "BUS_TYPES_RESERVED", "CORE_FIELDS", "GENERATED_FIELDS",
     "HA_OTHER_NAMES_RESERVED", "HA_RESERVED_KEYS", "HOST_PROVIDED_PACKAGES",
+    "FIELDS_FROM_0_2", "LICENSE_MAX_CHARS", "LICENSE_RESERVED_WORDS", "license_problem",
     "Manifest", "NO_PACKAGE", "OPTIONAL_FIELDS", "OTHER_RESERVED_KEYS",
     "PATTERNS", "REQUIRED_FIELDS", "SCHEMA_INEXPRESSIBLE", "SectionValidator",
     "BUS_GRANT_RE", "CODE_GRANT_RE", "RESERVED_HOST_NAMES", "build_schema",

@@ -101,3 +101,48 @@ class HostNameRefused(PluginContractRefusal):
 class ConsentRefused(PluginContractRefusal):
     """A consent-layer input is malformed (for example a host grant without
     its ``<host>:`` prefix, or an isolation level below the plug-in's floor)."""
+
+
+# --------------------------------------------------------------------------- #
+# Contract 0.2 ([DELTA:CXC-PLUGIN-CONTRACT-V0-2-DELTA]).
+# --------------------------------------------------------------------------- #
+class EulaShaMismatch(PluginContractRefusal):
+    """The EULA file is not the one shown at consent, or the caller's
+    ``consented_eula_sha256`` is missing, malformed or given for a manifest
+    without ``eula`` ([CXC-PC-V02-EULA-HASH-RECORD] bound-to-the-shown-text).
+    Carries both digests (``expected`` is what the caller consented to)."""
+
+    def __init__(self, message: str, *, expected: object, actual: "str | None"):
+        self.expected = expected
+        self.actual = actual
+        super().__init__(message)
+
+
+class PromptNotPrepared(PluginContractRefusal):
+    """``record_decline`` was given a prompt this manager did not prepare
+    ([CXC-PC-V02-RECORD-DECLINE-PROMPT-VALIDITY] prepared)."""
+
+    def __init__(self) -> None:
+        super().__init__("record_decline REFUSED: the prompt was not prepared by this manager")
+
+
+class PromptStale(PluginContractRefusal):
+    """``record_decline`` was given a prompt whose subject changed since it was
+    prepared, or that was already declined ([CXC-PC-V02-RECORD-DECLINE-PROMPT-VALIDITY])."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"record_decline REFUSED: the prompt is stale: {reason}")
+
+
+class InstallLogRefused(PluginContractRefusal):
+    """An event could not be appended to ``installs.jsonl``
+    ([CXC-PC-V02-INSTALL-LOG-WRITE-ORDER] failure-of-the-append). The message
+    names the log path and the CLASS of the underlying error, never its text
+    ([CXC-PC-V02-INSTALL-LOG-FAILURE-TEXT])."""
+
+    def __init__(self, path: object, error_class: str):
+        self.path = str(path)
+        self.error_class = error_class
+        super().__init__(f"install log REFUSED: an event could not be appended to "
+                         f"{self.path} ({error_class}); nothing changed")

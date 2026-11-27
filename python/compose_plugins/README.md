@@ -1,9 +1,18 @@
 # compose-plugins
 
 The shared plug-in contract library for ComposeIO's ComposeServer and for
-Gnomon, implementing the Shared Plug-in Contract v0.1 (ComposeIO spec 95,
-`[SPEC:CXC-PLUGIN-CONTRACT]`, revision r24). It is the layer a plug-in is
-INSTALLED and CONSENTED to, plus the shared manager that drives it.
+Gnomon, implementing the Shared Plug-in Contract v0.2 (ComposeIO spec 95,
+`[SPEC:CXC-PLUGIN-CONTRACT]`, revision r24 plus its v0.2 delta). It is the layer
+a plug-in is INSTALLED and CONSENTED to, plus the shared manager that drives it.
+
+Contract 0.2 is an additive MINOR over 0.1: optional manifest fields `license`
+(an SPDX expression, informational) and `eula` (a package-relative UTF-8 text
+file, shown verbatim at consent, its sha256 stored in the consent record);
+`PluginManager.record_decline(prompt, *, decided_by)`; the append-only install
+event log `installs.jsonl` and `PluginManager.install_log_findings()`; and a
+confirm step in front of uninstall in the web manager. The one non-additive
+change: the web manager's `POST .../uninstall` no longer uninstalls, it shows
+the confirm screen.
 
 One runtime dependency: `composebus==0.1.2` (the runtime `ComposePlugin` and
 its `MessageType` names). No ComposeIO distribution is required, so a host
@@ -22,10 +31,10 @@ that is not ComposeIO can use the library on its own.
 | `compose_plugins.config` | config validated against `config_schema` before the plug-in is instantiated; invalid config parks loudly |
 | `compose_plugins.derive` | `compose-plugin build` (writes `config_schema` and `bus` into `manifest.json` from the class) and the enable-time class/manifest drift check |
 | `compose_plugins.runner` | running a plug-in in-process, or in a child process over an inherited `AF_UNIX` socketpair (never a network listener) |
-| `compose_plugins.store` | the install records (the registry) and stored config |
+| `compose_plugins.store` | the install records (the registry), stored config, and the append-only install event log `InstallLog` with its findings |
 | `compose_plugins.web` | the plain Plugin Manager: server-rendered HTML, a mountable WSGI app that is correct under any URL prefix, with the host's auth hook and CSRF defence |
 | `compose_plugins.conformance` | the conformance script (below) |
-| `compose_plugins.fixtures` | the hello-world v1 and v2 conformance plug-ins |
+| `compose_plugins.fixtures` | the hello-world v1 and v2 conformance plug-ins, and `hello-world-eula` (contract 0.2, declares a EULA) |
 
 ```python
 from compose_plugins.package import read_manifest

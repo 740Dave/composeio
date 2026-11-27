@@ -481,10 +481,18 @@ def _refused_at_install(r: Run, t, fixture: str, edit, must: "list[str]") -> Non
     _nothing_installed(r, t)
 
 
+def _next_minor(contract: str) -> str:
+    major, minor = contract.split(".")
+    return f"{major}.{int(minor) + 1}"
+
+
 @_fresh
 def nc3(r: Run, t) -> None:
-    _refused_at_install(r, t, "NC3", lambda d: d.update(contract="0.2"),
-                        ["0.2", HOST_CONTRACT])
+    # one MINOR newer than this host (spec 95 r24 wrote "0.2" for a 0.1 host;
+    # a 0.2 host accepts "0.2", so the control uses the next MINOR)
+    newer = _next_minor(HOST_CONTRACT)
+    _refused_at_install(r, t, "NC3", lambda d: d.update(contract=newer),
+                        [newer, HOST_CONTRACT])
 
 
 @_fresh

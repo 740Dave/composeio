@@ -40,7 +40,7 @@ def test_schema_is_valid_draft_2020_12_and_accepts_the_valid_manifest():
 def test_schema_carries_the_contract_version():
     s = schema()
     assert s["x-compose-plugins-contract"] == HOST_CONTRACT
-    assert s["properties"]["contract"]["enum"] == ["0.0", "0.1"]
+    assert s["properties"]["contract"]["enum"] == ["0.0", "0.1", "0.2"]
 
 
 def test_schema_field_set_equals_the_validators():
@@ -71,10 +71,29 @@ def test_validator_only_cases_really_pass_the_schema(case_id):
     assert list(validator().iter_errors(m)) == []
 
 
+#: (0.2) [CXC-PC-RULE-SIZE] v0-2-dedicated-tests: `license` and `eula` are in
+#: contract 0.2 although hello-world does not exercise them; like
+#: standard_questions and permissions they are exercised by dedicated tests
+DEDICATED_TESTS = {
+    "license": ("test_v02_license_eula", "test_CXC_PC_V02_T_LICENSE_TABLE_boundary_refused"),
+    "eula": ("test_v02_license_eula", "test_CXC_PC_V02_T_EULA_FIELD_TABLE_boundary_refused"),
+}
+
+
+def _dedicated() -> "set[str]":
+    import importlib
+    out = set()
+    for field, (mod, fn) in DEDICATED_TESTS.items():
+        assert callable(getattr(importlib.import_module(mod), fn)), (field, mod, fn)
+        out.add(field)
+    return out
+
+
 def test_every_schema_field_is_exercised():
     """[CXC-PC-RULE-SIZE]: each schema field appears in the valid manifest or
-    in a boundary case; standard_questions by its own boundary tests."""
-    exercised = set(valid_manifest())
+    in a boundary case; standard_questions by its own boundary tests; (0.2)
+    license and eula by their dedicated tests (which must exist)."""
+    exercised = set(valid_manifest()) | _dedicated()
     for case_id, mutate, field in BOUNDARY:
         exercised.add(field.split(".")[0].split("[")[0])
     missing = set(schema()["properties"]) - exercised
@@ -87,5 +106,6 @@ def test_schema_coverage_check_can_fail(monkeypatch):
     exercises is reported."""
     s = schema()
     s["properties"]["frobnicate"] = {"type": "string"}
-    exercised = set(valid_manifest()) | {b[2].split(".")[0].split("[")[0] for b in BOUNDARY}
+    exercised = set(valid_manifest()) | {b[2].split(".")[0].split("[")[0] for b in BOUNDARY} \
+        | _dedicated()
     assert set(s["properties"]) - exercised == {"frobnicate"}

@@ -84,10 +84,22 @@ def _lifecycle_via_forms(app, prefix, src):
     st, h, page = call(app, prefix, accept[0][len(prefix):], "POST", accept[1])
     seen.append((st, h, page))
     for op, form in (("configure", {"config": '{"greeting": "web"}'}), ("enable", {}),
-                     ("disable", {}), ("uninstall", {})):
+                     ("disable", {})):
         st, h, page = call(app, prefix, f"/plugin/hello_world/{op}", "POST", form)
         seen.append((st, h, page))
         assert st == "303 See Other", (op, st, page)
+    # contract 0.2 ([CXC-PC-V02-UNINSTALL-CONFIRM]): uninstall is two steps; the
+    # confirm screen's form is followed with decision=confirm
+    st, h, page = call(app, prefix, "/plugin/hello_world/uninstall/prepare", "POST")
+    seen.append((st, h, page))
+    assert st == "200 OK", page
+    p = Links()
+    p.feed(page)
+    (confirm,) = [f for f in p.forms if f[0].endswith("/uninstall/decide")]
+    st, h, page = call(app, prefix, confirm[0][len(prefix):], "POST",
+                       {**confirm[1], "decision": "confirm"})
+    seen.append((st, h, page))
+    assert st == "303 See Other", (st, page)
     for path in ("/", "/consent", "/plugin/hello_world"):
         seen.append(call(app, prefix, path))
     return seen

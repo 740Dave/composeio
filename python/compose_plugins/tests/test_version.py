@@ -11,8 +11,9 @@ from compose_plugins.version import HOST_CONTRACT, check_contract, parse_contrac
 from conftest import empty_section, valid_manifest
 
 
-def test_host_contract_is_0_1():
-    assert HOST_CONTRACT == "0.1"
+def test_host_contract_is_0_2():
+    # contract 0.2 ([CXC-PC-V02-VERSION-0-2] rule (1)); was 0.1 through r24
+    assert HOST_CONTRACT == "0.2"
 
 
 # ---- positive controls ----------------------------------------------------- #
@@ -74,11 +75,11 @@ def test_nc_contract_mismatch_through_the_validator_is_the_only_refusal():
     """A newer-MINOR manifest is never half-read: its unknown keys are NOT also
     reported, only the contract, with both versions."""
     m = valid_manifest()
-    m["contract"] = "0.2"
-    m["some_0_2_field"] = True
+    m["contract"] = "0.3"                       # one MINOR newer than a 0.2 host
+    m["some_0_3_field"] = True
     with pytest.raises(ManifestRefused) as ei:
         validate_manifest(m, host="composeio", section_validator=empty_section,
                           package=NO_PACKAGE)
     print(ei.value)
     assert ei.value.fields == ["contract"]
-    assert "0.2" in str(ei.value) and "0.1" in str(ei.value)
+    assert "0.3" in str(ei.value) and "0.2" in str(ei.value)

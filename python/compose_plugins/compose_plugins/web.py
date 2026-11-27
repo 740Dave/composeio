@@ -19,6 +19,15 @@ WSGI app ([CXC-PC-WEB-UI], [CXC-PC-UI-URL-PREFIX], [CXC-PC-UI-HOST-HOOKS]).
   with the authenticated identity as the operator.
 * ``Host.extra_panels()`` are served at ``<prefix>/panel/<slug>``, behind the
   same auth.
+* (0.2) A declared EULA is shown on the consent screen in full, verbatim, after
+  the permission lines and before the buttons; the forms carry its digest
+  ([CXC-PC-V02-EULA-DISPLAY]). The index lists install-log findings, and shows
+  nothing extra when there is none ([CXC-PC-V02-INSTALL-LOG-DIVERGENCE]).
+* (0.2) Uninstall is two steps ([CXC-PC-V02-UNINSTALL-CONFIRM]): a POST to
+  ``.../uninstall/prepare`` (or the 0.1 route ``.../uninstall``, which no longer
+  uninstalls) changes nothing and renders the confirm screen; a POST to
+  ``.../uninstall/decide`` with ``decision=confirm`` uninstalls the install
+  that was shown, and any other decision changes nothing.
 """
 from __future__ import annotations
 
@@ -29,10 +38,11 @@ import secrets
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote
 
-from .consent import ConsentContent
+from .consent import EULA_CHANGED, EULA_HEADING, ConsentContent
 from .errors import PluginContractRefusal
 from .host import Host
 from .lifecycle import ConsentPrompt, PluginManager
+from .manifest import Manifest
 from .version import HOST_CONTRACT
 
 #: THE auto-upgrade switch ([CXC-PC-LIFECYCLE-UPGRADE]; pending DSD
@@ -125,7 +135,8 @@ class PluginManagerApp:
     def _route(self, environ: dict, prefix: str, identity: str) -> str:
         method = environ.get("REQUEST_METHOD", "GET")
         parts = [p for p in environ.get("PATH_INFO", "/").split("/") if p]
-        form = self._form(environ) if method == "POST" else {}
+        lists = self._form_lists(environ) if method == "POST" else {}
+        form = {k: v[0] for k, v in lists.items()}
         if method == "POST":
             self._csrf_check(environ, form, identity)   # nothing below runs if refused
         elif method != "GET":
@@ -145,7 +156,8 @@ class PluginManagerApp:
                                         "install/decide", csrf)
         if parts == ["install", "decide"] and method == "POST":
             self.manager.install(form["source"], consented_sha256=form["sha256"],
-                                 operator=identity, accepted=form.get("decision") == "accept")
+                                 operator=identity, accepted=form.get("decision") == "accept",
+                                 consented_eula_sha256=form.get("eula_sha256") or None)
             self._redirect(prefix, "/")
         if len(parts) >= 3 and parts[0] == "plugin" and method == "POST":
             domain, op = parts[1], "/".join(parts[2:])
@@ -154,8 +166,14 @@ class PluginManagerApp:
                 m.enable(domain)
             elif op == "disable":
                 m.disable(domain)
-            elif op == "uninstall":
-                m.uninstall(domain)
+            elif op in ("uninstall", "uninstall/prepare"):
+                # 0.2: one click changes nothing; the 0.1 route renders the screen
+                return self._uninstall_confirm_screen(prefix, domain, csrf)
+            elif op == "uninstall/decide":
+                if lists.get("decision", []) != ["confirm"]:   # cancel, missing, unknown,
+                    self._redirect(prefix, f"/plugin/{quote(domain)}")   # or repeated
+                self._uninstall_confirmed(domain, form)
+                self._redirect(prefix, "/")
             elif op == "configure":
                 import json
                 try:
@@ -168,7 +186,8 @@ class PluginManagerApp:
                                             f"plugin/{quote(domain)}/upgrade/decide", csrf)
             elif op == "upgrade/decide":
                 m.upgrade(form["source"], consented_sha256=form["sha256"], operator=identity,
-                          accepted=form.get("decision") == "accept")
+                          accepted=form.get("decision") == "accept",
+                          consented_eula_sha256=form.get("eula_sha256") or None)
             else:
                 raise _Response("404 Not Found", self._page(prefix, "Not found", ""))
             self._redirect(prefix, f"/plugin/{quote(domain)}")
@@ -179,12 +198,17 @@ class PluginManagerApp:
     # ---- helpers ---------------------------------------------------------- #
     @staticmethod
     def _form(environ: dict) -> "dict[str, str]":
+        return {k: v[0] for k, v in PluginManagerApp._form_lists(environ).items()}
+
+    @staticmethod
+    def _form_lists(environ: dict) -> "dict[str, list[str]]":
+        """Every value of every form key (a repeated key keeps all its values)."""
         try:
             n = int(environ.get("CONTENT_LENGTH") or 0)
         except ValueError:
             n = 0
         raw = environ["wsgi.input"].read(n).decode("utf-8") if n else ""
-        return {k: v[0] for k, v in parse_qs(raw, keep_blank_values=True).items()}
+        return parse_qs(raw, keep_blank_values=True)
 
     @staticmethod
     def _redirect(prefix: str, path: str) -> None:
@@ -215,7 +239,12 @@ class PluginManagerApp:
 
     def _index(self, prefix: str, csrf: str) -> str:
         rows = "".join(self._plugin_row(prefix, d) for d in self.manager.installs.domains())
-        body = (f"<table><tr><th>plug-in</th><th>version</th><th>state</th><th>status</th>"
+        # 0.2: from install_log_findings() and no other source; nothing when none
+        findings = self.manager.install_log_findings()
+        found = ("<h2>Install log findings</h2><ul class='install-log-findings'>"
+                 + "".join(f"<li>{e(f.message)}</li>" for f in findings) + "</ul>"
+                 if findings else "")
+        body = (f"{found}<table><tr><th>plug-in</th><th>version</th><th>state</th><th>status</th>"
                 f"<th>upgrades</th></tr>{rows}</table>"
                 f"<form method='post' action='{e(prefix)}/install/prepare'>"
                 f"{self._csrf_input(csrf)}<label>package (directory or wheel) <input name='source'></label> "
@@ -237,7 +266,7 @@ class PluginManagerApp:
         body = (f"<p>state: {e(m.state(domain))}; status: {e(m.status(domain))}; "
                 f"runs as: {e(str(rec.get('runs_as', '')))}</p>"
                 + button("enable", "enable") + button("disable", "disable")
-                + button("uninstall", "uninstall")
+                + button("uninstall/prepare", "uninstall")
                 + f"<form method='post' action='{base}/configure'>{self._csrf_input(csrf)}"
                   f"<textarea name='config'>"
                   f"{cfg}</textarea><button>save config</button></form>"
@@ -258,7 +287,9 @@ class PluginManagerApp:
         items = "".join(item(ln) for ln in c.lines)
         hidden = (self._csrf_input(csrf)
                   + f"<input type='hidden' name='source' value='{e(prompt.source)}'>"
-                  f"<input type='hidden' name='sha256' value='{e(prompt.manifest_sha256)}'>")
+                  f"<input type='hidden' name='sha256' value='{e(prompt.manifest_sha256)}'>"
+                  + (f"<input type='hidden' name='eula_sha256' value='{e(c.eula.sha256)}'>"
+                     if c.eula is not None else ""))
         decide = "".join(
             f"<form method='post' action='{e(prefix)}/{action}'>{hidden}"
             f"<input type='hidden' name='decision' value='{v}'><button>{label}</button></form>"
@@ -267,8 +298,65 @@ class PluginManagerApp:
                 "items need your consent.</p>" if c.widens else "")
         # [CXC-PC-CONSENT-CONTENT] dialog-title (r21): the shared renderer's title
         return self._page(prefix, c.title, f"<p>{e(prompt.kind)} {e(c.domain)} "
-                          f"{e(c.version)}</p>{note}<ul>{items}</ul>"
+                          f"{e(c.version)}</p>{note}<ul>{items}</ul>{self._eula_block(c)}"
                           f"<p>manifest_sha256 {e(prompt.manifest_sha256)}</p>{decide}")
+
+    @staticmethod
+    def _eula_block(c: ConsentContent) -> str:
+        """[CXC-PC-V02-EULA-DISPLAY] (3): the declared EULA, in full, inside a
+        <pre> with HTML escaping and nothing else done to it, then its hash
+        line; on a re-consent with a changed EULA, marked ADDED with "EULA
+        changed" ([CXC-PC-V02-EULA-RECONSENT] screen). Empty when none."""
+        if c.eula is None:
+            return ""
+        changed = (f"<p class='added'><strong>ADDED</strong> {e(EULA_CHANGED)}</p>"
+                   if c.eula_changed else "")
+        return (f"<section class='eula{' added' if c.eula_changed else ''}'>"
+                f"<h2>{e(EULA_HEADING)}</h2>{changed}<pre>{e(c.eula.text)}</pre>"
+                f"<p>EULA sha256: {e(c.eula.sha256)}</p></section>")
+
+    # ---- 0.2: the uninstall confirm ([CXC-PC-V02-UNINSTALL-CONFIRM]) ------- #
+    def _uninstall_confirm_screen(self, prefix: str, domain: str, csrf: str) -> str:
+        """What will be removed; changes nothing. A state in which uninstall is
+        refused raises the existing transition refusal."""
+        m = self.manager
+        m._check("uninstall", domain)
+        rec = m.record(domain)
+        topics = [ns for ns, typ in Manifest(rec["manifest"]).publishes if typ == "STATE"]
+        lines = ([f"removes the installed code of {domain}",
+                  f"removes the stored config of {domain}"]
+                 + ([f"clears retained topic {ns} (tombstone)" for ns in topics]
+                    or ["no retained topics to clear"])
+                 + ["keeps the consent records and the install history"])
+        items = "".join(f"<li>{e(t)}</li>" for t in lines)
+        form = (f"<form method='post' action='{e(prefix)}/plugin/{e(quote(domain))}"
+                f"/uninstall/decide'>{self._csrf_input(csrf)}"
+                f"<input type='hidden' name='sha256' value='{e(rec['manifest_sha256'])}'>"
+                f"<input type='hidden' name='version' value='{e(rec['version'])}'>"
+                "<button name='decision' value='cancel'>cancel</button>"
+                "<button name='decision' value='confirm'>confirm uninstall</button></form>")
+        title = f"Uninstall {rec['manifest']['name']} {rec['version']}?"
+        return self._page(prefix, title, f"<ul class='uninstall-effects'>{items}</ul>{form}")
+
+    def _uninstall_confirmed(self, domain: str, form: "dict[str, str]") -> None:
+        """[CXC-PC-V02-UNINSTALL-CONFIRM-BINDING]: uninstall only the install
+        that was shown (same version and manifest_sha256); a state change that
+        still allows uninstall is not stale."""
+        m = self.manager
+        with m._lock(domain):
+            for key in ("sha256", "version"):
+                if key not in form:
+                    raise PluginContractRefusal(
+                        f"uninstall confirm is stale: {domain}: the confirm form is "
+                        f"missing the field {key}")
+            m._check("uninstall", domain)
+            rec = m.record(domain)
+            if (rec["version"], rec["manifest_sha256"]) != (form["version"], form["sha256"]):
+                raise PluginContractRefusal(
+                    f"uninstall confirm is stale: {domain} changed since the screen was "
+                    f"shown (shown {form['version']} {form['sha256']}, now {rec['version']} "
+                    f"{rec['manifest_sha256']})")
+            m.uninstall(domain)
 
     def _consent_records(self, prefix: str) -> str:
         rows = "".join(
