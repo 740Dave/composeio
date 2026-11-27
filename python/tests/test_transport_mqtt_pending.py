@@ -12,6 +12,11 @@ the failure a code-shaped test misses.
 from __future__ import annotations
 
 import json
+import os
+import random
+import sys
+import threading
+import time
 
 import pytest
 
@@ -186,6 +191,217 @@ def test_disconnect_then_reconnect_holds_the_gap():
     assert fake.published == []           # held, not lost
     t._on_connect(fake, None, {}, 0)
     assert [p[0] for p in fake.published] == ["composeio/global/self/activity"]
+
+
+# ── [CXC-SOB-PRE-START-HOLD] thread safety of the ONE queue ─────────────────
+#
+# `_pending` is appended from every source thread and flushed on paho's
+# network thread. The hazard is a check-then-act race: a send reads "not
+# connected", loses the CPU, the CONNACK marks the link up and swaps the
+# queue out for a fresh list, and the send then appends to the FRESH list.
+# That message is stranded while the link is up, and the sender's next
+# message (which sees "connected") goes out AHEAD of it.
+
+
+class _WindowLink:
+    """Wraps the transport's LinkHealth so the FIRST read of `connected` on
+    one chosen thread opens a window: it signals `in_window`, then waits (up
+    to `hold_s`) for `flush_done`. That forces the race's interleaving
+    deterministically instead of hoping the scheduler finds it."""
+
+    def __init__(self, inner, *, hold_s: float = 0.5):
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "victim", None)
+        object.__setattr__(self, "in_window", threading.Event())
+        object.__setattr__(self, "flush_done", threading.Event())
+        object.__setattr__(self, "hold_s", hold_s)
+        object.__setattr__(self, "_armed", True)
+
+    def __getattr__(self, name):
+        if name == "connected":
+            value = self._inner.connected
+            if (self._armed and threading.current_thread() is self.victim
+                    and not value):
+                object.__setattr__(self, "_armed", False)
+                self.in_window.set()
+                self.flush_done.wait(self.hold_s)
+            return value
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._inner, name, value)
+
+
+def test_a_send_racing_the_connect_is_never_stranded_or_reordered():
+    """Deterministic. The sender reads "not connected" and is held in that
+    window while the CONNACK runs on another thread. With the pending lock the
+    CONNACK cannot mark the link up and flush until the send has queued its
+    message, so the message is flushed, and the sender's NEXT message goes
+    out after it. Without the lock the flush runs inside the window, the
+    message lands in the fresh queue and is stranded while the link is up."""
+    t, fake = _wired()
+    link = _WindowLink(t._link)
+    t._link = link
+
+    def sender():
+        t.send(_msg("race/a", 1))
+        t.send(_msg("race/a", 2))
+
+    def connacker():
+        assert link.in_window.wait(5)
+        t._on_connect(fake, None, {}, 0)
+        link.flush_done.set()
+
+    s = threading.Thread(target=sender)
+    c = threading.Thread(target=connacker)
+    object.__setattr__(link, "victim", s)
+    c.start()
+    s.start()
+    s.join(10)
+    c.join(10)
+    assert not s.is_alive() and not c.is_alive()
+
+    values = [BusMessage.from_json(json.loads(p[1])).value
+              for p in fake.published if p[0] == "composeio/global/race/a"]
+    assert t._pending == [], "a message was stranded in the queue while connected"
+    assert values == [1, 2], values
+
+
+@pytest.mark.parametrize("seed", [20261127, 7, 1234])
+def test_concurrent_senders_and_flushes_lose_nothing_and_keep_per_thread_order(seed):
+    """Stress, with a fixed seed. N sender threads publish while another
+    thread repeatedly connects and drops the link (each connect flushes the
+    queue on that thread, as paho would). At the end one last connect flushes
+    whatever is held. Every message must be on the wire EXACTLY once, and each
+    thread's messages in the order it sent them. A tiny switch interval makes
+    preemption inside the check-then-act window likely; this test is the
+    probabilistic companion of the deterministic one above."""
+    rng = random.Random(seed)
+    n_threads, per_thread = 8, 300
+    t, fake = _wired()
+    t.PENDING_MAX = n_threads * per_thread * 2      # no cap drops in this test
+    stop = threading.Event()
+    go = threading.Barrier(n_threads + 1)
+    pauses = [[rng.random() < 0.05 for _ in range(per_thread)]
+              for _ in range(n_threads)]
+    flips = [rng.random() * 0.0005 for _ in range(10_000)]
+
+    def sender(k):
+        go.wait()
+        for i in range(per_thread):
+            t.send(_msg(f"stress/t{k}", i))
+            if pauses[k][i]:
+                time.sleep(0)
+
+    def flapper():
+        go.wait()
+        j = 0
+        while not stop.is_set():
+            t._on_connect(fake, None, {}, 0)
+            time.sleep(flips[j % len(flips)])
+            t._on_disconnect(fake, None, 1)
+            time.sleep(flips[(j + 1) % len(flips)])
+            j += 2
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        senders = [threading.Thread(target=sender, args=(k,))
+                   for k in range(n_threads)]
+        f = threading.Thread(target=flapper)
+        for th in senders:
+            th.start()
+        f.start()
+        go_wait_ok = True
+        for th in senders:
+            th.join(60)
+            go_wait_ok = go_wait_ok and not th.is_alive()
+        stop.set()
+        f.join(60)
+    finally:
+        sys.setswitchinterval(old)
+    assert go_wait_ok and not f.is_alive()
+
+    # Order check FIRST, on the wire as it stood with the link last up and
+    # then down: anything still held is flushed by one final connect.
+    t._on_connect(fake, None, {}, 0)
+    assert t._pending == []
+
+    per: dict[str, list] = {}
+    for topic, payload, _qos in fake.published:
+        if topic.startswith("composeio/global/stress/"):
+            per.setdefault(topic, []).append(
+                BusMessage.from_json(json.loads(payload)).value)
+    for k in range(n_threads):
+        got = per.get(f"composeio/global/stress/t{k}", [])
+        assert sorted(got) == list(range(per_thread)), (
+            f"thread {k}: lost or duplicated "
+            f"{sorted(set(range(per_thread)) ^ set(got))[:10]} "
+            f"(n={len(got)})")
+        assert got == list(range(per_thread)), (
+            f"thread {k}: order broken at index "
+            f"{next(i for i, v in enumerate(got) if v != i)}")
+
+
+# ── fleet_roster: its "last published" becomes true with the hold ───────────
+
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def test_fleet_roster_first_publish_reaches_the_wire_after_connect(monkeypatch):
+    """`fleet_roster` publishes on CONTENT CHANGE only and records `last` as
+    published even when the transport could not send it. Before the hold its
+    forced first publish (made before the console starts the bus) was dropped,
+    and the roster stayed off the wire until the fleet changed. With the hold
+    `last` is true: the roster reaches the wire on the first connect, with NO
+    content change in between."""
+    import composeio.transport_mqtt as tm
+    from composeio.bus import ComposeIOBus
+
+    pub = os.path.join(_REPO, "compose_projects", "intelligence", "publisher")
+    if pub not in sys.path:
+        monkeypatch.syspath_prepend(pub)
+    import fleet_roster                                        # type: ignore
+
+    made: list[_FakePahoModuleClient] = []
+
+    def _fake_new_client(**kw):
+        c = _FakePahoModuleClient()
+        made.append(c)
+        return c
+
+    monkeypatch.setattr(tm, "new_paho_client", _fake_new_client)
+    monkeypatch.setattr(tm, "connect_with_backoff", lambda *a, **kw: None)
+
+    t = MQTTTransport(broker="test.local", client_id="console")
+    bus = ComposeIOBus(bus_id="console", global_transport=t)
+    stop = threading.Event()
+    th = threading.Thread(
+        target=fleet_roster.run, args=("",),
+        kwargs={"bus": bus, "stop": stop, "publish_s": 60.0,
+                "hosted_ids": ["architect"]},
+        daemon=True)
+    th.start()                         # the console starts sources first ...
+    deadline = time.time() + 5
+    while bus.get_state(fleet_roster.ROSTER_NS) is None and time.time() < deadline:
+        time.sleep(0.01)
+    try:
+        assert bus.get_state(fleet_roster.ROSTER_NS) == []    # published locally
+        assert t.health()["started"] is False
+        assert t.health()["pending"] >= 1                     # held, not dropped
+
+        bus.start(announce_time=False)  # ... then app.run() starts the bus
+        assert len(made) == 1
+        t._on_connect(made[0], None, {}, 0)                   # the CONNACK
+
+        roster = [BusMessage.from_json(json.loads(p[1])).value
+                  for p in made[0].published
+                  if p[0] == "composeio/global/fleet/roster"]
+        assert roster == [[]], roster   # on the wire once, unchanged content
+    finally:
+        stop.set()
+        th.join(5)
+    assert not th.is_alive()
 
 
 if __name__ == "__main__":

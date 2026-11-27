@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 import time
 from collections import defaultdict
 from typing import Callable
@@ -601,6 +602,19 @@ class MQTTTransport(Transport):
         # announces itself.  Bounded, so an unreachable broker can't grow it.
         self._pending: list[BusMessage] = []
         self._pending_dropped = 0
+        # [CXC-SOB-PRE-START-HOLD] `_pending` is appended from every source
+        # thread that publishes on the injected bus, and flushed on paho's
+        # network thread. This lock makes "check the link, then hold" in
+        # `send()` and "mark connected, then flush" in `_on_connect()` each
+        # one step. Without it a send could see "not connected", lose the CPU,
+        # and append to the fresh list AFTER the flush swapped the old one
+        # out: the message then sits held while the link is up, and the
+        # sender's next message goes out ahead of it. Nothing that can block
+        # on the network is called with it held from a source thread.
+        # Re-entrant because the connect path logs while holding it, and a
+        # log handler that publishes on the bus would re-enter `send()` on
+        # the same thread: a plain Lock would deadlock paho's thread there.
+        self._pending_lock = threading.RLock()
         # FOREIGN channel filter -> callbacks. Re-subscribed on every
         # (re)connect exactly like `_subscribers` and `_pattern_topics`; a
         # foreign subscription that silently failed to survive a reconnect
@@ -757,15 +771,21 @@ class MQTTTransport(Transport):
         through the cap, the counted overflow and `health()` (`started: False`,
         `pending: N`), not by discarding data.
         """
-        if not self._connected or self._client is None:
-            if self._client is None and not self._pending:
+        with self._pending_lock:
+            if not self._connected or self._client is None:
+                first_pre_start = self._client is None and not self._pending
+                self._pending.append(message)
+                if len(self._pending) > self.PENDING_MAX:
+                    self._pending.pop(0)
+                    self._pending_dropped += 1
+                hold = True
+            else:
+                hold = False
+        if hold:
+            if first_pre_start:
                 logger.info(
                     f"MQTT transport not started yet; holding messages until "
                     f"the first connect (first: '{message.namespace}')")
-            self._pending.append(message)
-            if len(self._pending) > self.PENDING_MAX:
-                self._pending.pop(0)
-                self._pending_dropped += 1
             return
 
         self._send_now(message)
@@ -1135,29 +1155,12 @@ class MQTTTransport(Transport):
         # `ReasonCodes` whose __eq__ compares against an int by value, so
         # Success (0) still tests equal. Verified against paho 1.6.1.
         if rc == 0:
-            failed = self._link.record_success()
-            if failed:
-                logger.info(f"MQTT connected after {failed} failed attempt(s)")
-            logger.info(f"MQTT connected to {self._broker}:{self._port} "
-                        f"(MQTT 5)")
-            opts = self._subscribe_options()
-            # Re-subscribe to all namespaces
-            for ns in self._subscribers:
-                self._sub(client, f"{self._topic_prefix}/+/{ns}", opts)
-            # Re-subscribe wildcard pattern filters ([CXC-FL-PATTERN])
-            for topic in self._pattern_topics:
-                self._sub(client, topic, opts)
-            # Subscribe to infrastructure topics
-            self._sub(client, f"{self._topic_prefix}/+/_bus/#", opts)
-            # Re-subscribe FOREIGN channels (peer protocols on this substrate).
-            # NoLocal is NOT applied here even when enabled: a foreign channel is
-            # another protocol's topic, and suppressing our own echo on it would
-            # silently change a peer protocol's semantics from inside our
-            # transport. Our loopback problem is on `composeio/` topics.
-            for filt in self._foreign_subs:
-                client.subscribe(filt, qos=1)
-                client.message_callback_add(filt, self._on_foreign_message)
-            self._flush_pending()
+            # Under the pending lock from "connected" to "flushed": a send on
+            # another thread either lands in `_pending` before this (and is
+            # flushed here, in order) or sees the link up after it (and goes
+            # straight out, after everything held). [CXC-SOB-PRE-START-HOLD]
+            with self._pending_lock:
+                self._on_connect_ok(client)
         else:
             # NAME THE REASON. A refused v5 CONNECT is the GOOD failure mode —
             # paho does not downgrade, so this is a loud stop rather than a
@@ -1170,6 +1173,33 @@ class MQTTTransport(Transport):
                 f"MQTT connection to {self._broker}:{self._port} REFUSED: "
                 f"{_connack_reason(rc)}. This client requires MQTT 5 "
                 f"(paho does NOT fall back to 3.1.1).")
+
+    def _on_connect_ok(self, client) -> None:
+        """A successful CONNACK: resubscribe and flush. Called with the
+        pending lock held (see `_on_connect`)."""
+        failed = self._link.record_success()
+        if failed:
+            logger.info(f"MQTT connected after {failed} failed attempt(s)")
+        logger.info(f"MQTT connected to {self._broker}:{self._port} "
+                    f"(MQTT 5)")
+        opts = self._subscribe_options()
+        # Re-subscribe to all namespaces
+        for ns in self._subscribers:
+            self._sub(client, f"{self._topic_prefix}/+/{ns}", opts)
+        # Re-subscribe wildcard pattern filters ([CXC-FL-PATTERN])
+        for topic in self._pattern_topics:
+            self._sub(client, topic, opts)
+        # Subscribe to infrastructure topics
+        self._sub(client, f"{self._topic_prefix}/+/_bus/#", opts)
+        # Re-subscribe FOREIGN channels (peer protocols on this substrate).
+        # NoLocal is NOT applied here even when enabled: a foreign channel is
+        # another protocol's topic, and suppressing our own echo on it would
+        # silently change a peer protocol's semantics from inside our
+        # transport. Our loopback problem is on `composeio/` topics.
+        for filt in self._foreign_subs:
+            client.subscribe(filt, qos=1)
+            client.message_callback_add(filt, self._on_foreign_message)
+        self._flush_pending()
 
     @staticmethod
     def _sub(client, topic: str, options) -> None:
@@ -1184,14 +1214,14 @@ class MQTTTransport(Transport):
         if not self._pending:
             return 0
         held, self._pending = self._pending, []
+        dropped, self._pending_dropped = self._pending_dropped, 0
         for msg in held:
             self._send_now(msg)
-        if self._pending_dropped:
+        if dropped:
             logger.warning(
                 f"MQTT flushed {len(held)} pre-connect message(s); "
-                f"{self._pending_dropped} older one(s) were dropped "
+                f"{dropped} older one(s) were dropped "
                 f"(queue cap {self.PENDING_MAX})")
-            self._pending_dropped = 0
         else:
             logger.info(f"MQTT flushed {len(held)} pre-connect message(s)")
         return len(held)
