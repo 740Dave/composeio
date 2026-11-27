@@ -1,0 +1,101 @@
+---
+scope: "The HOME ASSISTANT BRIDGE — a ComposeBus `adaptor` peer that bridges a LIVE Home Assistant instance ↔ the ComposeBus, bidirectionally: HA entities are published as ComposeBus semantic namespaces (via HA's MQTT `statestream` / WebSocket API), and ComposeBus commands are translated to HA service calls. It DEMOTES the hub to a peer — HA is kept for its unmatched open-source integration library but subsumed as one node on the bus among the MCUs and Intelligences. It runs NO HA plugin code: to use HA's integrations live it talks to HA-as-a-whole (HA runs its own plugins); to author NATIVE drivers from HA/ESPHome source it is MINING, done offline ([SPEC:CXC-HAL-DECLARE] [CXC-HALD-MINE]), not here. Sibling to the WLED adaptor, at whole-instance scale."
+audience: "ComposeIO/UX architects; the HA-bridge app builder; a maker who has HA deployed and wants it on the ComposeBus without living inside HA"
+boundary: "IN: the hub→peer inversion ([CXC-HAB-INTENT]); HA-entity→namespace ingress ([CXC-HAB-INGRESS]); ComposeBus-command→HA-service-call egress ([CXC-HAB-EGRESS]); the declarative default-deny entity↔namespace mapping ([CXC-HAB-MAPPING]); the adaptor-peer app model + graceful-if-absent ([CXC-HAB-ADAPTOR]); authority-gating across the bridge ([CXC-HAB-AUTHORITY]). OUT: running HA integrations inside ComposeIO (NEVER — they are HA-core-coupled; reach them by BRIDGING a running HA or MINING their source, [CXC-HALD-MINE]); authoring native HAL drivers (that is mining, spec 32); the HA installation/config itself; the render surface."
+not-this: "Not an HA plugin runner / emulator — ComposeIO hosts NO HA plugin code, in any mode. Not a replacement for HA — it keeps HA for its integration library and puts it on the bus as a peer. Not a driver-authoring path — that is offline MINING of HA/ESPHome source ([CXC-HALD-MINE]); this bridges a LIVE instance. Not a new bus contract — HA entities map onto the ordinary by-physical-quantity semantic namespaces ([CXC-HALD-NAMESPACE])."
+depends-on: [SPEC:CXC-HAL-DECLARE]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: "DRAFT for review (David 2026-07-18). Complements the ecosystem-mining path ([CXC-HALD-MINE]): MINE the source to author native drivers (design-time), or BRIDGE a running instance (this spec, runtime) — neither runs an HA plugin inside ComposeIO. Sibling in shape to the built WLED adaptor (composeio.adaptors.wled) at whole-instance scale. Build NOT started."
+created: 2026-07-18
+---
+# ComposeUX ↔ Home Assistant Bridge [SPEC:CXC-HA-BRIDGE]
+
+> Home Assistant is the HUB — the central engine that owns integrations, the very shape ComposeIO inverts.
+> This spec doesn't fight it; it **demotes** it. The HA-Bridge is a ComposeBus peer that puts a *running* HA
+> instance ON the bus — its entities become semantic namespaces, a ComposeBus command becomes an HA service
+> call — so HA sits alongside the $0.10 MCUs and the Intelligences as one node among many, kept for the one
+> thing it's unmatched at (thousands of open-source integrations) but no longer the center. There are exactly
+> two clean paths to the HA/ESPHome ecosystem, and **neither runs a plugin inside ComposeIO**: MINE the source
+> to author native drivers ([CXC-HALD-MINE], design-time), or BRIDGE a running instance (this spec, runtime).
+
+---
+
+## 1. Intent
+
+### [CXC-HAB-INTENT] The Hub Becomes a Peer
+
+- definition: a running HA instance exposes its state + services over MQTT (its `statestream`) and a WebSocket API. The bridge is a ComposeBus peer that MIRRORS that surface onto the bus, bidirectionally, so any bus participant — a widget, a leaf rule, an Intelligence, another device — reads and commands HA entities as ordinary semantic namespaces, ignorant that HA is behind them. HA runs its own integrations; ComposeIO runs none.
+- bridge, not runner: HA integrations are coupled to HA core and are NOT runnable outside it, so the only ways to reach them are to bridge the running instance (here) or mine their source ([CXC-HALD-MINE]). This spec explicitly does NOT run or emulate HA plugins — it talks to HA-as-a-whole, which is already running them.
+- the inversion: putting HA on the bus is the hub-model reflex turned inside out — the hub keeps doing what it is good at, but as a SUBORDINATE peer; the control plane is the bus, not HA. For a maker who has HA but doesn't want to live in it, this is the right relationship: harvest its value, don't sit inside it.
+- part-of: [SPEC:CXC-HA-BRIDGE]
+
+---
+
+## 2. The Bridge
+
+### [CXC-HAB-INGRESS] HA Entities → ComposeBus Namespaces
+
+- definition: the bridge subscribes HA's state stream (MQTT `statestream` topics `homeassistant/<domain>/<entity>/state`, or the WebSocket `state_changed` events) and publishes each MAPPED entity to a ComposeBus semantic namespace by PHYSICAL QUANTITY ([CXC-HALD-NAMESPACE]) — `sensor.living_room_temp` → `env/temperature`, `binary_sensor.front_door` → `contact/door`, `light.desk` → `light/on` + `light/brightness`. The HA domain + attributes inform the mapping; the bus sees the QUANTITY, not the HA entity id.
+- attributes + availability: an entity's attributes fan into sub-namespaces (a light's brightness/color, a climate entity's setpoint/current); HA `unavailable`/`unknown` maps to the health/diagnostic convention ([CXC-HALD-NAMESPACE] `.../health`).
+- part-of: [SPEC:CXC-HA-BRIDGE]
+
+### [CXC-HAB-EGRESS] ComposeBus Commands → HA Service Calls
+
+- definition: a write to a mapped COMMAND namespace becomes an HA SERVICE CALL — `light/on = true` → `light.turn_on{entity_id}`; `light/brightness = 0.5` → `light.turn_on{brightness_pct:50}`; `scene/mood = "storm"` → `scene.turn_on`; `cover/position = 0.3` → `cover.set_cover_position`. Delivered via HA's MQTT command topics or the WebSocket `call_service`. So a ComposeBus director/rule/Intelligence actuates HA-managed devices without knowing HA is behind them — the same `light/on` a native WLED adaptor or an MCU relay consumes.
+- part-of: [SPEC:CXC-HA-BRIDGE]
+
+### [CXC-HAB-MAPPING] The Declarative, Default-Deny Entity ↔ Namespace Map
+
+- definition: a declarative map — `{ ha_entity ↔ namespace(s), direction, transform? }` — that is **default-DENY** (only listed entities cross the bridge; a whole HA install does not flood the bus). It reuses the by-physical-quantity vocabulary, so a screen gauge or a leaf rule binds `env/temperature` indifferent to whether a NATIVE sensor or an HA entity is behind it — the define-once payoff, extended across the HA boundary. Auto-SUGGEST from HA's entity registry (domain → default namespace) with explicit overrides; a `transform` handles unit/scale/enum coercion.
+- part-of: [SPEC:CXC-HA-BRIDGE]
+
+---
+
+## 3. The Peer
+
+### [CXC-HAB-ADAPTOR] An Adaptor-Family App (Graceful if Absent)
+
+- definition: the bridge is an `adaptor`-family peer ([CXC-HALD-KINDS] / [CXC-HALD-BUILT]) — a host ComposeApp, sibling to the built WLED adaptor and the Intelligence MCP — configured `interface: { adaptor: { ha: { url, token | mqtt } } }`. Its internal↔ComposeBus membrane ([CXC-HALD-BRIDGE]) EXPORTS the mapped HA namespaces up; IMPORT drives HA. If HA is unreachable it degrades gracefully: the bridged namespaces go `health=down`, and the rest of the bus is UNAFFECTED (encapsulation).
+- optional, never required: ComposeBus does not depend on HA; the bridge exists for a deployment that HAS HA and wants it as a peer. A maker with no HA simply never instantiates it — and can still MINE HA/ESPHome source for native drivers with no HA runtime at all.
+- part-of: [SPEC:CXC-HA-BRIDGE]
+
+### [CXC-HAB-AUTHORITY] Authority Across the Bridge
+
+- definition: EGRESS (ComposeBus → HA service call) that actuates a real load is AUTHORITY-GATED ([CXC-HALD-BRIDGE] authority), so a random bus peer cannot command HA-managed devices; INGRESS is scoped by the default-deny map (not every HA entity is exported). This is bus hygiene per the HAL membrane model — the same discipline as `gm/cmd/*` and a `control`-class actuator.
+- part-of: [SPEC:CXC-HA-BRIDGE]
+
+---
+
+## 4. Verification (what a build must satisfy)
+
+| id | claim | test |
+|---|---|---|
+| HAB-C1 | HA entity → namespace | a mapped `sensor.*` publishes `env/temperature`; a bus `gauge` reads it indifferent to source |
+| HAB-C2 | command → service call | `light/on=true` on the bus results in `light.turn_on` on a mock HA |
+| HAB-C3 | default-deny + by-quantity | only mapped entities bridge; each lands on a by-physical-quantity namespace, not an HA entity id |
+| HAB-C4 | graceful absence | HA unreachable → bridged namespaces go `health=down`; the rest of the bus is unaffected |
+| HAB-C5 | no plugin hosting | the bridge runs NO HA integration code — only HA's MQTT/WebSocket surface is touched |
+| HAB-C6 | authority | an egress that actuates a load is authority-gated; a non-authorized peer's command is dropped |
+| HAB-C7 | define-once across the boundary | a rule bound to `env/temperature` fires identically whether a native DS18B20 or a bridged HA sensor is the source |
+
+---
+
+## 5. Relationships
+
+[SPEC:CXC-HA-BRIDGE] RELATED_TO [SPEC:CXC-HAL-DECLARE]
+[CXC-HAB-INTENT] RELATED_TO [CXC-HALD-MINE]
+[CXC-HAB-INGRESS] USES [CXC-HALD-NAMESPACE]
+[CXC-HAB-EGRESS] USES [CXC-HALD-NAMESPACE]
+[CXC-HAB-ADAPTOR] USES [CXC-HALD-BRIDGE]
+[CXC-HAB-ADAPTOR] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-3]
+[CXC-HAB-INTENT] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-1]
+
+---
+
+**Status**: DRAFT for review (David 2026-07-18). The runtime half of the HA/ESPHome story (the design-time half is mining, [CXC-HALD-MINE]). A ComposeBus `adaptor` peer that bridges a LIVE HA instance bidirectionally — HA entities → by-quantity namespaces ([CXC-HAB-INGRESS]), ComposeBus commands → HA service calls ([CXC-HAB-EGRESS]) — over a declarative default-deny map ([CXC-HAB-MAPPING]), as a graceful-if-absent adaptor app ([CXC-HAB-ADAPTOR]) with authority-gated egress ([CXC-HAB-AUTHORITY]). Demotes the hub to a peer; runs NO HA plugin code in any mode.
+
+**Architect — build plan flagged for David's go-ahead (NOT started):** (1) the `ha` adaptor app (host ComposeApp; MQTT `statestream` subscribe + optional WebSocket) — mirror `composeio.adaptors.wled` at instance scale; (2) the ingress mapper (HA domain/attrs → by-quantity namespaces) + auto-suggest from the entity registry; (3) the egress mapper (command namespace → service call) + authority-gate; (4) the declarative default-deny map + `transform`. Suggested first slice: subscribe a mock HA `statestream`, bridge one `sensor.*` → `env/temperature` and one `light.*` round-trip, all against a mocked HA — proving both directions + graceful-absence with no real HA.
+
+**Architect — ratifications flagged:** (1) new node-prefix `CXC-HAB-` (HA-Bridge), a `CXC-` sub-family — needs a [CONV-PREFIX] row. (2) whether the `bridge`/`ha` adaptor is a new entry in [CXC-HALD-KINDS]'s `adaptor` family (I have it so) or its own family. (3) transport choice: HA MQTT `statestream` (simplest, needs the HA MQTT integration enabled) vs the WebSocket API (no MQTT dependency, richer) — recommend MQTT-first, WebSocket as an option. (4) the entity→namespace auto-suggest table (HA domain → default quantity) should share the CONVENTION registry proposed for [CXC-HALD-NAMESPACE].

@@ -1,0 +1,476 @@
+---
+scope: "The fleet-wide common error-namespace convention: the two-leaf _error/<id>/{register,event} family, the 8-bit register-class taxonomy, the v1 error-code seed set, the fault-ownership inclusion boundary, severity-reaches-arbitration, scope defaults, capture, and the epistemics acceptance gate. Ratified 2026-08-25."
+audience: "David (architect) — for ratify of every non-david-ruling-tagged claim; the builder who implements the register/event leaves, the seed codes, and the bus_scribe capture profile; the composeio-expert whose fault sweep grounded the seed set."
+boundary: "IN: the _error/* namespace family shape, the register bitfield taxonomy, the v1 + deferred code allocations, the fault-ownership inclusion rule, severity-to-arbitration mechanism, scope defaults, capture, and the blocking epistemics gate. OUT: the LOG_ENTRY wire-code retirement and the {state,event}+retention namespace-mode collapse this spec DEPENDS ON (that amendment lives in spec/01-composeio-bus-protocol.smd §1.6.1 and spec/01-amendment-bus-extensions.smd §2.4 — not yet migrated into FactLattice); CAN bus-off producer code (transport_can.py, unbuilt — see [CXC-ERR-GAPS]); storage/docstore fault codes (separate sweep); occurrence_count's counting layer (unbuilt)."
+not-this: "Not a build spec with verify.machine/verify.human acceptance criteria — this mirrors the established convention of its nearest siblings (73, 79, 80, 81, 83, 84), all pre-build design captures carrying provenance tags instead. Not an assertion that every FMI/severity below is David's word — only the family shape, the two-leaf ruling, the fault-ownership boundary, severity-reaches-arbitration, and the 15 code NAMES/classes/allocations are ratified; per-code FMI and non-called-out severities are architect-synthesis pending review, tagged as such."
+depends-on: [DEC-LOG-ENTRY-MAY-COLLAPSE-INTO-EVENT-PLUS-RETENTION-2026-08-25, DEC-COMMON-ERROR-NAMESPACE-CONVENTION-2026-08-25, DEC-ERROR-CODE-SEED-SET-V1-2026-08-25, 62-composeplatform-vision.lts, 81-bus-scribe.lts]
+domain: plt.cio
+confidentiality: internal-only
+artifact-readiness: concept-capture
+status: draft
+created: 2026-08-25
+updated: 2026-08-25
+---
+# Common Error-Namespace Convention — two leaves, an allocated code space, a blocking epistemics gate; PLACEMENT UNRATIFIED [SPEC:CXC-ERR-NAMESPACE]
+
+> Every fleet emitter reports its own faults through the SAME two-namespace shape —
+> `_error/<id>/register` (a periodic STATE bitfield, because silence is itself the death
+> report) and `_error/<id>/event` (a retained EVENT per occurrence). One shared, allocated
+> error-code space grows the same way [BP-TYPE-CODES] grows: seeded small, one allocation,
+> never renumbered. Severity reaches the CAN arbitration id, not just the payload, so a
+> critical fault out-arbitrates telemetry exactly when things go wrong. This spec DEPENDS ON
+> the LOG_ENTRY retirement / namespace-mode collapse (`spec/01-composeio-bus-protocol.smd`
+> §1.6.1, `spec/01-amendment-bus-extensions.smd` §2.4) — an error IS a retained event, and
+> this convention falls out of that collapse's `kind x retention` model for free.
+
+---
+
+## 1. Placement and provenance
+
+### [CXC-ERR-PLACEMENT] Placement is UNRATIFIED, and filename 91 was verified unused
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because every sibling
+  it depends on (62, 81) and every sibling it structurally resembles (73, 79, 80, 84) already
+  sits there — convention, not a ruling. Per [CXC-VISION-PLACEMENT], this directory carries
+  live filename-number collisions elsewhere; this document does not add one.
+- filename-number-check: 91 was verified unused across `corpora/platform-specs/` before this
+  file was written (highest prior number in sequence was 90; 99 is a reserved
+  conventions-document number, `99-composeio-conventions.smd`, in a different corpus).
+- cross-format-note: this spec's PREREQUISITE (the LOG_ENTRY retirement + namespace-mode
+  collapse) does NOT live in a `.lts` file. The wire-protocol spec has not yet migrated into
+  FactLattice — it is still `spec/01-composeio-bus-protocol.smd` and
+  `spec/01-amendment-bus-extensions.smd`, amended in place by factlattice-editor 2026-08-25.
+  This is flagged rather than silently routed around, per [CXC-VISION-PLACEMENT]'s own
+  discipline: a stale or absent pointer is a finding, not something to paper over.
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-VISION-PLACEMENT]
+
+---
+
+## 2. The family — two leaves, the /link leaf withdrawn
+
+### [CXC-ERR-FAMILY] The family is TWO leaves — register (periodic STATE) and event (retained EVENT); /link is WITHDRAWN
+
+- ruling: David ruled (2026-08-25) the family is `_error/<id>/register` + `_error/<id>/event`
+  ONLY. A third `_error/<id>/link` leaf was proposed (transport/CAN health — TEC/REC,
+  error-active/passive/bus-off, restart_count) and is WITHDRAWN: [CXC-ERR-FAULT-OWNERSHIP]
+  closes it out, because a link/transport problem is a NODE FAULT under the fault-ownership
+  rule, not a distinct telemetry leaf — it is a comms-class `_error/event` plus a `_register`
+  comms bit, same as any other fault.
+  Reference: `DEC-COMMON-ERROR-NAMESPACE-CONVENTION-2026-08-25` property `family-is-two-leaves`
+  / `link-leaf-dropped`.
+- dissolves-a-gap: this also dissolves composeio-expert's "CAN /link has no producer" framing —
+  the producer to WRITE is a comms-class error EVENT on bus-off, never a `/link` state feed. See
+  [CXC-ERR-GAPS] for what remains unbuilt.
+- consequence: continuous link-health metrics (RSSI/SNR, TEC/REC counters, reconnect counts) are
+  NOT `_error` data at all — see [CXC-ERR-LINK-METRICS-ARE-TELEMETRY].
+- status: decided
+- provenance: david-ruling
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-REGISTER], [CXC-ERR-EVENT], [CXC-ERR-FAULT-OWNERSHIP]
+
+### [CXC-ERR-FAULT-OWNERSHIP] MUST — the inclusion boundary is FAULT OWNERSHIP, not connector-vs-application
+
+- rule: A fault the EMITTER/NODE owns — its own link, hardware, resource, config, or its own
+  state — MUST be reported in `_error`, captured uniformly. A fault a REMOTE CALLER caused,
+  returned to that caller through the protocol's own error mechanism, MUST NOT be reported in
+  `_error`.
+- corrected-exemplar: MCP endpoint-topology errors (not-bound, tool-not-found, wrong-tenant)
+  were an earlier, MISLEADING exemplar of "connector errors stay out." They are
+  caller-MISUSE returned to the caller — out, but NOT because they are "connector" errors; the
+  dividing line was never connector-vs-application.
+- usb-midi-and-lora-in: USB-MIDI errors (device disconnect, SysEx write fail, buffer overflow)
+  and LoRa errors (link timeout, CRC, RSSI/SNR degradation, packet loss, join failure) are
+  NODE/LINK faults and belong SQUARELY in `_error` (comms class, `_error/event`). This corrects
+  an earlier architect over-broad lean that would have kept all "connector" errors out.
+- mcp-connector-faults-in: the tell that confirms the boundary — even for MCP, the CONNECTOR
+  faults (bind failure, socket down) ARE node faults and belong in `_error` (0x51
+  `UNSAFE_BIND_REFUSED`, [CXC-ERR-SEED-V1]); only the caller-conversation faults stay out.
+- status: decided — confirmed by David 2026-08-25, no longer architect-inference-pending-confirm
+- provenance: david-ruling (the boundary itself, prompted by David's USB-MIDI/LoRa challenge
+  which corrected the architect's over-broad lean); the "fault ownership" articulation as a
+  named principle is architect-synthesis of David's intent, per [DX-INTERPRETATION-IS-AN-INFERENCE]
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-FAMILY], [CXC-ERR-TAXONOMY]
+
+---
+
+## 3. The two leaves, in detail
+
+### [CXC-ERR-REGISTER] `_error/<id>/register` — STATE, published PERIODICALLY; silence IS the death report
+
+- shape: an 8-bit bitfield of currently-active error CLASSES (bit0 comms … bit7 internal, see
+  [CXC-ERR-TAXONOMY]). One bit per CLASS, not per code — the register answers "what kind of
+  thing is wrong," the paired `/event` answers "which specific thing, when, how many times."
+- cadence: PERIODIC, not on-change, per [CXC-VISION-ANNOUNCE-BIND]'s announcement-must-be-periodic
+  rule — a missing publication IS the fault report; query cannot distinguish "healthy" from
+  "did not hear." Fold into the existing 5-second heartbeat cadence rather than adding a new
+  timer.
+- latch: `UNKNOWN_TRANSPORT_TYPE` (0x21) and `UNSAFE_BIND_REFUSED` (0x51) are deliberately fatal
+  by design — their register bit LATCHES until standup is re-attempted; it never self-clears on
+  its own. See [CXC-ERR-SEVERITY-DEFAULT].
+- status: proposed — mechanism specifics (bit layout, cadence fold-in) are architect-synthesis
+  realizing David's ruled family shape
+- provenance: david-ruling (the leaf exists, is STATE, is periodic — [CXC-ERR-FAMILY]); the
+  8-bit-per-class bitfield mechanics are architect + can-bus-expert-recommendation, grounded in
+  CANopen Error Register 1001h
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-TAXONOMY], [CXC-VISION-ANNOUNCE-BIND], [CXC-ERR-EPISTEMICS-GATE]
+
+### [CXC-ERR-EVENT] `_error/<id>/event` — EVENT + retention:N; the discrete occurrence and its bounded history
+
+- shape: an ordinary `event`-mode namespace (wire type `event`, never a distinct wire type —
+  see the depends-on amendment) with `retention: N` set, per the collapsed namespace-mode model
+  ([BP-EXT-LOG] §2.4). This IS 1003h/DM2's role: the discrete occurrence plus its bounded
+  history, queryable via the same `GET /api/v1/log/{namespace}` path any retained-event
+  namespace already exposes.
+- payload: `{code, fmi, severity, source, ts, occurrence_count}` — `code` is the allocated
+  register-taxonomy code ([CXC-ERR-TAXONOMY]/[CXC-ERR-SEED-V1]); `fmi` is a J1939-style Failure
+  Mode Identifier refining `code`; `severity` is the per-occurrence value (see
+  [CXC-ERR-SEVERITY-DEFAULT] — a default per code, not a fixed property of it); `source` names
+  the owning subsystem/module; `ts` is receiver-side per [BP-MSG-FIELDS]'s `ts` discipline
+  (never publisher clock — see `72-freshness-receiver.lts`); `occurrence_count` is a running
+  tally, see [CXC-ERR-GAPS] for its unbuilt counting layer.
+- status: proposed
+- provenance: david-ruling (the leaf exists, is EVENT+retention — [CXC-ERR-FAMILY]); the payload
+  field list is architect + can-bus-expert-recommendation, grounded in J1939 DM1/DM2's
+  SPN/FMI/occurrence-count shape
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-REGISTER], [CXC-ERR-SEVERITY-DEFAULT], [CXC-ERR-GAPS]
+
+---
+
+## 4. Register-class taxonomy — 8 bits, class-ranged codes
+
+### [CXC-ERR-TAXONOMY] The 8-bit register-class taxonomy — one bit per class, codes class-ranged, ONE-ALLOCATION-NEVER-RENUMBER
+
+- taxonomy: an 8-bit bitfield, one bit per class, mirroring CANopen Error Register 1001h:
+
+| Bit | Class | Code range |
+|-----|-------|-----------|
+| 0 | comms | 0x1n |
+| 1 | config | 0x2n |
+| 2 | plugin | 0x3n |
+| 3 | identity | 0x4n |
+| 4 | policy | 0x5n |
+| 5 | resource | 0x6n |
+| 6 | data | 0x7n |
+| 7 | internal | 0xFn |
+
+- discipline: codes are class-ranged (`0x1n` comms … `0xFn` internal) and
+  ONE-ALLOCATION-NEVER-RENUMBERED — the identical discipline [BP-TYPE-CODES] applies to wire
+  codes, applied here to fault codes. A hashed error code would collide and re-rank exactly like
+  a hashed arbitration id would; allocation is sequential and permanent.
+- seeded-small: the code space is SEEDED SMALL (15 codes, [CXC-ERR-SEED-V1]) and GROWS over
+  time as real conditions get producers — see [CXC-ERR-GAPS] for what is deliberately NOT
+  seeded yet.
+- status: decided (taxonomy + discipline); ratified accept-all with the seed set
+- provenance: david-ruling accept-all of the composeio-expert-distilled taxonomy, from a
+  read-only sweep of the ComposeServer/ComposeBus implementation on origin/main (d95aee1)
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-SEED-V1], [CXC-ERR-DEFERRED]
+
+### [CXC-ERR-SEED-V1] The v1 seed set — 15 codes, one-per-class plus comms heavies plus the two criticals
+
+- table: full v1 allocation. `fmi` follows J1939's Failure Mode Identifier convention.
+  ⛔ **Evidence tier**: `code`/`name`/`class` are RATIFIED (David accept-all,
+  `DEC-ERROR-CODE-SEED-SET-V1-2026-08-25`). `severity-default` is ratified ONLY for the two
+  rows the DEC node calls out explicitly (0x21, 0x51 — deliberately fatal/latching; 0x70 — warn
+  external-dispatch / critical unguarded-local). Every OTHER severity-default and every `fmi`
+  value below is ARCHITECT-SYNTHESIS pending David's review, per
+  [DX-INTERPRETATION-IS-AN-INFERENCE] — flagged, not silently promoted to ratified.
+
+| Code | Name | Class | Severity (default) | FMI | Origin site | Meaning |
+|------|------|-------|---------------------|-----|-------------|---------|
+| 0x10 | LINK_DOWN | comms | warning | 5 | not independently re-grounded this pass — verify against the composeio-expert sweep before implementation | A comms link the node owns has gone down |
+| 0x11 | BACKEND_UNREACHABLE | comms | warning | 9 | not independently re-grounded this pass — verify against the composeio-expert sweep before implementation | A configured backend (broker, bridge, hub) is unreachable |
+| 0x12 | RX_FRAME_CORRUPT | comms | warning | 2 | not independently re-grounded this pass — verify against the composeio-expert sweep before implementation | A received frame failed its integrity check (CRC/checksum) |
+| 0x13 | RX_FRAME_UNDECODABLE | comms | warning | 19 | not independently re-grounded this pass — verify against the composeio-expert sweep before implementation | A received frame parsed structurally but carried an unmappable/unallocated value |
+| 0x20 | CONFIG_INVALID | config | critical | 13 | `python/composeio/config.py:291,509` — `ConfigError` raised from validation/compile | Config failed validation or compile |
+| 0x21 | UNKNOWN_TRANSPORT_TYPE | config | critical — DELIBERATELY FATAL, register bit LATCHES | 31 | `python/composeio/transport_registry.py:94` — `f"unknown transport type {ttype!r}..."` | A configured transport `type:` has no registered factory |
+| 0x30 | PLUGIN_PARKED | plugin | warning | 7 | not independently re-grounded this pass — ComposeServer's requires-floor parking, Phase-0 in progress ([CXC-CBK-KERNEL-PRIMITIVES]) — verify against sweep once `composeserver.py` standup lands | A plugin's resolved isolation floor is not yet satisfiable; it is parked, not started |
+| 0x40 | NS_HASH_COLLISION | identity | critical | 2 | `python/composeio/ns_announce.py:600` — `"collision is still a collision; the first entry keeps it."` | Two distinct namespace names hashed to the same id; a receiver would confidently decode the wrong namespace |
+| 0x41 | TOOL_NAME_COLLISION | identity | warning | 2 | not independently re-grounded this pass — MCP surface tool registration — verify against the composeio-expert sweep before implementation | Two MCP tools registered under the same name |
+| 0x42 | NODE_ID_INVALID | identity | warning | 2 | not independently re-grounded this pass — verify against the composeio-expert sweep before implementation | An allocated node id (e.g. CAN `src`) is out of range or unassigned where required |
+| 0x50 | PUBLISH_DENIED | policy | warning | 14 | `python/composeio/namespace.py:446` — publish-whitelist validation ([BP-EXT-ACCESS]) | A publish was rejected by the namespace's access-policy whitelist |
+| 0x51 | UNSAFE_BIND_REFUSED | policy | critical — DELIBERATELY FATAL, register bit LATCHES | 14 | not independently re-grounded this pass — MCP connector bind-safety check — verify against the composeio-expert sweep before implementation | An MCP connector refused to bind because the bind would be unsafe |
+| 0x60 | DEPENDENCY_MISSING | resource | warning | 31 | not independently re-grounded this pass — verify against the composeio-expert sweep before implementation | A required dependency (module, service, resource) is absent |
+| 0x70 | ENGINE_VALUE_REJECTED | data | warning (external-dispatch: log+drop) — critical on the unguarded LOCAL path (can SIGABRT) | 2 | `python/composeio/state_engine.py:41` — `raise ValueError(f"Invalid value '{value}' for {self.engine_type} engine...")` | A published value failed the namespace's state-engine domain check |
+| 0xF0 | SUBSCRIBER_CALLBACK_ERROR | internal | warning | 12 | `python/composeio/bus.py:281,1337` — `logger.error(f"Message callback error: {e}")` | A subscriber's callback raised while handling a delivered message |
+
+- sigabrt-hazard: the 0x70-critical unguarded-local-path SIGABRT hazard (empty-string into a
+  binary domain check) is dispatched to defect-investigator separately from this spec, per
+  `DEC-ERROR-CODE-SEED-SET-V1-2026-08-25`.
+- pre-integration-question: for every row marked "not independently re-grounded this pass," the
+  exact file:line MUST be confirmed against the composeio-expert sweep (or re-grounded directly)
+  before a producer is written against this table — see [DX-SPEC-CARRIES-ITS-EVIDENCE]. This is
+  a deliberate EMPTY-marked gap, not a silent one.
+- status: decided (code/name/class allocation); proposed (fmi values, non-called-out severities)
+- provenance: david-ruling accept-all (code/name/class, from the composeio-expert sweep of
+  origin/main d95aee1); architect-synthesis (fmi assignment, non-called-out severity defaults)
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-TAXONOMY], [CXC-ERR-SEVERITY-DEFAULT], [CXC-ERR-DEFERRED]
+
+### [CXC-ERR-DEFERRED] 16 deferred codes — allocate on need, do NOT pre-mint
+
+- list: `0x14 TX_PAYLOAD_OVERSIZE`, `0x15 TX_QUEUE_OVERFLOW`, `0x16 RX_LOOP_ERROR`,
+  `0x22 NS_DECL_CONTRADICTION`, `0x23 FRESHNESS_CLASS_INVALID`, `0x24 BRIDGE_ROUTE_INVALID`,
+  `0x25 NS_PATTERN_INVALID`, `0x32 PLUGIN_STOP_ERROR`, `0x33 PLUGIN_DECL_INVALID`,
+  `0x43 TENANT_EXISTS`, `0x52 BOUNDARY_VIOLATION`, `0x53 MCP_BINDING_VIOLATION`,
+  `0x61 GLOBAL_TRANSPORT_DARK`, `0x71 VALUE_NOT_SERIALIZABLE`, `0x72 ENGINE_CONFIG_INVALID`,
+  `0xF1 HOOK_ERROR`.
+- rule: these names and code slots are RESERVED (nothing else may claim `0x14`, etc.) but NOT
+  allocated to a live producer. Allocate one only when a real condition needs it — minting a
+  code with no producer is exactly the aspirational-empty state [CXC-ERR-GAPS] warns against for
+  CAN `/link`.
+- status: decided (reservation); the codes themselves are dev-time/config-authoring faults or
+  fine-grained variants folded into a v1 code's payload sub-reason until split out
+- provenance: david-ruling accept-all
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-SEED-V1], [CXC-ERR-GAPS]
+
+---
+
+## 5. Severity, arbitration, scope
+
+### [CXC-ERR-SEVERITY-DEFAULT] Severity is a PER-OCCURRENCE DEFAULT, not a fixed property of the code
+
+- rule: a code's `severity-default` (table above) is the value used when nothing overrides it —
+  it is NOT a compile-time-fixed property of the code. `0x70 ENGINE_VALUE_REJECTED` is the
+  worked example: warning on the external-dispatch path (log+drop, the value is refused and
+  nothing crashes) but critical on the unguarded LOCAL path that can SIGABRT (empty-string into
+  a binary domain check) — the SAME code, two different severities, because the consequence
+  differs by call site, not by code identity.
+- fatal-latch: `0x21 UNKNOWN_TRANSPORT_TYPE` and `0x51 UNSAFE_BIND_REFUSED` are DELIBERATELY
+  FATAL by design and never take a lesser severity — their `_register` bit LATCHES (does not
+  self-clear) until standup is re-attempted. This is the one exception to "severity is
+  per-occurrence": these two codes are fixed-critical because there is no non-fatal
+  interpretation of either condition.
+- status: decided
+- provenance: david-ruling (the two fatal-latch codes, the per-occurrence-default principle for
+  0x70); architect-synthesis (generalizing the 0x70 worked example into the standing rule for
+  every other code)
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-SEED-V1], [CXC-ERR-ARBITRATION]
+
+### [CXC-ERR-ARBITRATION] MUST — severity reaches the arbitration id, not only the payload
+
+- rule: a payload-only severity arbitrates at one fixed tier regardless of how bad the fault is,
+  so a critical fault would queue behind ordinary telemetry exactly when things go wrong. David
+  concurred explicitly this is unacceptable.
+- mechanism: declared-priority-at-announce promotes a critical device fault to tier 0
+  ([BP-WIRE-PRIORITY]'s alarm tier), plus a DEFAULT rule — `_error/` -> `PRIORITY_LIVENESS`
+  (tier 4) — so an ordinary error report out-arbitrates telemetry and display but never
+  starves control, time-sync, or ACK.
+- status: decided (the requirement and the default-tier rule); proposed (the declared-priority
+  wiring mechanics, which depend on [CXC-VISION-ANNOUNCE-BIND]'s announce mechanism landing)
+- provenance: david-ruling (severity MUST reach arbitration; the PRIORITY_LIVENESS default);
+  architect + can-bus-expert-recommendation (the declared-priority-at-announce mechanism)
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-SEVERITY-DEFAULT], [BP-WIRE-PRIORITY]
+
+### [CXC-ERR-SCOPE-DEFAULT] Scope defaults — critical/alarm global, warning/info local
+
+- rule: critical and alarm severities default to GLOBAL scope — a fault of that severity MUST
+  escape its own locality. Warning and info severities default to LOCAL scope — do not flood the
+  shared segment with a chattering node's routine warnings.
+- status: decided
+- provenance: david-ruling
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-ARBITRATION]
+
+---
+
+## 6. Capture
+
+### [CXC-ERR-CAPTURE] ONE bus_scribe `errors` profile over `_error/*`, SEVERITY-PARTITIONED
+
+- rule: a single durable `bus_scribe` capture profile named `errors` subscribes the `_error/*`
+  prefix — the prefix is what makes one profile possible at all, instead of a hand-maintained
+  per-emitter register that rots the way `CAN_BRIDGE_REGISTER` already has
+  ([CXC-VISION-ANNOUNCE-BIND]'s `evidence-hand-typed-registry`).
+- partitioning: the profile MUST be SEVERITY-PARTITIONED so an info/warning burst cannot
+  evict-oldest the critical record that started a cascade — an ordinary bounded ring buffer
+  shared across severities would let exactly the noise around an incident erase the incident.
+- status: proposed
+- provenance: david-ruling (one profile, `_error/*`, severity-partitioned); [SPEC:CXC-BUS-SCRIBE]
+  (`81-bus-scribe.lts`) is the mechanism this profile is declared against
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [SPEC:CXC-BUS-SCRIBE]
+
+---
+
+## 7. Link telemetry is NOT error data
+
+### [CXC-ERR-LINK-METRICS-ARE-TELEMETRY] Continuous link metrics are ordinary STATE telemetry; a fault enters `_error` only on threshold-crossing
+
+- rule: RSSI/SNR, TEC/REC counters, reconnect counts and similar CONTINUOUS link-health metrics
+  are ordinary STATE telemetry a node publishes on its OWN namespaces — they are NOT `_error`
+  data. A fault enters `_error` only when a threshold crosses into an actual fault condition
+  (then: a comms-class `_error/event` plus the corresponding `_register` bit).
+- future-out-of-scope: a UNIFORM fleet-wide link-TELEMETRY convention, if ever wanted, is a
+  SEPARATE future thing OUTSIDE `_error` — `_error` stays reserved for faults only. This is an
+  architect note, not a David ruling.
+- status: decided (the boundary itself, as a consequence of [CXC-ERR-FAULT-OWNERSHIP] closing
+  the `/link` leaf); the future-telemetry-convention note is explicitly NOT decided
+- provenance: architect-synthesis, drawn as the direct consequence of [CXC-ERR-FAMILY] /
+  [CXC-ERR-FAULT-OWNERSHIP]
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-FAMILY], [CXC-ERR-FAULT-OWNERSHIP]
+
+---
+
+## 8. Epistemics gate — BLOCKING acceptance
+
+### [CXC-ERR-EPISTEMICS-GATE] BLOCKING — no error convention ships without a negative control AND the periodic register
+
+- rule: per [CXC-VISION-EPISTEMICS]'s `rule-negative-control` ("an instrument that can only
+  report success is not an instrument"), this convention does NOT ship without BOTH:
+  (a) a FAULT INJECTOR as negative control — an `_error` channel only ever observed empty is the
+  drop-counter-pinned-at-zero failure, structurally incapable of proving anything; and
+  (b) the PERIODIC register ([CXC-ERR-REGISTER]) — because death = silence, and on-change-only
+  publishing makes a healthy node and a dead node indistinguishable.
+- status: decided (the gate is blocking); NOT YET SATISFIED — see the evidence slots below
+- provenance: david-ruling
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-VISION-EPISTEMICS], [CXC-ERR-REGISTER]
+
+### [CXC-ERR-PRE-INTEGRATION-QUESTIONS] Pre-integration questions — EMPTY until answered
+
+- q1-injector-target: EMPTY — which subsystem hosts the first fault injector, and does it inject
+  at the register bit, the event payload, or the underlying condition (e.g. actually pulling a
+  CAN transceiver's supply to force LINK_DOWN)? Injecting at the condition is the only version
+  that also exercises the real producer path; injecting at the register/event level only proves
+  the capture pipeline.
+- q2-file-line-grounding: EMPTY — every [CXC-ERR-SEED-V1] row marked "not independently
+  re-grounded this pass" needs its file:line confirmed (or corrected) before a producer is
+  written against it.
+- q3-occurrence-count-source: EMPTY — [CXC-ERR-GAPS] names this as unbuilt; which layer owns
+  incrementing `occurrence_count` (the emitter, the register/event helper library, or
+  bus_storage on ingest)?
+- q4-latch-clear-mechanism: EMPTY — "latches until standup is re-attempted" (0x21, 0x51) needs a
+  concrete clear trigger: does a fresh `standup()` call clear the bit unconditionally, or only on
+  confirmed success of the previously-failing step?
+- status: draft — these MUST be answered before build, not discovered during it
+- provenance: architect-synthesis, per [DX-SPEC-CARRIES-ITS-EVIDENCE]
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-EPISTEMICS-GATE]
+
+### [CXC-ERR-POST-INTEGRATION-EVIDENCE] Post-integration evidence slots — EMPTY until a real bench/negative-control run fills them
+
+- slot-fault-injector-run: EMPTY — no fault injector has run against any producer yet. Record
+  here: which code, which injection method, the register bit observed to SET and later CLEAR,
+  the paired `/event` entry's fields.
+- slot-periodic-register-observed: EMPTY — no periodic register has been observed live on a bus
+  segment yet. Record here: interval measured vs. declared cadence, and a confirmed SILENCE
+  case (node powered off) producing the expected downstream "missing heartbeat" verdict rather
+  than a false-healthy read.
+- slot-severity-partition-proof: EMPTY — no proof yet that a synthetic info/warning burst fails
+  to evict a critical record from the `bus_scribe errors` capture. Record here: burst size,
+  capacity, and the critical record's survival.
+- slot-bridge-frame-count: EMPTY — the frame-count fixture confirming the log-forwarder deletion
+  closes the double-emit (01-composeio-bus-protocol.smd §1.6.1 / [BP-EXT-LOG] §2.4) has not been
+  run against this convention's own producers. Record the fixture name and its pass/fail here
+  once it exists.
+- why-empty-matters: "never run on hardware/against a real bus" MUST be a queryable property, not
+  something a reader has to already know — an unfilled slot IS the record that this has never
+  touched a bench. Per [DX-SPEC-CARRIES-ITS-EVIDENCE].
+- status: draft — all slots EMPTY as of this spec's authoring
+- provenance: architect-synthesis, per [DX-SPEC-CARRIES-ITS-EVIDENCE]
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-EPISTEMICS-GATE], [CXC-ERR-PRE-INTEGRATION-QUESTIONS]
+
+---
+
+## 9. Gaps — real conditions, no producer yet; do NOT mint codes
+
+### [CXC-ERR-GAPS] Known gaps — do NOT allocate a code until a real producer exists
+
+- gap-can-link: CAN `/link` health (bus-off, error-passive, TEC/REC, restart_count) has NO
+  producer in `transport_can.py` today. This is the single biggest gap and the strongest
+  argument the (withdrawn) `/link` leaf idea existed in the first place — under the ratified
+  two-leaf family, this becomes a comms-class `_error/event` on bus-off plus a `_register` bit,
+  written in `transport_can.py`, not a new leaf. Ships aspirational-empty for CAN until that
+  producer is built.
+- gap-mqtt-link: MQTT `/link` has no counter state (`reconnect_count` / time-since-connect)
+  today either.
+- gap-freshness-stale: freshness/staleness is a namespace TREATMENT (`72-freshness-receiver.lts`),
+  not an `_error` event, today. A future `SIGNAL_STALE` (FMI 9) is a plausible deferred
+  allocation once that treatment needs an error-visible face — NOT allocated here.
+- gap-storage-faults: storage/docstore faults live in the `bus_storage`/`document_store`
+  SERVICES, which were not part of the swept core. Sweep those separately before seeding
+  resource/storage-class codes.
+- gap-occurrence-count: `occurrence_count` (the `/event` payload field) has no source today —
+  recurrence-counting is a convention-layer job still to be built. See
+  [CXC-ERR-PRE-INTEGRATION-QUESTIONS] q3.
+- rule: NONE of the above license minting a new code. A code with no producer is exactly the
+  aspirational-empty state this list exists to name explicitly rather than let happen silently.
+- status: decided (as a list of known-unbuilt conditions); each gap's eventual code allocation
+  is undecided
+- provenance: david-ruling accept-all (composeio-expert sweep findings); architect-synthesis
+  (the "do not mint" rule stated as a standing discipline)
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-DEFERRED], [CXC-ERR-SEED-V1]
+
+---
+
+## 10. Dependency on the wire-protocol amendment
+
+### [CXC-ERR-DEPENDS-ON-WIRE-COLLAPSE] B depends on A — an error IS a retained event
+
+- rule: this entire convention is only well-formed because `_error/event` can be an ordinary
+  retained `event` namespace rather than a bespoke wire type. That depends on the LOG_ENTRY
+  retirement and the `{state,event_only,log}` -> `{state,event}`+`retention:int` collapse
+  landing FIRST (`spec/01-composeio-bus-protocol.smd` §1.6.1,
+  `spec/01-amendment-bus-extensions.smd` §2.4, both amended 2026-08-25). This spec does not
+  restate that amendment; it depends on it.
+- status: decided
+- provenance: david-ruling
+- part-of: [SPEC:CXC-ERR-NAMESPACE]
+- see-also: [CXC-ERR-EVENT]
+
+---
+
+## Relationships
+
+### Entity
+
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-PLACEMENT]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-FAMILY]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-FAULT-OWNERSHIP]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-REGISTER]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-EVENT]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-TAXONOMY]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-SEED-V1]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-DEFERRED]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-SEVERITY-DEFAULT]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-ARBITRATION]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-SCOPE-DEFAULT]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-CAPTURE]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-LINK-METRICS-ARE-TELEMETRY]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-EPISTEMICS-GATE]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-PRE-INTEGRATION-QUESTIONS]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-POST-INTEGRATION-EVIDENCE]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-GAPS]
+- [SPEC:CXC-ERR-NAMESPACE] CONTAINS [CXC-ERR-DEPENDS-ON-WIRE-COLLAPSE]
+
+### Semantic
+
+- [CXC-ERR-NAMESPACE] DEPENDS_ON [CXC-VISION-ANNOUNCE-BIND]
+- [CXC-ERR-NAMESPACE] DEPENDS_ON [CXC-VISION-EPISTEMICS]
+- [CXC-ERR-REGISTER] RELATED_TO [CXC-VISION-ANNOUNCE-BIND]
+- [CXC-ERR-CAPTURE] RELATED_TO [CXC-BUS-SCRIBE]
+- [CXC-ERR-EPISTEMICS-GATE] RELATED_TO [CXC-VISION-EPISTEMICS]
+- [CXC-ERR-PLACEMENT] RELATED_TO [CXC-VISION-PLACEMENT]
+
+---
+
+**Version**: 0.1 — 2026-08-25, initial authoring by factlattice-editor from
+`DEC-LOG-ENTRY-MAY-COLLAPSE-INTO-EVENT-PLUS-RETENTION-2026-08-25`,
+`DEC-COMMON-ERROR-NAMESPACE-CONVENTION-2026-08-25` and `DEC-ERROR-CODE-SEED-SET-V1-2026-08-25`.
+**Status**: Draft — [PLACEMENT UNRATIFIED]. Every `david-ruling`-tagged claim carries David's
+word directly; every `architect-synthesis`-tagged claim (notably the per-row FMI values and the
+non-called-out severity defaults in [CXC-ERR-SEED-V1], and every "not independently re-grounded
+this pass" code site) is PENDING his review before build. [CXC-ERR-EPISTEMICS-GATE] is BLOCKING
+and NOT YET SATISFIED — every slot in [CXC-ERR-POST-INTEGRATION-EVIDENCE] is EMPTY.

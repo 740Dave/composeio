@@ -1,0 +1,180 @@
+---
+scope: "The ComposeBus `time_service` — a generic, game-agnostic ComposeBus service app, shaped like `services/bus_storage` and `services/fingerprint_storage`, that publishes `time/base` (1 Hz default tick, schedule configurable via profile) carrying RAW MONOTONIC time, settled (UTC epoch when idle; game-elapsed-seconds-from-start in game). Everything locale- or planet-specific realizes that base as a separate 'time body' publishing `time/<body>`, with a per-body PRESENTATION/FORMAT that is itself configurable; time_service itself knows nothing of planets, locales, offsets, or rotation. DRAFT — audit round 1 applied (`docs/architecture/AUDIT-bus-time-service.md`), awaiting the architect's placement/ratify pass."
+audience: "David (architect) — audit round 1 applied, [CXC-TIME-AUDIT-R1]; the builder who will implement time_service and the game-world planet-realization layer; the render-engineer who owns the SHIP TIME leaf's locale-selector widget"
+boundary: "IN: time_service's own contract (`time/base`, raw monotonic value settled, 1 Hz default tick and per-body format CONFIGURABLE via profile — [CXC-TIME-BASE]'s `ruling-c2-q2`); the ship-time invariant and its idle default (San Francisco wall clock); the idle locale table (Caprica/Virgon/Tauron — Tauron=Ho Chi Minh City DECIDED, audit Q1 — Kobol reserved); the 'time body' realization pattern time/<body> and how a planet or locale becomes one; the SHIP TIME leaf's local-time view-selector; four open [DD-*] forks recorded and left OPEN, now updated per audit round 1. OUT: any planetary-rotation implementation (lives in the game-world layer, never in time_service — [CXC-TIME-PLANET-REALIZATION] states the boundary, does not cross it); the `colonial_clock` widget's rendering/display logic ([CXC-MODE-NAV-CIC-CHRONO-INSTANCE] owns that); wire-protocol ratification (open, [DD-TIME-WIRE-FORMAT]); any BSG-specific game profile content beyond the shape question raised in [DD-TIME-PROFILE-SHAPE]."
+not-this: "Not a ratified spec — `[PLACEMENT UNRATIFIED]`, status draft, awaiting an independent design-input audit that checks every claim below against what David actually said (per [DX-INTERPRETATION-IS-AN-INFERENCE]). Not a rendering spec for the SHIP TIME leaf's clock face — that belongs to [CXC-MODE-NAV-CIC-CHRONO-INSTANCE] and the render-engineer's widget-kind registration. Not a planetary-simulation spec — rotation periods, orbits, and per-planet game logic are game-world content this document deliberately does not model. Not a build authorization."
+depends-on: [61-config-over-bus.lts, 62-composeplatform-vision.lts, 78-composeux-cic-mode-nav.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: draft
+created: 2026-08-19
+updated: 2026-08-19
+---
+# ComposeBus Time Service — RAW MONOTONIC base, realized as many time bodies [SPEC:CXC-TIME-SERVICE]
+
+> `time_service` is a generic ComposeBus service app, shaped like `bus_storage` / `fingerprint_storage`: it
+> publishes ONE semantic fact — `time/base`, raw monotonic (SETTLED), at a 1 Hz default tick (schedule
+> configurable via profile) — and knows nothing about planets, locales, offsets, or rotation. Idle default is
+> San Francisco wall clock, and SHIP TIME IS INVARIANT: visiting a planet never changes it. Everything else —
+> Caprica, Virgon, Tauron, Kobol, a visited planet's own rotation, the SHIP TIME screen's local-time view — is
+> a "time body" that subscribes `time/base` and publishes `time/<body>`, with its own configurable
+> presentation/format, the same semantic-realization seam [CXC-VISION-SEMANTIC-REALIZATION] already names for
+> widgets. Rotation lives in the game-world entity that owns it, never in time_service
+> ([DX-LEAF-OWNS-BEHAVIOR]). `[PLACEMENT UNRATIFIED]` — filed as the next free numbered doc following
+> [CXC-VISION-PLACEMENT]'s precedent, pending the architect's own placement ruling. **DRAFT — audit round 1
+> applied (`docs/architecture/AUDIT-bus-time-service.md`, [CXC-TIME-AUDIT-R1]): 5 corrections + 2 rulings
+> dispositioned. Four forks remain OPEN, now reconciled against the rulings:
+> [DD-TIME-WIRE-FORMAT], [DD-TIME-SCHEDULE-RETAINED], [DD-TIME-PROFILE-SHAPE], [DD-TIME-BODY-UNIFICATION].**
+
+---
+
+## 1. Intent & placement
+
+### [CXC-TIME-SERVICE-INTENT] A generic, game-agnostic ComposeBus service app — same shape as `bus_storage` / `fingerprint_storage`
+
+- definition: `time_service` is a standalone ComposeBus service app — an ordinary bus client that originates one semantic fact and nothing else, the same posture `bus_storage` and `fingerprint_storage` already take toward their own contracts. It is GAME-AGNOSTIC: no ComposeIO service app hardcodes a game's vocabulary, and time_service is built to that same discipline.
+- shape-precedent: David's own analogy names `services/bus_storage` and `services/fingerprint_storage` as the shape to follow — a lightweight, decentralized service process that owns one contract and publishes it, not a game engine.
+- contract: publishes `time/base` at a 1 Hz DEFAULT tick (confirmed by David), raw-monotonic value settled; the tick schedule and the per-body presentation/format are CONFIGURABLE via a game-supplied time PROFILE ([CXC-TIME-GAME-PROFILE]) — see [CXC-TIME-BASE]'s `ruling-c2-q2`. What fields of that profile time_service itself reads (a "base mode" restriction is one candidate, not settled) remains open — [DD-TIME-PROFILE-SHAPE].
+- boundary: time_service knows NOTHING of planets, locales, offsets, or rotation. Those are realized by separate "time bodies" ([CXC-TIME-BODY]) and, for planets, by the game-world layer ([CXC-TIME-PLANET-REALIZATION]) — never by time_service itself.
+- see-also: [DX-ENGINE-VS-POLICY], [CXC-CONFIG-BUS]
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+### [CXC-TIME-SERVICE-PLACEMENT] Placement unratified
+
+- status: PLACEMENT UNRATIFIED
+- definition: filed as a new numbered spec in `corpora/platform-specs`, following [CXC-VISION-PLACEMENT]'s recorded precedent that this directory carries live filename-number collisions and that placement itself is not yet a ruled question. Tag carried in this document's title and here so a query can reach it structurally rather than only in prose.
+- see-also: [CXC-VISION-PLACEMENT]
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+---
+
+## 2. The base clock — engine, not policy
+
+### [CXC-TIME-BASE] `time/base` — raw-monotonic value SETTLED; 1 Hz default tick and per-body format are CONFIGURABLE
+
+- status: decided
+- definition: time_service publishes `time/base` carrying RAW MONOTONIC time, never a formatted clock string — UTC epoch seconds when idle; game-elapsed-seconds-from-start when a game module is running. This BASE VALUE is SETTLED — raw-monotonic and nothing else — because a planet ([CXC-TIME-PLANET-REALIZATION]) must be able to invert it into its own rotation phase, which a pre-formatted string cannot support.
+- tick-schedule: 1 Hz is the DEFAULT publish cadence (David confirmed: "1hz signal is fine", line 17847) — the cadence itself is CONFIGURABLE via the game-supplied time profile ([CXC-TIME-GAME-PROFILE]), not a hard-fixed constant. A profile MAY set a different tick rate for a given game module.
+- presentation-configurable: `time/base`'s own payload format is fixed raw-monotonic; any OTHER presentation/format (a formatted clock string, an offset view, a rotation-inverted view) is a per-body REALIZATION concern ([CXC-TIME-BODY], [CXC-TIME-PLANET-REALIZATION]), and that realization's format IS configurable per body/profile.
+- ruling-c2-q2: closes audit findings C2 (MISSING) and Q2 (David: "I'm fine with your proposal"). David's line-17810 origin ask — "configurable to emit a time packet on whatever schedule and in whatever format we want" — is CARRIED FORWARD, not superseded: the base VALUE stays raw-monotonic (settled, because a planet must be able to invert it to its own rotation), while the TICK SCHEDULE ([DD-TIME-SCHEDULE-RETAINED]) and the per-body PRESENTATION/FORMAT ([DD-TIME-WIRE-FORMAT]) are the configurable surfaces that honor it. Neither fork is closed by this ruling; both stay OPEN, now explicitly related to the decided configurability rather than orphaned.
+- dsd-source: (a local path, not published)
+- inference: the requirement that the base VALUE be RAW MONOTONIC rather than a pre-formatted clock remains an ARCHITECT INFERENCE, not David's stated words — derived because a planet must be able to invert a monotonic value into its own rotation phase. Recorded per [DX-INTERPRETATION-IS-AN-INFERENCE], not promoted beyond that.
+- rule: time_service never emits a per-body value on `time/base` itself — that is what [CXC-TIME-BODY] and [CXC-TIME-PLANET-REALIZATION] exist to do, each on its own `time/<body>` namespace.
+- see-also: [DX-ENGINE-VS-POLICY], [DX-STATE-ON-BUS], [CXC-CONFIG-BUS], [DD-TIME-WIRE-FORMAT], [DD-TIME-SCHEDULE-RETAINED], [DD-TIME-PROFILE-SHAPE]
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+### [CXC-TIME-SHIP-INVARIANT] Ship time is invariant — idle default is San Francisco wall clock
+
+- idle-default: not playing a game -> ship time = real wall clock in San Francisco.
+- rule: ship time NEVER changes on proximity to a planet or locale. Only a game-supplied profile, loaded at game START ([CXC-TIME-GAME-PROFILE]), may define a different ship-time offset — never a runtime proximity effect.
+- see-also: [CXC-TIME-BASE], [CXC-TIME-GAME-PROFILE]
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+---
+
+## 3. Time bodies — the semantic realization
+
+### [CXC-TIME-BODY] Everything else is a "time body" realizing `time/base` — ARCHITECT INFERENCE
+
+- inference: unifying locale-offset and planetary-rotation into ONE "time body" shape — `{offset, rotation (default 24h), format, proximity-gated?}` — is the architect's proposal, not David's stated words. Recorded per [DX-INTERPRETATION-IS-AN-INFERENCE] and left as an open fork rather than a settled model; see [DD-TIME-BODY-UNIFICATION].
+- definition: a time body SUBSCRIBES `time/base` and PUBLISHES `time/<body>`. A clock leaf subscribes to a body's namespace and displays it. No device is aware of any other body — the same simultaneous-realization pattern [CXC-VISION-SEMANTIC-REALIZATION] already names for widgets, applied here to time.
+- see-also: [CXC-VISION-SEMANTIC-REALIZATION], [DX-STATE-ON-BUS], [DD-TIME-BODY-UNIFICATION]
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+### [CXC-TIME-IDLE-LOCALES] Idle locale table — Caprica/Virgon/Tauron real-world stand-ins; Kobol reserved
+
+- status: decided
+- ruling-q1: DECIDED, David-confirmed (audit finding Q1) — Vietnam is a single time zone (Asia/Ho_Chi_Minh, UTC+7), so any city within it is equivalent and the country-to-city resolution is not an unflagged architect pick. Ho Chi Minh City stands as the idle locale, ambiguity hedge removed.
+- dsd-source: (a local path, not published)
+- locale-caprica: Copenhagen
+- locale-virgon: Singapore
+- locale-tauron: Ho Chi Minh City, Vietnam (Asia/Ho_Chi_Minh) — decided, audit Q1.
+- locale-kobol: intentionally NOT used in idle — reserved for gameplay, per David's own words.
+- rule: this table governs the IDLE realization only. An in-game profile may define different offsets for the same body names, per [CXC-TIME-GAME-PROFILE].
+- see-also: [CXC-TIME-BODY], [CXC-TIME-SHIP-INVARIANT]
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+### [CXC-TIME-GAME-PROFILE] In-game — a time profile defines unique per-body offsets, loaded at game start
+
+- rule: the profile is loaded ONCE, at game start. Which fields it carries, and which layer (time_service vs. a time body vs. the game-world layer) consumes each, is not yet settled — see [DD-TIME-PROFILE-SHAPE], which now also carries the "base mode" framing as ONE CANDIDATE profile shape (audit C3), not a settled restriction.
+- see-also: [CXC-CONFIG-BUS], [CXC-TIME-SHIP-INVARIANT], [DD-TIME-PROFILE-SHAPE]
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+---
+
+## 4. Planetary rotation — game-world layer, never time_service
+
+### [CXC-TIME-PLANET-REALIZATION] A planet subscribes `time/base` and publishes `time/<planet>` by its own rotation, IFF Galactica is nearby
+
+- rule: rotation period is a property of the PLANET, not of time_service. The planet — a game-world entity, not time_service — subscribes `time/base`, and IFF Galactica is nearby, publishes `time/<planet>` inverted through its own rotation period (default 24h absent a game-specific value). The 24h default is an ARCHITECT INFERENCE — an unconfirmed proposal, not a value David specified — see [DD-TIME-BODY-UNIFICATION], which flags the same default for the design-input audit rather than settling it.
+- proximity-gate: a planet publishes its own time body only while Galactica is nearby; time_service performs no proximity check of any kind and holds no notion of "nearby."
+- zero-new-time-service-code: this is the O(0) shape [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER] requires — time_service publishes the fact once; it is never edited, and never grows a special case, to add a new planet's rotation.
+- ownership: the cheapest node that can own rotation behavior is the planet entity itself, per [DX-LEAF-OWNS-BEHAVIOR] — rotation NEVER lifts into time_service as a coordinator concern.
+- see-also: [DX-LEAF-OWNS-BEHAVIOR], [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER], [CXC-TIME-BODY], [CXC-TIME-BASE]
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+---
+
+## 5. The Ship Time view — local-time selector, nested in CHRONO
+
+### [CXC-TIME-VIEW-SELECTOR] "Local Time" — a locale selector on the Ship Time screen; selecting a view never alters ship time
+
+- definition: the SHIP TIME leaf ([CXC-MODE-NAV-CIC-CHRONO-INSTANCE]'s `ship-time` slug) carries a locale SELECTOR that picks which body's time to VIEW — Ship / Local Time (an alias resolving, proximity-gated, to the nearby body) / named worlds (Kobol, Caprica, ...).
+- rule: selecting a view NEVER writes or alters ship time itself ([CXC-TIME-SHIP-INVARIANT]) — the selector changes what is DISPLAYED, never what time_service publishes on `time/base`.
+- definition-continued: nests in [CXC-MODE-NAV-CIC-CHRONO-INSTANCE]'s already-ratified SHIP TIME leaf.
+- see-also: [CXC-MODE-NAV-CIC-CHRONO-INSTANCE], [CXC-TIME-BODY], [CXC-TIME-SHIP-INVARIANT]
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+---
+
+## 6. Open forks — not yet ruled
+
+### [DD-TIME-WIRE-FORMAT] `time/base` wire format — epoch vs. ISO-8601-UTC
+
+- decision: OPEN — should `time/base`'s payload be a numeric UNIX epoch or an ISO-8601-UTC string?
+- status: raised
+- alternatives: epoch (numeric UNIX seconds); ISO-8601-UTC (string)
+- rationale: the architect leans epoch — a raw numeric monotonic value is the cheapest form for a time body to invert into its own offset or rotation phase, and matches [CXC-TIME-BASE]'s raw-monotonic requirement most directly. Not David's ruling.
+- ruling-context: David's line-17810 "configurable... format" ask is honored at the per-body PRESENTATION layer, per [CXC-TIME-BASE]'s `ruling-c2-q2` — this fork is the narrower, still-open question of which single wire encoding time_service itself uses for the raw value, not the general format-configurability question.
+- dsd-source: (a local path, not published)
+- invalidating-assumption: reopens if a consuming leaf needs a human-legible wire value with no client-side conversion available.
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+### [DD-TIME-SCHEDULE-RETAINED] 1 Hz default publish plus a retained snapshot for late joiners?
+
+- decision: OPEN — beyond the DEFAULT 1 Hz cadence (now confirmed CONFIGURABLE per profile, [CXC-TIME-BASE]'s `tick-schedule`), should time_service ALSO retain its last `time/base` value so a leaf joining mid-tick reads a value immediately rather than waiting up to one tick period?
+- status: raised
+- alternatives: publish-only, no retained snapshot; publish plus a retained/last-value snapshot
+- rationale: not ruled — raised because [CXC-CONFIG-BUS] and other ComposeBus services already use retained-value patterns for late joiners, but David has not confirmed this applies to `time/base`.
+- ruling-context: David's line-17810 "configurable... schedule" ask is now honored — the TICK RATE itself is a configurable profile field, per [CXC-TIME-BASE]'s `ruling-c2-q2`. This fork is the narrower, still-open question of a retained-snapshot mechanism, not the schedule-configurability question itself.
+- dsd-source: (a local path, not published)
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+### [DD-TIME-PROFILE-SHAPE] What the game time profile carries, and who consumes which part
+
+- decision: OPEN — the full shape of the game-supplied time profile ([CXC-TIME-GAME-PROFILE]) and which fields time_service reads versus which fields a time body or the game-world layer reads.
+- status: raised
+- alternatives: a single flat profile time_service reads in full; a profile split by consumer, with a "base mode" field scoped to time_service and per-body offsets/rotation defaults scoped to time bodies and the game-world layer.
+- rationale: not ruled in full — David's ruling (audit C3: "Yes, base mode should be a candidate") confirms the "time_service reads only a base-mode field" shape is a legitimate CANDIDATE for this fork, not that it is settled; [CXC-TIME-BASE] and [CXC-TIME-GAME-PROFILE] no longer assert it as fact. The full profile shape and field-routing question remains OPEN.
+- dsd-source: (a local path, not published)
+- part-of: [SPEC:CXC-TIME-SERVICE]
+
+### [DD-TIME-BODY-UNIFICATION] Whether locale-offset and planetary-rotation truly unify into one "time body" shape
+
+- decision: OPEN — is `{offset, rotation (default 24h), format, proximity-gated?}` the right single shape for BOTH an idle locale (Copenhagen, Singapore, Ho Chi Minh City) and an in-game planet's own rotation, or do they need distinct models?
+- status: raised
+- alternatives: one unified "time body" shape for both locales and planets (architect proposal, [CXC-TIME-BODY]); two distinct shapes — a simple offset-only locale realization and a separate rotation-bearing planet realization
+- rationale: this unification is an ARCHITECT INFERENCE per [DX-INTERPRETATION-IS-AN-INFERENCE], not something David stated. Flagged for the design-input audit rather than resolved here.
+- invalidating-assumption: reopens if a planet needs fields (e.g. an orbital-phase-dependent format) an idle locale never needs, which would break a single shared shape.
+- part-of: [SPEC:CXC-TIME-SERVICE]
+- david-ruling: DECIDED = UNIFIED (David 2026-08-19). A time body is a first-class TIME-OBJECT with its OWN time source; the idle-locale offset (UTC + IANA tz) is the DEGENERATE case, not the model. Confirmed by David's generality test: two ships — Galactica AND Pegasus — must each run on their OWN time base, which the unified object model gives directly (each publishes time/<object> off its own source) and a singleton special-cased time/ship could not. Consequences: bodies are OBJECT-NAMED (time/<object>); SHIP TIME becomes a VIEW resolving to the relevant ship-object (the current console's ship), not a fixed namespace. time_service realizes the idle-locale (offset) source; the game-world layer realizes the object-with-its-own-base source (Galactica, Pegasus, planet rotation) at the SAME seam. This ruling resolves QA run-1 notes 1 (body wire format) and 2 (idle bodies emit nonsense in game mode) as symptoms of the offset-only stopping point. dsd-source-followon: docs/architecture/AUDIT-bus-time-service.md + composeplatform-qa run 2026-08-19.
+
+---
+
+## 7. Audit round 1 — disposition record
+
+### [CXC-TIME-AUDIT-R1] Audit round 1 — 5 corrections + 2 questions, all dispositioned
+
+
+

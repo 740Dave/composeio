@@ -1,0 +1,386 @@
+---
+scope: "The ComposePlatform Launch Bar — an always-on vertical ribbon launcher that makes running each Compose* app one click, plus the TWO new file-navigation apps it launches (a Document Storage viewer over doc:// / docstore, and a Bus Storage viewer over bus:// / bus_storage). It is itself a ComposeUX app: a dark vertical ribbon, the Compose logo at top, a column of launch TILES (monochrome icon + label), the current app's tile drawn pressed. A tile press publishes an `_app/<target>/open` intent (control-is-a-peer: an Intelligence presses a tile by publishing the same intent); an in-process launcher consumes the intent and spawns the target, REUSING the existing launcher/intent seams — no new launch machinery is invented."
+audience: [composeux-architect, David, the builder implementing the launch bar + the two storage viewers, any Intelligence launching a Compose* app by publishing a launch intent]
+boundary: "IN: the ribbon + tile model ([CXC-LB-RIBBON], [CXC-LB-TILE], [CXC-LB-ROSTER], [CXC-LB-ACTIVE]); the tile->intent launch binding and the in-process launcher that consumes it ([CXC-LB-INTENT-BINDING], [CXC-LB-LAUNCHER], [CXC-LB-INTENT-TABLE]); the console-only tier scope ([CXC-LB-TIER-CONSOLE]); the two NEW navigation-shell apps as read/view interfaces over the existing stores ([CXC-DOCNAV-*], [CXC-BUSNAV-*]); the machine+glass acceptance gates ([CXC-LB-VERIFY]). OUT: the doc-viewer's markdown/svg/png/yaml rendering internals (reused by reference from intelligence/tools/doc_viewer_launcher.py + intelligence/console/docviewer.compose.yaml, not redefined); the docstore/bus_storage server internals (queried read-only via python/composeio/docstore.py and services/bus_storage/server.py, not modified); the decisions viewer ([SPEC:CXC-DVL], reused as tile 4's target); any WRITE/DELETE path into either store (explicitly future-scoped, [CXC-DOCNAV-READONLY], [CXC-BUSNAV-READONLY]); the PTY /compact launcher (intelligence/launcher/launcher.py — a different launch role, cited only as the process-spawn precedent)."
+not-this: "Not a new renderer — the two storage apps are NAVIGATION SHELLS over existing stores that hand a selected entry to the EXISTING doc-viewer; they add no rendering path. Not a new launch pattern — the tile press MIRRORS intelligence/tools/decisions_viewer_launcher.py + doc_viewer_launcher.py (the widget-owns-intent / launcher-owns-runtime split, [DX-NARROW-WAIST]); no fork. Not an embedded-tier surface — it is a desktop/console launcher, scoped console-only with a recorded reason ([CXC-LB-TIER-CONSOLE]). The launch-mechanism choice, the storage-viewers' home, the six new intents, and the project-registry entries are now RESOLVED — ratified by David 2026-07-29 ([DD-LB-LAUNCH-MECHANISM], [DD-LB-STORAGE-VIEWERS-HOME], [DD-LB-NEW-INTENTS], [DD-LB-PROJECT-REGISTRY])."
+depends-on: [SPEC:CXC-DVL]
+depends-on: [34-composeux-intelligence-console.lts]
+depends-on: [23-composeux-widget-primitives.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-07-29
+updated: 2026-08-06
+---
+# ComposePlatform Launch Bar [SPEC:CXC-LAUNCHBAR]
+
+> An always-on vertical ribbon that makes launching each Compose* app one click. It is itself a ComposeUX app — a dark ribbon, the Compose logo at top, a column of launch TILES (monochrome icon + label below), the current app's tile drawn pressed. A tile press PUBLISHES an `_app/<target>/open` intent; an in-process launcher consumes it and spawns the target, REUSING the exact seam the decisions/doc viewers already ride (`decisions_viewer_launcher.py`, `doc_viewer_launcher.py`) — control-is-a-peer, so an Intelligence "presses" a tile by publishing the same intent ([CXC-CREDO]). Two of the seven tiles launch NEW apps this spec also defines: a Document Storage viewer (a navigation shell over `doc://`/docstore) and a Bus Storage viewer (a navigation shell over `bus://`/bus_storage), both READ/VIEW-only, both handing a selected entry to the EXISTING doc-viewer.
+
+---
+
+## 1. Intent & Contract
+
+### [CXC-LB-INTENT] Why — one-click, always-on access to the Compose* app family
+
+- definition: the ComposePlatform has grown a family of Compose* apps (the compose console / app Designer ([SPEC:CXC-INTELLIGENCE-CONSOLE]), the AI harness — the distinct slash-command / self-directed-`/compact` app, the Visual/UX Composer, the Decisions viewer, the two storage viewers this spec adds, and a ComposeBus monitor). Today each is launched ad hoc (a shell command, a bespoke `_app/*/open` publish, a data-source registration). The Launch Bar is the ONE always-visible surface that makes running any of them a single click.
+- role: a persistent vertical ribbon docked beside the working surface (like an OS dock, but Compose-native and bus-driven). It holds no app logic — it is a pure launcher: each tile maps to exactly one target app and one launch intent.
+- requirement: the ribbon MUST present the seven tiles of [CXC-LB-ROSTER] in the stated top->bottom order, MUST draw the current app's tile in the active/pressed state ([CXC-LB-ACTIVE]), and MUST launch a tile's target by publishing that tile's launch intent ([CXC-LB-INTENT-BINDING]) — never by embedding the target's code.
+- reuse-by-reference: the launch machinery is NOT new. The tile-press -> intent -> in-process-launcher -> spawn path MIRRORS `intelligence/tools/decisions_viewer_launcher.py` and `intelligence/tools/doc_viewer_launcher.py` ([DX-NARROW-WAIST]); the process-spawn precedent is `intelligence/launcher/launcher.py`.
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-LB-CREDO] Control-is-a-peer — a tile press is a bus intent, so an Intelligence can press it
+
+- definition: pressing a tile does exactly one observable thing: it publishes the tile's launch intent onto the bus. A human clicking a tile and an Intelligence publishing the identical `_app/<target>/open` intent are PEERS — neither path is privileged ([CXC-CREDO], the ComposeUX credo).
+- consequence: the Launch Bar is fully drivable headlessly and observably. "Open the Composer" is a bus publish whether a finger or an Intelligence issues it; the launcher that spawns the target cannot tell them apart and must not try.
+- constraint: the tile widget OWNS the intent (it publishes on press); the launcher OWNS the runtime (it consumes the intent and spawns). This is the widget-owns-intent / launcher-owns-runtime split the doc/decisions launchers already enforce ([DX-LEAF-OWNS-BEHAVIOR]); the tile never spawns a process itself.
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-LB-AUTOSTART] The ribbon + app_launcher come up WITH the console — via ONE canonical bringup
+
+- definition: "always-on" ([CXC-LB-INTENT]) is a LIFECYCLE contract, not just an appearance one. The Launch Bar ribbon (`compose_platform_launch_bar/launch_bar.compose.yaml`) AND its intent-consuming launcher daemon (`intelligence/tools/app_launcher.py`) MUST be brought up WITH the Intelligence Console as one stack (David 2026-07-29). A console that is up while the ribbon is down is a DEFECT, not a degraded-but-acceptable state.
+- requirement-single-source-of-truth: the console + ribbon + app_launcher MUST be launched by ONE canonical, idempotent bringup — `intelligence/start-console-stack.sh` — that EVERY launch path reuses by reference ([DX-NARROW-WAIST], reuse-by-reference-never-fork): the interactive bounce (the `bounce-console` skill), the boot LaunchAgent (`deploy/launchagents/com.composeio.console-stack.plist`), and any operator. The linkage MUST live in that shared code, never as prose duplicated into a runbook — a behavior that lives only in a human-followed doc is dropped by every launch path that skips the doc (the recurrence engine this node closes; DEFECT-LAUNCH-BAR-RIBBON-NOT-RUNNING, David 2026-08-04).
+- requirement-idempotent-by-lock: each stack member is launched only if its host lock is FREE: the surface flock for the console and the ribbon, and the `app-launcher` role singleton for app_launcher, read by a non-blocking probe (`stack_member_probe`). Membership is NEVER inferred from process command-line text, which cannot tell a member from a shell that mentions one, nor recognise a member started in an unanticipated way. An unanswerable probe means do NOT launch, and a lock that cannot be READ (dir missing or inaccessible, file present but unopenable) is unanswerable, never absent.
+- correction: DEFECT-TWO-CONSOLES-SPAWNED-THEN-KILLED (David 2026-08-15) — the `pgrep` guard is a CONVENIENCE, NOT THE GUARANTEE. This clause previously ended "and never doubles a live surface". It cannot promise that, and the promise is what let the duplicate-console defect live. A `pgrep` guard fails in two independent ways, both measured: (1) it is ADVISORY — it binds only the launch path that runs it, so `console_supervisor.ConsoleSupervisor.start()` (guarded only by its own child handle), a hand `runtime --transports`, and this runbook's own relaunch-after-a-kill-that-did-not-take all spawn a rival surface beside a live one; and (2) `if ! pgrep …` reads EVERY nonzero exit as "nothing is running", including the exit that means "I could not tell" — David's preflight `pgrep -fc …` (`-c` is a Linux flag macOS `pgrep` rejects) reported nothing while two surfaces were live. The guarantee that "never doubles a live surface" now rests on [CXC-IC-SURFACE-SINGLETON]: the SURFACE itself holds a host `flock` keyed on its scene's `app: id:` and a second one yields before opening a window, so the invariant holds for launch paths this script has never heard of. The `pgrep` guard is KEPT — it is a cheap fast path that avoids the wasted spawn — but it is no longer load-bearing, and no future clause may state it as the guarantee.
+- see-also: [CXC-IC-SURFACE-SINGLETON] (the constitutive guarantee this requirement leans on)
+- requirement-no-session-dependency-for-ribbon: the ribbon is a pure tile scene with NO transcript-dependent in-process sources, so unlike the console it needs `--transports` (the bus) but NOT a session pin — it MUST come up clean even at login when no Claude session yet exists. (The console's telemetry may be dark until a session attaches; the ribbon's presence must not be.)
+- scenario:
+  - when: the console is launched by any path (a direct `runtime … --transports`, the supervisor, or the boot LaunchAgent)
+  - then: the ribbon and app_launcher are up too — `pgrep -f launch_bar.compose.yaml` and `pgrep -f intelligence.tools.app_launcher` each return a live pid
+- scenario:
+  - when: the machine reaches the login (Aqua) session
+  - then: the LaunchAgent RunAtLoad-fires the canonical bringup and the whole stack comes up without a human command
+- finding-launcher-spec-drift: [CXC-LB-LAUNCHER] still says the launcher is "registered as a console data source … NOT a standalone daemon." The as-built ONE generalized launcher ([DD-LB-LAUNCH-MECHANISM]) is a STANDALONE daemon (`python3 -m intelligence.tools.app_launcher`, singleton-guarded, watched by `daemon_watch`) — correct, because the ribbon is a separate top-level window and the launcher must consume `_app/*/open` at global scope for control-is-a-peer. [CXC-LB-LAUNCHER]'s "console data source, not a daemon" clause is stale relative to that ratified generalization and SHOULD be reconciled (implementation-ahead-of-spec).
+- see-also: [CXC-LB-INTENT], [CXC-LB-LAUNCHER]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+- requirement-no-duplicate-surface: no duplicate SURFACE opens or stays: the guarantee is the member's own lock, so a second launch inside a member's pre-lock window may start a duplicate PROCESS. That process MUST yield before opening a window, starting in-process sources or starting a bus.
+- requirement-members-independent: members are independent: a member whose spawn fails MUST NOT prevent the others from launching; the bringup reports the failed members and exits non-zero.
+- requirement-members-outlive-launcher: members outlive their launcher: every member MUST be launched in its own session (setsid), and the bringup MUST NOT continue until that has happened, so a member survives the exit of the bringup AND a teardown of the launching process group at any moment. The boot LaunchAgent runs the bringup as a one-shot job, and launchd SIGTERMs the job's remaining process group when the job exits (launchd.plist(5) AbandonProcessGroup). A member left in that group is reaped about 1 s after "console stack up" and exits 0 with no traceback (SDL maps SIGTERM to SDL_QUIT). DEFECT-CONSOLE-STACK-CONSOLE-RIBBON-APP-A37C0E, 2026-11-26.
+- scenario-teardown: when: the bringup is run as a process-group leader and that group is SIGTERMed right after any spawn, or after the bringup exits; then: console, ribbon and app_launcher are all alive, and none shares the bringup's pgid
+- scenario-already-up: when: a member is already running, however it was started, or only a shell mentions one; then: the first is reported "already up" and no duplicate surface opens or stays; the second does not suppress a launch
+- correction-runs-1-exit-0: "launchctl runs=1, last exit 0" (DEFECT-…-0CE4A6) measures the one-shot bash only; it cannot exonerate the agent with respect to its children.
+- provenance: DEFECT-CONSOLE-STACK-CONSOLE-RIBBON-APP-A37C0E; public PR #15 (740Dave/composeio main de55de4b4c9cc248703ce9cf921cd818f2cb14de); ratified by composeux-architect 2026-11-27
+- evidence: `compose_projects/intelligence/test_start_console_stack.py`
+- superseded-scenarios: the nested `scenario` block "when: the console is launched by any path … then: … `pgrep -f launch_bar.compose.yaml` and `pgrep -f intelligence.tools.app_launcher` each return a live pid" is superseded by requirement-idempotent-by-lock (2026-11-27; command-line matching cannot tell a member from a shell that mentions it). Kept in place as history; it is evidence. The login (Aqua) scenario does not check with pgrep and is not superseded.
+
+---
+
+## 2. The Ribbon & Tile Model
+
+### [CXC-LB-RIBBON] The vertical ribbon — dark, logo-topped, a column of tiles
+
+- definition: a single-column vertical ribbon ComposeUX surface. Top-to-bottom: (1) the Compose brand logo, then (2) the column of launch tiles ([CXC-LB-ROSTER]), one per app.
+- appearance (defaults, from the mockup `compose_platform_launch_bar/mockup.svg`): dark ribbon background; monochrome tile icons; a tile label rendered BELOW its icon; the active tile drawn highlighted/pressed ([CXC-LB-ACTIVE]). The mockup is authoritative for TOKENS AND PROPORTION — palette, the icon-above-label composition, the pressed inset-chip treatment — and, where a shared token exists, the console theme (`console_theme`); a builder MUST NOT invent an unrelated palette. The mockup is NOT authoritative for ABSOLUTE magnitudes (ribbon width, tile size, icon size, font size): those are DPI-relative and are stated below against a named reference display tier (see the `change` block on this node, 2026-08-06).
+- default ribbon size: 96 x 932 px (a single 96px tile column + padding: a 58px brand logo over seven 96x118 tiles). This is the DEFAULT and MAY be overridden by a ribbon config property, but MUST have a stated value so the builder does not guess — only the VALUE moved (David 2026-08-06); the requirement that a value be stated is unchanged and load-bearing.
+- reference display tier (must accompany any absolute size): these magnitudes are authored for the CONSOLE's 4K panel, which reports 3840x2160 LOGICAL pixels — 1pt renders as 1 DEVICE pixel, with NO Retina/backing-scale multiplier. An absolute size is only valid at the DPI its source assumed; a spec that pins absolute sizes without naming its reference tier will silently mis-size on the real glass.
+- sizing (derived, not pinned): two named constants in `python/composeio/render/widgets/launch_tile.py` are the source — `ICON_BOX = 64.0` and `LABEL_FONT = 12.0`. Tile width MUST be at least the widest UNBREAKABLE label MEASURED at LABEL_FONT plus 2 x LABEL_PAD (the measured floor: "ComposeBus" measures 74px at 12pt bold; 96 - 2 x 6 = 84 >= 74). Tile height, ribbon height (logo block + seven tiles + pad), the brand logo's centered x, and the pressed-chip metrics are COMPUTED from those two constants. A future resize MUST be a two-constant edit, never seven independent magic numbers re-pinned.
+- as-built geometry (derived; the scene must match the constants): the scene `compose_platform_launch_bar/launch_bar.compose.yaml` carries ribbon 96 x 932; tile 96 x 118 at y = 96, 214, 332, 450, 568, 686, 804; brand logo 58 x 58 at (19, 16); pressed chip CHIP_H 76, CHIP_W_MAX 80, CHIP_RADIUS 12; LABEL_PAD 6.0.
+- tokens unchanged by the resize: ribbon `#1c1c28`, icon `#e3e3e3`, pressed chip `#000000` @ ~.95, label `#ffffff`; the pressed inset-chip treatment is retained.
+- verification (sizing): machine — a test in `python/tests/render/test_launch_bar.py` asserts the scene YAML's ribbon/tile/logo geometry equals the values derived from `ICON_BOX`/`LABEL_FONT`, so a constant edit not propagated to the scene goes RED. Glass — every tile label is readable in situ on the console panel (David 2026-08-06: "Launch bar is very readable now").
+- change: "The ribbon's stated absolute sizes are REPLACED: ribbon 72 x 486 -> 96 x 932 px; ICON_BOX 28.0 -> 64.0; LABEL_FONT 7.5 -> 12.0; tile 72 x 58 -> 96 x 118; brand logo 44 @ (14,12) -> 58 @ (19,16); tile y offsets 72/130/188/246/304/362/420 -> 96/214/332/450/568/686/804; pressed chip CHIP_H 42 -> 76, CHIP_W_MAX 60 -> 80, CHIP_RADIUS 7 -> 12; LABEL_PAD 3.0 -> 6.0. Design tokens are UNCHANGED (#1c1c28 ribbon, #e3e3e3 icon, #000000 @ ~.95 pressed chip, #ffffff label) and the pressed inset-chip treatment is retained. The sizes also become DERIVED from two named constants rather than seven independent pinned numbers. Ratified by David 2026-08-06."
+- context_for_change:
+    prior_state: "The 72px ribbon width / 28.0 ICON_BOX / 7.5pt LABEL_FONT defaults were lifted from `compose_platform_launch_bar/mockup.svg` (this node's `appearance` property said exactly that: lift the tokens from the mockup). They were recorded as seven independent absolute magic numbers — ribbon, tile, icon, font, logo, chip, offsets — with NO stated reference DPI, in the scene YAML and in `launch_tile.py`."
+    reasoning: "The mockup's tokens were authored against a 1x-DPI reference. The console's actual glass is a 4K panel reporting 3840x2160 LOGICAL pixels, so 1pt renders as 1 DEVICE pixel with no Retina scaling — a 7.5pt label legible in a 1x mockup preview is sub-2mm in situ; David, on the real panel, reported he simply cannot read them at all. The new width was MEASURED, not chosen: at 12pt bold the single unbreakable word `ComposeBus` measures 74px, which sets the width floor (96 - 2 x 6 padding = 84 >= 74); every other dimension is then computed from ICON_BOX + LABEL_FONT. Human verdict after the resize (David 2026-08-06): the launch bar is very readable now."
+    rejected_alternative: "Scale the ribbon by a global DPI factor at render time — rejected: the panel reports logical == device pixels, so there is no backing scale to key off; a hand-set factor is the same magic number moved one indirection away. Also rejected: re-pin the seven NEW numbers as independent facts — that is precisely what let the first sizing go stale one place at a time."
+    counter_argument: "The mockup is this node's stated design source of truth; overriding its absolute sizes forks the ribbon from its own art."
+    counter_response: "Only the mockup's absolute MAGNITUDES are overridden. Its tokens and proportions — palette, icon-above-label composition, the pressed inset-chip treatment — are retained byte-for-byte. A mockup carries proportion faithfully and absolute size only at the DPI it assumed; the fork would be changing the palette, not resizing to the target panel."
+    invalidating_assumption: "That a mockup's absolute pixel/point values are valid at the DISPLAY TIER the surface actually renders on — FALSIFIED here (mockup.svg assumed a 1x-DPI reference; the console glass is a 4K panel at logical == device pixels). The GENERALIZABLE rule this buys, beyond this widget: any spec that pins absolute sizes lifted from a mockup MUST state that mockup's assumed reference DPI, or it will silently mis-size on the real display tier. If the console's panel/tier changes (a Retina-scaled display, a different panel, a non-console tier), these magnitudes reopen — but only through ICON_BOX/LABEL_FONT, not through seven edits."
+    implication: "The sizes are DERIVED from `ICON_BOX` + `LABEL_FONT` in `python/composeio/render/widgets/launch_tile.py`; the tile/ribbon/logo geometry and the pressed-chip metrics are computed from them, and a test asserts the scene YAML matches the constants — so a resize is a two-constant edit with a RED test if the scene drifts, not a hunt. This node's `appearance` property is narrowed accordingly (mockup = tokens + proportion; NOT absolute magnitudes). [CXC-LB-TIER-CONSOLE]'s console-only scope now also carries a SIZE-tier meaning: these magnitudes belong to the 4K console panel, not to a portable default."
+- tier: this ribbon is a desktop/console surface, scoped console-only with a recorded reason ([CXC-LB-TIER-CONSOLE]).
+- constructed-from: reuse the render-engine primitives ([SPEC:CXC-RENDER]) — a `pixel_stack` column of tile composites; each tile icon is an `svg`/image widget sourced from `compose_platform_launch_bar/artwork/` ([CXC-LB-TILE]). No new engine `Widget` subclass is required.
+- see-also: [CXC-LB-TILE], [CXC-LB-ROSTER]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-LB-TILE] A tile — monochrome icon + label, three visual states, one launch intent
+
+- definition: a tile is the ribbon's unit. It renders a monochrome icon (from `artwork/`) with a text label below it, and it carries exactly one launch intent ([CXC-LB-INTENT-BINDING]).
+- states (all three MUST be visually distinct): `idle` (default), `hover` (pointer over, desktop only), `active` (this tile's app is the current app — drawn highlighted/pressed, [CXC-LB-ACTIVE]).
+- icon source: each tile's icon is a file under `compose_platform_launch_bar/artwork/` ([CXC-LB-ROSTER] names the file per tile). A missing/unresolved icon MUST fall back to the tile's label text on a neutral swatch (preserve-and-flag — never a blank tile), and the fallback MUST be logged.
+- press behavior: on press the tile publishes its launch intent (§3) and nothing else — it does not itself spawn, focus, or mutate app state.
+- default label: the tile's app name as given in [CXC-LB-ROSTER]; labels MUST be stated, not derived.
+- see-also: [CXC-LB-INTENT-BINDING], [CXC-LB-ACTIVE]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-LB-ROSTER] The seven tiles — order, target, launch intent, icon
+
+- definition: the ribbon's tiles, top->bottom. "Intent status" marks whether the launch intent already EXISTS (a live seam) or is NEW (this spec mints it + a mirroring launcher, [CXC-LB-INTENT-TABLE], [DD-LB-NEW-INTENTS]).
+
+| # | Tile label | Target app | Launch intent | Intent status | Icon (`artwork/`) |
+|---|-----------|-----------|---------------|---------------|-------------------|
+| 1 | Designer | The compose console — the Python/Skia design app the Intelligence and David design together in ([SPEC:CXC-INTELLIGENCE-CONSOLE], spec 34); the Launch Bar is this console's own ribbon, so the Designer tile represents the host app (active/pressed when the console is focused) | `_app/designer/open` | NEW | `composer.svg` / TBD (flag) |
+| 2 | AI Harness | The AI harness — a DISTINCT app that lets the Intelligence fire self-directed `/compact` + all other slash commands (NOT the compose console; has no spec node yet — flag) | `_app/harness/open` | NEW | `compose_console.svg` / `console.png` |
+| 3 | Composer | Visual / UX Composer ([SYSTEM:CXC-OVERVIEW]) | `_app/composer/open` | NEW | `composer.svg` |
+| 4 | Decisions | Decisions viewer ([SPEC:CXC-DVL], spec 46/DVL) | `_app/decisions/open` | EXISTS | `decision_viewer.svg` |
+| 5 | Document Storage | Document Storage viewer ([CXC-DOCNAV-APP], NEW, §4) | `_app/docstore/open` | NEW | `document_viewer.svg` |
+| 6 | Bus Storage | Bus Storage viewer ([CXC-BUSNAV-APP], NEW, §5) | `_app/busstore/open` | NEW | `bus_storage.svg` |
+| 7 | ComposeBus | ComposeBus monitor / inspector | `_app/bus/open` | NEW | `bus_monitor.svg` |
+
+- finding (load-bearing): only tile 4 (Decisions, `_app/decisions/open`) rides an EXISTING intent+launcher. The other six require a NEW `_app/<name>/open` intent AND a mirroring in-process launcher ([CXC-LB-LAUNCHER]); this is the bulk of the build and the subject of [DD-LB-NEW-INTENTS].
+- finding (tile naming, David 2026-07-29): tile 1 "Designer" IS the compose console ([SPEC:CXC-INTELLIGENCE-CONSOLE], spec 34) — the Python/Skia app the Intelligence and David design in; the Launch Bar is that console's own ribbon. Tile 2 "AI Harness" is a SEPARATE app (the slash-command / self-directed-`/compact` harness), NOT the console — its intent is `_app/harness/open` (renamed from the earlier `_app/console/open`, since `console` is now tile 1's Designer host).
+- open: tile 1's icon is unconfirmed in `artwork/` (candidates: `composer.svg`, `terminal.svg`, `route.svg`); flagged for ratify.
+- open: tile 2's AI-harness app has NO spec node yet (it is a distinct app from [SPEC:CXC-INTELLIGENCE-CONSOLE]); a dedicated harness spec (e.g. a `CXC-HARNESS` node/doc) may need to be authored as the harness matures — flagged for ratify.
+- see-also: [CXC-LB-INTENT-TABLE]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-LB-ACTIVE] The active-tile rule — the current app's tile is drawn pressed
+
+- definition: at most one tile is `active` at a time — the tile whose target is the CURRENTLY-focused / running Compose app. It is drawn highlighted/pressed to signal "you are here".
+- requirement: the ribbon MUST derive the active tile from a bus signal, not local guesswork. It SHOULD subscribe to a current-app namespace (default `_app/current`, a state publish carrying the active app's key — matching a tile's target key). Absent any such signal, NO tile is active (never a stale/guessed highlight — preserve-and-flag).
+- default: when the Launch Bar hosts the Designer surface itself, tile 1 (Designer) is active; pressing an already-active tile is a no-op (or re-focuses the running app) and MUST NOT spawn a duplicate.
+- scenario:
+  - when: the Visual Composer becomes the focused app and publishes `_app/current = "composer"`
+  - then: tile 3 (Composer) renders `active`/pressed and every other tile renders `idle`
+- scenario:
+  - when: no `_app/current` has ever been published this session
+  - then: no tile is drawn active (no guessed highlight)
+- see-also: [CXC-LB-TILE]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+---
+
+## 3. Launch Mechanism (reused, not invented)
+
+### [CXC-LB-INTENT-BINDING] Tile press -> publish `_app/<target>/open` — the launch contract
+
+- definition: pressing a tile publishes its launch intent to the global-scope namespace `_app/<target>/open`, carrying a truthy open payload. This is the SAME intent contract the doc-viewer (`_app/doc/open`) and decisions-viewer (`_app/decisions/open`) already use ([SPEC:CXC-DVL] [CXC-DVL-LAUNCHER]).
+- payload shape (MUST accept the bus envelope + a bare value, mirroring `parse_intent` in the existing launchers): a bare-string / `{val: ...}` / `{open: true}` publish OPENS; a falsy token (`""`, `off`, `none`, `false`, `0`, `close`) is a no-op (the launcher window model has no close leg). For a target that carries a payload (the storage viewers may open at a specific sub-path), the payload MAY be `{path: <store-relative path>}` — same key the doc launcher reads.
+- requirement: the tile publishes and returns immediately; it does not block on, or await, the spawn. Success/failure of the spawn is the launcher's concern and is surfaced by the launcher's log + (optionally) a status namespace, NOT by the tile.
+- constraint: intents are published at GLOBAL scope (`composeio/global/_app/<target>/open`), so an Intelligence on the external bus can publish them identically to the in-console widget (control-is-a-peer, [CXC-LB-CREDO]).
+- scenario:
+  - when: a human clicks tile 5 (Document Storage), OR an Intelligence publishes `_app/docstore/open = true`
+  - then: the identical `_app/docstore/open` intent is on the bus and the docstore launcher ([CXC-LB-LAUNCHER]) spawns the Document Storage viewer window — the two triggers are indistinguishable downstream
+- see-also: [CXC-LB-LAUNCHER], [CXC-LB-INTENT-TABLE], [CXC-LB-RIBBON-BUS-BOUND]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-LB-RIBBON-BUS-BOUND] The ribbon SCENE MUST declare its MQTT transport — `--transports` alone is inert
+
+- definition: the ribbon's launch contract ([CXC-LB-INTENT-BINDING]) only holds if the tile's `_app/<target>/open` publish actually REACHES the global (MQTT) bus, because the consuming app_launcher is an OUT-OF-PROCESS daemon ([CXC-LB-LAUNCHER], reconciled). A tile publish auto-resolves to GLOBAL scope (there is no local subscriber to its own open intent), but the render runtime connects the global MQTT leg ONLY from the scene's declared `transports:` block (RenderApp._build_bus iterates `comp.transports`). Therefore the ribbon scene `compose_platform_launch_bar/launch_bar.compose.yaml` MUST declare an `mqtt` transport under `app:`.
+- requirement: the `--transports` CLI flag ([CXC-LB-AUTOSTART]) is NECESSARY BUT NOT SUFFICIENT — it merely tells the runtime to honor the scene's declared transports; with no `transports:` block the flag connects nothing (`_build_bus` returns a bus whose `_global` is None), every tile publish is dropped at `_send_message` (scope is global but there is no global transport), and NO button launches. The invariant is: a scene that publishes launch intents for an out-of-process launcher MUST be bus-bound (declare the transport), not merely launched with `--transports`.
+- kin: this is the SAME class as the doc-viewer's away-watch defect (`_app/doc/open` stranded off the global bus by a stale `scope: local`) — an intent that must reach an out-of-process launcher fails at a scene-level wiring gap. There it was scope; here it is the absent transport. Both are "the publish never left the process."
+- regression: DEFECT-LAUNCH-BAR-BUTTONS-DON-T-* (David 2026-08-05) — the ribbon shipped with `--transports` in the bringup ([CXC-LB-AUTOSTART]) but WITHOUT a `transports:` block in its own scene (the console + both storage-viewer scenes had one; the ribbon, the sole intent PUBLISHER, did not). Every tile published into a global-less in-process bus; the launcher (correctly registered + running) never received a single intent. Under-spec: the "ribbon is bus-bound" precondition lived only as `--transports` in a shell script, never as a scene invariant, and LB-C2 verified the publish against an INJECTED bus — so it never caught the real scene's missing global leg.
+- see-also: [CXC-LB-INTENT-BINDING], [CXC-LB-AUTOSTART], [CXC-LB-LAUNCHER]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-LB-LAUNCHER] The in-process launcher(s) — mirror `decisions_viewer_launcher`, one per target
+
+- definition: each launch intent is consumed by an IN-PROCESS launcher (registered as a console data source in `intelligence/console/data_sources.py`, NOT a standalone daemon), which spawns the target app's `runtime` window. Each launcher is a near-copy of `intelligence/tools/decisions_viewer_launcher.py`, reusing its seams by reference: `spawned_windows.SpawnedWindows` (same-window dedupe / reap), the `singleton` guard, the paho `run()` shape, the `COMPOSEIO_WINDOW_X/_Y/_RAISE` placement handoff, the repo-scoped path guard, and an injectable spawn for testability ([DX-NARROW-WAIST]).
+- requirement: a launcher MUST refuse to spawn anything outside the repo (the `resolve_doc`/path-guard defense-in-depth every existing launcher carries) and MUST dedupe by the target's window key (a second open while the window is alive is SKIPPED; a closed-then-reopened window spawns fresh). It MUST NOT invent a new spawn idiom — it spawns `composeio.render.engine.runtime <scene>` exactly as the doc/decisions launchers do.
+- reuse note: for a target that is a KNOWN single scene (the storage viewers, the ComposeBus monitor), the launcher spawns that repo-constant scene (the decisions-launcher shape). For a target that resolves a per-open payload (rare here), it bakes the payload into a per-open scene (the doc-launcher shape). Both shapes already exist; the builder picks the matching one per target.
+- open: whether the six new targets get six sibling launchers, or one generalized `_app/*/open`-pattern launcher parameterized by a target->scene table, is [DD-LB-LAUNCH-MECHANISM] (recommended: the generalized table — it is the narrow-waist move, one launcher, a data table, no six-fold fork).
+- see-also: [CXC-LB-INTENT-BINDING]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-LB-INTENT-TABLE] The intent namespace convention + the exists/new split
+
+- definition: every launch intent follows the convention `_app/<target>/open` at global scope, the payload/close semantics of [CXC-LB-INTENT-BINDING]. The `<target>` key MUST match the tile's target key and the `_app/current` key that drives the active-tile rule.
+- requirement (the NEW intents this spec mints — each needs a launcher + a target scene): `_app/designer/open`, `_app/harness/open`, `_app/composer/open`, `_app/docstore/open`, `_app/busstore/open`, `_app/bus/open`. Each MUST be registered where `_app/decisions/open` is registered (the console data-source layer) and each MUST have a target scene the launcher spawns.
+- requirement (the EXISTING intent reused unchanged): `_app/decisions/open` -> the decisions_tab scene, via `decisions_viewer_launcher.py` ([SPEC:CXC-DVL]). This spec MUST NOT alter it.
+- constraint: minting a new intent without its launcher + scene is an incomplete tile — the tile would publish into the void. A test MUST assert every roster tile's intent has a registered consumer (the by-construction guard the DSDV spec teaches, [SPEC:CXC-DSDV] [CXC-DSDV-REGISTER]).
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+---
+
+## 4. Document Storage viewer (NEW app) — a navigation shell over `doc://`/docstore
+
+### [CXC-DOCNAV-APP] The Document Storage viewer is a navigation SHELL, not a new renderer
+
+- definition: a new ComposeUX app that lets a user BROWSE the document store (`python/composeio/docstore.py`, the `DocumentStoreClient` over the doc:// REST API at `NODERED_HOST:8421` `/api/v1/...`) and VIEW a selected entry. It is the NAVIGATION shell over docstore; it adds no rendering path of its own.
+- role: tile 5's target. Launched by `_app/docstore/open` ([CXC-LB-INTENT-TABLE]); spawned by the docstore launcher ([CXC-LB-LAUNCHER]).
+- reuse-by-reference: the browse UI REUSES the existing `doc_picker`/`doc_browser` widgets (`python/composeio/render/widgets/doc_picker.py`, `.../doc_browser.py` — the list-left/render-right browser); the VIEW step REUSES the existing doc-viewer (`_app/doc/open` -> `intelligence/tools/doc_viewer_launcher.py` + `intelligence/console/docviewer.compose.yaml`, which already renders yaml/svg/png/md). The new app is the shell that wires docstore navigation to those two.
+- constraint: read/view only in THIS spec ([CXC-DOCNAV-READONLY]).
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-DOCNAV-BROWSE] Navigate the document tree; list entries
+
+- definition: the shell lists the docstore's collections and, within a collection, its entries, letting the user drill down. It reads via the `DocumentStoreClient` (`get`/`query`/list over `/api/v1/`), never by touching the store's files directly.
+- requirement: the browse pane MUST present docstore collections/entries as a scannable, selectable list (the `doc_picker`/`doc_browser` list idiom), MUST address entries by their `doc://<collection>/<id>` address, and MUST degrade gracefully when the store is unreachable — an empty/failed query renders an explicit "store unavailable" state, never a blank pane that looks like "no documents" (preserve-and-flag).
+- default: on open with no payload, the shell lists top-level collections; with an `{path: "doc://<collection>"}` payload it opens directly into that collection.
+- scenario:
+  - when: the user opens the Document Storage viewer and the docstore has collections `bsg_planets`, `configs`
+  - then: both collections list in the browse pane and selecting `bsg_planets` lists its entry ids
+- scenario:
+  - when: the docstore host is unreachable
+  - then: the browse pane shows an explicit unavailable state (not an empty "no docs" list)
+- see-also: [CXC-DOCNAV-VIEW]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-DOCNAV-VIEW] Select an entry -> render it in the existing doc-viewer
+
+- definition: selecting an entry hands it to the EXISTING doc-viewer for rendering — the shell publishes `_app/doc/open` with the entry (the same intent the console's live-links already publish), and the doc-viewer window renders it read-only.
+- requirement: the shell MUST NOT re-implement rendering. It resolves the selected `doc://` entry to something the doc-viewer accepts (a repo-scoped path or a fetched-then-cached temp under the repo, honoring the launcher's repo-scoped path guard) and publishes `_app/doc/open`. yaml/svg/png/md all render via the doc-viewer's existing lowering.
+- scenario:
+  - when: the user selects a `.compose.yaml` entry in the browse pane
+  - then: an `_app/doc/open` intent carrying that entry is published and the existing doc-viewer opens it read-only (no new renderer runs)
+- see-also: [CXC-DOCNAV-BROWSE]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-DOCNAV-READONLY] Read/view scope; write & delete are a future extension
+
+- definition: this spec scopes the Document Storage viewer to BROWSE + INSPECT only. The `DocumentStoreClient` exposes `put`/write, but no write or delete path is in scope here.
+- requirement: the shell MUST NOT expose a write/delete affordance in this build. A future extension (a doc editor / new-doc / delete flow over `put`/DELETE) is noted here as the explicit next slice, to be its own spec + decision — not smuggled into the navigation shell.
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+---
+
+## 5. Bus Storage viewer (NEW app) — a navigation shell over `bus://`/bus_storage
+
+### [CXC-BUSNAV-APP] The Bus Storage viewer is the same shell-over-store pattern, aimed at bus_storage
+
+- definition: a new ComposeUX app that lets a user BROWSE the bus_storage asset store (the asset server at `NODERED_HOST:8420`, `/api/v1/assets/...` and `/api/v1/namespaces` — `services/bus_storage/server.py`; the `bus://` addressing scheme; the same store the dual-throttle/qualia configs are PUT to) and VIEW a selected asset. It is the navigation shell over bus_storage; it adds no rendering path of its own.
+- role: tile 6's target. Launched by `_app/busstore/open` ([CXC-LB-INTENT-TABLE]); spawned by the busstore launcher ([CXC-LB-LAUNCHER]).
+- reuse-by-reference: the SAME list-left/render-right browser as the Document Storage viewer ([CXC-DOCNAV-APP]) — `doc_picker`/`doc_browser` for navigation, the existing doc-viewer for the view step (`_app/doc/open`). The ONLY difference from the Document Storage viewer is the store client it reads (the bus_storage REST API vs docstore) and the address scheme (`bus://assets/<path>` vs `doc://<collection>/<id>`).
+- constraint: read/view only in THIS spec ([CXC-BUSNAV-READONLY]).
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-BUSNAV-BROWSE] Navigate the asset namespace; list assets
+
+- definition: the shell lists the bus_storage asset namespace and lets the user drill into asset paths, reading via the asset REST API (`GET /api/v1/assets/{path}`, `GET /api/v1/namespaces`) — never the server's files directly.
+- requirement: the browse pane MUST present the asset namespace as a scannable, selectable tree/list, MUST address assets by their `bus://assets/<path>` address, and MUST render an explicit "store unavailable" state on a failed/empty fetch (never a blank pane read as "no assets" — preserve-and-flag).
+- default: on open with no payload, the shell lists the asset namespace root; an `{path: "bus://assets/<prefix>"}` payload opens directly into that prefix.
+- scenario:
+  - when: the user opens the Bus Storage viewer and assets exist under `assets/qualia/` and `assets/icons/`
+  - then: both prefixes list in the browse pane and drilling into `assets/qualia/` lists its assets
+- scenario:
+  - when: the bus_storage host (`NODERED_HOST:8420`) is unreachable
+  - then: the browse pane shows an explicit unavailable state, not an empty list
+- see-also: [CXC-BUSNAV-VIEW]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-BUSNAV-VIEW] Select an asset -> view it via the existing doc-viewer
+
+- definition: selecting an asset hands it to the EXISTING doc-viewer — the shell fetches the asset (repo-scoped temp, honoring the launcher path guard) and publishes `_app/doc/open`, which renders compose.yaml / icons / etc. via the doc-viewer's existing lowering.
+- requirement: no re-implemented renderer. An asset the doc-viewer can lower (yaml/svg/png/md) renders in the doc-viewer window; an asset it cannot lower renders in the doc-viewer's generic/binary fallback (never a crash).
+- scenario:
+  - when: the user selects an icon asset (`.svg`) in the browse pane
+  - then: an `_app/doc/open` intent carrying the fetched asset is published and the existing doc-viewer opens it as a pan/zoom vector surface (its SVG path, [SPEC:CXC-SVG])
+- see-also: [CXC-BUSNAV-BROWSE]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [CXC-BUSNAV-READONLY] Read/view scope; asset upload/delete is a future extension
+
+- definition: this spec scopes the Bus Storage viewer to BROWSE + INSPECT only. The asset API exposes `PUT`/`DELETE`, but no write/delete path is in scope here.
+- requirement: the shell MUST NOT expose an upload/delete affordance in this build. A future extension (asset upload/replace/delete over `PUT`/`DELETE /api/v1/assets/{path}`) is noted as the explicit next slice — its own spec + decision, not folded into the shell.
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+---
+
+## 6. Tier scope
+
+### [CXC-LB-TIER-CONSOLE] The Launch Bar is scoped console-only, with a recorded reason
+
+- principle: per [CXC-PRIM-TIER-PARITY], a UX capability is not a landed PLATFORM capability until it renders on the embedded tier ([SPEC:CXC-EMBED-REACTIVE]) OR is EXPLICITLY scoped console-only with a recorded reason. This node is that explicit scope + reason (the escape hatch), not a silent omission.
+- console-only: the Launch Bar renders on the Python/Skia desktop-console back-end ONLY.
+- reason: it is a DESKTOP APP LAUNCHER — its whole job is to spawn desktop `runtime` windows for the Compose* app family. An ESP32-class embedded device has no desktop window manager and no notion of "launch another app window", so the ribbon has no meaning on the embedded tier. This is a surface that is legitimately desktop-console-specific, exactly the case the tier-parity escape hatch exists for.
+- consequence: the tiles themselves are ordinary render-engine composites (a `pixel_stack` + `svg`/label), so the RIBBON's drawing is contract-clean; it is the LAUNCH SEMANTICS (spawning desktop windows) that are console-bound. Should an embedded "app switcher" ever be wanted, it would be a distinct capability, not a port of this one.
+- upholds: [CXC-PRIM-TIER-PARITY]
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+---
+
+## 7. Acceptance — machine signal + glass gate per surface
+
+### [CXC-LB-VERIFY] Two-tier verdicts — every human-perceptible surface carries a glass gate
+
+- definition: each requirement below carries a machine signal (`verify.machine`) AND, for a human-perceptible surface, an explicit human/glass gate (`verify.human`). A machine-green build with an unseen ribbon is not accepted.
+
+| ID | Requirement | verify.machine | verify.human (glass) |
+|----|-------------|----------------|----------------------|
+| LB-C1 | Ribbon renders the 7 tiles in roster order ([CXC-LB-ROSTER]) | a render/layout test asserts 7 tiles, top->bottom order + labels match the roster table | on glass: the ribbon shows logo-then-seven-tiles in order, labels legible |
+| LB-C2 | Tile press publishes its `_app/<target>/open` intent, nothing else ([CXC-LB-INTENT-BINDING]) | a test drives a tile press with an injected bus and asserts exactly one publish to the tile's intent ns, no spawn from the widget | on glass: clicking a tile opens its app; clicking Decisions opens the existing decisions viewer |
+| LB-C3 | Control-is-a-peer: an Intelligence publish opens the same app ([CXC-LB-CREDO]) | a test publishes `_app/docstore/open` directly and asserts the docstore launcher spawns (mocked spawn), no widget involved | on glass: publishing the intent from an Intelligence opens the same window a click would |
+| LB-C4 | Active tile tracks the current app; no guessed highlight ([CXC-LB-ACTIVE]) | a test publishes `_app/current=composer` and asserts tile 3 active, others idle; with no publish, none active | on glass: switching focus moves the pressed state to the matching tile |
+| LB-C5 | Every roster intent has a registered consumer ([CXC-LB-INTENT-TABLE]) | a by-construction test asserts each of the 7 intents resolves to a registered launcher+scene (the DSDV register-guard, [CXC-DSDV-REGISTER]) | n/a (structural) |
+| LB-C6 | Launchers reuse the seams, no fork ([CXC-LB-LAUNCHER]) | tests assert same-window dedupe + reap + repo-scoped path guard via the shared `spawned_windows`/guard seams; a refused (outside-repo) path never spawns | n/a (structural) |
+| LB-C7 | Document Storage viewer browses docstore + views via doc-viewer ([CXC-DOCNAV-BROWSE], [CXC-DOCNAV-VIEW]) | a test lists a fake docstore and asserts selecting an entry publishes `_app/doc/open`; unreachable store -> explicit unavailable state | on glass: browse doc:// collections, select one, it opens read-only in the doc-viewer |
+| LB-C8 | Bus Storage viewer browses bus_storage + views via doc-viewer ([CXC-BUSNAV-BROWSE], [CXC-BUSNAV-VIEW]) | a test lists a fake asset store and asserts selecting an asset publishes `_app/doc/open`; unreachable store -> explicit unavailable state | on glass: browse bus://assets, select an icon/compose.yaml, it opens in the doc-viewer |
+| LB-C9 | Read-only scope holds; no write/delete affordance ([CXC-DOCNAV-READONLY], [CXC-BUSNAV-READONLY]) | a test asserts neither shell exposes a write/delete action; both clients are used read-only | on glass: no edit/upload/delete controls appear in either viewer |
+| LB-C10 | Console-only tier scope is recorded, not silent ([CXC-LB-TIER-CONSOLE]) | the spec carries the `console-only` scope + reason node and an UPHOLDS edge to [CXC-PRIM-TIER-PARITY] | n/a (structural) |
+| LB-C11 | Ribbon + app_launcher autostart WITH the console via one canonical bringup ([CXC-LB-AUTOSTART]) | `intelligence/test_start_console_stack.py` asserts the single bringup launches console + ribbon + app_launcher, each behind a pgrep idempotency guard, and that app_launcher is a `daemon_watch`-watched daemon; the plist `plutil -lint`s clean | on glass: after a bounce/login the ribbon is visibly present beside the console (not just the console window) |
+| LB-C12 | The ribbon scene is BUS-BOUND — its tile publishes reach the global bus ([CXC-LB-RIBBON-BUS-BOUND]) | `test_launch_bar.py` asserts the ribbon scene declares an `mqtt` transport (so `RenderApp._build_bus` connects the global leg) AND that a `--transports`-equivalent RenderApp built from it has a non-None global transport; RED on the pre-fix scene (no `transports:` block, `_global` is None) | on glass: clicking a tile actually opens its app (the intent left the process and the launcher spawned it) |
+
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+---
+
+## 8. Design Decisions (RESOLVED — ratified by David 2026-07-29)
+
+### [DD-LB-LAUNCH-MECHANISM] Launch by intent-publish (recommended) vs direct launcher-spawn
+
+- decision: how a tile press reaches a running app.
+- chosen: intent-publish + ONE generalized `target->scene` launcher parameterized by a data table (NOT six sibling launchers) — the narrow-waist move. The tile publishes `_app/<target>/open`; a single in-process launcher consumes the `_app/*/open` pattern and spawns the mapped target scene.
+- ratified: David, 2026-07-29 (DSD disposition).
+- recommendation: intent-publish (the tile publishes `_app/<target>/open`; an in-process launcher consumes + spawns), consumed by ONE generalized launcher parameterized by a target->scene table rather than six sibling launchers.
+- rationale: intent-publish preserves control-is-a-peer ([CXC-LB-CREDO]) — an Intelligence launches an app identically to a human — and it REUSES the exact seam the decisions/doc viewers already ride (`decisions_viewer_launcher.py`, [DX-NARROW-WAIST]). A generalized target->scene launcher is the narrow-waist move: one launcher + a data table, no six-fold fork. Direct launcher.py-style process spawn from the widget would break the peer symmetry (a widget-local spawn is not a bus event an Intelligence can issue) and duplicate the guard/dedupe/placement logic the launchers already own.
+- alternatives: (a) six sibling launchers (more code, more drift surface); (b) the widget spawns the process directly (breaks control-is-a-peer, forks the guard logic).
+- invalidating_assumption: that all seven targets are `runtime`-scene desktop windows spawnable by the shared launcher. If a target needs a fundamentally different spawn (e.g. a non-render-engine external process), that target gets its own launcher and this generalization is only partial.
+- status: resolved
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [DD-LB-STORAGE-VIEWERS-HOME] The two storage viewers as nodes UNDER this spec (recommended) vs their own specs
+
+- decision: where the Document Storage + Bus Storage viewers are specified.
+- chosen: nodes UNDER this spec ([CXC-DOCNAV-*], [CXC-BUSNAV-*]), as authored — graduating to their own specs the moment either grows a WRITE/DELETE path.
+- ratified: David, 2026-07-29 (DSD disposition).
+- recommendation: nodes under this spec ([CXC-DOCNAV-*], [CXC-BUSNAV-*]) for now.
+- rationale: they are small NAVIGATION SHELLS launched BY the Launch Bar, they share one shell-over-store pattern, and they add no renderer (they reuse the doc-viewer). Co-locating them with the ribbon that launches them keeps the tile->app story in one traversable place. They graduate to their own specs the moment they grow a WRITE/DELETE path ([CXC-DOCNAV-READONLY], [CXC-BUSNAV-READONLY]) — that is a real, separable capability with its own decisions.
+- alternatives: two sibling specs now (more files, premature for read-only shells that are ~80% shared).
+- invalidating_assumption: that both stay thin read/view shells. If either grows editing, promote it to its own spec.
+- status: resolved
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [DD-LB-NEW-INTENTS] Mint six new `_app/<name>/open` intents + their launchers/scenes
+
+- decision: six of the seven tiles ([CXC-LB-ROSTER]) need a NEW launch intent + launcher + target scene (`designer`, `harness`, `composer`, `docstore`, `busstore`, `bus`); only `_app/decisions/open` exists.
+- chosen: APPROVED — mint the six new `_app/<name>/open` intents + the ONE generalized `target->scene` launcher (per [DD-LB-LAUNCH-MECHANISM]) + the target scenes, each with a by-construction register-guard test.
+- ratified: David, 2026-07-29 (DSD disposition).
+- recommendation: mint all six under the `_app/<name>/open` convention with a by-construction test that every roster intent resolves to a registered consumer ([CXC-DSDV-REGISTER] discipline). Sequence: `docstore`/`busstore` first (this spec fully defines their targets), then `harness`/`composer`/`bus`/`designer` (their target scenes already exist or are trivial wrappers — confirm each target scene path at ratify).
+- rationale: the intent convention is proven; the missing piece is a consumer per target. A tile that publishes into the void ([CXC-LB-INTENT-TABLE] constraint) is an incomplete build, so the register-guard test is required, not optional.
+- alternatives: only wire the tiles whose targets already have scenes and leave the rest as inert tiles (rejected — a dead tile is the silent-mask anti-pattern).
+- invalidating_assumption: that each of the six targets is launchable as a `runtime` scene. Where a target is not (an external process), see [DD-LB-LAUNCH-MECHANISM].
+- status: resolved
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+### [DD-LB-PROJECT-REGISTRY] Add three PROJECT entries (Launch Bar + the two viewer apps)
+
+- decision: whether to register the Launch Bar and the two storage-VIEWER apps in `[REGISTRY:PROJECTS]` (`corpora/intelligence-console/projects.lts`).
+- chosen: ADD the three `family: ComposeApps` entries — `[PROJECT:compose-launch-bar]`, `[PROJECT:document-storage-viewer]`, `[PROJECT:bus-storage-viewer]` — landed in `corpora/intelligence-console/projects.lts` (2026-07-29), DISTINCT from the existing storage-SERVICE entries `[PROJECT:document-store]` / `[PROJECT:bus-storage]`.
+- ratified: David, 2026-07-29 (DSD disposition).
+- recommendation: yes — three NEW `family: ComposeApps` entries: `[PROJECT:compose-launch-bar]`, `[PROJECT:document-storage-viewer]`, `[PROJECT:bus-storage-viewer]`. NOTE these are DISTINCT from the existing `[PROJECT:document-store]` / `[PROJECT:bus-storage]` entries, which are the STORAGE SERVICES (the doc:///bus:// servers, `family: ComposeBus Services`) — the viewers are new client APPS over those services, not the services.
+- rationale: each is a new ComposeApp with its own root, decision-LTS point-forward, and specs pointer — the registry's stated purpose. Point-forward per [DEC-PROJECT-STRUCTURE]: register now, let each project's decision-LTS/specs be created as it matures.
+- constraint: `projects.lts` is `machine-maintained: false` (human-reviewed). The three entries were added to the registry as part of this ratified disposition; David ratifies + lands via git-expert.
+- alternatives: register only the Launch Bar (the viewers are nodes under this spec, so arguably not yet separable projects) — reasonable if [DD-LB-STORAGE-VIEWERS-HOME] keeps them as nodes.
+- invalidating_assumption: that the registry convention wants an entry per launchable ComposeApp. If the convention is "one entry per repo/dir, not per app", fold the viewers under a single Launch Bar entry.
+- status: resolved
+- part-of: [SPEC:CXC-LAUNCHBAR]
+
+---
+
+## Relationships
+
+### Semantic
+
+[SPEC:CXC-LAUNCHBAR] USES [SPEC:CXC-DVL]
+[SPEC:CXC-LAUNCHBAR] USES [SPEC:CXC-RENDER]
+[SPEC:CXC-LAUNCHBAR] REALIZES [CXC-CREDO]
+[CXC-LB-CREDO] REALIZES [CXC-CREDO]
+[CXC-LB-INTENT-BINDING] USES [CXC-DVL-LAUNCHER]
+[CXC-LB-LAUNCHER] USES [DX-NARROW-WAIST]
+[CXC-LB-AUTOSTART] USES [DX-NARROW-WAIST]
+[CXC-LB-AUTOSTART] RELATED_TO [CXC-LB-INTENT]
+[CXC-LB-LAUNCHER] REALIZES [DX-LEAF-OWNS-BEHAVIOR]
+[CXC-LB-INTENT-TABLE] RELATED_TO [CXC-DSDV-REGISTER]
+[CXC-LB-INTENT-BINDING] DEPENDS_ON [CXC-LB-RIBBON-BUS-BOUND]
+[CXC-LB-RIBBON-BUS-BOUND] RELATED_TO [CXC-LB-AUTOSTART]
+[CXC-DOCNAV-VIEW] USES [SPEC:CXC-SVG]
+[CXC-BUSNAV-VIEW] USES [SPEC:CXC-SVG]
+[CXC-BUSNAV-APP] RELATED_TO [CXC-DOCNAV-APP]
+[CXC-LB-TIER-CONSOLE] UPHOLDS [CXC-PRIM-TIER-PARITY]
+[CXC-LB-RIBBON] DEPENDS_ON [SPEC:CXC-RENDER]
+[CXC-DOCNAV-APP] RELATED_TO [CXC-LB-ROSTER]
+[CXC-BUSNAV-APP] RELATED_TO [CXC-LB-ROSTER]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-07-29
+**Updated**: 2026-08-06 — [CXC-LB-RIBBON] sizing re-stated (96 x 932 ribbon, ICON_BOX 64 / LABEL_FONT 12, derived-from-two-constants) with its `change`/`context_for_change`; ratified by David 2026-08-06.
+**Status**: Draft

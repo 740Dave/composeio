@@ -1,0 +1,44 @@
+---
+scope: "document_store (:8421) — the binary-blob write path only. NOT a full service conversion: [SPEC:CXC-BUSSTORE] (73-bus-storage.lts) already carries the pattern this node applies — a request-supplied path segment that becomes a filesystem path must resolve strictly inside its storage root, one primitive, every call site, no route exempt. That invariant was ratified for bus_storage after DEFECT-BUSSTORE-* found it missing from six of seven handlers. This node states the same invariant for document_store's binary blob store, which had the identical shape and the identical hole: DEFECT-DOCUMENT-STORE-WRITE-PATH-PUT-D8CCDE found `_blob_path` building `os.path.join(db_dir, 'blobs', collection, doc_id)` with no containment at all, so a PUT with a `../`-laden `doc_id` wrote outside `blobs/` before any DB gate ran."
+audience: "factlattice-gap-analyzer, ruling this CURRENT against services/document_store/server.py once landed; the architect reviewing the fix; any future implementer of a document_store-shaped service (request-supplied id -> filesystem path) who should find this node before reinventing the primitive uncontained."
+boundary: "IN: the containment invariant for document_store's binary blob store (`_blob_path` / `put_binary` / `get_binary` / `delete_binary`) and the three HTTP routes that reach it. OUT: document_store's JSON document path (`_store.put`/`get`/`delete`), which is SQLite-keyed with no filesystem component and needs no guard; the JSON query surface; a full pass-1 conversion of the rest of the service, which this defect fix did not touch and does not claim to describe."
+not-this: "NOT a security review of document_store as a whole. NOT a claim that document_store is otherwise safe to expose beyond a trusted LAN — see [CXC-BUSSTORE-PRE-AUTH] for the sibling service's unresolved authentication question, which applies here with equal force and is equally unanswered for document_store."
+depends-on: [73-bus-storage.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: implemented
+lifecycle-position: ratified — landed with the fix, not a pass-1 conversion
+created: 2026-08-20
+---
+
+# document_store — binary write-path containment [SPEC:CXC-DOCSTORE]
+
+> This is a NARROW node, scoped to one invariant, written alongside the code that satisfies it
+> (`DEFECT-DOCUMENT-STORE-WRITE-PATH-PUT-D8CCDE`). It is not a conversion of `spec/`-side prose —
+> document_store has none describing this surface — and it does not attempt to specify the rest of
+> the service. It exists so this specific behavior is never again code-only: [CXC-BUSSTORE-CONTAINMENT]
+> already proved that a containment guard living in exactly one handler is a guard the other handlers
+> cannot reach, and a guard living in code with no spec node is the same failure one level up — the
+> NEXT reimplementation of this service has nothing but the source to tell it the guard is load-bearing.
+
+---
+
+### [CXC-DOCSTORE-CONTAINMENT] Every request-supplied blob id resolves INSIDE `blobs/` — one primitive, every call site
+
+- invariant: `collection` and `doc_id`, both request-supplied, are turned into a filesystem path by exactly one primitive, `_resolve_contained(root, *parts)`, local to `services/document_store/server.py`. Every handler that builds a blob path (`_blob_path`, reached by `put_binary`, `get_binary`, `delete_binary`) calls it. A resolved path outside `root` (`blobs/`) is **403**; a segment that cannot be resolved at all (an embedded NUL) is **400**. No route is exempt and no segment is trusted because of where it came from.
+- write-path-was-the-hole: `put_binary` wrote the blob to disk (`os.makedirs` + atomic write) BEFORE any database gate — there was no metadata lookup standing between an attacker-controlled `doc_id` and a filesystem write. `get_binary` and `delete_binary` were structurally safer (both call `get_binary_meta`, a DB lookup, FIRST, and return `None`/`False` on a miss) but are guarded uniformly here for defense-in-depth and because a DB-first check is an accident of call order, not a designed containment boundary.
+- three-forms-three-guards: same three attack shapes as [CXC-BUSSTORE-CONTAINMENT] `three-forms-three-guards`, because the underlying trap is the same Python behavior, not something particular to bus_storage — `../` directly; `%2e%2e/`, defeated because `_route` calls `unquote(self.path)` before any segment is extracted, so the wire-form string never reaches the guard un-decoded; and a LEADING SLASH on either `collection` or `doc_id`, which `os.path.join(root, "/etc/passwd")` silently resolves to `/etc/passwd` — discarding `root` — with no `..` anywhere in the request for a substring check to catch.
+- resolve-do-not-grep: containment is decided by `os.path.realpath` and an ancestry check (`target == root_real or target.startswith(root_real + os.sep)`), never by string-matching for `..`.
+- positive-control-is-part-of-the-invariant: `doc_id` LEGITIMATELY contains `/` — nested ids such as `a/b/c.bin` are a normal, supported shape and MUST continue to resolve. Containment is computed against the `blobs/` root as a whole, not per-collection, precisely so a nested id is not mistaken for an escape. A guard that rejects `nested/a/b.bin` has traded a vulnerability for breaking every caller storing structured blob ids.
+- not-shared-with-bus_storage: `_resolve_contained` is defined LOCALLY in `services/document_store/server.py`, a deliberate copy of the bus_storage primitive of the same name and contract, not an import — the two services are separate deploy units and importing across them would couple two independently-deployed processes for a ~25-line function. Keep both in sync by hand if the shared contract changes; a future de-fork into one importable module is a separate decision, not implied here.
+- json-path-is-out-of-scope-by-construction: `_store.put` / `.get` / `.delete` (the JSON document path) are SQLite-keyed — `collection` and `doc_id` are query parameters, never filesystem path components — so they carry no equivalent hole and need no guard.
+- enforced-by: `tests/test_document_store.py::TestBinaryPathEscape`, which PUTs a binary with a `../`-laden `doc_id` and a `%2e%2e`-encoded variant, asserts each is refused 4xx AND that no file was created outside `blobs/` (the pre-fix target path, computed the same way `_blob_path` used to), paired with a positive control (`nested/a/b.bin` PUTs and round-trips) so the guard is proven not to have broken legitimate nested ids.
+- part-of: [SPEC:CXC-DOCSTORE]
+
+---
+
+## Relationships
+
+- part-of: [SPEC:CXC-DOCSTORE]
+- see-also: [CXC-BUSSTORE-CONTAINMENT] — the sibling service's identical invariant, ratified first; this node is its scoped counterpart for document_store, not a duplicate of its content.
+- see-also: [CXC-BUSSTORE-PRE-AUTH] — the unresolved authentication question for bus_storage applies unanswered to document_store as well; containment bounds WHICH paths are addressable, not WHO may call.

@@ -1,0 +1,118 @@
+---
+scope: "The standing rule that UART transport is BASELINE firmware in every ComposeIO board env — not a per-board feature. Specifies the rule and its shape-based exemption, the measured cost of the transport, the RAM/flash floor below which a waiver may be granted, what a waived board loses and must provide instead, and the build-time assertion that makes the rule enforceable rather than remembered. Written 2026-08-13 as workstream B of the fleet-baseline plan, after an audit found the rule already satisfied by accident in all eleven firmware envs."
+audience: "ComposeIO/ComposeUX architects, firmware developers adding a board env, and whoever selects silicon for a new node"
+boundary: "IN: the compile-in policy, the audit verdict per env, the waiver floor and its arithmetic, the obligations a waiver creates, and the CMake guard. OUT: the UART transport's own design ([CXC-BOARD-HW-UART-SLAVE]), the wire frame format ([BP-UART-FRAME]), config delivery over the bus ([SPEC:CXC-CONFIG-BUS]), and per-board pin assignment."
+not-this: "Not a claim that every board must USE UART at runtime — a board may select any transport; the rule is that the code is PRESENT so the wire path exists when the radio does not. Not a hardware requirement for a UART peripheral beyond two GPIOs. Not a general policy about compiling everything in: it names one file and one reason."
+depends-on: [60-board-hardware-inventory.lts, 61-config-over-bus.lts, 31-composeux-board-bringup.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: concept-capture
+---
+# UART Is Baseline Firmware [SPEC:CXC-UART-BASELINE]
+
+> A board with `bus_uart.cpp` compiled in can be recovered, reconfigured and re-pointed over three wires with no IP address and no working radio. A board without it is only as reachable as its radio. That is not a convenience — it is the difference between a bricked board and a recoverable one, and this project has already used exactly that path to configure `(a device id, not published)` with its WiFi deliberately off. The rule below was already satisfied in all eleven firmware envs when it was written; this document is what turns an accident into a policy with a guard.
+
+---
+
+## 1. The Standing Rule
+
+### UART Compiles Into Every Bus Node, Forever [CXC-UART-BASELINE-RULE]
+
+- rule: An env that speaks ComposeBus AT ALL must be able to speak it OVER WIRE. Concretely: if a build registers `bus_can.cpp`, `bus_mqtt.cpp` or `bus_transport_select.cpp`, it MUST also register `bus_uart.cpp`. There is no per-board discretion and no "this board doesn't use serial" exception.
+- forcing-statement: David (2026-08-12) — "our baseline firmware now and forever more should have UART support baked in, unless we have to waive it for extremely slow/limited MCUs."
+- status-when-written: Already true in 9 of 9 bus-bearing envs and violated by none, as of 2026-08-13. The rule is therefore NOT a change to the firmware — it is the conversion of an accident into an enforceable commitment. Nothing was added to any board.
+- scope-of-application: Every ESP-IDF env in `cyd/platformio.ini`. The 13 `native_*` host-test envs are out of scope and stated so explicitly rather than silently skipped — see [CXC-UART-BASELINE-EXEMPT-SHAPE].
+- part-of: [SPEC:CXC-UART-BASELINE]
+
+### Three Wires Beat A Radio That Is Down [CXC-UART-BASELINE-WHY]
+
+- reason: A board carrying the UART transport can be recovered, reconfigured and re-pointed with NO IP address, NO DHCP lease and NO working radio. A board without it is reachable only as far as its radio is healthy — and the radio's configuration is itself a thing that gets broken.
+- precedent: `(a device id, not published)` was configured over UART on the bench with its WiFi deliberately off. The recovery path is not hypothetical; it is the path this project actually used.
+- failure-mode-prevented: The silent one. Nobody removes UART on purpose; a future board branch gets written by copying a neighbour, one line gets dropped, the build passes, and the omission is discovered on the day the radio is what failed — which is the one day the fallback cannot be added.
+- asymmetry: The cost of carrying it is ~6.4 KB flash and ~8.7 KB RAM on parts holding 4 MB and 320 KB ([CXC-UART-BASELINE-COST]). The cost of NOT carrying it is a board that must be physically retrieved and re-flashed. The trade is not close.
+- part-of: [SPEC:CXC-UART-BASELINE]
+
+---
+
+## 2. The Audit
+
+### Every Env Audited 2026-08-13 — Nine Compliant, Two Exempt, Zero Violations [CXC-UART-BASELINE-AUDIT]
+
+- method: Each env in `cyd/platformio.ini` was mapped to the CMake branch its cache vars select in `cyd/src/CMakeLists.txt`, and the branch's `idf_component_register` SRCS list read for `bus_uart.cpp`. The mapping was then MACHINE-CHECKED by building all eleven ESP-IDF envs on a scratch copy of the tree and testing for `.pio/build/<env>/src/bus_uart.cpp.o`.
+- compliant: `cyd` (fallthrough register L863, uart L945); `cyd_dsl_test` (extends cyd, target still esp32, same L945); `qualia_display` (L411, uart L496); `hosyond_s3` (L587, uart L634); `waveshare_c6` (L739, uart L785); `esp32_c3_st7796` (L185, uart L231); `esp32_can_relay` (L12, uart L19); `esp32_c3_can_bringup` (L86, uart L92); `esp32_c3_pin_drive_test` (extends can_bringup, same branch L86).
+- exempt: `esp32c3_dsl_test` and `qualia_s3_dsl_test`. Both carry no cache var, so both fall into the `NOT IDF_TARGET STREQUAL "esp32"` early return at L848-861 which registers `dsl.cpp` + `dsl_selftest.cpp` and NO transport whatsoever. They are on-device conformance runners for the expression DSL, not bus nodes.
+- violations: None. Zero envs register a transport without UART.
+- notable: `esp32_can_relay` is the node that legitimately holds TWO transports — CAN upstream, UART downstream — and so does not go through `bus_transport()` at all. It is the strongest instance of the rule rather than an exception to it.
+- part-of: [SPEC:CXC-UART-BASELINE]
+
+### Exemption Is By SHAPE, Never By Name [CXC-UART-BASELINE-EXEMPT-SHAPE]
+
+- decision: An env is exempt when it registers NONE of the transport sources — not when it appears on a list of exempt env names. The guard therefore needs no allow-list, and no allow-list needs to be kept in step with `platformio.ini`.
+- why: An allow-list is a thing you forget to update. It also inverts the default: a new env must be REMEMBERED into the policy rather than being covered by it on arrival. Shape-based exemption means the branch nobody has written yet is already governed.
+- consequence-accepted: A future env that registers no transport at all is silently exempt even if it was MEANT to be a bus node. That is a real hole and it is accepted knowingly: such a build cannot talk to anything, which is loud on its own within one bench session, whereas a missing UART on a working MQTT board is silent for months.
+- native-envs: The 13 `native_*` host-test envs (`native_dsl`, `native_wrap`, `native_chat_wrap`, `native_test`, `native_scroll_test`, `native_overlay_test`, `native_wire_codes`, `native_frame`, `native_config_chunk`, `native_can_id`, `native_relay`, `native_announce`, `native_keyboard_test`) are out of scope for TWO reasons, neither of which is "they are only tests": they produce no firmware, so there is no device whose reachability could be lost; and `platform = native` selects sources with `build_src_filter` under SCons and never enters CMake, so the guard is structurally incapable of seeing them. Several of them nonetheless TEST the wire codec the UART path depends on.
+- part-of: [SPEC:CXC-UART-BASELINE]
+
+---
+
+## 3. The Waiver
+
+### What The Transport Actually Costs — Measured, Not Estimated [CXC-UART-BASELINE-COST]
+
+- measurement-method: `riscv32-esp-elf-size` / `xtensa-esp-elf-size` run on the real `bus_uart.cpp.o` from the current build tree, 2026-08-13. Not a source-line estimate.
+- flash-and-static: ESP32-C3 (RISC-V): text 6,391 B, data 25 B, bss 3,149 B. ESP32-S3 (Xtensa LX7): text 6,096 B, data 25 B, bss 3,149 B. Call it ~6.4 KB flash and ~3.2 KB static RAM.
+- heap: `kRxRingBytes = 1024` and `kRxTaskStack = 4096` (bus_uart.cpp L176-L177) put roughly 5.5 KB more on the heap once `uart_driver_install()` and the `bus_uart_rx` task are running.
+- total-full-profile: ~6.4 KB flash, ~8.7 KB RAM (3.2 KB static + ~5.5 KB heap).
+- what-dominates: The bss is mostly the subscription tables — `kMaxSubs = 16` and `kMaxPersist = 8` entries of `NsEntry`, whose `char ns[96]` field is the expensive part: 24 x ~100 B is ~2.4 KB of the 3.1 KB. That is the knob a constrained profile turns, and it is why a smaller part can still carry the transport.
+- not-charged: `bus_frame.cpp` (1,406 B text) is the shared wire codec and is NOT charged to UART — the CAN transport needs it too.
+- part-of: [SPEC:CXC-UART-BASELINE]
+
+### The Waiver Floor — Under 8 KB RAM Or Under 32 KB Flash [CXC-UART-BASELINE-FLOOR]
+
+- floor: A part may be waived IF AND ONLY IF it has less than 8 KB usable RAM, OR less than 32 KB usable flash. OR, not AND: either resource alone is a hard stop.
+- tier-a-full: The constants as built. ~6.4 KB flash, ~8.7 KB RAM. Required of any part with >= 32 KB RAM and >= 128 KB flash. Every ESP32 in the fleet clears this by more than an order of magnitude — on the C3 the transport costs 2.7% of RAM.
+- tier-b-constrained: `kMaxSubs = 4`, `kMaxPersist = 2`, `kRxRingBytes = 256`, and a polled RX or a 1,536 B task stack. Static falls to ~800 B and heap to ~2 KB. ~6 KB flash, ~2.8 KB RAM. Required of any part with >= 8 KB RAM and >= 32 KB flash. A Tier B node subscribes fewer namespaces; it does NOT lose the recovery path, which is the entire point of having a second tier rather than a waiver.
+- why-eight-and-thirty-two: Tier B costs ~2.8 KB RAM. On an 8 KB part that is 35% of RAM before the application allocates anything — aggressive, and the last point at which a node can carry the transport AND still be the reason the board was chosen. Below 8 KB the transport crowds out the application and the board exists only to be reachable. Flash is set the same way: ~6 KB is 19% of a 32 KB part and the ratio degrades fast below it.
+- not-a-vibe: The floor is a number derived from a measurement of the actual object files, not a feeling about which MCUs are small. It can be re-derived when the transport's size changes, and it SHOULD be — the arithmetic is stated so that it can be redone rather than quoted.
+- part-of: [SPEC:CXC-UART-BASELINE]
+
+### The CH32V203 Is Not The Boundary — It Is Comfortably Above It [CXC-UART-BASELINE-CH32V203]
+
+- verdict: NOT WAIVABLE. Tier B required.
+- arithmetic: CH32V203C8T6 carries 20 KB RAM and 64 KB datasheet-marked flash (~128 KB per-unit extended). That is 2.5x the RAM floor and 2x the flash floor. Tier B's ~2.8 KB leaves 17 KB of RAM for the application.
+- empirical-support: The 82.8 KB `ch32v203_dsl_test` image already wrote and verified clean on the physical unit (ch32v203.descriptor.yaml, quirk extended-flash-per-unit), so a ~6 KB transport is nowhere near a flash problem on this part.
+- why-it-matters-beyond-bookkeeping: The plan proposes the CH32V203 as a CAN-attached host with a UART leaf hanging off it ([CXC-CONFIG-BUS-INTENT]). A waived CH32V203 would break that topology outright — it cannot proxy config to a leaf over a transport it does not have. The part that looked like the interesting boundary is in fact the part that most needs the rule.
+- ch32v003: WAIVABLE. ~2 KB RAM and 16 KB flash is below BOTH floors, and Tier B's 2.8 KB of static does not fit in 2 KB of total RAM at all. This is the part that forced a criterion to exist.
+- part-of: [SPEC:CXC-UART-BASELINE]
+
+### What A Waived Board Loses, And What It Must Provide Instead [CXC-UART-BASELINE-WAIVED-OBLIGATIONS]
+
+- loses: Radio-independent recovery (it cannot be re-pointed without its radio, so if the radio config is what broke, it is bricked short of a physical reflash); config over the bus ([SPEC:CXC-CONFIG-BUS] cannot reach it over wire); remote restart ([CXC-ER-REMOTE-RESTART] has no wire path); self-announcement, so it is invisible to a fleet census unless its radio is up; and peer status — it becomes a LEAF, reachable only through a host that does have UART.
+- worst-loss: The announcement one, because it is the loss that degrades a DIFFERENT design. A missing announcement is supposed to BE the fault report; from a waived board it becomes ambiguous between "absent" and "radio down", which is precisely the ambiguity periodic announcement exists to remove.
+- must-provide: All three, or the waiver is denied. (1) A hardware ISP/bootloader recovery path that reflashes with no network, recorded in the descriptor's `flash:` block — WCH single-wire SWIO via `minichlink` for the CH32V003, BOOT0 + `wchisp` USB-ISP for the CH32V203. This is the only accepted substitute for "recoverable over three wires". (2) A named UART-bearing proxy host carrying it onto the bus (the relay pattern, `env:esp32_can_relay`). A waived board with no proxy is not on the fleet. (3) A `uart_waiver:` block in `docs/board-bringup/<board>.descriptor.yaml` naming part, RAM, flash, recovery path and proxy host.
+- build-side: The env must carry BOTH `-DCXC_UART_WAIVED=1` and `-DCXC_UART_WAIVER_REASON="<part>: <ram>/<flash>"` in `board_build.cmake_extra_args`. A waiver with no reason is a FATAL configure error — deliberately, because a reasonless waiver is the silent accident the whole policy exists to catch.
+- part-of: [SPEC:CXC-UART-BASELINE]
+
+---
+
+## 4. The Guard
+
+### A Deferred CMake Assertion Covers The Branch Nobody Has Written Yet [CXC-UART-BASELINE-GUARD]
+
+- mechanism: `cxc_assert_uart_baseline()` at the top of `cyd/src/CMakeLists.txt`, scheduled with `cmake_language(DEFER CALL ...)`. It reads the component target's SOURCES property, and fails configure with FATAL_ERROR when a transport source is present and `bus_uart.cpp` is not.
+- why-deferred: Every board branch in that file ends in `return()`, so a check written at the BOTTOM would audit only the fallthrough env. A deferred call runs at the end of the directory scope, which `return()` does not skip. The consequence is the point: a new board branch added ANYWHERE in the file is audited without its author opting in.
+- script-mode-trap: ESP-IDF re-reads a component's CMakeLists under `cmake -P` (component_get_requirements.cmake) to expand requirements. Script mode has no directory scope and DEFER there is a hard error — "cmake_language DEFER CALL may not be scheduled in directory". Without an `if(NOT CMAKE_SCRIPT_MODE_FILE)` wrapper, EVERY ESP-IDF env in the tree fails to configure. Found by building a scratch copy, not by reading.
+- waiver-cannot-be-loud: Measured, in this order, all on a scratch copy: `message(WARNING)` is swallowed by PlatformIO; `message(STATUS)` is also swallowed, because on a SUCCESSFUL configure PlatformIO echoes nothing from CMake at all; and `add_custom_command(TARGET ... POST_BUILD)` never runs, because for framework=espidf PlatformIO uses CMake only to EXTRACT the build configuration and then compiles and links with SCons. So a waiver instead mints `CXC_UART_WAIVED_BUILD=1` as a real compile definition — the one channel that reaches an IDF compile — and the loudness lives where it can be ENFORCED rather than printed: the descriptor's `uart_waiver:` block and this node.
+- audit-command: `grep -c CXC_UART_WAIVED_BUILD cyd/.pio/build/<env>/compile_commands.json`
+- part-of: [SPEC:CXC-UART-BASELINE]
+
+### Proven By Making It Fail — Twice, On Two Different Branches [CXC-UART-BASELINE-GUARD-PROVEN]
+
+- principle: A guard that has never failed is not a guard. "The build passed" is evidence about the tree, not about the assertion. Only a deliberate break tests the assertion.
+- proof-1-baseline: Guard installed, tree unmodified: all 11 ESP-IDF envs build SUCCESS, and `bus_uart.cpp.o` is present in 9 and absent in the 2 exempt DSL runners — which also machine-confirms the audit table.
+- proof-2-can-bringup: `bus_uart.cpp` deleted from the `CXC_CAN_BRINGUP` branch: configure FATAL, naming `env: esp32_c3_can_bringup`, `found: bus_can.cpp, bus_mqtt.cpp, bus_transport_select.cpp`, `missing: bus_uart.cpp`. `pio run` exit 1.
+- proof-3-hosyond: `bus_uart.cpp` deleted from the `HOSYOND_S3` branch: configure FATAL, naming `env: hosyond_s3`, `IDF_TARGET: esp32s3`. A second branch, to show the guard is not coincidentally coupled to the first.
+- proof-4-reasonless-waiver: `-DCXC_UART_WAIVED=1` with no reason: configure FATAL — "CXC_UART_WAIVED is set with no CXC_UART_WAIVER_REASON".
+- proof-5-valid-waiver: `-DCXC_UART_WAIVED=1` plus a reason: configure proceeds and 13 compile units carry `CXC_UART_WAIVED_BUILD=1` in compile_commands.json.
+- incidental-finding: Proof 5 also showed that on an ESP-IDF board a waiver is NOT merely "drop the file": `bus_transport_select.cpp`'s static registry references `bus_uart_transport()`, so a waived ESP-IDF build fails at LINK with `undefined reference to bus_uart_transport()`. A genuine waiver here would have to remove the registry entry too. Treat that as a feature — on an ESP32 the linker is a second, independent objection to waiving something no ESP32 has any business waiving.
+- part-of: [SPEC:CXC-UART-BASELINE]

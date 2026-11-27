@@ -1,0 +1,223 @@
+---
+scope: "The RECEIVER half of the freshness contract: a monotonic receiver-side age counter, lazy expiry on read, the per-node heartbeat monitor that judges namespaces whose silence is by design, `unknown` as a first-class value (wire tag 0xFD), and the named freshness CLASS that carries the derived-value rule. Written 2026-08-15 after David's Dradis was measured rendering `contacts: 3` from a publisher that had been dead for hours."
+audience: "ComposeIO bus implementers on every tier, ComposeUX widget authors who consume bus values, and firmware developers on the C++ leaf receiver"
+boundary: "IN: age measurement, the staleness verdict and its six cases, the heartbeat receiver, the unknown type on the Python tier and in the UART codec, YAML-declared freshness classes, and the publisher/receiver asymmetry. OUT: the DECLARATION half ([CXC-FRESH-DECL], already shipped); the PRESENTATION of staleness on the glass, which the widget vocabulary cannot currently express at all and which is scoped to [SPEC:CXC-PRIM]; and the C++ leaf receiver, argued below as a named follow-on."
+not-this: "Not a timestamp-on-the-wire scheme — that was weighed and REJECTED on three independent grounds ([DEC-FRESHNESS-IS-RECEIVER-SIDE-AND-DECLARED-IN-YAML]). Not a reserved-sentinel scheme; no reserved value is safe in a dynamically-typed value domain. Not a timer-driven sweep. Not an inference engine: an interval is DECLARED, never learned from traffic, because the fleet's most-watched namespace is silent at rest by design and any inference would learn the wrong number from it."
+depends-on: [01-composeio-bus-protocol.smd, 61-config-over-bus.lts, 65-uart-baseline-policy.lts]
+domain: plt.cio
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+# The Freshness Receiver [SPEC:CXC-FRESHNESS]
+
+> A value that stopped arriving looked exactly like a value that had not changed. David's Dradis rendered `contacts: 3 threats: 0` with no contacts present and a stalled FTL-ready indicator — frozen last-known values from a publisher that had died, presented as though current, beside a `throttle/*` that updated fine because its publisher was alive. Nothing anywhere expired anything. The declaration half of the contract had shipped and NOTHING CONSUMED IT.
+
+---
+
+## 1. Intent
+
+### [CXC-FRESH-INTENT] A System That Cannot Say "I Do Not Know" Will Lie Instead
+
+- problem: `Namespace.value` returned `state_engine.current` unconditionally. There was no age counter anywhere in the tree, so the last value ever received was rendered forever, indistinguishable from a current one. This is not a bug in a widget; it is a property the bus lacked, so every consumer inherited it and no consumer could have fixed it locally.
+- the-tell: the defect surfaced because ONE namespace kept working. `throttle/*` updated while `dradis/*` sat frozen, and the contrast is the only reason anyone noticed — a fleet-wide publisher outage would have produced a completely consistent, completely wrong display with no internal evidence of trouble at all.
+- why-the-declaration-alone-was-worse-than-nothing: `refresh_interval`, `staleness_timeout` and `Cadence` shipped, were tested, and passed. A reader of the code — or of `spec/01` — would reasonably conclude freshness worked. A half-built mechanism that tests green is more dangerous than an absent one, because the green suppresses the suspicion that would otherwise prompt a look ([PRINCIPLE-MACHINE-GREEN-IS-NOT-GLASS-GREEN]).
+- status: implemented
+- implementation: python/composeio/namespace.py:Namespace.value
+- verify: python/tests/test_freshness_receiver.py::test_dradis_contacts_goes_unknown_when_the_world_app_stops
+- part-of: [SPEC:CXC-FRESHNESS]
+
+### [CXC-FRESH-ASYMMETRY] Freshness Is A RECEIVER'S Judgement And Never A PUBLISHER'S
+
+- rule: a publisher reports WHAT IT SENT. Only a receiver applies a freshness verdict. No outbound envelope ever carries this bus's own staleness opinion.
+- forcing-case: found by mutation, not by design. `bus.publish_state` re-read `ns.value` to build the outbound message, which pushes an accepted value back through the expiry gate BEFORE transmitting it. For a quiet-by-construction namespace whose node was marked silent, that gate answers `unknown` — so the bus would have transmitted `unknown` for a value it held in its hand one line earlier, corrupting a healthy signal on the way out because of a verdict about an unrelated node.
+- consequence: `publish_state` uses the value returned by the namespace, never a re-read. The distinction is not stylistic: a re-read makes the two halves of the contract observable from the wrong side.
+- status: implemented
+- implementation: python/composeio/bus.py:ComposeIOBus.publish_state
+- verify: python/tests/test_freshness_receiver.py::test_a_publisher_never_transmits_its_own_freshness_verdict
+- part-of: [SPEC:CXC-FRESHNESS]
+
+---
+
+## 2. The Mechanism
+
+### [CXC-FRESH-MONOTONIC] Age Is Measured On A MONOTONIC Clock, Never A Shared One
+
+- rule: the receiver stamps a monotonic instant on every RECEIPT and computes age as `monotonic() - last_receipt`. `time.time()` appears nowhere in the freshness path.
+- why-not-wall-clock: [D4] rejected wire timestamps on three grounds, and the decisive one is that THERE IS NO SHARED TIME BASE. `_bus/time` is one-way, one-second resolution, no delay compensation. Against CH32V003 parts on internal oscillators at about 1% (roughly 36 s/hour), the clock-offset error EXCEEDS the staleness being measured — so a wall-clock scheme would report fresh values as expired, consistently, and would do so in a way that survives testing on one machine.
+- second-reason: a monotonic clock cannot be dragged backwards by NTP mid-flight, which would otherwise make an expired value spontaneously un-expire.
+- injectable: the clock is a constructor argument. A freshness test built on real sleeps is slow, flaky, and — decisively — CANNOT ASSERT THE NEGATIVE CONTROL, because "still fresh at 2.999 s" is not a claim a wall-clock sleep can make honestly.
+- status: implemented
+- implementation: python/composeio/namespace.py:Namespace._clock
+- part-of: [SPEC:CXC-FRESHNESS]
+
+### [CXC-FRESH-RECEIPT] The Age Resets On RECEIPT, Not On CHANGE
+
+- rule: every publish stamps a receipt, INCLUDING one whose value is identical to the last.
+- why: `Namespace.publish_state` notifies subscribers only when `new != old`. An age counter driven by the subscriber callback would never see a publisher faithfully restating a steady value — so it would expire a transmitter that is working perfectly, and it would do so ONLY for the steadiest signals in the fleet, which are exactly the ones an operator most expects to trust.
+- status: implemented
+- implementation: python/composeio/namespace.py:Namespace.mark_received
+- verify: python/tests/test_freshness_receiver.py::test_a_republish_of_the_SAME_value_refreshes_the_age
+- part-of: [SPEC:CXC-FRESHNESS]
+
+### [CXC-FRESH-LAZY] Expiry Is Computed At READ And Nothing Sweeps
+
+- rule: there is no timer, no reaper and no background task. The verdict is computed inside the `value` property, by whoever asks.
+- why: [D4] — "a timer-driven sweep means a stalled receiver demotes the whole world and blames the world". A blocked GUI thread must not manufacture a fleet-wide outage out of its own stall, and under lazy evaluation it structurally cannot: a receiver that is not reading is not judging.
+- self-healing: nothing latches. When the publisher returns, the next receipt makes the next read FRESH with no reset step for anyone to forget.
+- one-measurement-path: every reader — `get_state`, the transports, the monitors, all 52 widget `on_bus_state` implementations — arrives through the same property, so a stale value cannot leak out through a second accessor ([PRINCIPLE-ONE-MEASUREMENT-PATH]). `raw_value` is the single deliberate, named exception, for diagnostics that need the last thing actually received.
+- status: implemented
+- implementation: python/composeio/namespace.py:Namespace.value
+- verify: python/tests/test_freshness_receiver.py::test_expiry_is_lazy_and_reversible_when_the_publisher_returns
+- part-of: [SPEC:CXC-FRESHNESS]
+
+### [CXC-FRESH-VERDICT] Six Cases, Because A Boolean Cannot Say WHY
+
+- case-fresh: received within its declared window.
+- case-stale: declared a cadence, and nothing arrived within 3x it.
+- case-wire-unknown: the publisher sent an explicit 0xFD — alive, and knowingly without a value.
+- case-never-received: declared a cadence, and nothing has EVER arrived.
+- case-node-silent: quiet-by-construction, and its node stopped beating.
+- case-undeclared: no contract, so no verdict was ever authorised.
+- timeout-formula: `max(3 * refresh_interval, refresh_interval + 0.1)`. The 3x is a J1939 CONVENTION and the spec must say convention rather than requirement; the floor stops a fast cadence producing a timeout inside its own jitter.
+- why-not-a-boolean: the four failure cases call for different operator responses — a NEVER_RECEIVED namespace may simply be early in boot, a STALE one has a publisher that died, a NODE_SILENT one has a whole board gone. Collapsing them hands the glass one word where the operator needs four.
+- ordering-is-load-bearing: WIRE_UNKNOWN precedes every age rule (an explicit 0xFD is a POSITIVE statement and must not be relabelled). UNDECLARED precedes anything time-based (no verdict is invented for a contract nobody made). NEVER_RECEIVED precedes STALE (there is no last value being disbelieved; there was never a first).
+- undeclared-is-not-fresh: reporting UNDECLARED as FRESH is how a system claims confidence it never earned. It is reported as its own case and counted separately in `freshness_report`, so "nothing is wrong" can never be read off a display that means "nothing was checked".
+- status: implemented
+- implementation: python/composeio/freshness.py:Verdict
+- part-of: [SPEC:CXC-FRESHNESS]
+
+---
+
+## 3. The Trap: Quiet By Design Is Not Dead
+
+### [CXC-FRESH-QUIET] Silence Can Never Condemn A Namespace Whose Silence Is The Design
+
+- hardware-fact: `controller_main.cpp` gates throttle emission on a sample clock AND a deadband against the last EMITTED value, with its own comment reading "quiet-bus by construction". A stationary lever therefore publishes NOTHING, indefinitely, while being perfectly healthy.
+- the-naive-rule-is-wrong: "no message in N seconds implies stale" marks the fleet's most-watched namespace DEAD seconds after David stops touching it. This is the same defect inverted — an instrument that condemns everything is exactly as useless as one that condemns nothing, and it passes precisely the same "did it go unknown?" test.
+- rule: an EVENT_DRIVEN namespace has NO staleness timeout. `staleness_timeout` is `None` — not zero, not infinity, because the quantity is meaningless rather than extreme. Its own silence is evidence of nothing.
+- what-does-condemn-it: the ABSENCE OF ITS NODE, and nothing else. This is what makes the per-node heartbeat load-bearing rather than belt-and-braces: for this entire class it is the only liveness signal that exists.
+- status: implemented
+- implementation: python/composeio/namespace.py:Namespace.verdict
+- verify: python/tests/test_freshness_receiver.py::test_a_quiet_by_construction_namespace_NEVER_expires_on_its_own_silence
+- part-of: [SPEC:CXC-FRESHNESS]
+
+### [CXC-FRESH-HEARTBEAT-RX] The Heartbeat Receiver — The Half That Was Never Built
+
+- prior-state: `ComposeIOBus.publish_heartbeat` shipped and said so in its own docstring: "the receiver half — a monitor counting missed intervals and driving a node to degraded — does not exist anywhere in this repo, and spec/01 currently describes it as though it does." Beats went out, arrived, and were counted by nothing. HEARTBEAT messages reach neither the STATE nor the EVENT branch of the inbound dispatcher, so they fell through entirely.
+- rule: a node is alive iff it has beaten within 3x the interval THE BEAT ITSELF DECLARED. The cadence rides in the payload (`interval_s`) precisely so the receiver never needs a configured second copy — the second copy being the thing that eventually disagrees.
+- a-node-never-heard-from-is-not-alive: the tempting default is "no evidence of death", and it certifies every node in the fleet alive before a single beat arrives, including ones that never boot. Absence of evidence is not evidence of liveness.
+- attribution: the receiver records which node published each namespace from the envelope's `src`, and that attribution is what routes a quiet namespace to its node's heartbeat. ⛔ NO ATTRIBUTED PUBLISHER MEANS NO VERDICT: a locally-published namespace, or one whose envelope carried no `src`, has no node to condemn, and condemning it anyway would mark every in-process namespace dead the moment this shipped. The heartbeat may only ever REMOVE confidence from a node positively identified and then positively lost.
+- ordering: the freshness receiver sees every inbound message FIRST, before engine validation can reject a payload and return. A peer whose value violates our engine is still a peer that is ALIVE, and losing its attribution because its data was malformed would condemn it for the wrong reason.
+- status: implemented
+- implementation: python/composeio/freshness.py:HeartbeatReceiver
+- verify: python/tests/test_freshness_receiver.py::test_the_heartbeat_receiver_marks_a_node_silent_at_three_intervals
+- part-of: [SPEC:CXC-FRESHNESS]
+
+---
+
+## 4. `unknown` Is A Type, Not A Value
+
+### [CXC-FRESH-UNKNOWN-TYPE] It Rides In The VALUE Domain So No Signature Has To Change
+
+- rule: `unknown` is a singleton object delivered as the ordinary `value` argument. It is not a side-channel, not a second callback, not a flag beside the value.
+- why: the widget seam is `on_bus_state(namespace, value)` and it is implemented 52 times. A freshness side-channel needs all 52 signatures changed, and until every one of them was, a widget would keep rendering a stale number while the receiver quietly knew better. Making unknown a member of the value domain is also simply what "type tag" MEANS — 0xFD sits beside 0xFE int32 and 0xFF float32, so its Python realization sits beside `int` and `float`.
+- convergence: wire-unknown ("I am alive and I know that I do not know") and expiry-unknown (the receiver's own timeout) are DIFFERENT MECHANISMS REACHING ONE RECEIVER STATE. Both are required, because a dead publisher cannot send 0xFD.
+- status: implemented
+- implementation: python/composeio/freshness.py:UNKNOWN
+- verify: python/tests/test_freshness_receiver.py::test_wire_unknown_and_expiry_unknown_are_the_SAME_receiver_state
+- part-of: [SPEC:CXC-FRESHNESS]
+
+### [CXC-FRESH-UNKNOWN-ARITH] Arithmetic PROPAGATES; Coercion And Ordering REFUSE
+
+- propagates: `UNKNOWN + 1` is UNKNOWN. This is [D4b]'s derived-value rule — "unknown if ANY input is unknown" — holding automatically wherever a binding transform does arithmetic, instead of every transform having to remember it.
+- refuses: `int()`, `float()`, `<`, `>` raise `UnknownValueError`. `int(UNKNOWN) -> 0` would draw a zeroed gauge indistinguishable from a real zero, which is the exact lie this mechanism exists to stop, reintroduced one layer lower. `UNKNOWN > limit -> False` would SUPPRESS AN ALARM: a comparison that never ran reads identically to a threshold that was not crossed.
+- equality-never-raises: `==` is identity-only and total, because dict lookups and the `new != old` change test run on every publish.
+- engine-bypass: publishing UNKNOWN never touches the state engine. Unknown is a TYPE, not a member of any engine's domain, so validating it against one is a category error — and a dangerous one, because a `binary` engine handed an out-of-domain value raises inside a Tk callback, becomes an NSException on macOS, and aborts the process with SIGABRT. A publisher saying "I do not know" must never be able to kill the surface rendering it.
+- status: implemented
+- implementation: python/composeio/freshness.py:_Unknown
+- verify: python/tests/test_freshness_receiver.py::test_publishing_unknown_bypasses_the_state_engine
+- part-of: [SPEC:CXC-FRESHNESS]
+
+### [CXC-FRESH-WIRE] Tag 0xFD, And The Injectivity Defect It Nearly Shipped With
+
+- encoding: `[0xFD]` with a ZERO-LENGTH payload, so the entire encoded value is one byte.
+- the-residual-bites: 0xFE and 0xFF are safe because their discriminator is LENGTH — they are only ever READ as tags at five bytes, so the one-byte values 254 and 255 pass through the small-int fast path untouched. 0xFD HAS NO LENGTH TO BE DISCRIMINATED BY. Measured on the unmodified codec: `encode_value(253)` returned `b"\xfd"`, byte-identical to unknown, and `decode_value(b"\xfd")` returned integer 253.
+- it-is-worse-than-mis-decoding: the failure is not that unknown would be read as 253. It is that THE CODEC STOPS BEING INJECTIVE — two distinct values share one encoding — and no care at the decoder can recover information the encoder threw away.
+- fix: 253 is carved out of the small-int fast path and goes out TAGGED as int32. Four extra bytes for exactly one integer in the whole domain; 0..252 and 254..255 unchanged. Widening the carve-out to 254/255 would be cargo-culting a fix onto values that never collided.
+- status: implemented
+- implementation: python/composeio/transport_uart.py:VALUE_TAG_UNKNOWN
+- verify: python/tests/test_value_codec_unknown_tag.py::test_the_codec_is_injective_across_every_single_byte_integer
+- part-of: [SPEC:CXC-FRESHNESS]
+
+---
+
+## 5. Freshness Classes
+
+### [CXC-FRESH-CLASS] A Named Group That Must ALL Be Current Together
+
+- origin: David, ratifying [D4], verbatim — "or a simple grouping of semantic messages that must all have a specific value within the bounding window defined as a class."
+- rule: age is the MAX of the members' ages; the class is UNKNOWN if ANY member is. This is [D4b]'s derived-value rule made a first-class, nameable, YAML-declarable object.
+- why-max: a navigation solution is not fresh because its newest input is fresh. It is as old as its OLDEST input, and it is not a solution at all if one input is missing. Taking the max is what stops the freshest member from laundering the staleness of the others.
+- it-is-not-a-weaker-fallback: the class was originally deferred on the reading that David offered it as a substitute for per-namespace fields if those proved hard. That reading was too narrow — a per-namespace field cannot express a conjunction ACROSS namespaces at all, so the class is the only form that can state a multi-message contract, and it is where the derived-value rule lives.
+- names-the-culprit: the class reports the FIRST unbelievable member's own verdict and can list all of them, because an operator needs to know WHICH sensor died, not merely that the solution is bad.
+- empty-is-refused: an empty class would report FRESH forever — a green light wired to nothing. A class naming an unregistered namespace is refused for the same reason: it fails OPEN, reporting FRESH while the namespace nobody registered is the one that died.
+- status: implemented
+- implementation: python/composeio/freshness.py:FreshnessClass
+- verify: python/tests/test_freshness_receiver.py::test_a_freshness_class_is_declarable_in_YAML
+- part-of: [SPEC:CXC-FRESHNESS]
+
+---
+
+## 6. The Gap This Build Does NOT Close
+
+### [CXC-FRESH-NO-PRESENTATION] ⛔ THE GLASS STILL CANNOT SHOW STALENESS — SCOPED OUT, NOT DONE
+
+- measured-verdict: the widget vocabulary has NO WAY TO RENDER `unknown`, and the failure mode is not a blank — it is SILENT RETENTION OF THE STALE NUMBER. `GaugeWidget.on_bus_state` ends in `try: self.value = float(value) except (TypeError, ValueError): pass`. `float(UNKNOWN)` raises `UnknownValueError`, which subclasses TypeError, so the handler catches it and PASSES — the widget keeps its previous value and redraws nothing.
+- measured-directly: a real `GaugeWidget` given 3 then given UNKNOWN reported `value = 3.0` both times. The receiver is correct and the glass still lies.
+- extent-widgets: 52 widgets implement `on_bus_state`; 22 of them wrap a coercion in an `except (TypeError, ValueError)` that will swallow unknown the same way.
+- extent-primitives: ZERO render primitives and ZERO widgets carry a staleness or unknown PRESENTATION — no dimmed state, no staleness marker, no no-data treatment.
+- extent-existing-forks: three widgets (`link_health`, `lts_engine_rail`, `decisions_summary`) hand-rolled private freshness notions, which is the fork a shared primitive should absorb.
+- follow-on-shape: a presentation state on the primitive vocabulary plus a base-class handler that renders it, so a widget opts OUT of staleness rather than having to opt in — 22 silent swallowers is the measured cost of opt-in.
+- why-it-is-not-fixed-here: this is a change to the render primitive vocabulary — a dimmed state, a staleness marker, an `unknown` presentation — and it belongs to [SPEC:CXC-PRIM] with its own dispatch. Building it silently into a bus change would put a visual language decision in a commit nobody would look for it in.
+- honest-status-of-the-whole-feature: ⛔ INCOMPLETE. The receiver is correct, tested and adversarially mutated. The DISPLAY is unchanged. David's Dradis will still show a stale `3` after this lands, because the widget throws the unknown away. An incomplete build must shout that it is incomplete ([PRINCIPLE-INCOMPLETE-MUST-SHOUT]).
+- status: open
+- part-of: [SPEC:CXC-FRESHNESS]
+
+### [CXC-FRESH-CPP-FOLLOWON] The C++ Leaf Receiver Is A NAMED FOLLOW-ON, And Here Is The Argument
+
+- decision: the C++/embedded receiver is OUT of this change and is a named follow-on, not an omission.
+- argument-for-deferring: the acceptance criterion is on David's glass, and every node in that path — the world app, the console, the render engine, the Dradis widget — is Python. Not one byte of the failing display crosses a C++ receiver. Building the firmware half now would ship untested-in-anger code to a fleet that cannot yet display its output, and would do it inside a change whose correctness nobody can see.
+- argument-against-deferring: stated fairly — [D4b] says the unknown tag "MUST be added to the UART codec in the same change — two mechanisms on two substrates is a fork this codebase has already paid for twice." That is a real instruction and it points the other way.
+- how-it-is-honoured: the CODEC half of that instruction IS in this change. `VALUE_TAG_UNKNOWN` is defined and both encode and decode handle it on the Python side of the UART wire, so the wire format is settled, single-sourced and testable NOW. What is deferred is the C++ RECEIVER LOGIC — the age counter and heartbeat monitor on the leaf — which is a different thing from the codec and was never what the fork warning was about.
+- residual-risk-named: until the C++ side decodes 0xFD, a leaf that receives one will fall into its `BusValueKind::Raw` path. That is visibly undecodable rather than invisibly wrong, which is the same flag-day behaviour the tagged-numerics change already chose deliberately. ⛔ No Python node should transmit UNKNOWN to a CAN/UART leaf until the firmware half lands.
+- follow-on-scope: `cyd/src/bus_frame.h` + `bus_uart.cpp` decode of 0xFD; a monotonic age counter per namespace on the leaf; the heartbeat receiver; and the same 253 carve-out at the C++ encoder, which has the identical collision.
+- status: proposed
+- part-of: [SPEC:CXC-FRESHNESS]
+
+---
+
+## 7. What The Spec Prose Got Wrong
+
+### [CXC-FRESH-SPEC01-CORRECTION] `spec/01` Described The Receiver As LIVE, Which Is Why It Was Believed Built
+
+- defect: `spec/01-composeio-bus-protocol.smd` sections 2.5, 5.2 and 9.2 describe heartbeat cadence and heartbeat-timeout-driven degraded mode as working behaviour, carrying NO not-implemented banner — while seven-plus other places in the same document do carry one. The reader's inference was therefore correct and the document was wrong.
+- consequence: this is precisely why David believed the freshness receiver had been built. The false claim was not incidental to the defect; it was the mechanism by which the defect stayed unfixed.
+- rule-this-establishes: a spec section describing unbuilt behaviour must be banner-marked, and a document that banners SOME of its unbuilt sections makes every unbannered section a positive claim of implementation.
+- migration-boundary: `spec/01` is corrected but NOT migrated, held by the ruling that migration CONFERS AUTHORITY — migrating a stale spec does not carry the staleness forward, it LAUNDERS it. This node is the LTS-tier statement of the corrected behaviour; the `.smd` carries a pointer here rather than a re-description.
+- status: implemented
+- part-of: [SPEC:CXC-FRESHNESS]
+
+---
+
+## Relationships
+
+- [SPEC:CXC-FRESHNESS] REALIZES [DEC-FRESHNESS-IS-RECEIVER-SIDE-AND-DECLARED-IN-YAML]
+- [SPEC:CXC-FRESHNESS] REALIZES [DEC-UNKNOWN-IS-A-TYPE-TAG-NOT-A-RESERVED-VALUE]
+- [CXC-FRESH-QUIET] UPHOLDS [PRINCIPLE-CHEAPEST-NODE-OWNS-BEHAVIOR]
+- [CXC-FRESH-LAZY] UPHOLDS [PRINCIPLE-ONE-MEASUREMENT-PATH]
+- [CXC-FRESH-INTENT] EXEMPLIFIES [PRINCIPLE-MACHINE-GREEN-IS-NOT-GLASS-GREEN]
+- [CXC-FRESH-NO-PRESENTATION] EXEMPLIFIES [PRINCIPLE-INCOMPLETE-MUST-SHOUT]
+- [CXC-FRESH-NO-PRESENTATION] STRESSES [SPEC:CXC-PRIM]
+- [CXC-FRESH-WIRE] EXTENDS [SPEC:CXC-CONFIG-BUS]
+- [CXC-FRESH-CPP-FOLLOWON] PORTS [CXC-FRESH-MONOTONIC]
+- [CXC-FRESH-SPEC01-CORRECTION] DOCUMENTS [SPEC:CXC-FRESHNESS]

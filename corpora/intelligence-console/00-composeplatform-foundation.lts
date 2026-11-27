@@ -1,0 +1,75 @@
+---
+title: "ComposePlatform Foundation"
+domain: plt.cio
+document_tag: SPEC
+confidentiality: internal-only
+artifact-readiness: reviewed
+created: 2026-08-17
+---
+
+# ComposePlatform — Foundation [CXC-FOUNDATION]
+
+> **The map you read FIRST.** What ComposePlatform is, what it is made of, and what each part is
+> called — so no instance has to infer the shape of the platform from a code read.
+
+- what-it-is: ComposePlatform is a control plane that INVERTS the hub model. There is no centre. State lives on a BUS as semantic namespaces, and every participant — a display, a sensor, a $0.10 MCU, an Intelligence — is a CO-EQUAL PEER that publishes and subscribes namespaces. Home Assistant is the foil: a central engine owns integrations, entities belong to integrations, automations are centralised rules. ComposePlatform has none of that; the control plane IS the semantic layer.
+- why-this-document-exists: Measured 2026-08-17 — an architect ran the full wake sequence (PRINCIPLE, STRATEGY, CXC-VISION-EPISTEMICS, the five vision pillars, the design-excellence rules) and then could not tell David that "UX Composer" names a product inside ComposeIO. Every query answered HOW TO BEHAVE; none answered WHAT EXISTS. The registry was already there ([REGISTRY:PROJECTS], 20 nodes) and `bootstrap/session-bootstrap-read.md` already specified the read ("Slice 0 — PLATFORM OVERVIEW, the map you read first") — but NO agent definition on the machine ran it. The failure was not ignorance; it was that the map was never routed into the wake.
+- the-standing-rule: a component's ONE-LINE gloss lives here; its DETAIL lives behind a query. A copy of the detail in this document would go stale silently, which is the disease this platform's own vision names ([CXC-VISION-COMPACT-WIRE] — the wire carries fingerprints, the registry resolves them).
+- see-also: [CXC-VISION], [REGISTRY:PROJECTS], [DOC-DX]
+
+## What this document answers — and what it does NOT [CXC-FOUNDATION-SCOPE]
+
+- provides: platform orientation; the component inventory with a query per component; the NAMING map (which product has how many names); why a feature is spread across directories; and the queries that replace what would otherwise be stale prose.
+- does-not-provide-architecture: the architectural spine — announce-then-bind, scope-as-membrane, semantic realization, the compact wire, epistemics. Query it: `lts_node(corpus="intelligence-console", node_id="CXC-VISION")` then traverse depth 1.
+- does-not-provide-principles: the collaboration contract and design principles. Query: `lts_find(corpus="intelligence-console", prefix="PRINCIPLE")`.
+- does-not-provide-edge-rules: where a boundary goes. Query: `lts_find(corpus="design-excellence", prefix="DX")`.
+- does-not-provide-project-status: per-project status, roots, git remotes, maker-flow step. Query: `lts_find(corpus="intelligence-console", prefix="PROJECT")` — 20 records, read by `project_validator.py` and projected onto the console's Projects tab.
+- does-not-provide-warts: what you will re-trip if you do not know it. Query: `lts_find(corpus="insights-and-warts")`.
+- does-not-provide-hardware: board pin maps, bring-up procedure, peripheral HAL. Query `lts_node(corpus="intelligence-console", node_id="CXC-BOARD-HW")` and read `docs/board-bringup/RUNBOOK.md`.
+- how-to-use-this: read the component table, pick the component, run ITS query. Do not read this document for detail — it is deliberately thin, and a thin map that routes correctly beats a thick one that goes stale.
+- part-of: [CXC-FOUNDATION]
+
+## ONE PRODUCT, SEVERAL NAMES — the failure this document was written for [CXC-FOUNDATION-NAMES]
+
+- the-problem: several components are known by more than one name, and the alternate name appears in conversation far more often than in the corpus. An instance that only ever queried the corpus id could not follow the human.
+- composer-aliases: **UX Composer** = **Visual Composer** = **Composer** — ONE product, a visual authoring surface for `.compose.yaml` scenes, and a PRODUCT WITHIN ComposeIO rather than a layer of it (David, 2026-08-17). Its corpus id is the `visual-composer` corpus and `[PROJECT-VISUAL-COMPOSER]`; its specs are the `*-composer-*` files in `platform-specs`.
+- composeio-vs-composeux-vs-composeplatform: **ComposeIO** is the bus and the platform tier (namespaces, transports, storage, devices). **ComposeUX** is the render/widget tier that draws on it. **ComposePlatform** is the whole. They are tiers of one thing, not competing products, and all three names appear in live prose.
+- intelligence-console: the operator surface — an app BUILT ON the platform, and as of 2026-08-17 a `compose_project`, not core. Alias: "the console".
+- the-tell: if the human uses a name that returns nothing from `lts_find`, it is almost certainly an ALIAS rather than a thing that does not exist. Check this node before concluding absence.
+- part-of: [CXC-FOUNDATION]
+
+## ComposePlatform Components [CXC-FOUNDATION-COMPONENTS]
+
+- how-to-read-this: one line each, then the query that opens it. The line orients; the query is authoritative. ⛔ Where the two disagree, the QUERY wins and this line is the defect.
+- svc-bus-storage: persistent storage for configs, assets, workloads and the namespace registry — the thing a device fetches its `.compose.yaml` from at boot. `services/bus_storage`. Query `lts_find(corpus="bus-storage")`.
+- svc-document-store: the document tier — collections and documents addressed as `doc://<collection>/<id>`, distinct from bus_storage's asset tier. `services/document_store`. Query `lts_find(corpus="document-store")`.
+- svc-service-hub: compute-intensive work runs on a hub, never on edge devices (DP-CIO-24). `services/service_hub`.
+- svc-coordination-relay: breaks STDIO isolation between Claude instances — any instance can POST a message to another. `services/coordination_relay`.
+- svc-intelligence-mcp: bridges MCP tool calls from an agent onto the ComposeBus. `services/intelligence_mcp`.
+- svc-bridges: `can_mqtt_bridge` and `uart_mqtt_bridge` translate between two LIVE substrates. ⛔ A bridge is COMPLEMENTARY to a Transport, not an alternative: a Transport lets ONE app speak one substrate; a bridge translates between two. `services/`.
+- lib-render-engine: the renderer-agnostic drawing engine — a Canvas contract (~30 primitives) with Skia, browser and CYD-C++ backends, plus the `.compose.yaml` runtime. `python/composeio/render`. Query `lts_find(corpus="visual-composer")`.
+- lib-composeio: the platform library — bus, transports, HAL, peripherals, decision_ops, defect_ops, maker, deliverable_sweep. `python/composeio`. ⚠ ELEVEN of its packages ship a `__main__.py` or `mcp_server.py`, so "library" and "service" are not cleanly separated here; `services/` are the things that own a PORT and a DATASTORE.
+- app-launch-bar: the launcher surface. `apps/compose_platform_launch_bar`. ⚠ David judges it a WIDGET rather than an app (2026-08-17); a move plus an `apps/` launcher script is pending.
+- app-composeux-shell: the shell surface. `apps/composeux-shell`.
+- proj-intelligence-console: the operator console — chat, decisions, deliverables, fleet, terminal. `compose_projects/intelligence`. Query `lts_find(corpus="intelligence-console", prefix="CXC-IC")`.
+- proj-compose-projects: `bsg` (the Battlestar game + its hardware), `carousel` (the rpi5 kiosk), `office_devices`, `fleet-hud`, `minnow-bringup`. These are APPLICATIONS OF the platform, not parts of it.
+- embedded-cyd-firmware: `cyd/` is the display-tier firmware (ESP32 + panel, BoardProfile per board); `firmware/` holds the smaller reactive nodes. ⛔ A NEW BOARD IS A NEW PROFILE, NEVER A NEW RASTERIZER. Query `lts_node(corpus="intelligence-console", node_id="CXC-BOARD-HW")`.
+- corpora-and-tooling: FactLattice `.lts` corpora + the lts-engine, `decision_ops`, `defect_ops`. ⛔ Since 2026-08-17 the corpora live OUTSIDE the repo at `~/.claude/factlattice_corpora/composeio/` — one copy, outside every worktree, because 41 worktrees had been carrying 41 forks.
+- part-of: [CXC-FOUNDATION]
+
+## Why a component is spread across directories [CXC-FOUNDATION-LAYERS]
+
+- the-observation: asked "where does the graph viewer live", the honest answer is FIVE places — `decision_ops/graph_projection.py` (data), `render/widgets/decisions_graph.py` (widget), `render/examples/graph_viewer.compose.yaml` (scene), `compose_projects/intelligence/tools/decisions_publisher.py` (publisher), `python/scripts/capture_graph_viewer.py` (capture).
+- why-that-is-correct: [CXC-VISION-SEMANTIC-REALIZATION] says the widget is SEMANTIC and the backend is its REALIZATION. So a feature is NECESSARILY spread across layers. The tree is organised by LAYER; a newcomer looks for it by FEATURE. Nothing is misfiled.
+- what-is-actually-missing: anything that says THESE FIVE ARE ONE THING. That is what the component table above is for — and it is why each entry is a one-liner plus a QUERY rather than a directory path.
+- the-rule-that-follows: do not reorganise a layer-shaped tree into a feature-shaped one to make a component findable. Make the component QUERYABLE instead.
+- part-of: [CXC-FOUNDATION]
+
+## How this document reaches a booting instance [CXC-FOUNDATION-BOOTSTRAP]
+
+- the-query: `lts_node(corpus="intelligence-console", node_id="CXC-FOUNDATION")` then `lts_traverse(corpus="intelligence-console", start_node="CXC-FOUNDATION", max_depth=1, tier="digest")`.
+- where-it-must-be-wired: the WAKE SEQUENCE in every role definition, as its FIRST step — before the collaboration contract, because an instance that does not know what exists cannot tell which principles apply. `bootstrap/session-bootstrap-read.md` already specifies this as "Slice 0 — PLATFORM OVERVIEW".
+- the-measured-gap: `grep -rl "session-bootstrap-read" .claude/agents/ ~/.claude/agents/` returned ZERO on 2026-08-17. The read was specified and nothing ran it.
+- completeness-check: the traverse must return the ROOT plus FIVE children — SCOPE, NAMES, COMPONENTS, LAYERS, BOOTSTRAP. Fewer means the fetch failed; do not proceed as though the platform is small.
+- falsifier: ask a fresh instance, after wake, to name three ComposePlatform components and one product alias. If it cannot, this document is not being loaded, whatever its contents say.
+- part-of: [CXC-FOUNDATION]

@@ -1,0 +1,349 @@
+---
+scope: "The RATIFIED-plus-proposed shape of the ComposeBus kernel: transport-agnostic, bare-instantiable, locality-recursive, standing up as bare-bus-then-attach-connectors-then-load-plugins, with MULTI-ATTACH connectors that forward-by-scope-and-encode and never transform. Captured from a design session between the composeio-hardware-architect and David, WIP capture dated in-session; not yet locked via /end_design_session."
+audience: "David (architect) — for ratify of every non-ratified claim below (the one prior open fork, primary-render-surface-as-participant, is now DECIDED per David's line-23408 ruling); the builder who will implement the kernel and its standup sequence; the audit that diffs this document against David's verbatim turns from the settling session."
+boundary: "IN: the kernel's transport-independence and bare-instantiability; the three-step standup sequence (bare bus, attach connectors, load plugins); the connector contract (declared config, MULTI-ATTACH, forward-by-scope-and-encode, never transform); locality-recursion (one kernel spec instantiated at every scale, mothercard equiv to ComposeServer at the embedded tier); the peripheral-is-a-plugin-of-the-local-kernel model. OUT: the ComposeServer micro-kernel supervisory layer and the plugin contract itself ([SPEC:CXC-COMPOSESERVER]'s subject, only cited); state_manager's derive/publish engine (a separate, still-undispatched spec per [DEC-COMPOSEIO-EXTENSIONS-ROADMAP-2026-08] item 3 — this document states only the connector's boundary against it); the CAN wire-format/scope ruling that CAN multi-attach is blocked on ([CXC-VISION-SCOPE-MEMBRANE]'s open item, only cited); any build authorization — this is a design capture, not a build spec."
+not-this: "Not a ratified spec — [PLACEMENT UNRATIFIED], per [CXC-VISION-PLACEMENT]: written into corpora/platform-specs because that is where its neighbours (73, 79, 80, 81, 83) already sit, most of them also UNRATIFIED, not because the placement was ruled. Not a build spec — no acceptance criteria, no MUST/SHOULD requirement predicates, no verify.machine/verify.human tiers; this mirrors the established convention of its nearest siblings (61, 79, 80, 81, 83), all pre-build design captures. Not an assertion that every claim below is David's stated word — each node carries an explicit provenance property (david-ruling / architect-synthesis / architect-proposed / architect-proposed-david-blessed) per [DX-INTERPRETATION-IS-AN-INFERENCE], and [DD-CBK-PRIMARY-RENDER-SURFACE] is now DECIDED (David ruled kill-the-carve-out, line 23408)."
+depends-on: [61-config-over-bus.lts, 62-composeplatform-vision.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: concept-capture
+status: draft
+created: 2026-08-23
+updated: 2026-08-23
+---
+# ComposeBus Kernel — bare-instantiable, locality-recursive, multi-attach; PLACEMENT UNRATIFIED [SPEC:CXC-COMPOSEBUS-KERNEL]
+
+> ComposeBus is a kernel, not an MQTT client: a bare `ComposeBus()` instantiates with zero arguments and zero paho import, and MQTT is one registry-factory connector among several (CAN, UART, LoRa, segment-bridge) rather than a hardcoded dependency. Standup is a fixed three-step sequence — bare bus, attach declared connectors (MULTI-ATTACH), load plugins respecting their `requires:` floor. The same kernel spec instantiates recursively at every scale: an internal bus inside a mothercard is the SAME kernel at an inner locality, and a peripheral is a plugin of whichever kernel is local to it. A connector's job is bounded tightly — forward by scope, encode for the wire, never transform — so the kernel cannot become a hidden mediator.
+
+---
+
+## 1. The kernel is transport-agnostic and bare-instantiable
+
+### [CXC-CBK-PLACEMENT] Placement is UNRATIFIED, and filename 84 was verified unused
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because its nearest relatives (61, 62, 73, 79, 80, 81, 83) already sit there, several of them flagged `[PLACEMENT UNRATIFIED]` themselves — convention, not a ruling.
+- filename-number-check: 84 was verified unused across `corpora/platform-specs/` before this file was written (highest prior number in sequence was 83; 99 is a reserved conventions-document number).
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-VISION-PLACEMENT]
+
+### [CXC-CBK-MQTT-INDEPENDENT] The kernel is MQTT-independent — bare instantiation is the default, not a mode
+
+- claim: A zero-argument `ComposeBus()` is the default and complete kernel. No `paho` import exists in the kernel itself. MQTT is ONE registry-factory connector, structurally equal to CAN and UART — the same status `transport_registry.py` already gives MQTT/CAN/UART/synthetic/replay at the Python transport-layer, generalized to the connector layer.
+- measured: a sweep verdict recorded CLEAN against this claim in-session — zero-arg bare bus is the default, no paho in kernel, MQTT is one registry factory equal to CAN/UART.
+- consolidates: today's fragmented per-service self-connect — `print_services` raw-paho, and two HTTP services each standing up their own client — collapses into one kernel with declared connectors, rather than N services each re-deriving a connection.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-STANDUP], [CXC-SOB-THESIS]
+
+---
+
+## 2. Standup — bare bus, attach connectors, load plugins
+
+### [CXC-CBK-STANDUP] Standup is a fixed three-step sequence: bare bus, attach declared connectors, load plugins
+
+- sequence: (1) instantiate the bare kernel with no transport; (2) attach every DECLARED connector — MULTI-ATTACH, so more than one connector may be live at once on the same kernel; (3) load plugins, each respecting its own `requires:` execution floor ([SPEC:CXC-COMPOSESERVER]'s subject).
+- multi-attach: a kernel is not limited to one connector. Same-node bridges (`can_mqtt_bridge`) COLLAPSE into multi-attach — a bridge was doing by hand what a kernel with two attached connectors does natively. `segment_bridge` (cross-machine WAN, federating two ComposeBus segments) remains a DISTINCT capability — it crosses a WAN boundary between two separate bus segments, which multi-attach on one kernel does not.
+- implementation-locus: LOCKED 2026-08-23 — this sequence's concrete implementation lives in `composeio/composeserver.py`, NOT on `ComposeIOBus` itself. See [CXC-CBK-KERNEL-PRIMITIVES] (§6) for the bare primitives the kernel gains instead, and [SPEC:CXC-COMPOSESERVER]'s [CXC-CS-STANDUP-OWNERSHIP] for the module that owns `standup()`.
+- implementation-locus-provenance: architect-synthesis — realizes [DEC-PHASE0-STANDUP-AND-SERVER-OUTSIDE-KERNEL] (an architect-autonomous Phase-0 build decision under David's 2026-08-23 overnight autonomy grant, recorded on that DEC node for his review).
+- status: proposed
+- provenance: architect-synthesis — the three standup ELEMENTS are David's (line 23309: a bare bus, then attach connectors, then load plugins as "bus services"), and multi-attach is David-endorsed (23389); but the ordered three-step SEQUENCE framing and the same-node-bridge-collapse consequence are the architect's synthesis around those elements, so the node is mostly synthesis and no longer carries a bare david-ruling tag.
+- david-quote-context: David gave the three ELEMENTS in line 23309 (a bare bus, attach connectors, plugins as "bus services") and endorsed multi-attach in 23389; those are his. The ordered three-step SEQUENCE framing and the same-node-bridge-collapse consequence are the architect's synthesis around them — which is why the tag is architect-synthesis, not david-ruling.
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-CONNECTOR-CONTRACT], [CXC-CBK-MQTT-INDEPENDENT]
+
+### [CXC-CBK-CONNECTOR-CONTRACT] A connector is declared config, and CAN multi-attach is blocked on an open wire-format ruling
+
+- shape: a connector is declared, not coded per-service — the same declared-config idiom `transport_registry.py`'s `type:` factory already uses at the Python transport layer, lifted to the kernel's connector layer.
+- open-item: CAN multi-attach WAITS on the open wire-format/scope ruling recorded at [CXC-VISION-SCOPE-MEMBRANE] (`current-defect`: scope is silently lost on every CAN round trip today, entangled with the [BP-CAN-ID-DIVERGENCE] two-layout conflict). This document does not resolve that ruling; it only names the dependency.
+- status: proposed
+- blocking-dependency: the [CXC-VISION-SCOPE-MEMBRANE] CAN wire-format/scope ruling — CAN multi-attach cannot proceed until that ruling lands.
+- provenance: architect-synthesis — David only NAMED the connectors (line 23309: "instantiate one or more connectors to the ComposeBus (e.g. MQTT ... CANBUS, LoRa, etc)") and endorsed multi-attach (23389). The declared-config idiom (lifted from transport_registry.py) and the entire CAN-blocked-on-wire-format-ruling dependency are architect-introduced.
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-STANDUP], [CXC-VISION-SCOPE-MEMBRANE]
+
+### [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS] A connector forwards by scope and encodes; it never transforms — membrane, not mediator
+
+- rule: a connector's job is bounded to two things — SCOPE (does this cross the membrane, honoring [CXC-VISION-SCOPE-MEMBRANE]) and ENCODE (the wire format on the far side). It never derives a new fact from what it forwards. This is [CXC-CBK-STANDUP]'s "the kernel supervises, it does not mediate" line recursed down to the connector: a supervisor that also transformed plugin traffic would be a hidden mediator wearing a supervisor's name.
+- distinguishes-three-roles: connector (scope + encode) is kept structurally distinct from a state_manager peer (derive raw/semantic input, publish a NEW fact — [DEC-COMPOSEIO-EXTENSIONS-ROADMAP-2026-08] item 3, out of scope here) and from leaf realization (semantic to physical, local, never a rule — [CXC-HAL-ACTUATE]). Collapsing any two of the three into one module is the error this rule forbids.
+- realizes: [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS] (new design-excellence node, this session)
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-CONNECTOR-CONTRACT], [CXC-HAL-ACTUATE]
+
+---
+
+## 3. Locality-recursion — one kernel spec, every scale
+
+### [CXC-CBK-LOCALITY-RECURSIVE] One kernel spec is instantiated per locality; a mothercard IS a ComposeServer at the embedded tier
+
+- claim: there is ONE kernel spec. An internal bus is the SAME kernel instantiated at an inner locality — not a second, simpler kernel design for the embedded case. Differences (scope, participant-capability, connector-substrate available) are orthogonal properties of a given instantiation; they never fork the kernel itself.
+- equivalence: a mothercard IS a ComposeServer at the embedded tier — same kernel, same standup sequence, same connector contract, running on different silicon with a different connector substrate available to it.
+- multi-attach-recurses: an ESP32 acting as an internal kernel may itself multi-attach UART-down plus LoRa (etc.) — the same MULTI-ATTACH property [CXC-CBK-STANDUP] states at the top-level kernel holds recursively at every inner locality.
+- participant-and-membrane: every node is participant-up in its PARENT's locality and membrane-down for its CHILDREN's locality, simultaneously. This is [CXC-VISION-SCOPE-MEMBRANE]'s membrane claim restated as a per-node duality rather than a single boundary.
+- root-framing-multi-tenant: ComposeServer's ComposeIOBus is the root of ITS OWN locality, not an absolute root — there is no global root (recursion: every locality's bus is a root below and a membrane above). Multi-tenancy means one ComposeServer hosts N roots. [SPEC:CXC-COMPOSESERVER]'s [CXC-CS-MULTI-TENANCY] specifies the N-bus orchestration itself; this property records only that it is the SAME recursive-root claim this node already makes, applied across tenants rather than across scale-tiers.
+- root-framing-multi-tenant-provenance: david-ruling — David's `root-framing` property on [DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23].
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-VISION-SCOPE-MEMBRANE], [CXC-CBK-PERIPHERAL-PLUGIN-MODEL], [CXC-CBK-SUBPROCESS-DAUGHTERCARD]
+- multi-attach-recurses-provenance: david-ruling — the multi-attach-recurses sub-claim is David's explicit word (line 23389: "there's no reason that an ESP32's own ComposeBus shouldn't support multi-attach too, e.g. UART mothercard/daughtercard, LoRa"). The rest of the node (the one-kernel-spec/per-locality framing, participant-and-membrane duality) is architect synthesis, per the node's provenance.
+
+---
+
+## 4. Peripheral is a plugin of the local kernel
+
+### [CXC-CBK-PERIPHERAL-PLUGIN-MODEL] A peripheral is a plugin of the local kernel — subscribe-side, or pub+sub for control
+
+- claim: a peripheral is a plugin of whichever kernel is LOCAL to it — subscribe-side only for pure realization (a display, an LED), or pub+sub for control (a sensor-and-actuator pair, a button with feedback).
+- wrapper-locus-is-a-collapse-transport-choice: whether the peripheral's wrapper runs as an RTOS thread in-process over a `LocalTransport`, or as a daughtercard out-of-process over an internal connector, is a COLLAPSE-TRANSPORT decision — [DX-COLLAPSE-TRANSPORT] applied one tier down. It is invariant under the semantic seam: the namespace the peripheral publishes/subscribes does not change with the wrapper locus.
+- swappable-realization: realization is swappable behind the namespace with zero upstream change — e.g. TM1637 to CH32V002-raw-LED is a backend swap under the same semantic channel, the [CXC-HAL-ACTUATE] define-once-actuate-many claim applied at the plugin boundary.
+- ch32v003-is-a-wrapper: the CH32V003 is one peripheral's wrapper, not a separate architectural tier — "the chip IS the thread."
+- esp32-as-daughtercard: an ESP32 configured WiFi-off plus UART-up is a point on a capability spectrum, not a distinct chip class — the same board family can be first-class (own IP, own WiFi) or relayed (WiFi off, UART-slaved), and which it is is a deployment property, not a hardware fact. Mirrors [CXC-BOARD-HW-UART-SLAVE]'s WiFi-off/UART-slave finding at the peripheral-plugin layer.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [DX-COLLAPSE-TRANSPORT], [CXC-HAL-ACTUATE], [CXC-BOARD-HW-UART-SLAVE]
+
+### [CXC-CBK-EMBEDDED-STATE-MANAGER] The leaf may carry an embedded state_manager tier on its inner bus — a bidirectional transform/ruleset
+
+- claim: a transform or ruleset (a `state_profile`) may live ON the embedded ComposeBus at the leaf — a tiny version of state_manager running at the inner locality. It is applied to semantic messages received from the main ComposeBus BEFORE they are emitted on the embedded bus, and it COEXISTS with the pure pass-through peripheral of [CXC-CBK-PERIPHERAL-PLUGIN-MODEL] rather than replacing it.
+- bidirectional: the embedded state_manager is BIDIRECTIONAL — raw → semantic going UP (a raw leaf input derived into a semantic fact for the main bus) and semantic → derived-semantic going DOWN (a semantic message from the main bus transformed before it drives the embedded bus). Both directions are the same tier at the leaf.
+- worked-example: the throttle controller — the determination of what thrust % to emit is implemented as a `state_profile` on the internal state_manager: "if the pot value is X to Y, emit thrust 10%" (David, line 23374). The mapping is CONFIG (a state_profile), not code in the connector or in the leaf realization.
+- distinct-from-connector: the embedded state_manager is a state_manager PEER, never the connector — [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS] keeps transformation OFF the connector, and this node is where the transform legitimately lives instead: on the inner bus, as a state_profile.
+- out-of-scope: state_manager's full derive/publish engine and the state_profile grammar are OUT of scope here — a separate, still-undispatched spec ([DEC-COMPOSEIO-EXTENSIONS-ROADMAP-2026-08] item 3). This node records only that the tier CAN live embedded at the leaf and is bidirectional.
+- status: proposed
+- provenance: david-ruling — David's line 23374: a transform or ruleset applied on semantic messages received from the main ComposeBus before emission on the embedded ComposeBus, "a tiny version of state_manager on the embedded ComposeBus … it should be bi-directional", with the throttle state_profile as the worked example.
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PERIPHERAL-PLUGIN-MODEL], [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS], [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS]
+
+---
+
+## 5. Primary render surface — DECIDED
+
+### [DD-CBK-PRIMARY-RENDER-SURFACE] A node's primary display IS a wrapped participant like every peripheral — the carve-out is killed
+
+- question: is the node's main display a wrapped participant exactly like every other peripheral ([CXC-CBK-PERIPHERAL-PLUGIN-MODEL]), or is it the one carve-out — a non-wrapped, directly-owned realization?
+- decision: DECIDED — participant. David ruled "kill the carve-out" (line 23408): the primary render surface IS a wrapped participant — the node's principal subscribe+publish plugin — held to [CXC-CBK-PERIPHERAL-PLUGIN-MODEL] with NO exception. There is no special-cased, non-wrapped display tier.
+- rationale: [CXC-CBK-PERIPHERAL-PLUGIN-MODEL] generalizes cleanly to the primary display when it is wrapped like any other peripheral; a carve-out is an asymmetry the model does not otherwise need. David's ruling follows the model's own grain, so [CXC-CBK-PERIPHERAL-PLUGIN-MODEL] needs no exception clause — the primary display is simply one more instance of it.
+- rejected-alternative: carve-out — keeping the primary display as the one non-wrapped, directly-owned realization. Ruled OUT by David at line 23408.
+- change: the primary-render-surface fork is RESOLVED toward participant — David ruled "kill the carve-out" (line 23408) after the architect ran the stress-test straw man. The earlier WIP capture had recorded it "PENDING (this turn)"; that pending state is now closed.
+- context_for_change:
+  prior_state: the WIP capture this document was first authored from recorded the fork as "PENDING (this turn)" with a stated leaning toward participant, and an earlier draft carried a self-contradictory provenance-caveat (a david-ruling tag on a node whose body said "not yet decided").
+  reasoning: after the architect ran the stress-test straw man, David explicitly ruled "kill the carve-out" (line 23408) — the primary display is a wrapped participant like every peripheral, no special case.
+  rejected_alternative: leave the primary render surface as a permanent non-wrapped exception.
+  invalidating_assumption: if the primary display is later found to have a genuine structural need the peripheral-plugin model cannot express (e.g. a boot-time render path that must exist before any plugin loader runs), the carve-out reopens and this decision is revisited.
+  implication: [CXC-CBK-PERIPHERAL-PLUGIN-MODEL] needs NO amendment and NO exception clause — the primary display is one more instance of it.
+- invalidating_assumption: if the primary display is later found to have a genuine structural need the peripheral-plugin model cannot express (e.g. a boot-time render path that must exist before any plugin loader runs), the carve-out reopens and this decision is revisited. (Restated as a top-level property so the DD-family schema can find it directly; the fuller change record lives in `context_for_change` above.)
+- status: decided
+- status-detail: decided 2026-08-23 — David ruled "kill the carve-out" (line 23408). The prior raised/pending state is closed. The DD- id is retained (this corpus uses DD- for both open and ruled design decisions, e.g. [DD-DRI-BRACKET-KEY-VERDICT]), so no re-id is needed and no dangle is created.
+- provenance: david-ruling — David's explicit ruling at line 23408: "In any event, I agree - kill the carve-out."
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PERIPHERAL-PLUGIN-MODEL]
+- alternatives: participant (CHOSEN, David's ruling): wrap the primary display exactly like any other peripheral, per [CXC-CBK-PERIPHERAL-PLUGIN-MODEL]. carve-out (REJECTED, line 23408): keep the primary display as the one non-wrapped, directly-owned realization.
+
+---
+
+## 6. Phase 0 — locked: kernel primitives, connector realization, liveness hook, send_message seam, subprocess daughtercard
+
+> This section folds in the 2026-08-23 bus-standup + multi-tenancy design session ([DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23]) and its five Phase-0 autonomous build decisions. It makes this spec the correct oracle for the Phase-0 gap-analysis: what the kernel now concretely IS, not only what it was proposed to be.
+
+### [CXC-CBK-KERNEL-PRIMITIVES] The kernel's bare primitive surface — attach_connector, connectors, set_liveness_oracle, send_message, hook registrars
+
+- claim: Phase 0 locked WHERE the standup sequence and ComposeServer live: NOT on `ComposeIOBus`. A new module `composeio/composeserver.py` holds the canonical three-step `standup()` ([CXC-CBK-STANDUP]) and the multi-tenant ComposeServer (N per-tenant ComposeIOBus objects, the binder that parks/unparks on the requires-floor). The kernel itself gains only bare primitives: `attach_connector`, `connectors`, `set_liveness_oracle`, `send_message`, and the hook registrars (`register_post_publish_hook`, `register_module_hook`).
+- why: [SPEC:CXC-COMPOSESERVER]'s [CXC-CS-MICROKERNEL] — ComposeServer is a DISTINCT micro-kernel RUNNING ON the ComposeBus kernel; loading plugins is ComposeServer's job, not the bus's. Keeping the bus ignorant of plugins best-exemplifies micro-kernel minimalism and the [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS] grain — a kernel that also loaded and bound plugins would be a hidden mediator wearing a supervisor's name.
+- realizes: [CXC-CBK-STANDUP]'s sequence, now with a concrete module home.
+- status: proposed — awaiting ratify (Phase-0 autonomous build decision; see [DEC-PHASE0-STANDUP-AND-SERVER-OUTSIDE-KERNEL] for review)
+- provenance: architect-synthesis — realizes [DEC-PHASE0-STANDUP-AND-SERVER-OUTSIDE-KERNEL], the mechanics through which David's subprocess-model and multi-tenancy rulings take concrete shape.
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-STANDUP], [SPEC:CXC-COMPOSESERVER]
+
+### [CXC-CBK-CONNECTOR-MULTIATTACH-IMPL] Multi-attach realized as per-scope-class LISTS; the historical single-valued attributes survive as read/write properties
+
+- claim: the kernel now holds `_local_connectors`/`_global_connectors`/`_remote_connectors` LISTS — multi-attach per scope-class, realizing [CXC-CBK-STANDUP]'s multi-attach claim. The historical single-valued `_local`/`_global`/`_remote` survive as read/write PROPERTIES over those lists (getter = first-or-None, setter = replace the class with `[t]` or `[]`), preserving every external mutator (e.g. `bus._global = t`) byte-for-byte.
+- native-multiattach: `attach_connector(transport, scope_class)` is the native multi-attach entry point; `_send_message`/`start`/`stop`/`subscribe` iterate the lists.
+- collapses: a same-node MQTT<->CAN bridge collapses into two attached connectors on one kernel — [CXC-CBK-STANDUP]'s same-node-bridge-collapse consequence, now built and behavior-preserving (3903 python + 601 root tests green, unchanged from baseline).
+- status: proposed — awaiting ratify (Phase-0 autonomous build decision; see [DEC-PHASE0-MULTIATTACH-VIA-PROPERTIES] for review)
+- provenance: architect-synthesis — realizes [DEC-PHASE0-MULTIATTACH-VIA-PROPERTIES]
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-STANDUP], [CXC-CBK-CONNECTOR-CONTRACT]
+
+### [CXC-CBK-LIVENESS-ORACLE-HOOK] Node-liveness is a PLUGIN; the kernel consults it only through a sanctioned liveness-oracle hook
+
+- ruling: David ratified — one of four ambiguous-ruling leans, 2026-08-23 — that node-liveness is a PLUGIN (publisher + receiver), never a kernel built-in. The kernel exposes `set_liveness_oracle(fn)`; `node_is_alive` consults that registered function rather than deriving liveness itself.
+- distinguishes: freshness classes (multi-namespace aggregation) are ALSO a plugin concern; a single-namespace freshness VERDICT stays kernel — the two are not the same grain (see [SPEC:CXC-COMPOSESERVER]'s [CXC-CS-LIVENESS-FRESHNESS-SPLIT] for the full four-way split).
+- why: this is [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS]'s no-mediation grain applied to liveness — the kernel exposes a HOOK it consults, it does not compute liveness policy itself.
+- status: decided
+- provenance: david-ruling — one of the four ambiguous-ruling leans David ratified 2026-08-23 (recorded on [DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23]'s `ambiguous-rulings` property); the `set_liveness_oracle` hook NAME and signature are architect-synthesis mechanics realizing that ruling.
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS], [SPEC:CXC-COMPOSESERVER]
+
+### [CXC-CBK-SEND-MESSAGE-SEAM] The kernel gains ONE generic send_message seam; QoS frame-stamping (critical/ACK) relocates OUT to peer/critical.py
+
+- ruling: one of the four ambiguous-ruling leans David ratified 2026-08-23 — critical/ACK helpers are transport QoS, OUT of bus-core. `bus.publish_critical`/`bus.publish_ack` are DELETED from the kernel and move verbatim into `peer/critical.py` as `stamp_and_send_critical(bus,...)`/`stamp_and_send_ack(bus,...)`.
+- seam: the kernel gains exactly one generic public seam, `send_message(envelope)`, which addresses/routes a pre-built `BusMessage`. The QoS layer frames its own envelope and reaches the bus's resolve/notify internals only for the local-landing step. Addressing/routing is legitimate kernel work (the same scope-job grain as [CXC-VISION-SCOPE-MEMBRANE]); frame-stamping priority is not.
+- why: a kernel that imports a peer QoS module to stamp priority would defeat the relocation and re-open [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS]'s hidden-mediator failure mode from the other direction — the kernel reaching INTO a peer module rather than a plugin reaching into the kernel.
+- status: decided
+- provenance: david-ruling on the WHAT (critical/ACK is OUT of bus-core, one of the four ambiguous-ruling leans); architect-synthesis on the `send_message` seam mechanics realizing it.
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS], [CXC-CBK-KERNEL-PRIMITIVES]
+
+### [CXC-CBK-SUBPROCESS-DAUGHTERCARD] A subprocess plugin is a daughtercard of its tenant's ComposeServer over IPC — the mothercard recursion one tier up, applied to software
+
+- ruling: David ruled (subprocess-model, part a): a subprocess plugin lives INSIDE its tenant's ComposeServer locality, reached over an internal IPC connector — it does NOT share the ComposeIOBus object. ComposeServer supervises its lifecycle (spawn/config/restart) but NEVER mediates its bus traffic. Structurally it is a daughtercard of ComposeServer over IPC — the mothercard recursion, one tier up. Its `local` scope stays in the tenant; only `global` uplinks.
+- generalizes: [CXC-CBK-PERIPHERAL-PLUGIN-MODEL]'s `wrapper-locus-is-a-collapse-transport-choice` — whether a peripheral's wrapper runs in-process over a `LocalTransport` or out-of-process over an internal connector was already stated as a collapse-transport decision invariant under the semantic seam. This node is the SAME pattern one tier up: a SOFTWARE plugin's wrapper locus (in-process vs. subprocess-over-IPC) is the identical collapse-transport choice, now made concrete for ComposeServer plugins.
+- phase-0-seam: a plugin whose resolved isolation is >= subprocess (David's Q1 HARD pin, [SPEC:CXC-COMPOSESERVER]'s [CXC-CS-ISOLATION-FLOOR]) is recorded `subprocess_pending` and NOT started in-process; the IPC daughtercard host is Phase 1 — the seam is explicit rather than silently starting it in-process.
+- status: decided
+- provenance: david-ruling — David's subprocess-model ruling (a) on [DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23]; the `generalizes` cross-reference to [CXC-CBK-PERIPHERAL-PLUGIN-MODEL] and the `phase-0-seam` property are architect-synthesis.
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PERIPHERAL-PLUGIN-MODEL], [CXC-CBK-LOCALITY-RECURSIVE], [SPEC:CXC-COMPOSESERVER]
+
+---
+
+## 7. Packaging — the composebus distribution (v0.1.0)
+
+
+### [CXC-CBK-PKG-DISTRIBUTION] The distribution is `composebus` 0.1.0 at `python/composebus/`, import package `composebus`, depending on pydantic only
+
+- requirement: the composeio repo MUST contain a distribution named `composebus`, version `0.1.0`, rooted at `python/composebus/` with its OWN `pyproject.toml`. Its import package MUST be `composebus`.
+- runtime-dependencies: exactly one — `pydantic>=2.0`. No other runtime dependency may be declared (no paho, no yaml, no composeio).
+- verify-machine: parse `python/composebus/pyproject.toml`; assert `project.name == "composebus"`, `project.version == "0.1.0"`, and `project.dependencies` equals `["pydantic>=2.0"]` (whitespace-insensitive); assert `python/composebus/composebus/__init__.py` exists.
+- verify-human: none required — no human-perceptible surface.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PKG-CONTENTS], [CXC-CBK-PKG-CLOSURE-RULE]
+- monorepo-resolution: TRANSITIONAL. `composeio/__init__.py` first tries `import composebus`. On ImportError it inserts the sibling directory `python/composebus` (located relative to `composeio/__file__`, never a hard-coded absolute path) at the front of sys.path and retries. An installed composebus therefore always wins. This keeps every existing entrypoint working unchanged (`cd python && pytest`, `PYTHONPATH=.` services, launchd, the ComposeServer container), and the pre-commit hook must still pass. Removal condition: when composeio declares a dependency on a published composebus release, delete the fallback (follow-on). (Architect ruling, 2026-11-25, on the builder's pre-integration question 2.)
+- amendment-ship-and-install-paths: (Architect ruling 2026-11-25, after QA FAIL F1/F2.) (1) EVERY path that ships or installs `python/composeio` must also ship or install `python/composebus`: Dockerfiles, rsync/deploy scripts, build.sh files, launchd/systemd units, READMEs that document an install. Find them WIDE first: every literal `python/composeio`, `composeio/python` and `-e ...python` in the repo, outside `python/composeio` itself. Report the funnel (N matched, M are ship/install paths, K changed), then fix each one. (2) `python/pyproject.toml` declares its packages explicitly (`composeio*` only, so auto-discovery no longer sees `composebus`) and declares a runtime dependency `composebus==0.1.0`. (3) The documented install is one pip command that resolves both locally: `pip install ./python/composebus ./python`, or `-e` for each. Verify each repaired path by SIMULATION OUTSIDE the clone, the way QA did (git archive the shipped subset, run its entrypoint), with the pre-move base as a control.
+
+### [CXC-CBK-PKG-CONTENTS] The package contents are the measured bare-bus import closure plus the envelope and transport contract — and no other module moves
+
+- requirement: the following modules MUST move from `python/composeio/` into `composebus` (same file names): `bus.py`, `bus_clock.py`, `bus_envelope.py`, `freshness.py`, `module.py`, `namespace.py`, `selector.py`, `state_engine.py`, `transport.py`, `transport_contract.py`, `transport_local.py`, `plugin.py`, and the subpackage `plugins/` containing exactly `__init__.py`, `state_manager.py`, `discovery.py`, `time.py`, `liveness.py`, `log.py`.
+- basis: the bare-bus top-level import closure, measured 2026-11-25, plus the envelope and transport contract. A bare `ComposeIOBus()` constructor installs those five default plugins (state_manager, discovery, time, liveness, log); `plugin.py` needs pydantic.
+- exclusion: NO other module moves. Every other module under `python/composeio/` (including `composeserver.py`, `transport_registry.py`, and `peer/`) stays where it is. A builder who believes another module must move STOPS under [CXC-CBK-PKG-CLOSURE-RULE]; it does not move it.
+- verify-machine: a test lists the `.py` files under the installed `composebus` package and asserts the set equals the 12 named top-level modules plus the 6 `plugins/` files; a second assertion confirms no file outside that list was deleted from `python/composeio/`.
+- verify-human: none required.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PKG-DISTRIBUTION], [CXC-CBK-KERNEL-PRIMITIVES], [CXC-CBK-MQTT-INDEPENDENT]
+- amendment-transforms: ADD `python/composeio/transforms.py` (187 lines, stdlib only) to the move list. Found by the builder's closure pre-scan (STOP raised 2026-11-25 22:36:29 UTC at 07348ff): `plugins/state_manager.py:93` lazily imports `composeio.transforms.TransformChain` on the `ComposeIOBus.add_binding` path, so a bare bus reaches it. Counts become 13 top-level modules plus 6 `plugins/` files. Injecting TransformChain instead is a redesign, so it is out of §7's scope. (Architect ruling, 2026-11-25.)
+
+### [CXC-CBK-PKG-CLOSURE-RULE] Closure rule — nothing in composebus imports outside composebus, the standard library and pydantic, lazy imports included — with an explicit STOP condition
+
+- rule: no module in `composebus` may import anything outside (a) `composebus` itself, (b) the Python standard library, (c) `pydantic` — at module top level OR inside any function, method or class body (lazy imports count).
+- measurement: an AST walk over every `.py` file in the package collects every `Import` and `ImportFrom` node at any depth (not only the module body) and classifies each root module name against that allow-list. Relative imports resolve inside `composebus` and are allowed. The violation set MUST be empty.
+- stop-condition: if the builder finds an import — top-level or lazy — that reaches outside the allow-list, it STOPS and reports it to the architect as a SPEC QUESTION (module, line, imported name, the call path that reaches it). It MUST NOT move additional modules to satisfy the rule, MUST NOT delete or stub the import, and MUST NOT widen the allow-list. The architect decides; the spec is amended.
+- why: the closure is what makes the package pinnable by a consumer that has never seen the monorepo; one lazy `import composeio.x` inside a function body would pass every top-level check and fail at runtime in the consumer.
+- verify-machine: the AST-walk script exits 0 with an empty violation set; its raw output is pasted into the closure-check slot of [CXC-CBK-PKG-EVIDENCE].
+- verify-human: none required.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PKG-CONTENTS], [CXC-CBK-PKG-STANDALONE-PROOF], [DX-NARROW-WAIST]
+
+### [CXC-CBK-PKG-COMPAT-IDENTITY] Every moved `composeio.<name>` stays importable and resolves to the IDENTICAL module object
+
+- requirement: for every moved module `<name>` (and `plugins` and each `plugins.<x>`), `import composeio.<name>` MUST succeed, and `composeio.<name> is composebus.<name>` MUST be true (object identity, not equality). Consequence: monkeypatching through either path affects both, and `isinstance` checks across the two names agree.
+- mechanism: the builder's choice — `sys.modules` aliasing or a re-export shim. Identity is the acceptance criterion, not the mechanism. A shim that re-exports names but produces a distinct module object FAILS this node.
+- boundary: `from composeio.bus import ComposeIOBus` and `from composebus.bus import ComposeIOBus` MUST yield the same class object; a monkeypatch of `composeio.bus.<attr>` MUST be observable as `composebus.bus.<attr>`.
+- verify-machine: a test iterates the 12 moved top-level modules plus `plugins` and its 5 submodules, importing each by both names and asserting `is`; plus one monkeypatch round-trip test on `bus`.
+- verify-human: none required.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PKG-CONTENTS], [CXC-CBK-PKG-BEHAVIOUR-PRESERVED]
+- amendment-plugins-package: The PACKAGE `composeio.plugins` is NOT aliased. It stays a real package in the monorepo, because three non-moving plugins live in it (`bus_storage.py`, `fingerprint_manager.py`, `fingerprint_template_store.py`). Identity is required for each of the 5 moved SUBMODULES: `composeio.plugins.<x> is composebus.plugins.<x>` for x in state_manager, discovery, time, liveness, log. `composebus.plugins` is its own package holding only those 5 plus its `__init__`. The non-moving plugins must NOT become importable as `composebus.plugins.*`: no `__path__` grafting. This supersedes this node's line requiring identity for `plugins` itself. (Architect ruling, 2026-11-25, on the builder's pre-integration question 1.)
+
+### [CXC-CBK-PKG-BEHAVIOUR-PRESERVED] Behaviour is preserved — the full existing python test suite has identical pass/fail/skip counts before and after
+
+- requirement: the full existing python test suite MUST report the same pass, fail and skip counts after the change as before it. The pre-change baseline MUST be recorded BEFORE any file moves, in the baseline slot of [CXC-CBK-PKG-EVIDENCE]; the after-counts go in the after slot.
+- boundary: a new test added by this change (closure, identity, contents, standalone) is reported SEPARATELY and does not enter the before/after comparison. A previously failing or skipped test stays failing or skipped: this change does not fix or un-skip anything, and a count that improves is as much a discrepancy as one that worsens.
+- verify-machine: the three counts after equal the three counts before, field by field.
+- verify-human: none required.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PKG-COMPAT-IDENTITY], [CXC-CBK-PKG-EVIDENCE]
+
+### [CXC-CBK-PKG-STANDALONE-PROOF] Standalone proof — a kernel-only test subset passes in a fresh venv holding only composebus and pydantic, and `import composeio` FAILS there (negative control)
+
+- requirement: create a FRESH virtualenv; install ONLY `composebus` (from `python/composebus/`) — which brings pydantic — plus the test runner. Run a kernel-only test subset (the existing tests that exercise only moved modules; the builder selects them by the closure measurement and lists them in the evidence slot). The subset MUST pass.
+- negative-control: in the SAME venv, `python -c "import composeio"` MUST fail with `ModuleNotFoundError`. This is mandatory: without it a passing subset could be silently importing the monorepo from the working directory or a develop-install. A venv where `import composeio` succeeds INVALIDATES the standalone result, however green the subset is.
+- boundary: the venv is run from a directory outside the repository checkout, so the working directory cannot supply `composeio`.
+- verify-machine: subset exit code 0 AND the negative-control command exits non-zero with `ModuleNotFoundError` in its output; both captured verbatim in the standalone slot of [CXC-CBK-PKG-EVIDENCE].
+- verify-human: none required.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PKG-CLOSURE-RULE], [CXC-CBK-PKG-EVIDENCE]
+- test-import-rule: the selected existing tests import `composeio.*` and so cannot run unchanged in a venv where `import composeio` fails. They are COPIED into `python/composebus/tests/` with ONLY their import lines rewritten from `composeio` to `composebus` (assertions, fixtures and bodies byte-identical). The originals stay where they are and still run in the full suite. Proof: a diff of each copy against its original whose every changed line is an import line, pasted into the standalone slot. (Architect amendment at ratify, 2026-11-25.)
+
+### [CXC-CBK-PKG-RELEASE] Release mechanics — annotated tag `composebus-v0.1.0`, LOCAL ONLY; nothing is pushed
+
+- requirement: after every other §7 predicate passes, create the ANNOTATED git tag `composebus-v0.1.0` on the commit carrying the package. The tag is LOCAL ONLY.
+- prohibition: nothing is pushed anywhere — not the tag, not the branch, not to any remote. Pushing needs HoP's word via a later DSD (a decision, not a build step).
+- consumer-pin: once pushed (not before), Gnomon pins with `composebus @ git+https://github.com/740Dave/composeio@composebus-v0.1.0#subdirectory=python/composebus`. This string is recorded here so the tag name and package subdirectory are not changed without amending the pin.
+- verify-machine: `git cat-file -t composebus-v0.1.0` prints `tag` (annotated, not lightweight); `git ls-remote --tags origin composebus-v0.1.0` returns nothing; the tag's commit SHA goes in the tag slot of [CXC-CBK-PKG-EVIDENCE].
+- verify-human: HoP's word is required for the later push; that word is NOT part of this section's acceptance.
+- status: proposed
+- provenance: architect-synthesis — realizes HoP's public-first direction while withholding the push, which HoP has reserved.
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PKG-DISTRIBUTION], [CXC-CBK-PKG-EVIDENCE]
+- amendment-licence-and-refnames: (Architect ruling 2026-11-25, after QA FAIL F3 and note 1.) (1) `python/composebus/LICENSE` carries the MIT text, copied verbatim from the public repo's LICENSE. `pyproject.toml` declares the licence in a form its setuptools floor supports, and the built wheel must include the licence file; verify by listing the wheel's contents. (2) No branch may share the tag's name. The build branch is `build/composebus-v0.1.0`, and the pin must resolve to the tagged commit.
+- published: PUBLISHED 2026-11-26 by git-expert, under DEC-HOP-STANDING-PUSH-AUTHORITY-COMPOSEIO-2026-11-25 while HoP was away. Public 740Dave/composeio main: d856590..7bad79018c7914ef869a6096bba608d8b21f0ad2, a fast-forward that adds only python/composebus/ (36 files, +7765), extracted from internal 6a14673. Annotated tag composebus-v0.1.0, object eb61cdc5bb289399791e5d4287be93264b123e17, peels to 7bad790. Leak scan before the push: every secret, path, host and org class 0; only permitted classes hit (owner name 1 in LICENSE, ip:bsg 2, bio:fingerprint 13). Verified after the push: ls-remote shows both refs; a fresh venv installed the pin `composebus @ git+https://github.com/740Dave/composeio@composebus-v0.1.0#subdirectory=python/composebus`; `ComposeIOBus()` constructs from outside every clone; `import composeio` fails. Internal 740Dave/composeio-internal main: 07348ff..6a14673, a fast-forward; others' uncommitted work had 0 overlap and was left untouched; the tag was not pushed internally.
+
+### [CXC-CBK-PKG-LEAK-HYGIENE] Leak hygiene — nothing in composebus names a host, private IP, home path or a deployment name (Haven, for example); two BSG docstring mentions and the owner's first name may stay
+
+- permitted: 2 docstring mentions of a BSG term in `namespace.py` and `transport.py`, and the owner's first name. HoP ruled 2026-11-25 that his name and references to his ComposeIO projects need no screening.
+- verify-machine: the builder greps every file in the package (including `pyproject.toml` and docstrings) for each forbidden class and records the command and its output in the leak slot of [CXC-CBK-PKG-EVIDENCE]. A hit is reported to the architect; the builder does not rewrite code to make it vanish, because a docstring edit would be a non-moving change outside the packaging scope.
+- verify-human: none required.
+- status: proposed
+- provenance: david-ruling — HoP's 2026-11-25 ruling that his name and references to his ComposeIO projects need no screening; the forbidden-class list is architect-synthesis.
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-PKG-CONTENTS], [CXC-CBK-PKG-EVIDENCE]
+
+### [CXC-CBK-PKG-STDLIB-ONLY-FOLLOWON] Follow-on, OUT OF SCOPE — a stdlib-only kernel with default plugins injected by ComposeServer
+
+- proposal: a later change could make the kernel stdlib-only by removing the default-plugin install from the bare-bus constructor and having ComposeServer inject those plugins. That would drop the pydantic dependency from the kernel and follows [CXC-CBK-KERNEL-PRIMITIVES]'s grain (loading plugins is ComposeServer's job, not the bus's).
+- scope-boundary: NOT part of v0.1.0. v0.1.0 preserves the current constructor behaviour exactly ([CXC-CBK-PKG-BEHAVIOUR-PRESERVED]); this node records the direction so it is not lost, and authorizes no work.
+- invalidating_assumption: if a consumer of the public package needs a pydantic-free kernel before ComposeServer-side injection is designed, the order of the two changes reopens.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [CXC-CBK-KERNEL-PRIMITIVES], [CXC-CBK-PKG-DISTRIBUTION]
+
+### [CXC-CBK-PKG-PRE-INTEGRATION] Pre-integration questions — none open
+
+- questions: none. Every packaging choice is ratified above. The one point left to the builder, the aliasing mechanism, is explicitly delegated by [CXC-CBK-PKG-COMPAT-IDENTITY]; the one foreseeable surprise, a lazy import reaching outside the closure, has a prescribed STOP in [CXC-CBK-PKG-CLOSURE-RULE]. A builder who finds a genuine ambiguity records it as a spec question to the architect rather than choosing silently.
+- status: decided
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE]
+
+### [CXC-CBK-PKG-EVIDENCE] POST-integration evidence slots — every one EMPTY until the builder fills it with a measured value
+
+- rule: per [DX-SPEC-CARRIES-ITS-EVIDENCE], an unfilled slot carries the literal `EMPTY`, never absence. `EMPTY` means this packaging has never been built and verified; the builder replaces each value with the raw measured output and the date.
+- baseline-test-counts-before: At 07348ff (run twice, scratch venv mirroring system site-packages, composeio not installed): python/tests "3 failed, 4139 passed, 24 skipped, 9 xfailed" (twice); repo-root tests/ "3 failed, 593 passed, 47 skipped"; compose_projects/intelligence "184 passed". The 3 python failures predate this change (test_m31_composer_chrome_golden; test_converted_source_blocks_and_then_stops[lts_engine_status] and [daemon_watch]). Logs and junit: (a local path, not published) (before2-*). Builder run 2026-11-25; independently compared by composeplatform-qa.
+- after-test-counts: At 6a14673, with the new packaging test file excluded: python/tests "3 failed, 4139 passed, 24 skipped, 9 xfailed", n=4175, per-test-id status-changed [] (only-before [], only-after []); root tests/ n=643 status-changed []; intelligence n=184 status-changed []. New tests: test_composebus_packaging.py 45 passed; python/composebus/tests 120 passed. QA re-verdict PASS_WITH_NOTES (its own junit diff: zero changed tests; spot runs of 172 python + 226 root tests with no status differences). junit: cbk/after2-*.
+- closure-check-output: Builder's closure test against the installed copy: "files_scanned: 20 / import_statements_classified: 106 / nested_imports: 13 / distinct_roots: __future__ abc collections composebus dataclasses enum json logging pydantic re sys threading time typing weakref / violations: 0 / closure_exit=0". Negative control: a planted lazy `from composeio.transforms import TransformChain` in a scratch copy was caught (1 violation). QA's independent AST walk (every depth, plus dynamic-import calls): 20 files, 0 violations; it catches injected composeio.peer and yaml imports, and fails on an empty directory.
+- identity-check-output: python/tests/test_composebus_packaging.py at 6a14673: 45 passed. It covers the 13 moved modules and 5 plugin submodules (`composeio.X is composebus.X`), composeio.plugins as a real package, the non-moving plugins importable from composeio only, class identity, a monkeypatch round-trip, no extra deletions, the real __spec__ kept, and reload re-executing through both names. QA independently checked 13+5 modules from five entrypoint styles (cd python; PYTHONPATH=python; installed composebus with and without the checkout; the editable pair): no identity failures and no file loaded twice.
+- contents-check-output: Installed copy: "files_found: 20 (__init__ bus bus_clock bus_envelope freshness module namespace plugin plugins/__init__ plugins/discovery plugins/liveness plugins/log plugins/state_manager plugins/time selector state_engine transforms transport transport_contract transport_local) / missing: [] / unexpected: [] / RESULT: MATCH". `git diff --diff-filter=D 07348ff..` under python/composeio lists exactly the 18 moved files. Wheel composebus-0.1.0-py3-none-any.whl: 25 files, including dist-info/licenses/LICENSE (1070 bytes, identical to the public repo LICENSE); METADATA "License: MIT", "Requires-Dist: pydantic>=2.0". The composeio wheel drops from 353 to 335 files (exactly the 18) and gains "Requires-Dist: composebus==0.1.0".
+- standalone-venv-subset-result: Fresh venv holding only composebus 0.1.0 + pydantic + pytest (pip list: annotated-types, composebus, iniconfig, packaging, pip, pluggy, pydantic, pydantic_core, Pygments, pytest, typing_extensions, typing-inspection), tests run from outside the checkout with PYTHONPATH unset: "120 passed", subset_exit=0, at both 424f58e and 6a14673. QA reproduced this in its own fresh composebus[test] venv installed from the pin: 120 passed. Consumer smoke from the pin: a bare ComposeIOBus() publish/get returns 42, and add_binding with a scale transform returns 50.0.
+- standalone-venv-subset-test-list: Selected by an AST scan for test files whose only non-stdlib imports are moved modules, pytest or pydantic (test_bus_storage_device_baseline.py excluded, because it loads services/bus_storage by path): test_bus 25, test_bus_clock 17, test_bus_concurrent_publish 3, test_bus_scope_auto_resolve_union 9, test_compound_bindings 13, test_liveness_d1_d2_bringup 2, test_modal_priority 5, test_selector 9, test_state_engines 19, test_transforms 15, plus new test_closure 1 and test_contents 2. Per test-import-rule, every changed line in the copies is an import line rewritten composeio->composebus; QA confirmed this for all 10 copies. The conftest fixtures (bus, local_transport) are copied verbatim apart from their imports.
+- standalone-venv-negative-control-result: In the same fresh venv and directory: `python -c "import composeio"` gives "ModuleNotFoundError: No module named 'composeio'", negative_control_exit=1. QA reproduced this in both of its venvs (the standalone one and the pin-install one).
+- leak-hygiene-grep-output: Builder, every file of the exported python/composebus/: grep for *.local hostnames, other internal hostnames, RFC1918 IPs, /Users/ and /home/ paths, and zero ?biometric|haven. All five classes gave grep_exit=1 (no hits). QA, 36 tracked files: no hits; the only `.local` matches are Scope.LOCAL and Authority.LOCAL; the owner's name appears in LICENSE and docstrings, which HoP's ruling of 2026-11-25 permits.
+- tag-annotated-check: `git cat-file -t composebus-v0.1.0` prints "tag", with no ambiguity warning now that the branch is named build/composebus-v0.1.0. Both pin forms (@composebus-v0.1.0 and @refs/tags/composebus-v0.1.0) installed commit_id 6a14673 (QA).
+- tag-not-on-remote-check: Before publication: `git ls-remote --tags origin composebus-v0.1.0` and `--heads` for both branch names printed nothing (exit 0), from both the builder and QA. Publication to the public repo happens afterwards under DEC-HOP-STANDING-PUSH-AUTHORITY-COMPOSEIO-2026-11-25 and is recorded under CXC-CBK-PKG-RELEASE.
+- stop-conditions-raised: One: plugins/state_manager.py:93, a lazy `from composeio.transforms import TransformChain`, raised 2026-11-25 22:36:29 UTC at 07348ff. It was resolved by the architect's amendment-transforms on CXC-CBK-PKG-CONTENTS. None after that. QA rounds: the first FAIL (F1 deploy paths, F2 pip install, F3 licence, F4 these slots) was fixed in 6a14673; the re-verdict is PASS_WITH_NOTES.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSEBUS-KERNEL]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-CBK-PKG-BEHAVIOUR-PRESERVED], [CXC-CBK-PKG-STANDALONE-PROOF], [CXC-CBK-PKG-RELEASE]
+
+---
+
+**Version**: 0.3 — 2026-11-25, amended to add §7 (the composebus distribution, v0.1.0) per HoP's public-first direction; §7 is a packaging build spec with POST-integration evidence slots, all `EMPTY`. Prior: 0.2 — 2026-08-23, amended to fold in the bus-standup + multi-tenancy design session ([DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23]) as §6, per the dispatch making this spec the correct oracle for the Phase-0 gap-analysis.
+**Status**: Draft — awaiting architect ratify of every non-`david-ruling`-tagged claim. [DD-CBK-PRIMARY-RENDER-SURFACE] is now DECIDED (David ruled kill-the-carve-out, line 23408). §6's david-ruling nodes ([CXC-CBK-LIVENESS-ORACLE-HOOK], [CXC-CBK-SEND-MESSAGE-SEAM], [CXC-CBK-SUBPROCESS-DAUGHTERCARD]) carry David's word directly; §6's architect-synthesis nodes realize architect-autonomous Phase-0 build decisions David authorized overnight 2026-08-23 and asked to review on return — still PENDING that review.

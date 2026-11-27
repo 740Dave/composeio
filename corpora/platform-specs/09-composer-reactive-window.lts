@@ -1,0 +1,382 @@
+---
+scope: "Reactive window specification for ComposeUX — bus-triggered popup window with template instantiation, priority replacement, and auto-dismiss"
+audience: "ComposeUX module developers, application designers needing alert/diagnostic windows"
+boundary: "Single reactive window behavior only; tab container in 08-composer-tab-container.lts; general widget layout in 03-composer-modules.lts"
+not-this: "Not a multi-window manager; not a notification/toast system; not a modal dialog"
+depends-on: [01-composer-architecture.lts, 02-composer-internal-bus.lts, 08-composer-tab-container.lts]
+domain: plt.cux
+---
+
+# ComposeUX Reactive Window [SPEC:CXC-RWIN]
+
+> A reactive window is a dormant UI template that materializes when a bus
+> condition fires. One window at a time. Higher priority replaces lower.
+> The window is a live bus participant — its widgets show real-time state,
+> not a frozen snapshot. When the condition clears or the operator
+> acknowledges, the window is destroyed and its widgets unsubscribed.
+
+---
+
+## 1. Concept [CXC-RWIN-CONCEPT]
+
+The reactive window extends the bus condition evaluation model from the
+tab controller (spec 08) to window lifecycle:
+
+| Component | What It Does | Lifecycle |
+|-----------|-------------|-----------|
+| Tab controller | Switches between existing views on condition | Persistent — views always exist |
+| **Reactive window** | **Creates a view on condition, destroys on dismiss** | **Ephemeral — view exists only while condition holds** |
+
+The window is defined as a **template** in `.compose.yaml`. It has no visual
+presence until triggered. When triggered, the template is instantiated: a
+top-level window is created, child widgets are constructed and subscribed to
+the bus, and the operator sees a contextual UI for the triggering condition.
+
+**One window at a time.** If a new trigger fires while a window is showing,
+priority determines the outcome: higher replaces, lower queues or drops.
+This is not a window manager — it's a single reactive surface.
+
+---
+
+## 2. Template Definition [CXC-RWIN-TEMPLATE]
+
+### 2.1 Config Schema [CXC-RWIN-SCHEMA]
+
+```yaml
+reactive_windows:
+  - id: ammo_alert
+    title: "Ammunition Status"
+    trigger:
+      - namespace: ammo_inventory
+        condition: "< 20"
+    dismiss:
+      auto:
+        - namespace: ammo_inventory
+          condition: ">= 50"
+      timeout: 300                    # auto-dismiss after 5 minutes if no clear
+      acknowledge: true               # show acknowledge button (default: true)
+    priority: high
+    size: [400, 300]                  # width, height in pixels
+    widgets:
+      - id: ammo_gauge
+        type: GaugeWidget
+        namespace: ammo_inventory
+        label: "Current Inventory"
+        layout: {row: 0, column: 0, columnspan: 2}
+      - id: resupply_btn
+        type: ButtonWidget
+        namespace: ammo_reload_request
+        label: "Request Resupply"
+        layout: {row: 1, column: 0}
+      - id: last_engagement
+        type: LabelWidget
+        namespace: ammo_last_engagement
+        label: "Last Engagement"
+        layout: {row: 1, column: 1}
+
+  - id: ftl_fault
+    title: "FTL Drive Fault"
+    trigger:
+      - namespace: ftl_status
+        condition: "== offline"
+      - namespace: warp_core_temp
+        condition: "> 200"
+    dismiss:
+      auto:
+        - namespace: ftl_status
+          condition: "== online"
+        - namespace: warp_core_temp
+          condition: "<= 150"
+      timeout: 0                      # no auto-timeout — stays until condition clears
+      acknowledge: true
+    priority: critical
+    size: [500, 400]
+    widgets:
+      - id: ftl_status_led
+        type: RelayWidget
+        namespace: ftl_status
+        label: "FTL Status"
+        layout: {row: 0, column: 0}
+      - id: temp_gauge
+        type: GaugeWidget
+        namespace: warp_core_temp
+        label: "Core Temperature"
+        layout: {row: 0, column: 1}
+      - id: diag_log
+        type: BusMonitorWidget
+        namespace: _bus/fault
+        label: "Fault Log"
+        layout: {row: 1, column: 0, columnspan: 2}
+```
+
+### 2.2 Field Definitions [CXC-RWIN-FIELDS]
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique template identifier |
+| `title` | string | Yes | Window title bar text |
+| `trigger` | list | Yes | Conditions that open the window (OR — any fires) |
+| `trigger[].namespace` | string | Yes | Namespace to monitor |
+| `trigger[].condition` | string | Yes | Condition expression (same syntax as bindings) |
+| `dismiss.auto` | list | No | Conditions that auto-close (AND — all must be true) |
+| `dismiss.timeout` | int | No | Auto-dismiss after N seconds. 0 = no timeout. Default: 300. |
+| `dismiss.acknowledge` | bool | No | Show acknowledge/dismiss button. Default: true. |
+| `priority` | string | No | `critical`, `high`, `normal`, `low`. Default: `normal`. |
+| `size` | [int, int] | No | [width, height] in pixels. Default: [400, 300]. |
+| `widgets` | list | Yes | Widget definitions (same schema as module widgets) |
+
+---
+
+## 3. Lifecycle [CXC-RWIN-LIFECYCLE]
+
+### 3.1 State Machine [CXC-RWIN-STATES]
+
+```
+                  trigger fires
+  DORMANT ──────────────────────────► ACTIVE
+     ▲                                   │
+     │                                   │ dismiss (auto/timeout/ack)
+     │                                   ▼
+     └───────────────────────────── DISMISSED
+                                   (destroy window,
+                                    return to dormant)
+```
+
+All reactive window templates start in DORMANT. Only one can be ACTIVE at a time.
+
+### 3.2 Trigger Evaluation [CXC-RWIN-TRIGGER]
+
+The reactive window module subscribes to all trigger namespaces across all
+templates. On each bus message:
+
+1. Evaluate trigger conditions for all DORMANT templates
+2. If one or more fire: select the highest-priority template
+3. If no window is active: instantiate the winner
+4. If a window is active: compare priorities
+   - New priority > current: dismiss current, instantiate new
+   - New priority <= current: drop (the current window is more important)
+
+**Trigger conditions are OR'd**: any single condition in the template's
+`trigger` list fires the window. Multiple conditions provide multiple
+paths to the same alert.
+
+### 3.3 Window Instantiation [CXC-RWIN-INSTANTIATE]
+
+When a template activates:
+
+1. Create a `CTkToplevel` window with the template's title and size
+2. Build the widget grid inside the window from the template's widget definitions
+3. Subscribe each widget to its declared namespace on the internal bus
+4. If `dismiss.acknowledge` is true: add a dismiss button at the bottom
+5. Publish activation event to the bus (see section 5)
+6. Start the dismiss timeout timer (if configured)
+
+The window's widgets are live — they receive bus traffic and render in real time.
+The ammo gauge shows the current value, updating as it changes. This is not a
+static alert — it's a contextual dashboard.
+
+### 3.4 Dismiss Conditions [CXC-RWIN-DISMISS]
+
+Three paths to dismissal:
+
+**Auto-dismiss (condition clears):**
+- Conditions in `dismiss.auto` are AND'd — ALL must be true to auto-dismiss
+- Evaluated on each bus message while the window is active
+- Example: ammo alert auto-dismisses when `ammo_inventory >= 50`
+
+**Timeout:**
+- If `dismiss.timeout > 0`, the window auto-dismisses after N seconds
+- The timeout resets if the trigger condition fires AGAIN while the window is active (the condition is ongoing, not stale)
+- Timeout = 0 means the window stays until explicitly dismissed or condition clears
+
+**Operator acknowledge:**
+- If `dismiss.acknowledge` is true, a dismiss button is shown
+- Clicking it dismisses regardless of auto conditions
+- Publishes an acknowledge event to the bus (so other systems know the operator saw it)
+
+### 3.5 Window Destruction [CXC-RWIN-DESTROY]
+
+On dismiss:
+1. Unsubscribe all child widgets from the bus
+2. Destroy the `CTkToplevel` window
+3. Publish dismiss event to the bus
+4. Template returns to DORMANT
+5. If a lower-priority trigger was pending: evaluate it now (it may fire)
+
+---
+
+## 4. Priority Replacement [CXC-RWIN-PRIORITY]
+
+Same priority stack as the tab controller:
+
+| Priority | Meaning | Example |
+|----------|---------|---------|
+| `critical` | Safety or fault — demands immediate attention | Hull breach, FTL offline, E-stop activated |
+| `high` | Important operational alert | Ammo low, overtemp warning, session error |
+| `normal` | Informational popup | New device discovered, vote opened |
+| `low` | Nice-to-know | Non-urgent status change, background task complete |
+
+**Replacement rule:** A trigger with priority strictly greater than the current
+window's priority replaces it. Equal or lower priority is dropped.
+
+**Exception:** If the current window was triggered by a condition that has since
+cleared (the auto-dismiss conditions are now met, but the operator hasn't
+acknowledged yet), ANY priority trigger replaces it — the stale window yields.
+
+---
+
+## 5. Bus Events [CXC-RWIN-EVENTS]
+
+The reactive window module publishes lifecycle events:
+
+### 5.1 Window Opened
+
+```
+PUBLISH composer/reactive_window/opened
+{
+  "template_id": "ammo_alert",
+  "trigger_namespace": "ammo_inventory",
+  "trigger_value": 15,
+  "priority": "high",
+  "timestamp": 1742169600
+}
+```
+
+### 5.2 Window Dismissed
+
+```
+PUBLISH composer/reactive_window/dismissed
+{
+  "template_id": "ammo_alert",
+  "dismiss_reason": "auto_clear",     # "auto_clear", "timeout", "acknowledge", "replaced"
+  "replaced_by": null,                 # or template_id of the replacement
+  "duration_seconds": 45,
+  "timestamp": 1742169645
+}
+```
+
+### 5.3 Operator Acknowledge
+
+```
+PUBLISH composer/reactive_window/acknowledged
+{
+  "template_id": "ammo_alert",
+  "timestamp": 1742169640
+}
+```
+
+These events are on the internal bus. Other modules (Intelligence, toolbar,
+logging) can subscribe to track operator awareness of alerts.
+
+---
+
+## 6. ComposeUX Design Integration [CXC-RWIN-DESIGN]
+
+### 6.1 Reactive Window Panel [CXC-RWIN-PANEL]
+
+In the ComposeUX editor, reactive windows are NOT on the canvas (they're
+dormant — no visual presence). Instead, a **Reactive Windows panel** lists
+all defined templates:
+
+```
+┌─ Reactive Windows ──────────────────────┐
+│                                          │
+│  ▶ ammo_alert        [high]    ⚡ < 20  │
+│  ▶ ftl_fault         [critical] ⚡ == offline │
+│  ▶ device_discovered [normal]  ⚡ discovery │
+│                                          │
+│  [+ Add Window]                          │
+└──────────────────────────────────────────┘
+```
+
+Clicking a template opens it in a design sub-canvas where the operator
+designs the window's widget layout. The trigger and dismiss conditions
+are configured in the property editor.
+
+### 6.2 Preview [CXC-RWIN-PREVIEW]
+
+The preview module can simulate reactive window triggers. The state injector
+publishes a value that fires the trigger, and the preview renders the window
+as a floating frame within the preview area.
+
+### 6.3 Intelligence API [CXC-RWIN-INTEL]
+
+An Intelligence can define reactive windows via the standard command taxonomy:
+
+```
+PUBLISH composer/reactive_window/template_added
+{
+  "template": {
+    "id": "ammo_alert",
+    "title": "Ammunition Status",
+    "trigger": [{"namespace": "ammo_inventory", "condition": "< 20"}],
+    "dismiss": {"auto": [{"namespace": "ammo_inventory", "condition": ">= 50"}]},
+    "priority": "high",
+    "widgets": [...]
+  }
+}
+```
+
+---
+
+## 7. Serialization [CXC-RWIN-SERIAL]
+
+Reactive window templates are serialized in the `.compose.yaml` under the
+`reactive_windows` key (top-level, alongside `modules`, `widgets`, `bindings`):
+
+```yaml
+compose_version: "0.1"
+metadata:
+  name: "Tactical Dashboard"
+
+modules:
+  - id: main_panel
+    # ... normal module layout ...
+
+reactive_windows:
+  - id: ammo_alert
+    # ... template definition ...
+```
+
+The `reactive_windows` key is optional. Designs without reactive windows
+omit it entirely (backward compatible).
+
+---
+
+## 8. Relationship to Tab Controller [CXC-RWIN-TAB]
+
+The reactive window and tab controller share:
+- Condition evaluation syntax (same expressions)
+- Priority resolution model (same stack)
+- User-hold concept (tab: 5s after click; window: acknowledge button)
+- Bus event publication pattern
+
+They differ in:
+- **Lifecycle**: Tabs are persistent, windows are ephemeral
+- **Multiplicity**: Multiple tabs coexist, only one reactive window at a time
+- **Scope**: Tabs are children of a TabWidget in the layout, windows are top-level
+- **Design surface**: Tabs are on the canvas, windows are in a separate panel
+
+The condition evaluation engine SHOULD be shared code — both the TabWidget
+and the ReactiveWindowModule use the same `evaluate_condition(namespace, value, condition_expr)` function.
+
+---
+
+## 9. Compliance [CXC-RWIN-COMPLIANCE]
+
+A compliant reactive window implementation MUST:
+
+1. **[RWIN-C1]** Evaluate trigger conditions on every received bus message
+2. **[RWIN-C2]** Enforce one-window-at-a-time with priority replacement
+3. **[RWIN-C3]** Instantiate live widgets that subscribe to the bus (not static snapshots)
+4. **[RWIN-C4]** Support all three dismiss paths: auto-clear, timeout, acknowledge
+5. **[RWIN-C5]** Publish lifecycle events (opened, dismissed, acknowledged)
+6. **[RWIN-C6]** Destroy window and unsubscribe widgets on dismiss
+7. **[RWIN-C7]** Serialize templates in `.compose.yaml` under `reactive_windows`
+8. **[RWIN-C8]** Yield stale windows (auto-dismiss conditions met) to any priority trigger
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-28
+**Status**: Draft — specification for review

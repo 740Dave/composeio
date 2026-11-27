@@ -1,0 +1,600 @@
+---
+scope: "bus_storage — the HTTP service on the bus master that holds the fleet's configs, assets, namespace registry and workload definitions, and the `bus://` reference form that addresses it. This document is a PASS-1 CONVERSION of the existing SMD prose into `.lts`: the REST surface from `spec/01-composeio-bus-protocol.smd` §7, the config lifecycle and boot sequences from §8, the storage doctrine from `spec/00-composeio-design-principles.smd` DP-CIO-23, and the display boot sequence from [CXC-R-BOOT-SEQUENCE]. It carries those claims across FAITHFULLY and judges none of them."
+audience: "factlattice-gap-analyzer, which is the intended NEXT reader and the agent that will rule each claim CURRENT, BEHIND or AHEAD of the implementation; then the architect reviewing that verdict. Also any Intelligence asking by QUERY what the corpus says about bus_storage — which until this document was nothing, the service being named 55 times by its consumers and described zero times."
+boundary: "IN: everything the SMD sources and the existing corpus already assert about this service — identity and role, the `bus://` reference form, the complete REST surface with the status codes §7 records, the config CRC / lifecycle / size constraints, both boot sequences, absence behaviour, and the declared seam to [SPEC:CXC-CONFIG-BUS]. OUT: any verdict on whether those claims match the code, which is pass 2's and is deliberately absent here; document_store (:8421), a different service; the ComposeBus wire protocol itself; the config COMPILER; and the bus_storage VIEWER, which is [CXC-BUSNAV-APP]."
+not-this: "⛔ NOT a reconciled or verified specification, and NOT a description of the running service. It is prose moved into queryable structure, nothing more. Not a security review. Not a decision record — where the sources conflict with each other, the conflict is RECORDED and left open rather than resolved. Where the sources are silent on something a reader needs, the node says `EMPTY` rather than filling the gap from the implementation, because filling it here is exactly the self-certification pass 2 exists to prevent."
+depends-on: [61-config-over-bus.lts, 12-composeux-render-engine.lts, 48-compose-launch-bar.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+lifecycle-position: converted — gap-analysis PENDING, not yet reconciled to implementation
+converted-from: spec/01-composeio-bus-protocol.smd §6.4 §7 §8 §9.2 (identical on both sides of the live fork) + spec/00-composeio-design-principles.smd DP-CIO-23 + spec/01-amendment-bus-extensions.smd + [CXC-R-BOOT-SEQUENCE]
+created: 2026-08-15
+---
+
+# ComposeIO Bus Storage — SMD Conversion, NOT YET RECONCILED [SPEC:CXC-BUSSTORE]
+
+> ⛔ **NOTHING IN THIS FILE HAS BEEN CHECKED AGAINST THE IMPLEMENTATION.** Every claim below was
+> carried across from prose. None has been ruled CURRENT, BEHIND or AHEAD of the code by this
+> document, and no reader should cite it as though one had. `lifecycle-position` says the same thing
+> in a form a query can read: **`converted — gap-analysis PENDING`**.
+>
+> This is **pass 1 of the ratified two-step**. Migration confers authority
+> (`[DEC-MIGRATE-SPEC-01-GATED-ON-GAP-ANALYSIS]`) — a `.lts` node is queryable, citable, and treated
+> as current by every downstream reader, so converting stale prose does not carry staleness forward,
+> it **LAUNDERS** it: prose nobody trusted becomes a node everyone cites. The banner and the
+> lifecycle property are what stop that here. **Pass 2 is `factlattice-gap-analyzer`**, which reads
+> `.lts` only — so this conversion is what makes the analysis possible at all, and the verdict is
+> deliberately left to it rather than taken by the author who wrote these nodes.
+>
+> The gap this closes is real: `bus_storage` is a product this project builds, deploys and depends
+> on at every boot, and the corpus named it **55 times — every one a CONSUMER declaring a
+> dependency** — while describing it not once. Its registry entry is a 129-token stub; its BROWSER
+> carries 327. The viewer for the thing was specified and the thing was not.
+>
+> `[PLACEMENT UNRATIFIED]` — see [CXC-BUSSTORE-PLACEMENT].
+
+---
+
+## 0. Conversion status, provenance and placement
+
+### [CXC-BUSSTORE-CONVERSION-STATUS] This node is not authoritative, and that must be queryable rather than implied
+
+- status: converted — gap-analysis PENDING, not yet reconciled to implementation
+- what-that-means: the content is faithful to its sources; the sources have NOT been checked against the code by this document. Stated as a bare leading lifecycle token above so a query can reach it, rather than as prose only an exact-string match would find.
+- what-was-deliberately-not-done: no claim here was audited against `services/bus_storage/server.py` or any firmware source, and no node asserts that the service behaves as described. An author who reconciles a spec and then certifies it current has produced a green light with no independent light behind it — [PRINCIPLE-SAFETY-NET-IS-A-CHAIN] requires the static pass to run on context INDEPENDENT of the author, and self-certification defeats it by construction.
+- how-a-reader-tells: three signals, deliberately redundant — this node, the `lifecycle-position` frontmatter key, and the document banner. Any one of them is enough; all three exist because a reader arriving mid-document must not be able to mistake a converted node for a verified one.
+- next-step: `factlattice-gap-analyzer` over this file, producing a per-claim CURRENT / BEHIND / AHEAD verdict. Where BEHIND, the spec is brought current in a distinct reviewable step — not by editing this one silently.
+- sentinel-convention: a property whose answer the sources do not contain carries the literal value `EMPTY`. An absent key is indistinguishable from one nobody thought to write, which is the ambiguity [DX-SPEC-CARRIES-ITS-EVIDENCE] exists to close.
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-PROVENANCE] Four sources, each named at the node it fed
+
+- source-rest-api: `spec/01-composeio-bus-protocol.smd` §7 (`BP-STORAGE-API`) — the complete REST surface. Feeds every node in section 3 of this document.
+- source-config-lifecycle: the same file §8 (`BP-CONFIG-VERSION`) — checksum algorithm, config lifecycle, module boot sequence, size constraints. Feeds section 5.
+- source-doctrine: `spec/00-composeio-design-principles.smd` DP-CIO-23 — what bus storage is FOR, the cache doctrine, the `bus://` reference form, the backup property. Feeds sections 1 and 2.
+- source-display-boot: `[CXC-R-BOOT-SEQUENCE]` in `12-composeux-render-engine.lts` — already `.lts`, already in the corpus, and the only source describing what a DISPLAY device fetches. Feeds [CXC-BUSSTORE-BOOT-DISPLAY].
+- source-state-reference: `spec/01-amendment-bus-extensions.smd` — the CAN `bus://` state-reference pattern. Feeds [CXC-BUSSTORE-STATE-REFERENCE].
+- unqueryable-today: `spec/` is a root of no corpus, so `BP-STORAGE-API`, `BP-CONFIG-BOOT` and their siblings are referenced here by FILE PATH and SECTION rather than by bracketed id. Minting an edge to an id that lives only in an un-ingested file would manufacture a dangling reference and imply a node exists where none does.
+- registry-entry: this service's only pre-existing self-referential node is PROJECT-BUS-STORAGE in `corpora/intelligence-console/projects.lts` — a 129-token registry stub, and the description it lacks is this document. Named unbracketed on purpose: it lives in a DIFFERENT corpus root, so a bracketed reference to it would resolve at corpus scope and dangle at root scope, which is how this corpus accumulated its reference backlog.
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-FORK] The source is FORKED — and the fork does not touch this subject
+
+- fact: `spec/01-composeio-bus-protocol.smd` exists in two versions — `main`, and the unlanded branch `spec/bus-protocol-corrections-2026-08-14` at commit `d022482` ("reconcile the bus protocol with the code BEFORE migration confers authority"), which is step 1 of the ratified two-step and is held by a gate. `git merge-tree` reports a real three-stage CONFLICT, so both sides changed the file after diverging and NEITHER is automatically authoritative.
+- measured-scope: the two versions were diffed. §7 (`BP-STORAGE-API`) is **byte-identical on both sides** — a 228-line section with a zero-line diff. The whole-file difference is 33 lines and not one of them mentions bus storage, port 8420, assets or `bus://`.
+- where-they-actually-differ: §2.5, §5.2 and §9.2 — heartbeat cadence, heartbeat payload shape, and degraded-mode implementation status. `main` is the newer side there, carrying 2026-08-15 findings that cite `[SPEC:CXC-FRESHNESS]` and postdate the 2026-08-14 branch.
+- consequence-for-this-document: every claim converted here is fork-independent. `main` was read as the working text and the branch was read as a control; on this subject they agree byte for byte, so no claim depends on the choice. That is a measurement, not an assumption.
+- not-resolved-here: the branch was READ, not landed, merged or resolved. It is held by a ratified gate and resolving it is not this document's call.
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-PLACEMENT] Placement is UNRATIFIED, and 73 was chosen by listing rather than by counting
+
+- placement-status: UNRATIFIED. This file was written into `corpora/platform-specs/` because that directory is a live root of the `intelligence-console`, `headless-monitor` and `visual-composer` corpora and is therefore queryable the moment the file lands. That is a reason, not a ruling.
+- why-not-the-obvious-home: `corpora/bus-storage/` exists, is EMPTY, and its registry entry names `decisions/decision-graph-bus-storage.lts`, a file that does not exist. It is slated for de-registration. A spec placed there would be structurally correct and practically invisible — the opposite of the gap this document closes.
+- number-chosen: 73. The directory was listed; 00-72 are taken and 73 is the first free prefix.
+- collision-hazard: this directory carries live filename-number collisions. `61` was RESOLVED 2026-08-17 (`61-fleet-console.lts` -> `76-fleet-console.lts`). TWO remain: `00-composer-design-principles.lts` with `00-composer-overview.lts`, and `46-console-sources-on-the-bus.lts` with `46-handover-process.lts` — both deliberately left, because their filenames are cited rather than merely described. Per [CXC-VISION-PLACEMENT] the numeric prefix is this corpus's ordering and cross-reference convention, so a collision is a real ambiguity git can never flag. 73 was verified free by listing.
+- ratification-needed: whether a SERVICE spec belongs in a directory otherwise holding platform and widget specs, and whether `corpora/bus-storage/` should be revived as this document's home instead of de-registered. Both are the architect's.
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 1. What the service is
+
+### [CXC-BUSSTORE-IDENTITY] An HTTP service on the bus master, at port 8420
+
+- what: an HTTP service running on the bus master, storing configs, assets, the namespace registry and workload definitions. All endpoints return JSON unless otherwise noted.
+- base-url: `http://{bus_master}:8420/api/v1`.
+- port-history: §7 records that the port is 8420 from `COMPOSEIO_PORT`, and that the `5100` the section specified until 2026-08-14 was never the port the service listens on. The correction is carried across with its history because a reader may still hold the old number.
+- transport-role: §6.4 (`BP-TRANSPORT-HTTP`) places this service outside the real-time path — "HTTP is not a real-time message transport." Real-time messages flow over MQTT or CAN; HTTP is for config, assets, state queries and system management.
+- source-section: spec/01-composeio-bus-protocol.smd §6.4 and §7 preamble
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-ROLE] Source of truth for the fleet, so a replacement module self-configures
+
+- purpose: DP-CIO-23 states the bus provides a persistent storage service holding compiled configs, large assets (images, audio, firmware) and system-wide state (namespace registry, device roster). Modules pull their configuration from it on boot rather than requiring individual manual pushes.
+- config-lifecycle-doctrine: builder edits YAML on their laptop, `composeio push` writes the compiled binary to bus storage under the target namespace, and any device configured for that namespace picks it up — immediately if online, or on next boot. No per-device flashing.
+- replacement-story: replacing a dead module is "power on, device announces its role, bus storage delivers its config, device self-configures." DP-CIO-23 states the failure test directly: if replacing a dead module requires locating the original config file and manually re-pushing it, the design has failed.
+- large-assets: anything too large for a bus message (DP-CIO-18) lives here and is referenced by `bus://` URI, e.g. `{namespace: "now_playing", art_url: "bus://assets/album_art/current.jpg"}`.
+- registry-persistence: DP-CIO-23 claims the store maintains a registry of all known namespaces, their state engines, current values, and which devices publish and subscribe — enabling auto-discovery, introspection and a `composeio status` view of the whole system. ⚠ §7.2 CONTRADICTS the richer half of this claim; see [CXC-BUSSTORE-NOT-OBSERVER] and [CXC-BUSSTORE-SOURCES-DISAGREE].
+- backup-property: the entire system's configuration, assets and namespace registry live in one location. Back it up, restore it to a new bus master, power on the devices, and the system self-reconstructs — called out as critical for deployable installations such as vehicle head units, escape rooms and permanent props.
+- source-section: spec/00-composeio-design-principles.smd DP-CIO-23
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-CACHE-DOCTRINE] Local flash is a cache, not the source of truth
+
+- rule: DP-CIO-23 states it as a headline — devices cache their last-pulled config in local flash for resilience (DP-CIO-11). If bus storage is unavailable on boot, the device runs from its cached config. When the store becomes available again, the device checks for updates and pulls if the config has changed, comparing version or checksum.
+- named-pattern: the source calls this the Docker registry pattern — pull when available, run local when not.
+- staleness-warning-in-source: §8.3's cross-reference adds that booting from cache while re-requesting is resilient but can render a months-old scene and look perfectly healthy, and states that cache MUST be paired with a visible staleness indication.
+- where-implemented: EMPTY. The sources state the doctrine and do not name the module, key or storage medium that implements it. Not filled in here from code.
+- source-section: spec/00-composeio-design-principles.smd DP-CIO-23; spec/01-composeio-bus-protocol.smd §8.3 cross-reference
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-NOT-OBSERVER] The store is PASSIVE — no write has a side effect, and it cannot see the bus
+
+- rule: §7 states this as a correction to earlier prose. Bus storage holds no bus handle. It does not observe traffic, publish, or notify.
+- consequence-config: a `PUT /api/v1/config/{module_id}` writes the file and returns. The previously-documented "publishes `config_push` on PUT" DOES NOT HAPPEN. A module is NOT notified of a new config by this call; it learns on its next boot, or by the bus-config path, which §7 stresses is a different mechanism on a different transport. Any flow assuming an HTTP PUT reaches a live module is wrong.
+- consequence-workload: `PUT /api/v1/workloads/{id}` writes the JSON and returns; it does not notify or start anything. A service hub running the workload must be polling or otherwise triggered.
+- consequence-registry: the namespace registry is a passive store — it persists whatever a client PUTs and returns it verbatim. It does not derive publishers, subscribers, current values or history. §7.2 states plainly that the rich response shapes previously specified "described a service that observes traffic; that service does not exist."
+- consequence-status: `GET /api/v1/status` reports what the store holds on disk. It does not report module liveness, transport health or bus time, because the store cannot know any of those.
+- source-section: spec/01-composeio-bus-protocol.smd §7.1, §7.2, §7.4, §7.5
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-SOURCES-DISAGREE] DP-CIO-23 and §7.2 describe two different registries — recorded, not resolved
+
+- conflict: DP-CIO-23 says the namespace registry maintains "state engines, current values, and which devices publish/subscribe", enabling auto-discovery and a whole-system `composeio status`. §7.2 says the registry is a passive store that returns what was PUT plus a `name` key, computes nothing, and that a service observing traffic "does not exist."
+- both-are-sources: neither is code and neither is this document's to overrule. §7.2 is the later and more specific statement and was written as an explicit correction, which is evidence but not a ruling.
+- why-it-matters: the two readings support completely different tooling. A `composeio status` built on DP-CIO-23's description would render fields the server never sends — the exact failure §7.5 records for the status endpoint.
+- resolution-owner: pass 2. A gap analysis against the implementation settles which description is current, and that verdict is not taken here.
+- resolution-state: EMPTY
+- source-section: spec/00-composeio-design-principles.smd DP-CIO-23 versus spec/01-composeio-bus-protocol.smd §7.2
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 2. The `bus://` reference form
+
+### [CXC-BUSSTORE-URI-SCHEME] `bus://assets/<path>` names an asset independently of any host
+
+- rule: content too large for a bus message is stored here and referenced by a `bus://` URI rather than by a host-specific path. The worked example in DP-CIO-23 is `bus://assets/album_art/current.jpg`.
+- correspondence-to-http: §7.3 establishes the mapping from the other direction — the asset PUT response carries a `path` and "a caller needing a `bus://` URL constructs it from `path`". So `bus://assets/<path>` corresponds to the asset route's `<path>`.
+- deliberately-unspecified-transport: DP-CIO-23 says the consuming device fetches "via whatever sideband protocol the bus storage exposes (HTTP, filesystem, etc.)". The source treats the fetch mechanism as an implementation choice, not a contract.
+- config-reference-variant: §2.x message examples show a different shape — `"val": "bus://config/panel-1.bin"` as a config_push payload. That is a `bus://` reference that is NOT under `assets/`, carried here because it appears in the source and bears on whether `bus://` is one prefix or a family. See [CXC-BUSSTORE-URI-RESOLUTION].
+- source-section: spec/00-composeio-design-principles.smd DP-CIO-23; spec/01-composeio-bus-protocol.smd §2.x message examples and §7.3
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-URI-RESOLUTION] The resolution RULES are not in the sources — EMPTY, deliberately
+
+- what-is-missing: no source states how a `bus://` URI is turned into a request. There is no specified rewrite rule, no named resolver, no statement of which endpoint a URI binds to, and no statement of how the endpoint is configured or overridden.
+- prefixes-accepted: EMPTY. The sources show `bus://assets/...` and `bus://config/...` in examples without saying whether both resolve, whether either is the general form, or what happens to a third.
+- unrecognised-uri-behaviour: EMPTY. No source states whether an unsupported `bus://` form is rejected, ignored, or attempted some other way.
+- endpoint-configuration: EMPTY. No source names an environment variable, config key or discovery mechanism binding a `bus://` reference to a host.
+- resolver-count-and-parity: EMPTY. No source states how many implementations of this resolution exist, on which tiers, or whether they are required to agree.
+- why-left-empty: this is the largest hole the conversion found, and filling it from the implementation is precisely the self-certification pass 2 exists to prevent. It is recorded as a gap so the analyser has something to rule on rather than nothing to notice.
+- source-section: no source — absence recorded across spec/00, spec/01 and spec/01-amendment
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-STATE-REFERENCE] The amendment specifies a state route this document could not find described anywhere else
+
+- claim: `spec/01-amendment-bus-extensions.smd` states that on CAN transport a `json` state value MUST be referenced by URL rather than inlined (DP-CIO-18), the frame carrying a `bus://` reference which the subscriber dereferences from bus storage, "the same pattern as config_push".
+- route-named: the amendment gives the fetch as `GET /api/v1/state/{ns_hash}/{content_hash}`, with CAN data bytes 3-7 carrying the first 5 bytes of the URL hash as a content-addressable reference.
+- not-in-the-rest-api: §7 enumerates config, namespace, asset, workload and system endpoints. **There is no state family in §7**, so the amendment specifies a route the REST API section does not carry. This is a source-versus-source gap and it is recorded, not resolved.
+- history-claim: the amendment also states that late subscribers can query history via bus storage, and that log entries are stored under the namespace — neither of which §7 provides a route for.
+- verdict-state: EMPTY
+- source-section: spec/01-amendment-bus-extensions.smd, versus spec/01-composeio-bus-protocol.smd §7
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 3. The REST surface, as §7 records it
+
+### [CXC-BUSSTORE-API-CONFIG] Config — get, put, delete, checksum
+
+- get: `GET /api/v1/config/{module_id}` returns the compiled config binary as `application/octet-stream` with **200**, or **404** `{"error": "No config for module '{module_id}'"}`.
+- get-has-no-crc-header: §7.1 flags this explicitly — no `X-Config-CRC` header is set, the header previously specified does not exist, and a client wanting the checksum must call the checksum endpoint.
+- put: `PUT /api/v1/config/{module_id}` with the binary as body returns **201** `{"status": "ok", "module": "{module_id}", "size": 1024}`. §7.1 notes the status is 201 and not 200, that there is no `crc` field, and that the `module` field was previously undocumented.
+- put-metadata: an optional `X-ComposeIO-Metadata` header is stored verbatim as `{module_id}.meta.json`.
+- put-has-no-side-effect: see [CXC-BUSSTORE-NOT-OBSERVER]. §7.1 marks this the most consequential correction in the section.
+- delete: `DELETE /api/v1/config/{module_id}` removes the config and its metadata sidecar, returning **200** `{"status": "deleted", "module": "{module_id}"}`. Deleting a config that does not exist succeeds idempotently rather than 404ing.
+- checksum: `GET /api/v1/config/{module_id}/checksum` — §7.1 stresses the path is `/checksum` and NOT `/crc`, which returns 404. The response is **200** with a bare lowercase hex string as `text/plain`, zero-padded to 8 digits, e.g. `a1b2c3d4` — not JSON, no `0x` prefix. **404** with the same message as `get` when absent.
+- containment: `{module_id}` is a request-supplied segment and is bound by [CXC-BUSSTORE-CONTAINMENT] — it MUST resolve inside the config root. The `.bin` / `.meta.json` suffix the handler appends narrows what an escape can reach but does not prevent one; the `delete` route in particular is an arbitrary-file-REMOVAL primitive without containment, which is why the invariant is stated on the family rather than on the read routes only.
+- source-section: spec/01-composeio-bus-protocol.smd §7.1
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-API-ASSET] Assets — GET and PUT, atomic writes, and no delete route
+
+- get: `GET /api/v1/assets/{path}` returns **200** with the asset bytes and "an appropriate Content-Type header", or **404** when not found. The path is hierarchical; the section's example is `/api/v1/assets/album_art/current.jpg`.
+- content-type-derivation: §7.3 states the type is guessed from the file extension on GET, and that the request's `Content-Type` on PUT is neither required nor stored.
+- content-type-table: EMPTY. The source says the type is guessed from the extension and does not enumerate which extensions are recognised or what an unrecognised one yields.
+- put: `PUT /api/v1/assets/{path}` returns **201** `{"status": "ok", "path": "album_art/current.jpg", "size": 45000}`. §7.3 notes the status is 201 and not 200 and that there is **no `url` field** — a caller needing a `bus://` URL constructs it from `path`.
+- put-durability: written atomically via `os.replace`, so a concurrent GET never observes a torn file; parent directories are created as needed.
+- no-delete: §7.3 states `DELETE /api/v1/assets/{path}` does not exist and returns 404. There is no route to remove an asset.
+- size-limits: EMPTY. No source states a maximum asset size, a request body limit, or what happens when one is exceeded.
+- containment: `{path}` is a request-supplied segment and is bound by [CXC-BUSSTORE-CONTAINMENT] — it MUST resolve inside the assets root, on GET and on PUT alike. ⚠ AMENDED 2026-08-15: the sources' silence here was an IMPLEMENTATION GAP, not a documentation gap. Probe answered [CXC-BUSSTORE-PRE-CONTAINMENT]; see [CXC-BUSSTORE-EV-06].
+- source-section: spec/01-composeio-bus-protocol.smd §7.3
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-API-ASSET-LIST] The listing route — one level, dirs first, guarded against escape
+
+- route: `GET /api/v1/assets?prefix={prefix}`, recorded in §7.3 as previously undocumented and shipping. Omit `prefix` or leave it empty for the assets root.
+- response: **200** `{"entries": [...]}` — directories first, then files, each group sorted case-insensitively by name. Each entry carries `name`, the slash-joined `path` from the assets root, and `kind` of `"dir"` or `"file"`; files also carry `size`.
+- non-recursive: one level under the prefix only.
+- absence-is-not-an-error: a prefix that does not exist is a valid EMPTY listing — 200 with `entries: []`, never 404.
+- escape-guard: **403** when the prefix escapes the assets root (`../`). **400** on a malformed prefix, the source's example being an embedded NUL.
+- dotfiles-skipped: dotfiles are omitted, which also excludes the `.{name}.tmp.{pid}.{tid}` temp files atomic writes create — so a listing never shows a torn asset.
+- guard-scope: ⚠ ANSWERED 2026-08-15, and the answer was the bad one. The source stated this containment guard for the LISTING route and no equivalent rule for GET or PUT because the IMPLEMENTATION had it in exactly one place — this handler — and in none of the other six. The silence was faithful reporting of a hole. The guard is no longer specified here as a property of the listing route; it is [CXC-BUSSTORE-CONTAINMENT], a property of the SERVICE, and this route is one of its subjects. See [CXC-BUSSTORE-PRE-CONTAINMENT] and [CXC-BUSSTORE-EV-06].
+- source-section: spec/01-composeio-bus-protocol.smd §7.3
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-API-NAMESPACE] The namespace registry — a bare array, a passive store, no delete
+
+- list: `GET /api/v1/namespaces` returns **200** with a bare JSON array of registry entries, `[{...}, {...}]`. §7.2 flags emphatically that it is NOT wrapped in a `{"namespaces": [...]}` object.
+- entry-shape: whatever was PUT, plus a `name` key set by the server. There is no fixed schema and no server-computed field.
+- get: `GET /api/v1/namespaces/{namespace}` returns **200** with the entry as stored plus `name`, or **404** `{"error": "Namespace '{namespace}' not found"}`. §7.2 states that no `publishers`, `subscribers`, `current_val`, `bindings` or `history` are computed or returned unless a client stored them.
+- put: `PUT /api/v1/namespaces/{namespace}`, recorded as previously undocumented and shipping — its absence "made the registry look read-only and left no specified way to populate it." Body is a JSON object; the server overwrites `name`. Returns **201** `{"status": "ok", "namespace": "{namespace}"}`.
+- write-serialisation: writes are serialised under a registry lock; last write wins.
+- no-delete: `DELETE /api/v1/namespaces/{namespace}` does not exist and returns 404. There is no route to remove a namespace entry.
+- source-section: spec/01-composeio-bus-protocol.smd §7.2
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-API-WORKLOAD] Workloads — definitions only, no runtime state, no delete
+
+- list: `GET /api/v1/workloads` returns **200** with a bare JSON array of the stored definitions, NOT wrapped in `{"workloads": [...]}`.
+- no-runtime-fields: §7.4 states `status`, `hub` and `uptime` are not returned — the store holds definitions and has no knowledge of what is running. Liveness is the service hub's to report.
+- put: `PUT /api/v1/workloads/{id}` with a JSON definition returns **201** `{"status": "ok", "workload": "camera_frame_server"}`. §7.4 notes the status is 201 not 200 and the key is `workload` not `id`, while the server does set `id` inside the stored document.
+- definition-shape: the source's worked example carries `id`, `runtime`, `entry`, `requirements`, `restart` and a `namespaces` object with `publishes` and `subscribes` lists.
+- put-has-no-side-effect: §7.4 states the store writes the JSON and returns, notifying and starting nothing. A service hub must be polling or otherwise triggered; this endpoint does not reach it.
+- no-delete: `DELETE /api/v1/workloads/{id}` does not exist and returns 404 — "and therefore no specified way to stop one through this API."
+- get-one: EMPTY. §7.4 documents a list and a put; it states no single-workload GET route and does not say whether one exists.
+- containment: `{id}` is a request-supplied segment and is bound by [CXC-BUSSTORE-CONTAINMENT] — it MUST resolve inside the workloads root.
+- list-is-per-row-tolerant: one unreadable or non-JSON file in the workloads directory MUST NOT deny the whole collection — see [CXC-BUSSTORE-ERROR-BOUNDARY]. The readable definitions are served and the skipped count is reported on `X-ComposeIO-Skipped-Entries`. The header carries it because the body is a specified BARE array and adding a wrapper to report a skip would break every existing client to describe an edge case.
+- source-section: spec/01-composeio-bus-protocol.smd §7.4
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-API-STATUS] Status and health — a storage status, emphatically not a system overview
+
+- status-route: `GET /api/v1/status` returns **200** with `service`, `version`, `uptime_seconds`, `configs`, `namespaces`, `workloads`, `storage_bytes`, `disk_free_bytes`, `data_dir` and `modules`.
+- what-it-is-not: §7.5 is blunt — it reports what bus storage holds on disk, not module liveness, transport health or bus time, "because bus storage does not observe the bus and cannot know any of those." The nested health object previously specified "describes a service that does not exist; a dashboard built on it would render fields the server never sends."
+- modules-field: a list of module ids that have a stored config, derived from filenames and not from liveness. §7.5 states directly that a module in this list may be powered off.
+- counts-not-objects: `namespaces`, `configs` and `workloads` are counts, not objects.
+- health-route: `GET /health`, recorded as previously undocumented, returns **200** with the bare body `ok` as `text/plain`. It is explicitly NOT under `/api/v1`.
+- cost: EMPTY. No source states what the status route costs to serve or whether it is safe to poll.
+- source-section: spec/01-composeio-bus-protocol.smd §7.5
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-NO-DELETE] Only config has a delete route — three families are append-or-overwrite
+
+- pattern: §7 records three separate "does not exist, returns 404" findings — for assets (§7.3), namespaces (§7.2) and workloads (§7.4). Config (§7.1) is the only family with a working DELETE, and that one is idempotent.
+- consequence-stated-in-source: for workloads §7.4 draws it out — there is "no specified way to stop one through this API."
+- consequence-not-stated: EMPTY. No source says whether append-only is an intended durability stance or an omission, nor what an operator should do instead. See [CXC-BUSSTORE-PRE-DELETE-STANCE].
+- why-grouped: the three findings appear in three separate subsections of the source and read as three unrelated notes. Gathered into one node they are visibly a single property of the surface, which is the kind of thing conversion is for.
+- source-section: spec/01-composeio-bus-protocol.smd §7.2, §7.3, §7.4
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 4. The asset namespace
+
+### [CXC-BUSSTORE-ASSET-NS] The path is hierarchical, and the sources name no convention for it
+
+- what-the-source-says: §7.3 states the asset path is hierarchical and gives `album_art/current.jpg`. DP-CIO-23 gives the same shape in a `bus://` reference. That is the whole of the specification.
+- naming-conventions: EMPTY. No source names a required or recommended prefix, reserved directory, or path grammar. Nothing states which paths a device or widget is expected to find.
+- registry-of-assets: EMPTY. No source describes a manifest, index or schema of asset paths, nor any validation that a published path is one a consumer will look for.
+- case-sensitivity: EMPTY. No source states whether asset paths are case-sensitive.
+- who-may-write: EMPTY. No source states which actors are expected to PUT assets or under what prefixes.
+- why-this-matters: the boot sequences in section 5 depend on a device and a publisher agreeing on an exact path. The sources describe both halves and never state the contract between them, which makes this an unusually load-bearing EMPTY.
+- source-section: spec/01-composeio-bus-protocol.smd §7.3; spec/00-composeio-design-principles.smd DP-CIO-23
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 5. Config versioning and boot
+
+### [CXC-BUSSTORE-CONFIG-CRC] CRC-32 over the whole binary
+
+- algorithm: CRC-32 (ISO 3309, polynomial 0x04C11DB7) computed over the entire compiled config binary — the same CRC-32 used by zlib, PNG and Ethernet.
+- purpose-in-source: config currency. A module compares its cached CRC against the store's to decide whether to pull.
+- contrast-carried-from-source: §8.2's cross-reference notes the bus-config path uses a **CRC-16/CCITT whole-payload hash** carried in the transfer header instead, chosen so a 2 KB-class part needs no second polynomial. Two paths, two integrity primitives, both stated in the source.
+- source-section: spec/01-composeio-bus-protocol.smd §8.1, §8.2
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-CONFIG-LIFECYCLE] Push, pull, verify, reconfigure — with the notification step marked absent in the source itself
+
+- flow: builder edits YAML, `composeio push` validates it against the schema, the compiler produces a compact binary, CRC-32 is computed, and the binary is uploaded with `PUT /api/v1/config/{module_id}`.
+- the-gap-the-source-marks: §8.2 carries a banner reading "THE NOTIFICATION STEP DOES NOT EXIST" — the store writes the file and returns, holding no bus handle, so a `composeio push` does not reach a running module and the lifecycle completes only across a reboot unless something else polls.
+- module-side: the module fetches the binary with `GET /api/v1/config/{module_id}`, verifies the CRC-32 against the header, writes binary and CRC to flash, reconfigures, and publishes discovery with the updated `config_crc`.
+- live-update-path: §8.2 names [SPEC:CXC-CONFIG-BUS] as supplying the live-update path this lifecycle assumed — the head may push an unsolicited transfer when bus storage changes, making boot-time pull the degenerate case rather than a separate mechanism.
+- capability-boundary-carried: the same cross-reference records that `config: http` cannot receive live updates at all, and calls that a real capability boundary rather than an implementation gap.
+- source-section: spec/01-composeio-bus-protocol.smd §8.2
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-CONFIG-SIZE] Under 4 KB for CH32V003, under 32 KB for ESP32 and RP2040
+
+- constraint: compiled config binaries MUST be less than 4 KB for CH32V003 targets — a 2 KB flash budget after firmware — and less than 32 KB for ESP32 and RP2040 targets.
+- enforcement-point: the `composeio push` tool validates the constraint before uploading. The store itself is not stated to enforce it.
+- server-side-enforcement: EMPTY. No source says what the store does with an oversized binary, or whether it checks at all.
+- source-section: spec/01-composeio-bus-protocol.smd §8.4
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-BOOT-MODULE] The module boot sequence — cached config applied first, then a request
+
+- first-boot: a module with empty flash publishes `config_request` with `crc=0x00000000`, waits up to 10 seconds for `config_push`, and on no response enters discovery-only mode, publishing discovery and waiting.
+- warm-boot: a module with a config in flash applies the cached config IMMEDIATELY with no network dependency (DP-CIO-11), then publishes `config_request` with the cached CRC. If the store responds with new config it applies the update; if the store responds "current" it is done; if there is no response within 5 seconds it continues with the cached config.
+- superseded-in-part-by-the-source-itself: §8.3 carries a cross-reference stating [SPEC:CXC-CONFIG-BUS] SUPERSEDES the retry and failure behaviour above, with two differences a builder MUST honour — retry is exponential with jitter and NEVER STOPS (base 1 s, doubling, 30 s ceiling, ±25% jitter as protocol constants), where the fixed 10 s / 5 s waits above give up; and a board with no config MUST SAY SO, on the bus if it can and on its own glass if it cannot, because "enters discovery-only mode and waits" is silent and a dark or stale panel is indistinguishable from a working one.
+- jitter-rationale-carried: the jitter is load-bearing — it stops a rack of boards that lost their head together from returning in LOCKSTEP and re-creating the outage the moment it clears.
+- source-section: spec/01-composeio-bus-protocol.smd §8.3
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-BOOT-DISPLAY] The display boot sequence — the only source describing what a display fetches
+
+- sequence: [CXC-R-BOOT-SEQUENCE] describes a generic display device booting — initialise display hardware, connect to network, connect to the MQTT broker, announce on `_bus/discovery/{uuid}` with role and capabilities, then request config from bus_storage.
+- the-fetch-as-stated: the corpus node states step 5 as `GET /api/v1/config/{uuid}`, receiving a `.compose.yaml` carrying the widget composition, namespace bindings and asset URIs.
+- assets-as-stated: step 7 states the device fetches assets — fonts, icons, images — from **document_store**, caching them in PSRAM.
+- config-poll: step 12 includes a config poll every 5 minutes, re-parsing and re-rendering if the config changed. Note this is a THIRD update mechanism alongside boot-time pull and the bus push path, and no source reconciles the three.
+- fungibility: [CXC-R-BOOT-FUNGIBLE] states the device is generic and its behaviour entirely determined by the `.compose.yaml` it receives from bus_storage — the same hardware becoming a weather widget, an engine gauge cluster or a task dashboard by config alone.
+- internal-tension: ⚠ step 5 fetches the `.compose.yaml` from the CONFIG family while [CXC-R-BOOT-FUNGIBLE] and DP-CIO-23 treat `.compose.yaml` as the config artifact and assets as a separate family; step 7 then fetches assets from a DIFFERENT SERVICE. Recorded, not resolved — see [CXC-BUSSTORE-BOOT-SOURCES-DISAGREE].
+- source-section: [CXC-R-BOOT-SEQUENCE] and [CXC-R-BOOT-FUNGIBLE] in 12-composeux-render-engine.lts
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-BOOT-SOURCES-DISAGREE] Three boot descriptions, and no source reconciles them
+
+- description-one: §8.3's module sequence — a compiled BINARY, addressed by `module_id`, fetched from the config family, verified by CRC-32, cached in flash.
+- description-two: [CXC-R-BOOT-SEQUENCE]'s display sequence — a `.compose.yaml`, addressed by `uuid`, fetched from `GET /api/v1/config/{uuid}`, with assets from document_store.
+- description-three: [SPEC:CXC-CONFIG-BUS]'s bus path — a scene config chunked over ComposeBus, addressed by namespace, integrity by CRC-16/CCITT.
+- what-is-unreconciled: whether a display's `.compose.yaml` is a "config" in the §7.1 sense or an "asset" in the §7.3 sense; whether `module_id` and `uuid` are the same identifier space; whether a display caches to flash the way §8.3's module does; and which of the three update mechanisms (boot pull, 5-minute poll, bus push) is authoritative when they disagree.
+- why-recorded-rather-than-resolved: every one of these is answerable from the implementation, and answering them here would be exactly the self-certification pass 2 exists to prevent. They are stated so the analyser inherits a worklist rather than a smooth-reading document that hides four open questions.
+- resolution-state: EMPTY
+- source-section: spec/01-composeio-bus-protocol.smd §8.3 versus [CXC-R-BOOT-SEQUENCE] versus [SPEC:CXC-CONFIG-BUS]
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 6. Absence and failure
+
+### [CXC-BUSSTORE-FAIL-ABSENCE] What the source says absence returns, route by route
+
+- config-absent: **404** `{"error": "No config for module '{module_id}'"}`, for both the get and the checksum routes.
+- config-delete-absent: **200**. Deleting a config that does not exist succeeds idempotently.
+- asset-absent: **404**.
+- asset-prefix-absent: **200** with `entries: []`. The source is explicit that an absent or empty directory is not an error.
+- namespace-absent: **404** `{"error": "Namespace '{namespace}' not found"}`.
+- workload-absent: EMPTY. There is no single-workload route in the source, so it states no absence behaviour for one.
+- route-absent: EMPTY. The source records that several DELETE routes "return 404" but does not state a general catch-all shape for an unmatched path or an unsupported verb.
+- malformed-request: EMPTY. No source states what happens on a malformed body, an unparseable JSON payload, or a request that fails midway. This is a hole a client author cannot work around.
+- source-section: spec/01-composeio-bus-protocol.smd §7.1, §7.2, §7.3
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-FAIL-MASTER-DOWN] When the bus master fails, the storage API is simply unavailable
+
+- statement: §9.2's master-failure sequence lists, among the consequences of degraded mode, "Bus storage API is unavailable" — alongside config requests going unanswered (modules use cached config), time sync stopping, and workloads on the service hub stopping if the bus master is also the service hub.
+- caveat-from-the-source: ⛔ §9.2 carries a banner reading "THIS ENTIRE SEQUENCE IS NOT IMPLEMENTED" — a design narrative in the present tense. Detection exists on the Python tier as of 2026-08-15; entering and exiting degraded mode do not exist at all. The storage-unavailable line is therefore a statement about a mode nothing currently enters.
+- fork-note: §9.2 is one of the three sections where the two sides of the fork differ. The banner above is `main`'s text; the branch carries the unbannered original. `main` is the newer side. This is the ONE place in this document where the fork side mattered to the wording, and `main` was used.
+- consumer-side-behaviour: EMPTY. No source states what a Python consumer, widget or firmware client does when the store is unreachable — whether it retries, caches, degrades visibly or raises.
+- source-section: spec/01-composeio-bus-protocol.smd §9.2 (main side of the fork)
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 7. The seam to config-over-bus
+
+### [CXC-BUSSTORE-CONFIG-BUS-SEAM] The store holds the artifact; config-over-bus is how it reaches a board that cannot ask
+
+- relationship-as-the-source-states-it: §8.2 and §8.3 both cross-reference [SPEC:CXC-CONFIG-BUS] as supplying what the HTTP lifecycle assumed — the live-update path, and the retry and failure behaviour. The bus path is presented as extending this one, not replacing it.
+- division-carried: a board with IP fetches over HTTP; a board without one is served over ComposeBus by an upstream that dereferences on its behalf. [CXC-CONFIG-BUS-INTENT] states the reason — a URL presumes a peer that can dereference it, and a slaved board cannot, so this is an explicit DP-CIO-18 exception rather than a workaround.
+- capability-boundary: `config: http` cannot receive live updates at all — stated in the source as a real capability boundary, not an implementation gap.
+- integrity-differs-across-the-seam: CRC-32 on the HTTP path, CRC-16/CCITT whole-payload on the bus path.
+- shared-dependency: EMPTY. No source states whether the bus path's upstream fetches from this store at relay time, holds a cache, or is provisioned some other way — so the availability coupling between the two paths is unstated.
+- source-section: spec/01-composeio-bus-protocol.smd §8.2, §8.3; 61-config-over-bus.lts
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 8. Pre-integration questions — for pass 2 and for the architect
+
+> These are questions the CONVERSION raised, phrased so the gap analysis can answer them against the
+> implementation. None is answered here. `answer-state: EMPTY` is the queryable record of that.
+
+### [CXC-BUSSTORE-PRE-CONTAINMENT] Do the asset GET and PUT routes constrain the path the way the listing route does?
+
+- question: §7.3 specifies a containment guard for the LISTING route — 403 when a prefix escapes the assets root — and specifies no equivalent rule for the asset GET or PUT routes. Is that silence a documentation gap, or does the implementation genuinely constrain only the listing?
+- why-it-blocks: it decides whether the asset path is a bounded namespace or a filesystem path, and therefore whether this service can be exposed on any network wider than the lab.
+- how-pass-2-answers-it: read the two handlers for a resolve-and-contain check equivalent to the listing route's, and exercise an escaping path against each.
+- priority: HIGHEST of the six. Answer this one first.
+- answer-state: ANSWERED 2026-08-15 by probe against a scratch instance. **The implementation genuinely constrained ONLY the listing route.** The asset path was a FILESYSTEM path, not a bounded namespace, on GET and PUT alike — and so were the config and workload segments. The silence in §7.3 was accurate reporting of a real hole, which is the outcome this question was written to be able to have.
+- answer-scope-correction: the question asked about two routes. The probe found SIX unguarded handlers — asset GET, asset PUT, config GET, config PUT, config DELETE, workload PUT — against ONE guarded (`_handle_asset_list`). The question's framing understated the blast radius because it inherited the source's framing, in which containment was a listing concern. That framing is itself the defect: see [CXC-BUSSTORE-CONTAINMENT] `why-it-was-missed`.
+- consequence-for-the-blocked-decision: `why-it-blocks` asked whether this service can be exposed on any network wider than the lab. Pre-fix the answer was NO under any circumstance — it bound `0.0.0.0` with an unauthenticated arbitrary read/write/delete primitive. Post-fix containment holds, but that changes the answer only to "not until [CXC-BUSSTORE-PRE-AUTH] is ruled." Containment is not authentication and must not be read as having settled it.
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-PRE-AUTH] Is the absence of any authentication rule intentional?
+
+- question: across `spec/01-composeio-bus-protocol.smd`, `spec/00-composeio-design-principles.smd` and the amendment, there is NO mention of authentication, authorisation, TLS, credentials, rate limiting or audit for this service. Every route is specified as openly callable. Is that a deliberate trusted-LAN stance, or has it simply never been written down?
+- why-it-blocks: an undocumented trade is indistinguishable from an oversight, particularly to the open-source reader this project is designing for. It also gates any decision to route this port beyond the lab.
+- note-on-scope: this asks about the SPECIFICATION's silence, which is an observation about the sources and not a claim about the code.
+- answer-state: STILL EMPTY — and deliberately left so. This is a design-intent ruling only the architect holds, and the containment fix of 2026-08-15 did NOT answer it. Recorded here so a reader who sees the containment work landing does not infer the auth question went with it.
+- sharpened-by-the-probe: the code side is now confirmed — the service binds `0.0.0.0` with no authentication, authorisation, TLS, rate limiting or audit on any route. So the question is no longer "is the silence deliberate" in the abstract; it is "is an unauthenticated write surface on a fleet-wide config source of truth the intended trusted-LAN stance." Containment (2026-08-15) removed the arbitrary-filesystem primitive; it left every route openly callable by anything that can reach the port, which still includes overwriting any device's config.
+- why-it-is-more-urgent-now-not-less: a fix that removes the most alarming symptom is the classic moment for the remaining exposure to stop being discussed. The pre-fix hole was a reason to rule this urgently; the post-fix state is the same reason with less adrenaline behind it.
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-PRE-RESOLUTION] How is a `bus://` URI actually resolved, and by how many implementations?
+
+- question: [CXC-BUSSTORE-URI-RESOLUTION] is entirely EMPTY — no source states the rewrite rule, the accepted prefixes, the endpoint binding, the behaviour on an unrecognised form, or how many resolvers exist. What is the real contract?
+- why-it-blocks: `bus://` is the platform's location-independence primitive and appears in scenes, widgets and messages. A reference form with no specified resolution is a contract nobody can implement against twice the same way.
+- sub-question: the sources show both `bus://assets/...` and `bus://config/...`. Is `bus://` a family with room to grow, or one fixed prefix?
+- answer-state: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-PRE-BOOT-RECONCILE] Which of the three boot descriptions is current?
+
+- question: [CXC-BUSSTORE-BOOT-SOURCES-DISAGREE] records three incompatible accounts of how a device gets its config. Which does the fleet actually run, and are `module_id` and `uuid` the same identifier space?
+- why-it-blocks: this is the single most consequential thing the corpus says about this service, and it currently says it three different ways. A builder cannot pick one without guessing.
+- sub-question: is a display's `.compose.yaml` stored under the config family or the asset family? The two carry different routes, different response types and different delete semantics.
+- answer-state: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-PRE-STATE-ROUTE] Does the state route the amendment specifies exist?
+
+- question: `spec/01-amendment-bus-extensions.smd` specifies `GET /api/v1/state/{ns_hash}/{content_hash}` and a history query, neither of which appears in §7's enumeration. Does that family exist, was it never built, or was it dropped?
+- why-it-blocks: the CAN bridge's design for `json` state values depends on it. If it does not exist, that design has no dereference step.
+- answer-state: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-PRE-DELETE-STANCE] Is append-only the intended contract for assets, namespaces and workloads?
+
+- question: three of four families have no delete route ([CXC-BUSSTORE-NO-DELETE]). Is that a deliberate durability stance to be specified and relied on, or a gap to be closed with three routes?
+- why-it-blocks: any lifecycle tooling — a cleanup job, a decommissioning flow, a browser with a delete affordance — cannot be designed until this is ruled, and building it either way first makes the ruling expensive.
+- depends-on: nothing technical. This is design intent only the architect holds, and it is the one question on this list pass 2 CANNOT answer.
+- answer-state: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 9. Post-integration evidence slots — EMPTY until something real fills them
+
+> Each slot names a SPECIFIC observation with a discriminating expectation, per
+> [CXC-PERIPH-EVIDENCE-SLOTS]. `evidence-state: EMPTY` is the queryable record that this claim has
+> never been checked against a running store or a real board.
+
+### [CXC-BUSSTORE-EV-01] The REST surface answers as §7 describes, against the RUNNING service
+
+- observation: against the production store, exercise each family and record status and body — a config PUT returning 201 with `module` and `size`; a checksum returning a bare 8-digit lowercase hex string as `text/plain`; a namespace list returning a BARE array; an asset PUT returning 201 with no `url` field.
+- discriminates: §7's specific corrections being current from §7 having been accurate once and drifted since. Each named shape can fail individually, which is why they are listed individually rather than as "the API works".
+- evidence-state: EMPTY
+- observed: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-EV-02] A real board boots and renders from the store, and the fetched URL is recorded
+
+- observation: power a display board with serial capture and record the EXACT URL it requests for its config, plus whether any asset fetch goes to :8420 or :8421. Compare against all three descriptions in [CXC-BUSSTORE-BOOT-SOURCES-DISAGREE].
+- discriminates: which of the three boot accounts is real. A board that renders proves only that SOME path works; only the recorded URL says which.
+- evidence-state: EMPTY
+- observed: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-EV-03] The negative control — a board whose config is ABSENT from the store
+
+- observation: boot a board for which the store holds nothing at the path EV-02 recorded. Record what it does: which fallback it attempts, whether it says anything on the bus, and whether anything appears on its glass.
+- discriminates: this is the paired negative control for EV-02. Without it, EV-02's pass could be produced by a store that serves something for every path, and §8.3's ratified "a board with no config MUST SAY SO" would go unchecked.
+- evidence-state: EMPTY
+- observed: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-EV-04] A board with a cached config boots with the store STOPPED
+
+- observation: stop the store, cold power-cycle a board that has previously fetched, and record whether it renders, what it renders, and whether the age of the cached config is visible anywhere.
+- discriminates: a genuine cache read from a board still holding its scene in RAM — only a cold cycle with the store down separates them. Also tests §8.3's "cache MUST be paired with a visible staleness indication."
+- evidence-state: EMPTY
+- observed: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-EV-05] A config PUT does NOT reach a running module
+
+- observation: with a module running, PUT a changed config for it and observe for a stated interval whether the module changes behaviour without a reboot. Expect NO change.
+- discriminates: §7.1's central correction. A pass here confirms the no-side-effect rule; a change would mean something else is polling, which is itself a finding.
+- evidence-state: EMPTY
+- observed: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-EV-06] The asset path containment question, answered by probe
+
+- observation: against a NON-PRODUCTION instance, request an asset path that escapes the assets root and record the status. Compare with the same escape against the listing route, which §7.3 says returns 403.
+- discriminates: whether the guard §7.3 specifies for listing also covers GET and PUT. Answers [CXC-BUSSTORE-PRE-CONTAINMENT].
+- safety-note: run this against a scratch instance with a scratch data directory, never against production, and never in the write form.
+- evidence-state: OBSERVED 2026-08-15. Scratch instance, port 18999, scratch data dir. Production `NODERED_HOST:8420` was NOT touched, in read or write form. ⚠ the write form WAS exercised, against the scratch instance only — the slot's original safety-note forbade it outright, and that would have left the worst half of the finding undiscovered, so the note is superseded by `write-form-ruling` below.
+- observed: pre-fix, against `services/bus_storage/server.py` at `e854fed`. `GET /api/v1/assets/../SECRET.txt` -> **200 + file contents**. `GET /api/v1/assets/%2e%2e/SECRET.txt` -> **200, same** (`_route` unquotes before any check, so the encoded form is not a separate bypass so much as proof no check existed at all). `GET /api/v1/assets//etc/hosts` -> **200, served `/etc/hosts`** — `Path(base) / "/abs"` DISCARDS the base, and no `..` appears anywhere in that request. `PUT /api/v1/assets/../PWNED.txt` -> **201, file written outside the assets root**. `GET /api/v1/assets?prefix=../` -> **403** — the one guarded route, behaving as §7.3 says. Beyond the slot's stated scope: `PUT /api/v1/config/../../PWNED` -> **201** (write), `DELETE /api/v1/config/../../PWNED` -> **200, file removed** (arbitrary DELETE), `PUT /api/v1/workloads/../../PWNED` -> **201**. Post-fix all of these return 400/403 and the positive controls — nested asset PUT/GET, deep nesting, a `v1..2` directory name, the config boot roundtrip, nested listing — all still return 200/201.
+- write-form-ruling: the read form alone would have produced a HALF answer. `_handle_asset_get` and `_handle_asset_put` are separate functions with separately-absent guards, and a read probe says nothing about the write one — an evidence slot that forbids the write form can only ever certify half the surface. The correct containment is the SCRATCH INSTANCE, not the omitted verb. Slots written for this service should say "never against production" and stop there.
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-EV-07] The deployed service is the code the gap analysis reads
+
+- observation: `GET /api/v1/status` against production, record `version`, `data_dir` and the counts; then confirm the file on the host matches the repository at the commit pass 2 analysed.
+- discriminates: an analysis of the working tree from an analysis of the running system. `version` alone cannot settle it if it is a hardcoded literal, which is why the file comparison is part of the row.
+- evidence-state: EMPTY
+- observed: EMPTY
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## 10. Ruled invariants — VERIFIED against the implementation, unlike everything above
+
+> ⚠ **These two nodes are NOT pass-1 conversion and the document banner does not apply to them.** They
+> were derived from a defect probe against a scratch instance on 2026-08-15, they state what the
+> service MUST do rather than what a source said it does, and each is enforced by a test that was
+> watched FAILING before the fix landed (`tests/test_bus_storage_containment.py`, 41 red -> green).
+> They are marked out here rather than filed among the converted nodes because the two have opposite
+> epistemic status and a reader must not have to guess which kind a node is.
+>
+> They are also the first CONTENT in this file, as opposed to carried prose. Everything in sections
+> 1–7 still awaits `factlattice-gap-analyzer`.
+
+### [CXC-BUSSTORE-CONTAINMENT] Every request-supplied segment resolves INSIDE its family root — one primitive, not one per route
+
+- invariant: any route that turns a request-supplied path segment into a filesystem path MUST resolve that segment strictly inside the root of its family (`assets/`, `configs/`, `workloads/`). A segment resolving outside is **403**; a segment that cannot be resolved at all (an embedded NUL) is **400**. There is no route exempt from this and no such thing as a segment trusted because of where it came from.
+- one-implementation: the invariant is carried by ONE primitive, `_resolve_contained(root, rel, suffix=...)`, and every handler that builds a path calls it. Stated as a structural requirement, not a coding style note: a guard that must be REMEMBERED at each of seven call sites is a guard that will be forgotten at the eighth, which is the literal history of this defect.
+- three-forms-three-guards: the refusal must survive all three attack shapes, because each defeats a different naive implementation. `../` is the obvious one. `%2e%2e/` defeats any check running before `unquote` — and `_route` unquotes first, so a wire-form string check never sees it. A LEADING SLASH defeats a `..` check entirely and is a Python-specific trap: `Path("/root") / "/etc/hosts"` evaluates to `/etc/hosts`, silently DISCARDING the base, with no `..` anywhere in the request.
+- resolve-do-not-grep: containment is decided by resolving the path and testing ancestry, never by string-matching for `..`. A string check both over-rejects a legitimate name like `fw/v1..2/image.bin` and under-rejects the absolute form. Resolution also catches a symlink out of the root, which no string check can see.
+- positive-control-is-part-of-the-invariant: the guard MUST NOT reject legitimate nested paths. `bus://assets/album_art/current.jpg` resolution and the fleet's boot-time config fetch run through these routes; a containment guard that also breaks them has traded a vulnerability for a fleet-wide outage. Any test of this invariant carries the paired positive control or it is not a test of this invariant.
+- why-it-was-missed: the guard was authored 2026-07-30 (`30255a0`) as a local detail INSIDE `_handle_asset_list`, born with a new feature and scoped to it. It was never lifted to the seam, so it was structurally unavailable to the six handlers that already existed — and equally unavailable to every handler added since. This is the failure mode [DX-NARROW-WAIST] names: the correct behaviour existed, in one place, reachable by nobody. Six sibling routes did not "forget" the guard; they were never able to reach it.
+- containment-is-not-authentication: this invariant bounds WHICH paths a caller may address. It says nothing about WHO may call, and every route remains openly callable — see [CXC-BUSSTORE-PRE-AUTH], which this does not answer.
+- enforced-by: `tests/test_bus_storage_containment.py`, parametrized over routes × attack forms. A new route is added to `_ESCAPE_ROUTES` and is covered; a new route that is NOT added is the one gap this design still has, and it is a visible one-line omission rather than an invisible absent guard.
+- part-of: [SPEC:CXC-BUSSTORE]
+
+### [CXC-BUSSTORE-ERROR-BOUNDARY] Every request gets an HTTP status line, and one bad row never denies a collection
+
+- invariant-response: no request may terminate without an HTTP response. A malformed JSON body is **400**; an unhandled server-side failure is **500** with a logged traceback. A closed connection with no status line is a defect, not an error report.
+- why-it-costs-more-than-it-looks: a `RemoteDisconnected` with no status line tells an operator nothing about which layer failed, so it sends them to the network — sockets, firewall, MTU, the bus master's health — to debug what is a 400 from a JSON parser. The service being UP the whole time is what makes it expensive: every signal says healthy. Hours, and only the operator pays them.
+- invariant-collection: a collection route MUST NOT let one unreadable member deny the whole collection. `GET /api/v1/workloads` serves every definition it can parse and skips those it cannot. One corrupt file is a corrupt file, not an outage of every workload in the store.
+- skips-must-be-visible: a survived skip that is silent is worse than the crash it replaced — the caller cannot distinguish a partial listing from a complete one, and acts on the partial. The count rides on `X-ComposeIO-Skipped-Entries` and the skip is logged at WARNING. The header rather than the body because the bare-array shape is specified ([CXC-BUSSTORE-API-WORKLOAD]) and breaking every client to describe an edge case is the wrong trade.
+- boundary-must-not-double-respond: the handler tracks whether a response has already begun, so a failure AFTER the first byte logs rather than writing a second status line into the same stream. A boundary that corrupts the response it was added to protect is a downgrade.
+- boundary-must-not-swallow: an unknown route is still **404** and `/health` is still **200**. An error boundary that turns every outcome into a 500 has replaced one uninformative answer with another.
+- enforced-by: `tests/test_bus_storage_containment.py::TestRequestErrorBoundary`, including the negative controls for the two preceding properties.
+- part-of: [SPEC:CXC-BUSSTORE]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-BUSSTORE] EXEMPLIFIES [CXC-PERIPH-EVIDENCE-SLOTS]
+- [CXC-BUSSTORE-ROLE] REALIZES [CXC-R-BOOT-FUNGIBLE]
+- [CXC-BUSSTORE-BOOT-DISPLAY] REALIZES [CXC-R-BOOT]
+- [CXC-BUSSTORE-BOOT-DISPLAY] USES [CXC-BUSSTORE-API-CONFIG]
+- [CXC-BUSSTORE-BOOT-MODULE] USES [CXC-BUSSTORE-API-CONFIG]
+- [CXC-BUSSTORE-URI-SCHEME] USES [CXC-BUSSTORE-API-ASSET]
+- [CXC-BUSNAV-BROWSE] USES [CXC-BUSSTORE-API-ASSET-LIST]
+- [CXC-R-ENGINE-ASSETS] USES [CXC-BUSSTORE-URI-SCHEME]
+- [CXC-BUSSTORE-CONFIG-LIFECYCLE] USES [CXC-BUSSTORE-CONFIG-CRC]
+- [CXC-BUSSTORE-CONVERSION-STATUS] UPHOLDS [CXC-VISION-EPISTEMICS]
+- [CXC-BUSSTORE-PROVENANCE] DOCUMENTS [CXC-BUSSTORE-CONVERSION-STATUS]
+- [CXC-BUSSTORE-FORK] DOCUMENTS [CXC-BUSSTORE-PROVENANCE]
+- [CXC-BUSSTORE-SOURCES-DISAGREE] STRESSES [CXC-BUSSTORE-ROLE]
+- [CXC-BUSSTORE-BOOT-SOURCES-DISAGREE] STRESSES [CXC-BUSSTORE-BOOT-DISPLAY]
+- [CXC-BUSSTORE-STATE-REFERENCE] STRESSES [CXC-BUSSTORE-URI-SCHEME]
+- [CXC-BUSSTORE-URI-RESOLUTION] STRESSES [CXC-BUSSTORE-URI-SCHEME]
+- [CXC-BUSSTORE-ASSET-NS] STRESSES [CXC-BUSSTORE-API-ASSET]
+- [CXC-BUSSTORE-NOT-OBSERVER] CONTRAST_WITH [CXC-BUSSTORE-ROLE]
+- [CXC-BUSSTORE-API-ASSET-LIST] CONTRAST_WITH [CXC-BUSSTORE-API-ASSET]
+- [CXC-BUSSTORE-PLACEMENT] RELATED_TO [CXC-VISION-PLACEMENT]
+- [CXC-BUSSTORE-NO-DELETE] PART_OF [CXC-BUSSTORE-API-CONFIG]
+- [CXC-BUSSTORE-CONFIG-SIZE] PART_OF [CXC-BUSSTORE-CONFIG-LIFECYCLE]
+- [CXC-BUSSTORE-API-ASSET] CONSTRAINED_BY [CXC-BUSSTORE-CONTAINMENT]
+- [CXC-BUSSTORE-API-ASSET-LIST] CONSTRAINED_BY [CXC-BUSSTORE-CONTAINMENT]
+- [CXC-BUSSTORE-API-CONFIG] CONSTRAINED_BY [CXC-BUSSTORE-CONTAINMENT]
+- [CXC-BUSSTORE-API-WORKLOAD] CONSTRAINED_BY [CXC-BUSSTORE-CONTAINMENT]
+- [CXC-BUSSTORE-API-WORKLOAD] CONSTRAINED_BY [CXC-BUSSTORE-ERROR-BOUNDARY]
+- [CXC-BUSSTORE-API-NAMESPACE] CONSTRAINED_BY [CXC-BUSSTORE-ERROR-BOUNDARY]
+- [CXC-BUSSTORE-CONTAINMENT] REALIZES [DX-NARROW-WAIST]
+- [CXC-BUSSTORE-CONTAINMENT] CONTRAST_WITH [CXC-BUSSTORE-PRE-AUTH]
+
+### Causal
+
+- [SPEC:CXC-BUSSTORE] PRECONDITION_FOR [SPEC:CXC-CONFIG-BUS]
+- [CXC-BUSSTORE-CONFIG-BUS-SEAM] DEPENDS_ON [CXC-CONFIG-BUS-CHUNKS]
+- [CXC-BUSSTORE-CONFIG-BUS-SEAM] DEPENDS_ON [CXC-CONFIG-BUS-STRATEGY]
+- [CXC-BUSSTORE-NOT-OBSERVER] CAUSES [CXC-BUSSTORE-CONFIG-LIFECYCLE]
+- [CXC-BUSSTORE-CACHE-DOCTRINE] PREVENTS [CXC-BUSSTORE-FAIL-MASTER-DOWN]
+- [CXC-BUSSTORE-PRE-CONTAINMENT] PRECONDITION_FOR [CXC-BUSSTORE-API-ASSET]
+- [CXC-BUSSTORE-PRE-AUTH] PRECONDITION_FOR [CXC-BUSSTORE-IDENTITY]
+- [CXC-BUSSTORE-PRE-RESOLUTION] PRECONDITION_FOR [CXC-BUSSTORE-URI-RESOLUTION]
+- [CXC-BUSSTORE-PRE-BOOT-RECONCILE] PRECONDITION_FOR [CXC-BUSSTORE-BOOT-SOURCES-DISAGREE]
+- [CXC-BUSSTORE-PRE-STATE-ROUTE] PRECONDITION_FOR [CXC-BUSSTORE-STATE-REFERENCE]
+- [CXC-BUSSTORE-PRE-DELETE-STANCE] PRECONDITION_FOR [CXC-BUSSTORE-NO-DELETE]
+- [CXC-BUSSTORE-CONTAINMENT] PREVENTS [CXC-BUSSTORE-PRE-CONTAINMENT]
+- [CXC-BUSSTORE-PRE-AUTH] PRECONDITION_FOR [CXC-BUSSTORE-CONTAINMENT]
+
+### Entity
+
+- [CXC-BUSSTORE-EV-01] GROUNDS [CXC-BUSSTORE-API-CONFIG]
+- [CXC-BUSSTORE-EV-02] GROUNDS [CXC-BUSSTORE-BOOT-SOURCES-DISAGREE]
+- [CXC-BUSSTORE-EV-03] GROUNDS [CXC-BUSSTORE-BOOT-MODULE]
+- [CXC-BUSSTORE-EV-04] GROUNDS [CXC-BUSSTORE-CACHE-DOCTRINE]
+- [CXC-BUSSTORE-EV-05] GROUNDS [CXC-BUSSTORE-NOT-OBSERVER]
+- [CXC-BUSSTORE-EV-06] GROUNDS [CXC-BUSSTORE-API-ASSET-LIST]
+- [CXC-BUSSTORE-EV-06] GROUNDS [CXC-BUSSTORE-CONTAINMENT]
+- [CXC-BUSSTORE-EV-07] GROUNDS [CXC-BUSSTORE-IDENTITY]
+- [CXC-BUSSTORE-EV-03] PART_OF [CXC-BUSSTORE-EV-02]
+
+---
+
+**Version**: 0.2 — 2026-08-15. Section 10 adds the first two RULED invariants, [CXC-BUSSTORE-CONTAINMENT] and [CXC-BUSSTORE-ERROR-BOUNDARY], from a defect investigation rather than from prose; [CXC-BUSSTORE-PRE-CONTAINMENT] is answered and [CXC-BUSSTORE-EV-06] is filled by probe. v0.1 — first appearance of `bus_storage` in any corpus. Pass 1 of the ratified two-step: CONVERT. The service has been in production since Phase 1 and was named 55 times by its consumers before it was described once.
+**Status**: Draft — ⛔ **SECTIONS 1–7 REMAIN CONVERTED, NOT RECONCILED** ([CXC-BUSSTORE-CONVERSION-STATUS]). Section 10 is the exception and says so: verified by probe, enforced by a test watched failing first. PLACEMENT UNRATIFIED ([CXC-BUSSTORE-PLACEMENT]). Pass 2 is `factlattice-gap-analyzer` over this file; FIVE pre-integration questions and six evidence slots remain EMPTY and are its worklist — [CXC-BUSSTORE-PRE-CONTAINMENT] and [CXC-BUSSTORE-EV-06] are now answered. ⛔ [CXC-BUSSTORE-PRE-AUTH] is deliberately STILL EMPTY and is the architect's to rule: the containment fix removed the arbitrary-filesystem primitive and left every route openly callable on `0.0.0.0`. Three source-versus-source conflicts are recorded and deliberately unresolved: [CXC-BUSSTORE-SOURCES-DISAGREE], [CXC-BUSSTORE-BOOT-SOURCES-DISAGREE] and [CXC-BUSSTORE-STATE-REFERENCE].

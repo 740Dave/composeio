@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComposeUX Flow — Headless Widget Authoring (pre-vis v1)</title>
+</head>
+<body>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#1c222b; --node:#232b35; --node-hi:#2b3542;
+    --border:#29313c; --border-hi:#3a4655;
+    --ink:#e7ecf2; --dim:#8a94a4; --faint:#5c6675;
+    --accent:#3fb6d4; --accent-soft:#3fb6d41c; --accent-ink:#8fdcea;
+    --good:#4bd6a0; --warn:#e0a63a; --crit:#e5695f;
+    --logic:#b98cff; --logic-soft:#b98cff1c;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Menlo,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  :root[data-theme="light"] {
+    --bg:#e9edf2; --panel:#ffffff; --node:#f4f6f9; --node-hi:#eaf0f6;
+    --border:#d2d9e2; --border-hi:#b7c2ce;
+    --ink:#1c222b; --dim:#5a6572; --faint:#8a94a2;
+    --accent:#0e8fb0; --accent-soft:#0e8fb015; --accent-ink:#0b6f89;
+    --good:#12a877; --warn:#b9821f; --crit:#cf5347;
+    --logic:#7b52d6; --logic-soft:#7b52d615;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme]) {
+      --bg:#e9edf2; --panel:#ffffff; --node:#f4f6f9; --node-hi:#eaf0f6;
+      --border:#d2d9e2; --border-hi:#b7c2ce; --ink:#1c222b; --dim:#5a6572; --faint:#8a94a2;
+      --accent:#0e8fb0; --accent-soft:#0e8fb015; --accent-ink:#0b6f89;
+      --good:#12a877; --warn:#b9821f; --crit:#cf5347; --logic:#7b52d6; --logic-soft:#7b52d615;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); }
+  .wrap { max-width:1240px; margin:0 auto; padding:26px 22px 60px; }
+
+  header { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; border-bottom:1px solid var(--border); padding-bottom:18px; margin-bottom:20px; flex-wrap:wrap; }
+  .kicker { font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent-ink); font-weight:600; }
+  h1 { font-size:clamp(22px,3.2vw,30px); margin:8px 0 5px; letter-spacing:-.02em; font-weight:660; }
+  .lede { color:var(--dim); margin:0; max-width:66ch; font-size:14px; }
+  .lede b { color:var(--ink); font-weight:600; }
+  .themebtn { font-family:var(--mono); font-size:12px; cursor:pointer; background:var(--node); color:var(--ink); border:1px solid var(--border); border-radius:6px; padding:6px 11px; }
+  .themebtn:hover { border-color:var(--accent); }
+
+  .toolbar { display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; }
+  .lens { display:inline-flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+  .lens span { padding:6px 12px; color:var(--dim); cursor:pointer; }
+  .lens span.on { background:var(--accent-soft); color:var(--accent-ink); }
+  .lens span+span { border-left:1px solid var(--border); }
+  .btn { font-family:var(--mono); font-size:12px; border:1px solid var(--border); background:var(--node); color:var(--ink); border-radius:7px; padding:6px 12px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; }
+  .btn:hover { border-color:var(--accent); color:var(--accent-ink); }
+  .btn.logic:hover { border-color:var(--logic); color:var(--logic); }
+  .spacer { flex:1; }
+
+  .stage { display:grid; grid-template-columns:1.55fr 1fr; gap:16px; align-items:stretch; }
+  @media (max-width:880px){ .stage{ grid-template-columns:1fr; } }
+
+  /* ---- canvas ---- */
+  .canvas { position:relative; background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; min-height:460px;
+    background-image:radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0); background-size:22px 22px; }
+  .canvas svg { display:block; width:100%; height:100%; }
+  .canvas .caphint { position:absolute; left:14px; bottom:12px; font-family:var(--mono); font-size:10.5px; color:var(--faint); }
+  .legend { position:absolute; right:12px; top:12px; display:flex; flex-direction:column; gap:5px; font-family:var(--mono); font-size:10.5px; color:var(--dim); background:color-mix(in srgb, var(--panel) 82%, transparent); border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
+  .legend .row { display:flex; align-items:center; gap:7px; }
+  .lg { width:11px; height:11px; border-radius:3px; }
+
+  /* ---- inspector ---- */
+  .insp { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px; display:flex; flex-direction:column; gap:14px; }
+  .insp-head { display:flex; align-items:center; gap:9px; }
+  .lam { width:22px; height:22px; border-radius:6px; background:var(--logic-soft); color:var(--logic); display:grid; place-items:center; font-family:var(--mono); font-weight:700; border:1px solid color-mix(in srgb,var(--logic) 40%, var(--border)); }
+  .insp-head .nm { font-family:var(--mono); font-size:15px; font-weight:600; }
+  .insp-head .sub { font-family:var(--mono); font-size:10.5px; color:var(--faint); }
+  .sect { display:flex; flex-direction:column; gap:8px; }
+  .sect > .lab { font-family:var(--mono); font-size:10px; letter-spacing:.09em; text-transform:uppercase; color:var(--dim); }
+
+  /* schedule picker */
+  .sched { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; }
+  .sched button { font-family:var(--mono); font-size:11px; padding:8px 4px; border:1px solid var(--border); background:var(--node); color:var(--dim); border-radius:7px; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .sched button .ic { font-size:15px; }
+  .sched button.on { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-ink); }
+  .sched button:hover:not(.on){ border-color:var(--border-hi); color:var(--ink); }
+  .sched-detail { font-family:var(--mono); font-size:11px; color:var(--dim); background:var(--node); border:1px solid var(--border); border-radius:7px; padding:7px 10px; display:flex; align-items:center; gap:6px; }
+  .sched-detail b { color:var(--ink); }
+
+  /* ports */
+  .ports { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .portcol .lab2 { font-family:var(--mono); font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; margin-bottom:5px; }
+  .chip { font-family:var(--mono); font-size:11px; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--node); display:flex; align-items:center; gap:6px; margin-bottom:5px; }
+  .dot { width:7px; height:7px; border-radius:50%; flex:none; }
+  .in .dot{ background:var(--good); } .out .dot{ background:var(--accent); }
+  .chip .eng { color:var(--faint); margin-left:auto; }
+
+  /* expr editor */
+  .expr { font-family:var(--mono); font-size:12px; background:var(--node); border:1px solid var(--border-hi); border-radius:8px; padding:10px; line-height:1.6; color:var(--ink); }
+  .expr .ns{ color:var(--good); } .expr .op{ color:var(--accent-ink); } .expr .kw{ color:var(--logic); } .expr .num{ color:var(--warn); }
+  .expr-foot { display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:10.5px; margin-top:6px; }
+  .valid { color:var(--good); display:flex; align-items:center; gap:5px; }
+  .valid .tick{ width:14px; height:14px; border-radius:50%; background:var(--good); color:#04140d; display:grid; place-items:center; font-size:9px; font-weight:700; }
+  .out-ns { color:var(--accent-ink); }
+
+  /* deploy */
+  .deploy { border:1px solid var(--border); border-radius:9px; background:var(--node); padding:11px; display:flex; flex-direction:column; gap:9px; }
+  .deploy .rt { display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px; }
+  .deploy .rt .path{ color:var(--faint); }
+  .roster { display:flex; flex-wrap:wrap; gap:5px; }
+  .rmem { font-family:var(--mono); font-size:10.5px; padding:3px 7px; border-radius:5px; border:1px solid var(--border); color:var(--dim); }
+  .rmem.here { border-color:var(--logic); color:var(--logic); background:var(--logic-soft); }
+  .pushbtn { font-family:var(--mono); font-size:12px; background:var(--accent); color:#04222a; border:none; border-radius:7px; padding:9px; cursor:pointer; font-weight:600; }
+  :root[data-theme="light"] .pushbtn, :root:not([data-theme]) .pushbtn { color:#fff; }
+  .pushbtn:hover{ filter:brightness(1.08); }
+
+  /* live confirmation tier (Pass 3) */
+  .live { margin-left:auto; color:var(--accent-ink); font-variant-numeric:tabular-nums; }
+  .chip .eng { margin-left:8px; }
+  .livedot { width:6px; height:6px; border-radius:50%; background:var(--good); box-shadow:0 0 0 0 var(--live-glow,#4bd6a055); animation:pulse 1.6s ease-out infinite; }
+  @keyframes pulse { 0%{ box-shadow:0 0 0 0 color-mix(in srgb,var(--good) 45%,transparent);} 70%{ box-shadow:0 0 0 5px transparent;} 100%{ box-shadow:0 0 0 0 transparent;} }
+  @media (prefers-reduced-motion:reduce){ .livedot{ animation:none; } }
+  .inspectbtn { margin-left:auto; font-family:var(--mono); font-size:11px; border:1px solid var(--border); background:var(--node); color:var(--dim); border-radius:6px; padding:5px 9px; cursor:pointer; display:inline-flex; gap:5px; align-items:center; }
+  .inspectbtn:hover { border-color:var(--logic); color:var(--logic); }
+  .inspectbtn .p4 { font-size:8.5px; color:var(--faint); border:1px solid var(--border); border-radius:4px; padding:0 4px; }
+  .heartbeat { display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:10.5px; color:var(--dim); }
+  .heartbeat .ok { color:var(--good); display:inline-flex; align-items:center; gap:5px; }
+  footer { margin-top:22px; padding-top:16px; border-top:1px solid var(--border); color:var(--faint); font-family:var(--mono); font-size:11.5px; line-height:1.7; }
+  footer b{ color:var(--dim); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="kicker">Composer · Flow Mode · Pass 3</div>
+      <h1>Authoring Headless Widgets as Logic Nodes</h1>
+      <p class="lede">A headless widget is a <b>logic node</b> in the same graph as namespace hubs and visual widgets — <b>inputs</b> it subscribes, <b>outputs</b> it publishes, a <b>schedule</b>, and its logic written in the expression <b>DSL</b>. Wire it like any node; author it in the Inspector; deploy the set as a <b>roster</b> to bus&nbsp;storage. The graph stays a pure projection of the <code style="font-family:var(--mono)">.compose.yaml</code>.</p>
+    </div>
+    <button class="themebtn" id="themeBtn" type="button">◐ theme</button>
+  </header>
+
+  <div class="toolbar">
+    <span class="lens"><span>Layout</span><span>Bindings</span><span class="on">Flow</span><span>Source</span></span>
+    <button class="btn logic" type="button">＋ Logic node</button>
+    <button class="btn" type="button">＋ Listen…</button>
+    <span class="spacer"></span>
+    <span style="color:var(--faint)">filter</span>
+    <span class="btn" style="cursor:text; color:var(--dim)">jumpdrive/*&nbsp;·&nbsp;fuel/*</span>
+  </div>
+
+  <div class="stage">
+    <!-- ============ CANVAS ============ -->
+    <div class="canvas">
+      <div class="legend">
+        <div class="row"><span class="lg" style="background:var(--good)"></span>namespace hub ◎</div>
+        <div class="row"><span class="lg" style="background:var(--accent)"></span>visual widget ▢</div>
+        <div class="row"><span class="lg" style="background:var(--logic)"></span>logic node λ</div>
+      </div>
+      <svg viewBox="0 0 700 460" preserveAspectRatio="xMidYMid meet" aria-label="Flow graph: the jump-drive as headless logic nodes">
+        <defs>
+          <marker id="arw" markerWidth="7" markerHeight="7" refX="5.5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="var(--accent)"></path>
+          </marker>
+          <marker id="arwg" markerWidth="7" markerHeight="7" refX="5.5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="var(--good)"></path>
+          </marker>
+        </defs>
+
+        <!-- wires: subscribe (good) into logic inputs, publish (accent) out to hubs -->
+        <g fill="none" stroke-width="1.6">
+          <!-- fuel/remaining -> fuel_pump.in ; -> jump_engine.in -->
+          <path d="M150,86 C230,86 210,150 300,150" stroke="var(--good)" marker-end="url(#arwg)"></path>
+          <path d="M150,86 C250,86 250,300 300,300" stroke="var(--good)" opacity=".55" marker-end="url(#arwg)"></path>
+          <!-- pump/damaged -> fuel_pump.in -->
+          <path d="M150,210 C230,210 220,178 300,178" stroke="var(--good)" marker-end="url(#arwg)"></path>
+          <!-- ship/charge -> jump_engine.in -->
+          <path d="M150,330 C230,330 230,328 300,328" stroke="var(--good)" marker-end="url(#arwg)"></path>
+          <!-- fuel_pump.out -> pump/flow_rate hub (SELECTED wire, animated) -->
+          <path d="M470,164 C540,164 500,250 560,250" stroke="var(--accent)" stroke-width="2.1" marker-end="url(#arw)" stroke-dasharray="5 4"><animate attributeName="stroke-dashoffset" from="9" to="0" dur="0.7s" repeatCount="indefinite"></animate></path>
+          <!-- fuel_tank.out -> fuel/remaining (feedback) -->
+          <path d="M470,64 C560,50 120,40 150,74" stroke="var(--accent)" opacity=".5" marker-end="url(#arw)"></path>
+          <!-- jump_engine.out -> jumpdrive/readiness hub -->
+          <path d="M470,314 C540,314 520,392 560,392" stroke="var(--accent)" marker-end="url(#arw)"></path>
+        </g>
+
+        <!-- namespace hubs -->
+        <g font-family="var(--mono)" font-size="11">
+          <g>
+            <rect x="40" y="70" width="110" height="30" rx="7" fill="var(--node)" stroke="var(--border)"></rect>
+            <circle cx="56" cy="85" r="4" fill="var(--good)"></circle>
+            <text x="67" y="82" fill="var(--ink)">fuel/remaining</text>
+            <text x="67" y="94" fill="var(--faint)" font-size="8.5">continuous</text>
+          </g>
+          <g>
+            <rect x="46" y="196" width="104" height="30" rx="7" fill="var(--node)" stroke="var(--border)"></rect>
+            <circle cx="62" cy="211" r="4" fill="var(--warn)"></circle>
+            <text x="73" y="208" fill="var(--ink)">pump/damaged</text>
+            <text x="73" y="220" fill="var(--faint)" font-size="8.5">binary · external</text>
+          </g>
+          <g>
+            <rect x="60" y="316" width="90" height="30" rx="7" fill="var(--node)" stroke="var(--border)"></rect>
+            <circle cx="76" cy="331" r="4" fill="var(--good)"></circle>
+            <text x="87" y="328" fill="var(--ink)">ship/charge</text>
+            <text x="87" y="340" fill="var(--faint)" font-size="8.5">continuous</text>
+          </g>
+          <!-- output hubs -->
+          <g>
+            <rect x="560" y="235" width="112" height="30" rx="7" fill="var(--node)" stroke="var(--accent)"></rect>
+            <circle cx="576" cy="250" r="4" fill="var(--accent)"></circle>
+            <text x="587" y="247" fill="var(--ink)">pump/flow_rate</text>
+            <text x="587" y="259" fill="var(--faint)" font-size="8.5">continuous</text>
+          </g>
+          <g>
+            <rect x="560" y="377" width="126" height="30" rx="7" fill="var(--node)" stroke="var(--border)"></rect>
+            <circle cx="576" cy="392" r="4" fill="var(--good)"></circle>
+            <text x="587" y="389" fill="var(--ink)">jumpdrive/readiness</text>
+            <text x="587" y="401" fill="var(--faint)" font-size="8.5">binary</text>
+          </g>
+        </g>
+
+        <!-- logic nodes -->
+        <g font-family="var(--mono)">
+          <!-- fuel_tank -->
+          <g>
+            <rect x="300" y="44" width="170" height="44" rx="9" fill="var(--node)" stroke="var(--border)"></rect>
+            <rect x="300" y="44" width="4" height="44" rx="2" fill="var(--logic)"></rect>
+            <text x="316" y="63" fill="var(--ink)" font-size="12" font-weight="600">λ fuel_tank</text>
+            <text x="316" y="78" fill="var(--faint)" font-size="9">∞ continuous · 10 Hz</text>
+            <circle cx="470" cy="64" r="4.5" fill="var(--accent)" stroke="var(--panel)"></circle>
+          </g>
+          <!-- fuel_pump (SELECTED) -->
+          <g>
+            <rect x="300" y="140" width="170" height="52" rx="9" fill="var(--node-hi)" stroke="var(--logic)" stroke-width="1.6"></rect>
+            <rect x="300" y="140" width="4" height="52" rx="2" fill="var(--logic)"></rect>
+            <text x="316" y="160" fill="var(--ink)" font-size="12" font-weight="600">λ fuel_pump</text>
+            <text x="316" y="175" fill="var(--faint)" font-size="9">∞ continuous · 10 Hz</text>
+            <text x="316" y="187" fill="var(--logic)" font-size="8.5">selected</text>
+            <circle cx="300" cy="150" r="4.5" fill="var(--good)" stroke="var(--panel)"></circle>
+            <circle cx="300" cy="178" r="4.5" fill="var(--good)" stroke="var(--panel)"></circle>
+            <circle cx="470" cy="164" r="4.5" fill="var(--accent)" stroke="var(--panel)"></circle>
+          </g>
+          <!-- jump_engine -->
+          <g>
+            <rect x="300" y="290" width="170" height="52" rx="9" fill="var(--node)" stroke="var(--border)"></rect>
+            <rect x="300" y="290" width="4" height="52" rx="2" fill="var(--logic)"></rect>
+            <text x="316" y="310" fill="var(--ink)" font-size="12" font-weight="600">λ jump_engine</text>
+            <text x="316" y="325" fill="var(--faint)" font-size="9">⚡ bus-triggered</text>
+            <text x="316" y="337" fill="var(--faint)" font-size="8.5">on fuel/remaining, ship/charge</text>
+            <circle cx="300" cy="300" r="4.5" fill="var(--good)" stroke="var(--panel)"></circle>
+            <circle cx="300" cy="328" r="4.5" fill="var(--good)" stroke="var(--panel)"></circle>
+            <circle cx="470" cy="314" r="4.5" fill="var(--accent)" stroke="var(--panel)"></circle>
+          </g>
+        </g>
+      </svg>
+      <div class="caphint">A logic node's <b style="color:var(--good)">green</b> ports subscribe · <b style="color:var(--accent)">cyan</b> ports publish · drag hub→port to wire</div>
+    </div>
+
+    <!-- ============ INSPECTOR ============ -->
+    <div class="insp">
+      <div class="insp-head">
+        <div class="lam">λ</div>
+        <div>
+          <div class="nm">fuel_pump</div>
+          <div class="sub">headless widget · no render</div>
+        </div>
+        <button class="inspectbtn" type="button" title="Live tick trace + internal state">Inspect ▸ <span class="p4">Pass 4</span></button>
+      </div>
+
+      <div class="sect">
+        <div class="lab">Schedule</div>
+        <div class="sched">
+          <button class="on" data-s="c" type="button"><span class="ic">∞</span>Continuous</button>
+          <button data-s="p" type="button"><span class="ic">⏱</span>Periodic</button>
+          <button data-s="b" type="button"><span class="ic">⚡</span>Bus-trig</button>
+        </div>
+        <div class="sched-detail" id="schedDetail">ticks on the engine clock at <b>10&nbsp;Hz</b> — a daemon</div>
+      </div>
+
+      <div class="sect">
+        <div class="lab">Ports</div>
+        <div class="ports">
+          <div class="portcol in">
+            <div class="lab2">◂ subscribes <span style="color:var(--faint)">· live</span></div>
+            <div class="chip"><span class="dot"></span>fuel/remaining<span class="live">62.4</span></div>
+            <div class="chip"><span class="dot"></span>pump/damaged<span class="live">off</span></div>
+          </div>
+          <div class="portcol out">
+            <div class="lab2">publishes ▸ <span style="color:var(--faint)">· live</span></div>
+            <div class="chip"><span class="dot"></span>pump/flow_rate<span class="live">8.0</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="lab">Output · <span class="out-ns">pump/flow_rate</span> = expr</div>
+        <div class="expr"><span class="ns">ns</span>(<span class="ns">'pump/damaged'</span>) <span class="op">?</span> <span class="num">0.0</span>
+  <span class="op">:</span> <span class="kw">min</span>(<span class="ns">ns</span>(<span class="ns">'fuel/remaining'</span>), <span class="num">8.0</span>)</div>
+        <div class="expr-foot">
+          <span class="valid"><span class="tick">✓</span>valid</span>
+          <span style="color:var(--faint)">DSL · sandboxed · runs on macOS / RPi / ESP32</span>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="lab">Deploy</div>
+        <div class="deploy">
+          <div class="rt">runtime <b style="color:var(--ink)">hub-headless-01</b></div>
+          <div class="heartbeat"><span class="ok"><span class="livedot"></span>running</span> · 3 widgets · last tick 40&nbsp;ms ago</div>
+          <div class="rt"><span class="path">bus://assets/headless/hub-headless-01.roster.yaml</span></div>
+          <div class="roster">
+            <span class="rmem">fuel_tank</span>
+            <span class="rmem here">fuel_pump</span>
+            <span class="rmem">jump_engine</span>
+          </div>
+          <button class="pushbtn" type="button">Push roster → bus storage</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <b>The authoring loop (Pass 3):</b> ＋ Logic node → wire ports → write each output's <code>expr</code> (live-validated) → pick a schedule → add to a roster → push → <b>confirm it's alive</b>. · <b>Confirmation tier is live here:</b> port values update on the node (from discovery liveness) and the deploy card shows a runtime heartbeat — author→deploy→see-it-run. · <b>Diagnosis is Pass 4</b> (the <code>Inspect ▸</code> stub): the runtime publishes per-widget tick trace / internal state / <code>$vars</code> to reserved <code>_bus/headless/&lt;id&gt;/*</code>, and one Headless Monitor surface consumes it — as this pop-out and as a standalone ops app. · <b>Nothing new in the graph model</b> — a logic node is <code>kind="logic"</code>; wires are ordinary bindings; the roster reuses the Pass-1 loader.
+  </footer>
+</div>
+
+<script>
+  (function(){
+    var root=document.documentElement, btn=document.getElementById('themeBtn');
+    btn.addEventListener('click',function(){
+      var c=root.getAttribute('data-theme');
+      root.setAttribute('data-theme', c==='dark'?'light':c==='light'?'dark':(matchMedia('(prefers-color-scheme: dark)').matches?'light':'dark'));
+    });
+    var detail={c:'ticks on the engine clock at <b>10&nbsp;Hz</b> — a daemon',
+                p:'fires once per interval — <b>every 1h</b> (editable) — cron-like',
+                b:'wakes on a subscribed publish — trigger <b>fuel/remaining, ship/charge</b>'};
+    var sd=document.getElementById('schedDetail');
+    document.querySelectorAll('.sched button').forEach(function(b){
+      b.addEventListener('click',function(){
+        document.querySelectorAll('.sched button').forEach(function(x){x.classList.remove('on');});
+        b.classList.add('on'); sd.innerHTML=detail[b.dataset.s];
+      });
+    });
+  })();
+</script>
+</body>
+</html>

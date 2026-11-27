@@ -1,0 +1,330 @@
+---
+scope: "The DECLARATIVE HARDWARE-ABSTRACTION layer — the code-free schema that binds a physical peripheral (a Grove/STEMMA-QT/Qwiic sensor or actuator on a CH32V*/ESP32* MCU, or a host/network adaptor) to a semantic ComposeBus namespace. It is the INPUT/OUTPUT DUAL of the render-widget surface: a widget declares screen output; a `peripheral:` entry declares physical I/O. Each peripheral is a bus peer — a SENSOR publishes readings, an ACTUATOR subscribes to intent, a TRANSACTIONAL device is driven by commands and emits results — with the MCU firmware owning the driver (complexity down at the leaf) and only semantic state crossing the bus (intent up). It spans the two buses a device inherently has (its private INTERNAL bus + the shared COMPOSEBUS, joined by a declared bidirectional membrane over a pluggable transport incl. CAN), models hierarchical addressing (I2C muxes + GPIO/analog expanders + shift registers as PORT-PROVIDERS), compound peripherals (button matrices, gauge clusters, actuator pin-groups, banks), device configuration/calibration, and the driver as a SIGNED, tiered, fetchable BusStorage artifact. Grounded in three cross-validated sources: the Grove peripheral catalog (docs/hardware/grove-peripheral-cross-section.md), the R503 protocol stress test, and four real ComposeBus PCBs (../../../pcb/boards-overview.lts). Realizes the concept-capture in [SPEC:CXC-HAL]."
+audience: "ComposeIO/UX architects; the HAL-declaration parser + per-peer runtime builder; the decoder-registry + driver-VM authors; the PCB/firmware author (CH32V003/CH32V203/ESP32-C3 ports, Grove + Adafruit sockets); the Composer peripheral-palette builder"
+boundary: "IN: the `peripherals:` schema ([CXC-HALD-DECLARE]); the nine INTERFACE KINDS + params ([CXC-HALD-KINDS]); topology + hierarchical addressing ([CXC-HALD-TOPOLOGY]) incl. muxes/expanders/shift-registers as PORT-PROVIDERS ([CXC-HALD-EXPANDER]); the `driver` join key ([CXC-HALD-DRIVER]); the sensor/actuator/TRANSACTIONAL role model ([CXC-HALD-ROLE]); the by-physical-quantity semantic vocabulary ([CXC-HALD-NAMESPACE]); COMPOUND peripherals — groups, actuator pin-groups, banks ([CXC-HALD-COMPOUND]); device CONFIGURATION/calibration ([CXC-HALD-CONFIG]); collision/allocation validation ([CXC-HALD-VALIDATE]); code-free local RULES at the leaf ([CXC-HALD-RULES]); the internal↔ComposeBus MEMBRANE over a pluggable transport incl. CAN, + authority-gating ([CXC-HALD-BRIDGE]); the driver as a signed tiered BusStorage ARTIFACT + the VM-floor ([CXC-HALD-DRIVER-DIST]); the ecosystem-mining registry seed ([CXC-HALD-MINE]); the peripheral ASSURANCE class ([CXC-HALD-ASSURANCE]); the MCU-as-peer + PCB port model ([CXC-HALD-MCU]); how the built audio/WLED/NFC slot in ([CXC-HALD-BUILT]); the Composer palette ([CXC-HALD-PALETTE]). OUT: the per-chip register maps / protocol framers themselves (the decoder REGISTRY content, keyed by `driver`); the MCU firmware + the driver-VM implementation; the reactive embedded render tier ([SPEC:CXC-EMBED-REACTIVE]); the render-widget surface (this is its DUAL, RELATED_TO)."
+not-this: "Not a driver library — the schema NAMES drivers; the register maps live in a registry it joins to. Not a rewrite of the bus — peripherals publish/subscribe ordinary semantic namespaces. Not pixel/frame transport — a status display gets `display/text`, an LED strip gets `led/color`; raw framebuffers/images/waveforms/templates NEVER cross the bus, and a full scene-rendering display is the RENDER TIER ([SPEC:CXC-EMBED-REACTIVE]), not a driver. Not MCU-only — host/network actuators are the same declaration with an `adaptor` interface. Not a security surface — an `assurance` class keeps peripherals from implying guarantees they can't back (a fingerprint reader here is EXPERIENTIAL/theatrical, not access control)."
+depends-on: [SPEC:CXC-HAL, SPEC:CXC-BIND, SPEC:CXC-FLAUTH]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: "DRAFT v3 for review (David 2026-07-18). Cross-validated + hardware-grounded: the nine interface kinds cover the Grove catalog; the R503 stress test drove the transactional role + the resumable-FSM driver-VM + the assurance class; and four real PCBs (../../../pcb/boards-overview.lts) drove hierarchical addressing / port-providers (MCP23017 on 2 boards), CAN as a bridge transport (can_controller), compound peripherals (button_matrix, rack_triple_gauge), and actuator pin-groups (the x27.168 gauge steppers via L293D). Build NOT started; plan + ratifications in the status block."
+created: 2026-07-18
+---
+# ComposeUX Declarative Hardware-Abstraction Layer [SPEC:CXC-HAL-DECLARE]
+
+> The render-widget surface lets you declare, code-free, what appears on a SCREEN — `type: gauge`, bound
+> to `env/temperature`. This spec is its **dual**: a code-free way to declare what is wired to the
+> PHYSICAL world — `driver: bme280` on an I2C port publishing `env/temperature`, or `driver: x27168` on
+> a stepper channel subscribing `gauge/value`. A peripheral is a **bus peer**; the MCU (a
+> CH32V003/CH32V203/ESP32-C3 on a PCB with Grove + STEMMA-QT/Qwiic sockets) runs ComposeIO firmware that
+> OWNS the driver — the debounce, the register map, the packet framing, the stepper micro-stepping — and
+> puts only meaning on the bus. **Complexity flows down to the leaf; intent flows up.** This v3 is
+> grounded in three converging sources: the Grove peripheral catalog, the R503 protocol stress test, and
+> four real ComposeBus boards (see **`../../../pcb/boards-overview.lts`** — `rack_triple_gauge` is literally
+> the platform's founding `gauge/value → stepper needle` example, on a bench). The boards are cited inline
+> throughout, because a future reader learns the model fastest from hardware that exists.
+
+---
+
+## 1. Intent
+
+### [CXC-HALD-INTENT] Physical I/O as a Code-Free Bus-Peer Declaration
+
+- definition: a peripheral is declared, not coded. One `peripheral:` entry states WHICH physical port/address, WHICH interface kind + params, WHICH driver decodes it, and WHICH semantic namespace(s) it publishes/subscribes/commands. The runtime on the owning peer reads the declaration and instantiates the driver. No per-sensor code in the scene — the look-and-feel of `.compose.yaml` widgets, applied to silicon.
+- the dual: render widgets are the output-to-screen surface; HAL peripherals are the input-from-world + output-to-world surface. Both lower to the SAME thing — a semantic namespace on the bus — which is why a `gauge` bound to `env/temperature` renders identically whether the temperature came from a BME280, a DS18B20, or a thermistor, and why the `rack_triple_gauge` board's physical needle can be driven by the very same `gauge/value` a screen gauge reads.
+- grounded, not hypothetical: a PCB with a minimal MCU + Grove/Adafruit sockets is being built now, and four boards already exist ([PCB-BOARDS-OVERVIEW]). The declaration surface is what makes "plug it in / wire it up" == "it's on the ComposeBus" without a firmware rebuild per peripheral.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+---
+
+## 2. The Taxonomy & Addressing
+
+### [CXC-HALD-KINDS] The Nine Interface Kinds (the Closed Set) + the `adaptor` Family
+
+- definition: a peripheral's `interface` is EXACTLY ONE kind. This closed set covers 100% of the Grove/Qwiic cross-section (grove-peripheral-cross-section.md §10); each carries a small fixed parameter set:
+  | kind | params | topology | example parts |
+  |------|--------|----------|---------------|
+  | `i2c` | `addr`, `driver`, `bus`(path) | bus-shared | BME280, VL53L0X, SSD1306, INA219, MCP23017, PCA9685, PN532@0x24 |
+  | `analog` | `pin`(path), `scale{map,in,out}` | point-to-point / muxable | pot, LDR, moisture, the 0–25V divider (`calibrate_linear`) |
+  | `digital_in` | `pin`(path), `pull`, `debounce_ms`, `active`, `edge` | point-to-point | button, PIR, reed, flame |
+  | `pwm_out` | `pin`(path), `mode`, `freq_hz` | point-to-point | servo, buzzer, relay, LED, a gauge backlight (2N2222) |
+  | `uart` | `baud`, `driver` | point-to-point | GPS(nmea), PN532(uart), R503, LD2410/2420/2450 |
+  | `onewire` | `pin`, `driver`, `rom?` | bus-shared | DS18B20, MAX31850 |
+  | `single_wire` | `pin`, `driver`, `poll_ms` | point-to-point | DHT11, DHT22 |
+  | `ws281x` | `pin`, `count`, `order` | timed serial | WS2813 strip/ring |
+  | `spi` | `bus`, `cs`, `driver`, `mode` | bus-shared | MCP2515 CAN ctrl (on `can_controller`), MAX7219 |
+  Plus the NON-pin **`adaptor`** family for peripherals that are not MCU-attached: `wled{host}`, `audio{device}`, … (host-peer surface, [CXC-HALD-BUILT]).
+- what is NOT a kind: a **transport** (MQTT, CAN, a UART inter-MCU relay) is not an interface kind — it carries the BUS between peers, and belongs on the membrane ([CXC-HALD-BRIDGE]). This is the `can_controller` board's lesson ([PCB-CANGW]): CAN moves ComposeBus traffic across a segment; it is not a peripheral that publishes a quantity.
+- `pin`(path): note `pin` and `bus` are ADDRESSING PATHS, not raw GPIO/bus numbers — a pin may sit behind an expander, a bus behind a mux ([CXC-HALD-TOPOLOGY]/[CXC-HALD-EXPANDER]).
+- change:
+  - decision: INTERFACE KIND (not device) is the top-level axis; transports are separate.
+  - reasoning: "The device space is huge (400+ SKUs) but the interface space is tiny and closed (nine kinds). One `i2c{addr,driver}` line covers dozens of chips. Keying on device would produce 400 schemas and re-invent a driver library. Transports were tempting to add as a tenth kind, but `can_controller` shows CAN is a peer-to-peer FABRIC, not a peripheral — modeling it as a kind would have conflated 'a thing that publishes temperature' with 'the wire the bus rides on'."
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-TOPOLOGY] Bus-Shared vs Point-to-Point — and Hierarchical Addressing
+
+- definition: the primary axis. `i2c`/`onewire`/`spi` are **bus-shared** — many devices per bus, each needing a SELECTOR (I2C `addr`, 1-Wire `rom`, SPI `cs`). `analog`/`digital_in`/`pwm_out`/`uart`/`single_wire`/`ws281x` are **point-to-point**. BUT real builds interpose **addressing layers**, so a selector/pin is a PATH, not a flat value:
+  - an **I2C multiplexer** (TCA9548A/PCA9548A) makes the I2C selector `(bus → mux → channel → addr)` — so eight identical-address sensors (all SHT30 @ 0x44) coexist, one per channel. This CORRECTS the naive rule "same addr on one bus is un-deployable": a mux is exactly the resolution.
+  - an **expander / analog-mux / shift-register** ([CXC-HALD-EXPANDER]) makes a pin a path (`mcp1.gpa0`, `mux1.ch3`, `sr_in.bit5`).
+- selector-required: a bus-shared kind without its selector is rejected ([CXC-HALD-VALIDATE]); a collision is a duplicate selector on the SAME segment (post-mux), not merely the same address.
+- change:
+  - decision: addressing is HIERARCHICAL (a path), not flat.
+  - reasoning: "Two independent sources forced this. The Grove catalog has the TCA9548A (same-address coexistence) and the CD74HC4067 analog mux; and on real hardware, MCP23017 expanders appear on TWO of the four boards ([PCB-BTNMATRIX] runs 2×, [PCB-GAUGE3] runs 1×). A flat `addr`/`pin` model can't express any of it, and the v1 collision rule was simply wrong. Hierarchical addressing is the minimal correct model and it makes expanders/muxes first-class rather than special-cased."
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-EXPANDER] Port-Providers — Expanders, Muxes, Shift Registers
+
+- definition: a whole class of parts are not sensors/actuators but **port-providers** — they consume one bus/pin and RE-EXPOSE N virtual pins/channels that other peripherals address through. The declaration models them as a peripheral with a `provides:` clause:
+  - `MCP23017` — `i2c{addr:0x20, driver:mcp23017}` `provides: {gpio: 16}` → other peripherals reference `pin: mcp0.gpa3`.
+  - `CD74HC4067` — an analog mux `provides: {analog_ch: 16}` off one ADC pin.
+  - `74HC165`/`74HC595` — shift registers `provides: {in: 8}` / `{out: 8}`, chainable.
+  - `TCA9548A` — `provides: {i2c_channel: 8}`; a downstream `i2c` peripheral names `bus: mux0.ch2`.
+  - `PCA9685` — an I2C 16-ch **12-bit PWM driver** `provides: {pwm_ch: 16}`; the PWM-output SIBLING of the MCP23017 GPIO expander (professional LED dimming / servo banks). Downstream actuators address `pin: pwm0.ch3` with `led/brightness` (normalized → 12-bit + gamma in the driver) or `servo/angle`. Chainable 0x40–0x7F for 32/48/… channels. NOTE its PWM FREQUENCY is SHARED across all 16 channels (one prescaler) — a PROVIDER-level config the channels inherit + must agree on, not per-channel (contrast MCP23017, whose sub-pins are independent). That the PCA9685 (PWM), MCP23017 (GPIO), 4067 (analog), and TCA9548A (i2c-channel) all fit one `provides:` shape confirms the port-provider concept is a general "one bus device → N TYPED sub-channels," not a GPIO special case.
+  - `PCA9955B`/`PCA9956B`/`PCA9957` — **constant-current** LED port-providers (`provides: {led_ch: 16|24}`; PCA9957 is the SPI 24-ch variant). RICHER than the PCA9685: each channel has its OWN current (IREF, 0–57 mA — so a 20 mA red and a 10 mA blue share one chip) PLUS an 8-bit PWM, with a provider-level group-dim/blink. Current is a PER-CHANNEL config ([CXC-HALD-CONFIG]), contrast the PCA9685's provider-level frequency. They ALSO self-report per-channel open/short FAULTS — a DUAL-ROLE port-provider (drives `led/{n}/brightness`, publishes `led/{n}/fault`). Channels group into ZONES ([CXC-HALD-COMPOUND]).
+- grounded: `[PCB-BTNMATRIX]` is the canonical case — 2× MCP23017 (0x20 buttons, 0x21 LEDs) turn one I2C bus into 32 addressable pins for 16 buttons + 16 LEDs. `[PCB-GAUGE3]` uses an MCP23017 (0x20) to fan out to 3 H-bridges. The port-provider is declared once; the leaf peripherals address through it.
+- runtime: the port-provider's driver owns the expansion (register writes to set/read MCP pins, channel-select on the mux); a peripheral addressed `pin: mcp0.gpa3` is transparently routed by the runtime. Chainable providers compose (`sr0.bit5`, `mux0.ch2 → 0x44`).
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+---
+
+## 3. Driver, Role, Namespace, Compound
+
+### [CXC-HALD-DRIVER] `driver` — the Join Key to the Decode Registry (and to Built Drivers)
+
+- definition: for `i2c`/`uart`/`onewire`/`single_wire`/`spi`/`ws281x`/port-providers, the raw stream is meaningless without a per-chip/per-protocol DECODER. `driver` names it — `bme280`, `vl53l0x`, `ssd1306`, `nmea`, `pn532`, `ds18b20`, `mcp23017`, `x27168`, `mcp2515`. It is the JOIN KEY to a decoder registry (register maps / protocol framers, authored per chip, delivered as ARTIFACTS — [CXC-HALD-DRIVER-DIST]) AND to EXISTING ComposeIO drivers: `pn532`→`composeio.peripherals.nfc`; `ws281x`→WLED family; `buzzer`/`mp3`/`dac`→audio. A driver self-describes (interface kind + params, provides?, published/subscribed namespaces, config schema, assurance class) so the Composer palette can generate from it.
+- narrow waist: N boards × M chips collapses to N + M — add a chip = one registry entry, reusable by every board.
+- OPEN, authored registry (not a closed vendor catalog): a `driver` may be USER-AUTHORED — the registry is extensible and drivers are first-class artifacts ([CXC-HALD-DRIVER-DIST]). Prior art + migration path: an ESPHome CUSTOM COMPONENT already IS a HAL driver (a wrapper mapping a chip to a normalized semantic surface); existing custom wrappers (e.g. the `pca995x` / `pca995x_zone` / `pca995x_calibrator` components) PORT to HAL drivers rather than being rewritten. The clean driver-surface model is the NXP-library shape — normalized `current`/`pwm` (0.0–1.0), buffered/synchronized updates, hardware-ramp gradation — the driver hides the register math; the HAL sees the normalized quantity.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-ROLE] Sensor Publishes · Actuator Subscribes · Transactional Commands
+
+- definition: THREE role shapes (v3 adds the third, from the R503):
+  - `role: sensor` — firmware PUBLISHES to the namespace(s). May publish MANY (BME280 → 3; an LD2450 → per-target structured records; an IMU → 6–9).
+  - `role: actuator` — firmware SUBSCRIBES and drives the pin/register/display.
+  - `role: transactional` — a **request/response + long-running-operation** device driven by a `<peripheral>/cmd/*` namespace, emitting `<peripheral>/status` events and a `<peripheral>/result`. This is what a pure sensor/actuator split cannot express. Worked: the **R503 fingerprint** — `fingerprint/cmd/{enroll,match,delete}` in; `fingerprint/enroll/status {step, prompt}` + `fingerprint/match {id, score}` out. (The R503 in Compose* is EXPERIENTIAL/theatrical — see [CXC-HALD-ASSURANCE] — e.g. the BSG "Permission to Fire" ceremony, NOT an access-control primitive.)
+- dual-role: a peripheral may combine roles (PN532 read/write; a Grove LCD-RGB = `display/text` + `led/color`; a slide-pot = `input/slider` sensor + on-board LED actuator) — one entry, a namespace map tagged by role.
+- display boundary: a status/text display (SSD1306 → `display/text`) is an ACTUATOR driver. A full scene-rendering display (a 320×240 color TFT) is NOT a driver — it is the RENDER TIER ([SPEC:CXC-EMBED-REACTIVE]). Raw framebuffers never cross the bus.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-NAMESPACE] Namespaces by Physical Quantity, Not by Part (the Define-Once Enabler)
+
+- definition: the semantic namespace names a PHYSICAL QUANTITY, never a chip. `env/temperature` is published identically by a BME280, SHT31, DS18B20, thermistor, or a DS3231 die sensor — so a widget/rule/Intelligence/peer binds the quantity and is indifferent to the silicon; swap the sensor, the scene is unchanged. Illustrative vocabulary (grouped): `env/{temperature,humidity,pressure,altitude}`, `air/{co2,tvoc,voc_index,pm/2_5,gas/*}`, `light/{lux,uv_index,color}`, `motion/{accel,gyro,mag}/{x,y,z}`, `motion/{heading,steps,vibration}`, `distance/mm`, `presence/{detected,target/{n}/{x,y,speed}}`, `geo/position/{lat,lon,alt}`, `touch/key/{n}`, `rotation/angle`, `time/rtc`, `fingerprint/{match,enroll/status}`; actuators: `relay/{n}/state`, `servo/angle`, **`gauge/value`**, **`motor/{speed,direction,position}`**, `buzzer/{state,tone}`, `led/{state,brightness,color}`, `display/{text}`, `haptic/effect`. Diagnostics/health (any peripheral, a first-class convention not a per-part afterthought): `.../fault`, `.../open`, `.../short`, `.../health` — e.g. a PCA995x LED driver publishes `led/{n}/fault`, making an actuator DUAL-ROLE (it drives AND self-reports).
+- structured values: a namespace value may be a STRUCTURED RECORD or ARRAY, not just a scalar — an LD2450 publishes up to 3 targets each `{x,y,speed,distance}`; because target IDs swap, the USEFUL semantic is a DERIVED zone occupancy computed by a local rule ([CXC-HALD-RULES]), not the raw target list.
+- v3 additions from hardware: `gauge/value` and `motor/position` — the `rack_triple_gauge` board's x27.168 needle is driven by `gauge/value`, closing the platform's founding "gauge/value → physical needle" loop.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-COMPOUND] Compound Peripherals — Groups, Actuator Pin-Groups, Banks
+
+- definition: many real peripherals are ONE logical/semantic object built from MANY physical pins/elements. Three shapes, all declared as a single grouped peripheral (not N scattered atomics):
+  - **actuator pin-group** — a motor/stepper/gauge is a `driver`-bound group of pins of MIXED kinds. A TB6612 motor = 2×digital + 1×PWM → `motor/{speed,direction}`. The `rack_triple_gauge` x27.168 = an L293D H-bridge (2 channels / 4 coil lines) → `gauge/value` (`driver: x27168` owns the micro-step sequence). The `interface` names the driver; the driver declares the pins it needs.
+  - **grouped/matrix peripheral** — the `button_matrix_4x4` is ONE 16-key + 16-LED panel behind 2× MCP23017, not 32 entries: `driver: button_matrix{rows,cols}` publishing `button/{n}/pressed` + subscribing `led/{n}`. A TCA8418 keypad scanner is the same shape (a matrix behind one I2C driver emitting a key-event FIFO).
+  - **bank / array** — the `lego_dots` board is a 12× BC337 LED/lamp driver; `array: 12` sugar declares one `led/{0..11}/state` bank rather than twelve entries.
+  - **zone / channel-group** — N channels of ONE port-provider grouped into a single semantic actuator that MOVES TOGETHER (a chase with a `phase_offset_deg`, a synchronized fade). A real custom wrapper's `pca995x_zone` binds e.g. 8 PCA9956B channels as one `led/zone/bridge_backlight`. Distinct from a bank (independent per-channel): a zone is one unit with group behavior.
+- grounded: three of the four boards are compound — `[PCB-BTNMATRIX]` (matrix), `[PCB-GAUGE3]` (3× actuator pin-groups + a 3-gauge cluster), `[PCB-LEGODOTS]` (12× bank). The atomic-only v1/v2 schema would have scattered each into dozens of unrelated lines.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+---
+
+## 4. The Declaration + Runtime
+
+### [CXC-HALD-DECLARE] The `peripherals:` Schema
+
+- definition: a top-level `peripherals:` list (board profile or `.compose.yaml` deployment section). Each entry: `{ id, on?, role, interface:{<kind>:{params}}, driver, provides?, namespace|namespaces, config?, assurance? }`. `on:` names the owning PEER (an MCU id or `host`) — so one schema covers an MCU-attached Grove sensor and a host-side adaptor. Worked example — a real mixed board that exercises hierarchical addressing, a compound actuator, and config:
+  ```yaml
+  peripherals:
+    # port-providers first (they define the addressing other peripherals use)
+    - id: io ; on: mcu0 ; driver: mcp23017
+      interface: { i2c: { bus: qwiic0, addr: 0x20 } } ; provides: { gpio: 16 }
+    - id: fanout ; on: mcu0 ; driver: tca9548a
+      interface: { i2c: { bus: qwiic0, addr: 0x70 } } ; provides: { i2c_channel: 8 }
+
+    # an I2C sensor chain behind the mux — two identical-address parts coexist
+    - id: climate_in  ; on: mcu0 ; role: sensor ; driver: sht31
+      interface: { i2c: { bus: fanout.ch0, addr: 0x44 } }
+      namespaces: { temperature: env/temperature, humidity: env/humidity }
+    - id: climate_out ; on: mcu0 ; role: sensor ; driver: sht31
+      interface: { i2c: { bus: fanout.ch1, addr: 0x44 } }          # same addr, different channel — OK
+      namespaces: { temperature: outside/temperature, humidity: outside/humidity }
+
+    # a compound actuator pin-group: a gauge needle (rack_triple_gauge pattern)
+    - id: gauge_a ; on: mcu0 ; role: actuator ; driver: x27168
+      interface: { actuator_group: { via: io, coils: [gpa0,gpa1,gpa2,gpa3] } }
+      namespace: gauge/value ; config: { sweep_deg: 315, home_on_boot: true }
+
+    # a status display + a door button (behind the expander)
+    - id: hud ; on: mcu0 ; role: actuator ; driver: ssd1306
+      interface: { i2c: { bus: qwiic0, addr: 0x3C } } ; namespace: display/text
+    - id: doorbell ; on: mcu0 ; role: sensor ; driver: gpio
+      interface: { digital_in: { pin: io.gpb0, pull: up, debounce_ms: 20, edge: falling } }
+      namespace: input/button
+
+    # a transactional device (theatrical) + a host adaptor
+    - id: bioscan ; on: mcu0 ; role: transactional ; driver: r503
+      interface: { uart: { baud: 57600 } } ; assurance: experiential
+      namespaces: { cmd: fingerprint/cmd, status: fingerprint/enroll/status, result: fingerprint/match }
+    - id: room_lights ; on: host ; role: actuator
+      interface: { adaptor: { wled: { host: (a private LAN address, not published) } } }
+      namespaces: { on: light/on, brightness: light/brightness, mood: scene/mood }
+  ```
+- runtime: each peer filters `peripherals` for its own `on:`, instantiates port-providers first, then the peripherals addressed through them, wiring sensors→publish / actuators→subscribe / transactional→cmd+status+result. MCU firmware and host service use the same declaration; only the owned subset differs.
+- change:
+  - decision: ONE unified `peripherals:` list (role + `on:` + `provides:` tags), port-providers declared inline.
+  - reasoning: "Sensor/actuator/transactional/adaptor and MCU/host differ only in fields, not schema. A unified list keeps one mental model, lets a dual-role part be one entry, and — the surfacing answer to 'what does ComposeUX need for these' — makes the built WLED/audio/NFC and a future Grove sensor and a real board's expander all declare the same way."
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-CONFIG] Device Configuration & Calibration (Persistent, Distinct from Live Namespaces)
+
+- definition: nearly every non-trivial peripheral needs PERSISTENT configuration/calibration distinct from its live namespaces — LD2410 per-gate sensitivity, LD2420 range/timeout, INA219 shunt resistance, the 0–25V divider's `calibrate_linear` points, servo/gauge trim, a stepper's `sweep_deg`/home, TCA8418 debounce. It is set-once/tuned-in-situ, PERSISTED, and applied by the driver at init. Declared in a peripheral's `config:` block; the driver's self-description carries the config schema.
+- tunable in-situ + out-of-band: config may be adjusted live (an exposed `.../cfg/*` namespace) or out-of-band (the LD24xx BLE tuning app is a real example) — the HAL owns the DECLARATION + persistence hook, not the tuning UI.
+- provider-level shared config: a PORT-PROVIDER ([CXC-HALD-EXPANDER]) may carry config that CONSTRAINS its channels — the PCA9685's PWM frequency is one prescaler across all 16 channels, so `freq_hz` is a PROVIDER config the channels inherit and must agree on (unlike the MCP23017, whose sub-pins are independent). A channel may not override an incompatible provider-level constraint; the validator enforces it ([CXC-HALD-VALIDATE]).
+- per-channel config within a provider: config may ALSO be per-channel inside one provider — the PCA9955B/56B sets a distinct current per LED channel (a `channel_current_ma:` map), so dissimilar LEDs (red/blue/white) share a chip. Provider-level (shared, PCA9685 freq) and per-channel (PCA995x current) config coexist.
+- calibration as a sensor-in-the-loop PROCESS: calibration is not always static — it can be an ACTIVE, sensor-driven procedure that WRITES the persisted config. Worked (a real custom wrapper): a `pca995x_calibrator` reads a TSL2591 lux sensor and auto-tunes each channel's current until dissimilar LEDs reach UNIFORM perceived brightness, persisting the profile. This composes a SENSOR + an ACTUATOR + a leaf RULE ([CXC-HALD-RULES]) into a self-calibrating group; the HAL owns the declaration + the persisted profile, not the loop's code.
+- why first-class: in the real world calibration is MOST of the setup, not an afterthought; leaving it implicit (as v1/v2 did) makes every real deployment fall back to code.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-VALIDATE] Collision & Allocation Validation (Fail at Parse, Not on the Bench)
+
+- definition: the validator MUST catch, before deploy: (1) **selector collisions on a segment** — a duplicate I2C `addr` on the SAME bus/mux-channel (a mux RESOLVES it — same addr on different channels is fine); duplicate 1-Wire `rom` / SPI `cs`. (2) **pin conflicts** — two point-to-point peripherals on the same resolved pin (including expander sub-pins: two things on `io.gpa0`). (3) **provider over-allocation** — more sub-pins/channels claimed than a provider `provides:`. (4) **selector-required / driver-unknown** — rejected with a "did you mean" from the registry. (5) **shared-provider agreement** — channels on a single-prescaler provider (PCA9685) must share a compatible PWM frequency; a 50 Hz servo channel and a 1 kHz LED channel on the SAME PCA9685 is rejected (chain a second PCA9685 at another address). This is the whole payoff of declaring-before-building: the wiring mistake is caught at parse time, not with a multimeter.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+---
+
+## 5. The Two Buses — Rules, the Membrane & Transports
+
+### [CXC-HALD-RULES] Local Reaction Rules at the Leaf
+
+- definition: a peripheral reacts to another (or to imported ComposeBus intent) via a DECLARATIVE rule that runs AT THE LEAF on the MCU's INTERNAL bus, using the EXISTING logic layer ([SPEC:CXC-BIND] behaviors, the [SPEC:CXC-FLAUTH] headless node, the [plt.cux:SPEC:CXC-DSL] expression DSL) — NOT a new HAL rule engine. `rules:` declares `when <condition over internal namespaces> → set <internal namespace(s)>`. Local, fast, and it SURVIVES loss of the ComposeBus link (autonomy at the leaf).
+  ```yaml
+  rules:                                  # runs on the MCU's internal bus, at the leaf
+    - when: env/temperature > 25
+      set: { relay/state: on,  display/text: "HOT {env/temperature|0}C" }
+    - when: env/temperature <= 25
+      set: { relay/state: off, display/text: "{env/temperature|0}C OK" }
+  ```
+- change:
+  - decision: reuse the existing headless-logic layer scoped to the internal bus, not a HAL-specific engine.
+  - reasoning: "The platform already has a declarative no-code logic surface that runs on ANY ComposeIOBus; the MCU's internal bus IS one. A HAL-specific engine would fork a solved problem. The HAL's job is only to STATE that rules run at the leaf and make the internal bus a first-class place to run them."
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-BRIDGE] The Internal Bus ↔ ComposeBus Membrane — Pluggable Transport, Authority-Gated
+
+- definition: a device has TWO buses; the HAL models the membrane. The MCU is a ComposeApp with an INTERNAL bus (local scope) and a COMPOSEBUS connection (shared/global). The membrane is config-driven, reusing ComposeApp export/import + `Scope` ([plt.cio:SPEC:DP-CIO-5]):
+  - **EXPORT (up):** a local namespace — raw (`env/temperature`) or a DERIVED semantic state a rule computed (`climate/status`) — declared `export` is promoted to ComposeBus.
+  - **IMPORT (down):** a ComposeBus namespace declared `import` is surfaced on the internal bus, consumed by a rule or a direct actuator binding — e.g. a ComposeBus `demo/alert = "red"` writes "RED ALERT!" to the display AND trips the relay.
+  - **ENCAPSULATION:** non-exported internal namespaces are invisible to ComposeBus, so a FLEET coexists without collisions.
+- **transport (v3):** the membrane rides a PLUGGABLE transport — MQTT/WiFi (the ESP32-C3 boards `lego_dots`/`rack_triple_gauge`), or **CAN** (the `[PCB-CANGW]` `can_controller`: a CH32V003 + MCP2515 + SN65HVD230 that carries ComposeBus across a CAN segment), or a **UART inter-MCU relay** (`[PCB-BTNMATRIX]`: a CH32V003 relayed to a host ESP32 over a Grove UART). CAN/UART are TRANSPORTS on the membrane, not interface kinds — the `can_controller` board is the physical proof. `bridge: { transport: can, export: [...], import: [...] }`.
+- **authority (v3):** export/import composes with the bus Authority model — a sensitive or command namespace (`fingerprint/cmd/enroll`, a `weapons/launch_enabled`, a relay driving a real load) is authority-gated, exactly as the game's `gm/cmd/*`. This is bus HYGIENE (a random peer can't trigger it), NOT a security assurance ([CXC-HALD-ASSURANCE]). The BSG "Permission to Fire" is authored here: two `fingerprint/match` results, authority-gated, within a window → `weapons/launch_enabled` — a ceremony, not an auth system.
+- change:
+  - decision: model the two buses + a PLUGGABLE transport + authority-gating explicitly, reusing ComposeApp's bridge.
+  - reasoning: "The acid test showed a device always has two buses; the real boards showed the membrane rides different fabrics (MQTT, CAN, UART-relay) — CAN is a peer-to-peer transport, not a peripheral, so it belongs here. And a fingerprint/relay/launch semantic must be gate-able. Default-local + explicit-export + authority-gated-command is the safe direction."
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+---
+
+## 6. Drivers as Signed Artifacts
+
+### [CXC-HALD-DRIVER-DIST] The Driver as a Signed, Tiered, Fetchable BusStorage Artifact
+
+- definition: a `driver` reaches the peer that needs it as a SIGNED artifact from BusStorage (`bus://drivers/<id>@<ver>`, content-addressed, verified against the bus Authority/CA BEFORE load). "Driver" is not one thing — it is three artifact TIERS, and the tier determines how (and whether) it loads at runtime:
+  - **(a) declarative descriptor — data, not code.** For most register-map sensors, a driver is a register map + a decode expression (the [plt.cux:SPEC:CXC-DSL] DSL). A generic per-interface engine baked into the firmware interprets it. Portable (no CPU target), safe, fetchable as pure data — the common case.
+  - **(b) sandboxed bytecode VM — for stateful/complex drivers.** A packet protocol / multi-step FSM (PN532, R503, a display init) needs logic, run in a purpose-built sandboxed driver-bytecode VM whose only ops are `i2c/uart/gpio read-write / delay / arith / publish` — tiny AND trivially sandboxed. The VM must support a **RESUMABLE, multi-tick state machine with persisted state** (the R503 enrollment takes seconds + human interaction and cannot block) — not just bounded decode.
+  - **(c) native / compiled-in / OTA — the floor.** A bare-metal MCU can't live-load native code; it gets drivers compiled in or via OTA firmware reflash (BusStorage ships the image).
+- **the VM floor (hardware-anchored to the real boards):**
+  | tier | MCU | hosts |
+  |------|-----|-------|
+  | data-descriptor / compiled | **CH32V003** (2 KB / RV32EC) — `[PCB-BTNMATRIX]`, `[PCB-CANGW]` | descriptors + compiled drivers; below the VM floor |
+  | bespoke bytecode VM | **CH32V203** (~20–64 KB / RV32IMAC, HW multiply) | the VM floor — resumable driver bytecode + descriptors |
+  | WASM | **ESP32-C3** (~400 KB) — `[PCB-LEGODOTS]`, `[PCB-GAUGE3]` | standard WASM (WAMR/wasm3) drivers, portable with the host |
+  WASM's 64 KB-page linear memory puts its floor at the ESP32 class; a bespoke driver-bytecode VM (few KB, more sandboxable) reaches the CH32V203; the V003 is data/compiled only. So the pluggability gradient: **data-descriptor (V003+) → bytecode VM (V203+) → WASM (ESP32+) → native/OTA (host)**.
+- trust + capability negotiation: every artifact (even data) is signed + verified; a peer that can't host a tier reports "driver unavailable" and degrades — it does not crash; `on:` must be satisfiable by a peer that can run the driver's tier.
+- change:
+  - decision: driver = a signed BusStorage artifact in three tiers, data-descriptor-first, VM for the complex, OTA for the floor.
+  - reasoning: "The trap is treating every driver as a native-code plugin — uniformly hard AND a supply-chain hole. Splitting by artifact tier makes the common case (register-map sensors) pure signed DATA interpreted by a generic engine (no code loading), quarantines the hard VM path to the stateful minority, and honestly bottoms out at OTA on the floor. The R503 pins the VM's requirements (framing, checksum, timers, KB buffers, resume); the real boards anchor the tiers to actual silicon."
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-MINE] The Open-Source Ecosystem as the Registry's Seed — Mine, Don't Run
+
+- definition: the Home Assistant + ESPHome ecosystems are the largest open-source device-support corpus in existence (thousands of integrations, hundreds of ESPHome components). The registry ([CXC-HALD-DRIVER]) is SEEDED by MINING them — reading the open source to AUTHOR HAL drivers — and ComposeIO runs NO HA/ESPHome plugin code to do it. Two flavors, by how self-contained the source is:
+  - **ESPHome components** (self-contained C++ sensor/light/output platforms) → PORT / TRANSPILE to HAL drivers: register-map ones become DATA-DESCRIPTORS ([CXC-HALD-DRIVER-DIST] tier a); stateful ones port to bytecode (tier b). An ESPHome component already IS a HAL driver in shape, so this is a mechanical harvest, not a rewrite.
+  - **HA integrations** (Python, coupled to HA core — the `hass` object, entity registry, config entries) → a KNOWLEDGE source ONLY: read them to learn a device's protocol/API and author an adaptor. They are mine-only because they are NOT runnable outside HA core; ComposeIO never hosts HA plugin code. To use a *running* HA instance's integrations live, BRIDGE to it ([SPEC:CXC-HA-BRIDGE], spec 33) — which talks to HA-as-a-whole, so ComposeIO still runs no plugin.
+- provenance + license (load-bearing for an OSS platform): a mined driver carries `provenance:` (source project + commit) and `license:` (the source's license). HA core is Apache-2.0, ESPHome MIT (parts GPL), integrations vary; a GPL-derived driver carries copyleft and attribution is required. The registry keeps mined drivers license-tagged so the platform stays clean.
+- why: this turns the world's biggest device library into ComposeIO's driver registry with no runtime dependency on HA and no per-chip authoring slog — the single largest accelerant for coverage and the OSS-adoption on-ramp.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-ASSURANCE] The Assurance Class — Don't Imply Guarantees You Can't Back
+
+- definition: a peripheral declares an `assurance` class so the HAL never over-promises: `experiential` (a prop/effect — a consumer fingerprint reader, a gesture sensor: spoofable, no liveness, no secure element — theatrical, NOT access control); `measurement` (a sensor reading, accurate to its calibration, not a legal/safety instrument); `control` (an output driving a real load — a relay, a motor, a gauge — which gets FAIL-SAFE defaults: known-state on boot/link-loss, e.g. `relay: off`, `gauge: home`). The class is advisory metadata that shapes defaults and documents intent; a match/reading/command carries only the trust its class asserts.
+- worked: the R503 is `experiential` — the BSG "Permission to Fire" is a CEREMONY (its drama is the point precisely because it isn't real auth); a relay on `[PCB-...]` driving mains is `control` (fail-safe off); an INA219 is `measurement`.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+---
+
+## 7. The Leaf, the Built Batch, the Palette
+
+### [CXC-HALD-MCU] The MCU as a Bus Peer — the PCB Port Model (Anchored to Real Boards)
+
+- definition: the MCU runs ComposeIO firmware and is a co-equal bus peer: it reads its `on:` peripherals, OWNS each driver (or interprets a descriptor / runs the bytecode VM per its tier), and publishes/subscribes/commands semantic namespaces across the internal-bus↔ComposeBus membrane ([CXC-HALD-BRIDGE]). The PCB exposes I2C buses (Grove-I2C ≡ STEMMA-QT ≡ Qwiic, electrically identical — the density socket, especially with a mux/expander) plus point-to-point analog/digital/PWM/UART ports. The four real boards anchor the model: `[PCB-BTNMATRIX]` (CH32V003, relayed over UART), `[PCB-CANGW]` (CH32V003 + CAN), `[PCB-LEGODOTS]` + `[PCB-GAUGE3]` (ESP32-C3 native WiFi peers) — none is a dumb daughtercard; each has a real brain, so the native-peer `on:` model fits at the top level and the gaps are all one level down (addressing, transport, grouping).
+- the floor still applies: a CH32V003 owns a fixed compiled/descriptor behavior; a CH32V203 hosts the bytecode-VM tier; an ESP32-C3 hosts WASM + the reactive render tier. `on:` splits peripherals across a cheap daughter MCU and a capable host by editing the declaration, not the firmware.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-BUILT] How the Already-Built Drivers Slot In (the Surfacing Answer)
+
+- definition: the three drivers built this session are the first realizations, and this schema surfaces them code-free:
+  - **NFC** (`composeio.peripherals.nfc`, PN532) → `interface:{uart|i2c:{...,driver:pn532}}`, `role: transactional`, `assurance: experiential`, `fingerprint`-like `cmd/*`+result.
+  - **WLED** (`adaptors.wled`) → `interface:{adaptor:{wled:{host}}}`, `role: actuator`, `light/*`+`scene/mood`; a locally-wired `ws281x` strip is the same WLED family.
+  - **Audio** (`composeio.audio`) → `interface:{adaptor:{audio:{device}}}`, `role: actuator`; an MCU-local `pwm_out` buzzer / `uart` DFPlayer is the same audio backend.
+  Today they're Python-instantiated; the declaration + a per-peer instantiator makes them a board-profile line. That integration is the build work below.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+### [CXC-HALD-PALETTE] Composer Surfacing — the Peripheral Palette (future)
+
+- definition: the peripheral analog of the widget catalog ([CXC-FEAT-PALETTE], `composer/catalog.py`): a driver-keyed catalog (name, interface kind, `provides?`, default namespaces, addr, config schema, assurance) so a human/Intelligence adds a peripheral in the Composer by picking a driver and assigning a port + namespace — the driver self-description ([CXC-HALD-DRIVER]) generates it. Render widgets → catalog done (this session); peripherals → catalog next.
+- part-of: [SPEC:CXC-HAL-DECLARE]
+
+---
+
+## 8. Verification (what a build must satisfy)
+
+| id | claim | test |
+|---|---|---|
+| HALD-C1 | nine kinds cover the catalog | every Grove/board part maps to one kind (+ `adaptor`; transports on the bridge) |
+| HALD-C2 | one declaration, many chips | a new I2C sensor is a one-line entry, zero firmware change, given a registry decoder |
+| HALD-C3 | hierarchical addressing | two identical-addr sensors on different mux channels coexist; an expander sub-pin (`io.gpa3`) resolves + routes |
+| HALD-C4 | collision caught at parse | duplicate addr on a segment / duplicate resolved pin / provider over-allocation / unknown driver all fail validation |
+| HALD-C5 | define-once binding | a `gauge` bound to `gauge/value` drives the `rack_triple_gauge` needle AND a screen gauge, unchanged |
+| HALD-C6 | compound peripheral | `button_matrix` declares as ONE grouped peripheral (16 buttons + 16 LEDs), not 32 entries; a stepper is one actuator pin-group |
+| HALD-C7 | transactional role | R503 declares `role: transactional`; `cmd/*` in, `status`+`result` out; the driver-VM runs a resumable multi-tick enroll FSM |
+| HALD-C8 | rules run at the leaf | with ComposeBus DOWN, `env/temperature > 25` still drives the relay + display; non-exported namespaces never appear on ComposeBus |
+| HALD-C9 | bridge both ways + transport | a derived `climate/status` exports up; a ComposeBus `demo/alert` imports down → screen/relay; the membrane rides CAN (`can_controller`) unchanged |
+| HALD-C10 | driver tiers + trust | a data-descriptor loads on a V003; a bytecode driver on a V203; both signed + verified; an unhostable tier degrades, no crash |
+| HALD-C11 | config/calibration | a peripheral's persisted `config:` (gate sensitivity, `calibrate_linear`, gauge sweep) is applied at init, tunable in-situ |
+| HALD-C12 | assurance honesty | the R503 is `experiential` (no auth claim); a `control` relay defaults fail-safe off on boot/link-loss |
+
+---
+
+## 9. Relationships
+
+[SPEC:CXC-HAL-DECLARE] REALIZES [SPEC:CXC-HAL]
+[CXC-HALD-KINDS] RELATED_TO [PCB-BOARDS-OVERVIEW]
+[CXC-HALD-TOPOLOGY] DEPENDS_ON [CXC-HALD-EXPANDER]
+[CXC-HALD-NAMESPACE] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-3]
+[CXC-HALD-DECLARE] USES [SPEC:CXC-BIND]
+[CXC-HALD-RULES] USES [SPEC:CXC-FLAUTH]
+[CXC-HALD-RULES] RELATED_TO [plt.cux:SPEC:CXC-DSL]
+[CXC-HALD-BRIDGE] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-5]
+[CXC-HALD-BRIDGE] RELATED_TO [CXC-HALD-MCU]
+[CXC-HALD-DRIVER-DIST] DEPENDS_ON [SPEC:CXC-HAL]
+[CXC-HALD-DRIVER] RELATED_TO [CXC-HALD-DRIVER-DIST]
+[CXC-HALD-MINE] RELATED_TO [SPEC:CXC-HA-BRIDGE]
+[CXC-HALD-DRIVER] USES [CXC-HALD-MINE]
+[CXC-HALD-MCU] UPHOLDS [SPEC:CXC-HAL]
+[CXC-HALD-MCU] RELATED_TO [PCB-BOARDS-OVERVIEW]
+[CXC-HALD-BUILT] DEPENDS_ON [SPEC:CXC-NFC]
+
+---
+
+**Status**: DRAFT v3 for review (David 2026-07-18). Consolidated + hardware-grounded. Folds twelve cross-validated refinements from three converging sources — the Grove catalog, the R503 stress test, and four real ComposeBus PCBs (`../../../pcb/boards-overview.lts`): the nine kinds + `adaptor` ([CXC-HALD-KINDS]); hierarchical addressing + port-providers ([CXC-HALD-TOPOLOGY]/[CXC-HALD-EXPANDER]); the transactional role ([CXC-HALD-ROLE]); `gauge/value`/`motor/position` + structured values ([CXC-HALD-NAMESPACE]); compound peripherals ([CXC-HALD-COMPOUND]); config/calibration ([CXC-HALD-CONFIG]); the pluggable-transport + authority-gated membrane incl. CAN ([CXC-HALD-BRIDGE]); the signed tiered driver artifact + VM-floor ([CXC-HALD-DRIVER-DIST]); the assurance class ([CXC-HALD-ASSURANCE]); and the real-board-anchored leaf model ([CXC-HALD-MCU]). The boards are cited inline as the primary illumination — see [PCB-BOARDS-OVERVIEW].
+
+**Architect — build plan flagged for David's go-ahead (NOT started):** (1) the `peripherals:` PARSER (incl. hierarchical addressing + port-providers + compound + config) + per-peer instantiation; (2) a DECODER REGISTRY keyed by `driver`, seeded with the built pn532/ws281x/audio + a first data-descriptor I2C sensor (bme280) + a first port-provider (mcp23017) to prove both seams; (3) the VALIDATOR ([CXC-HALD-VALIDATE]); (4) the RULES + BRIDGE realization (scope the headless-logic layer to the internal bus + the ComposeApp export/import membrane, incl. a CAN transport shim); (5) the driver-artifact tiers ([CXC-HALD-DRIVER-DIST]) — the data-descriptor interpreter + signing/verify first, the bytecode VM later; (6) the Composer peripheral palette. Suggested first slice: parser + registry(pn532/ws281x/audio + bme280 + mcp23017) + validator + a leaf rule + a host-side ComposeApp export/import, all HOST-side — so the built adaptors become declaration-driven, a muxed/expander I2C bank + a compound gauge parse and validate, and the two-bus flow is demonstrated before firmware/PCB.
+
+**Architect — ratifications flagged:** (1) new node-prefixes `CXC-HALD-` (this spec) — a `CXC-` sub-family; needs a [CONV-PREFIX] row. (2) `[CXC-HALD-DECLARE]` REALIZES `[SPEC:CXC-HAL]` (spec 27, concept-capture); a future pass may fold 27's live concepts in. (3) cross-repo ref to `../../../pcb/boards-overview.lts` — the PCB dir is not (yet) under a spec domain; treat as an external hardware-ground-truth companion, not a domain-namespaced node. (4) the semantic-namespace vocabulary ([CXC-HALD-NAMESPACE]) should graduate into a shared CONVENTION registry (sibling to the widget catalog). (5) `provides:`/port-provider addressing and `actuator_group` are the two genuinely new schema shapes — confirm the syntax before the parser is built.

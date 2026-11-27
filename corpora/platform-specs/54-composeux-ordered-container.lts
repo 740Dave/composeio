@@ -1,0 +1,291 @@
+---
+scope: "The BINDABLE-ORDER / VISIBILITY container (`ordered_stack`, `OrderedFlowContainer`) — a flex flow whose child LAYOUT ORDER and SHOWN-SET are bound to ComposeBus state namespaces, so a publish reorders / hides / shows the children and the container REFLOWS. A CAPTURE of a primitive that is already BUILT, TESTED (9 tests) and IN PRODUCTION (the console collaboration rail), authored because seven references across the corpus cite [SPEC:CXC-ORDER] and no document carrying that id has ever existed. Covers: the `_flow_children()` layout-order hook it overrides ([CXC-R-ENGINE-LAYOUT]); the strict-additive-superset/zero-diff identity path; the `state_namespace` order+shown-set payload grammar (list OR `{order, hidden, visible}` dict); the SEPARATE `visibility_namespace` shown-set source and the order/visibility UNCOUPLING invariant that [SPEC:CXC-IC-LAUNCH]'s pane swap depends on; reversibility (the declared child list is never mutated, so draw z-order and hit-test stay declared); the hot-add hook; change-gated damage-scoped redraw; the `.compose.yaml` declaration surface; and the divergences between the de-facto docstring spec and the actual code, FLAGGED not redesigned."
+audience: [David (architect) — ratify a capture of built behaviour, "the builder implementing against [SPEC:CXC-ORDER] (spec 55's pane swap, any customizable-layout surface)", the render-engineer maintaining `layout.py`, any Intelligence asking whether the platform can reorder/hide a live layout over the bus]
+boundary: "IN: WHAT THE CODE DOES TODAY at `python/composeio/render/engine/layout.py:347-517` (+ the base hook at `:137-147`), `python/composeio/render/engine/parser.py:1473-1535`, and `python/composeio/render/engine/runtime.py:946-953` — every claim traced to a line and, where covered, to one of the 9 tests in `python/tests/render/test_ordered_container.py`; the four invariants a from-spec reimplementation must preserve ([CXC-ORD-SUPERSET], [CXC-ORD-VIS-NAMESPACE], [CXC-ORD-REVERSIBLE], [CXC-ORD-DAMAGE]); the `.compose.yaml` declaration surface; the production wiring in `intelligence/console/console.compose.yaml`; and an open-questions node recording every place the de-facto docstring spec and the code DISAGREE. OUT: any improvement to the primitive — this document specifies nothing that is not already built (a capture that quietly re-designs makes the spec and the code disagree silently, which is worse than no capture); the flex/grid layout algebra itself ([CXC-R-ENGINE-LAYOUT], reused not respec'd); the damage/redraw engine ([CXC-R-DAMAGE-ONCHANGE], reused); the hot-add re-bind machinery (`add_widget_live`, reused); the console pane swap that CONSUMES this primitive ([SPEC:CXC-IC-LAUNCH], which is being landed concurrently and is NOT edited by this document); the S4 launch-read personalization applier ([CXC-ICP-S4-DEFAULT-RAIL]), a SEPARATE mechanism that mutates the declared child list."
+not-this: "Not a design. The primitive shipped in the W2 workstream of [DEC-2026-07-25-FOLLOWUP-CALLS-SETTLED] (commit 65ad7fc) and has been running in the console since; this document is the missing SPEC for built code, written from the code, not a proposal for new behaviour. Not a redesign — where the behaviour is arguably wrong (the `direction` default, the `hidden`-beats-`visible` resolution order, duplicate-id children, silent malformed-payload tolerance) it is recorded in [CXC-ORD-OPEN] as an open question for the architect, NEVER silently corrected in the prose. Not a new widget primitive and not an engine change ([CXC-ICL-PANE-SWAP]'s zero-engine-change constraint holds precisely because this primitive already exists). Not an embedded-tier contract: there is no firmware implementation of `ordered_stack` (zero hits outside the Python render engine)."
+depends-on: [SPEC:CXC-RENDER]
+depends-on: [12-composeux-render-engine.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-08-10
+updated: 2026-08-10
+---
+# ComposeUX — The Bindable-Order / Visibility Container [SPEC:CXC-ORDER]
+
+> **This is a CAPTURE of built code, not a design.** `OrderedFlowContainer` (`type: ordered_stack`) is a `FlexContainer` subclass that overrides ONE hook — `_flow_children()`, the "children to LAY OUT, in layout order" seam every flex/grid container iterates instead of `self.children` — and binds that hook's answer to ComposeBus state. Publish a list of `widget_id`s and the children reorder; publish `{order, hidden, visible}` and they reorder AND hide; publish on the separate `visibility_namespace` and only the shown-set moves. The container REFLOWS: a hidden child leaves the FLOW entirely (it contributes no measured size, is not drawn, is not hit-tested), which is the property no `visible:` attribute binding has and the reason [CXC-ICL-PANE-SWAP] rides this container rather than a `visible:` binding. Everything is REVERSIBLE because `self.children` is never mutated: draw z-order and hit-test still walk the declared list, and clearing the state restores the original layout. With NO state published the container is byte-for-byte a `stack` (the identity path returns the declared list unchanged), so converting a `stack` to an `ordered_stack` is a zero-diff change until a state drives it — the backward-compatibility property that made the console rail conversion safe. It was commissioned as workstream W2 ("bindable-order container + hot-add + S4 reflow") of [DEC-2026-07-25-FOLLOWUP-CALLS-SETTLED] and landed in commit `65ad7fc`; the decision commissioned the CODE and no spec was ever written. Seven references across the corpus cite `[SPEC:CXC-ORDER]` and, until this document, none of them resolved. Every claim below is traced to a code line, and where covered, to one of the 9 tests in `python/tests/render/test_ordered_container.py`. Where the class docstring (the de-facto spec) and the actual behaviour DISAGREE, the code wins and the disagreement is recorded in [CXC-ORD-OPEN].
+
+---
+
+## 1. Intent & capture discipline
+
+### [CXC-ORD-WHY] Why this document exists — the primitive was built, cited seven times, and never specified
+
+- definition: the reusable primitive under any *customizable-layout* surface — a rearrangeable dashboard, an Intelligence-drivable collaboration region, a user-hidable card rail, a pane swap. It answers ONE question the base flex container cannot: *which children lay out, and in what order*, driven by the bus at runtime, reversibly. It is implemented in `python/composeio/render/engine/layout.py:347-517` as `OrderedFlowContainer(FlexContainer)`, constructed by the parser at `python/composeio/render/engine/parser.py:1517-1535`, and used in production by `intelligence/console/console.compose.yaml:1517-1523`.
+- capture-discipline (load-bearing, read this before editing this document): **the code is the truth.** This document was authored AFTER the fact from the implementation and its tests. It specifies nothing that is not already built. A reader who finds behaviour here that they would have designed differently should look in [CXC-ORD-OPEN] — the disagreement is recorded there — and MUST NOT "fix" it by editing the prose, because a spec that quietly re-designs makes the spec and the code disagree SILENTLY, which is strictly worse than the seven dangling references this document closes.
+- provenance: commissioned as workstream **W2 — "bindable-order container + hot-add + S4 reflow"** (D1 hot-add + D2 S4 widget-selection, "one converged effort") of [DEC-2026-07-25-FOLLOWUP-CALLS-SETTLED]; landed in commit `65ad7fc`. The decision commissioned the CODE; the spec was never authored. That gap is what this document closes — the gap [CXC-ICL-PANE-SWAP] named as a finding ("its SPEC is a docstring. A builder following the reference will find nothing").
+- role: the resolvable target for every `[SPEC:CXC-ORDER]` citation in the corpus and in the source — `layout.py:144`, `layout.py:344`, `layout.py:349`, `parser.py:1518`, `console.compose.yaml:1019`, `console.compose.yaml:1507`, `test_ordered_container.py:2`, `drive_ordered_reflow.py:2`, and the `uses:`/`USES` edges carried by [CXC-ICL-PANE-SWAP] and [SPEC:CXC-IC-LAUNCH].
+- reuse-by-reference: the layout algebra is the existing `FlexContainer` ([CXC-R-ENGINE-LAYOUT]); the draw + hit-test skip of an invisible child is the existing base `Container` (`layout.py:201-203`, `:214-216`); the damage model is the existing scoped `request_redraw()` (`python/composeio/render/widget.py:169-180`); the hot-add re-bind is the existing `RenderApp.add_widget_live` (`runtime.py:907-973`). This primitive forks NONE of them — it overrides ONE method.
+- see-also: [CXC-ORD-CONTAINER], [CXC-ORD-OPEN], [CXC-ICL-PANE-SWAP]
+- part-of: [SPEC:CXC-ORDER]
+
+---
+
+## 2. The primitive as built
+
+### [CXC-ORD-CONTAINER] `OrderedFlowContainer` — a `FlexContainer` that overrides the `_flow_children()` layout-order hook, and nothing else
+
+- definition: `class OrderedFlowContainer(FlexContainer)` (`layout.py:347`). The base `Container._flow_children()` (`layout.py:137-147`) returns `self.children` and is documented as "the children to LAY OUT, in layout order" — every container that lays out by list order iterates THAT, not `self.children` directly, so a subclass can reorder or exclude children from layout WITHOUT mutating the tree. `FlexContainer.measure` (`:262`) and `FlexContainer._arrange_children` (`:282`) both call it. `OrderedFlowContainer` overrides it (`:402-421`) and adds bus-facing state — it overrides no other layout, draw, or hit-test method.
+- state it carries (`layout.py:386-393`): `widget_type = "ordered_stack"` (assigned AFTER `FlexContainer.__init__` set `"stack"`); `state_namespace: str` and `visibility_namespace: str` (both default `""` = unbound); `_order: Optional[List[str]]` (`None` = declared order); `_hidden: set` (subtractive); `_visible_only: Optional[set]` (an allow-list; `None` = inactive).
+- the shown predicate (`layout.py:397-400`): `_shown(wid)` is `wid in self._visible_only` when an allow-list is active, else `wid not in self._hidden`. The allow-list therefore DOMINATES the hidden set whenever both are somehow set.
+- the layout-order computation (`layout.py:402-421`), stated so a reimplementer does not guess: (1) if `_order is None` AND `_hidden` is empty AND `_visible_only is None`, return `self.children` unchanged — the zero-cost identity path ([CXC-ORD-SUPERSET]); (2) build an id→child map with `setdefault` (FIRST child wins on a duplicate id, `:408`); (3) if there is no `_order`, return the declared list filtered by `_shown`; (4) otherwise emit, for each id in `_order`, the mapped child if it exists, is unseen, and is shown; then (5) append every remaining declared child that is unseen and shown, IN DECLARED ORDER. An id in `_order` naming no child is silently ignored; a child named by no id keeps declared order, after the ordered ones.
+- requirement: a from-spec reimplementation MUST express order and visibility ONLY through the `_flow_children()` hook (plus the `visible` flag, [CXC-ORD-REVERSIBLE]); it MUST NOT reorder or remove entries from `self.children`, MUST NOT override `draw`/`hit_test_tree`/`measure`, and MUST preserve the identity path as an object-identity return of the declared list (the zero-diff guarantee is asserted at the PIXEL level, not merely the order level).
+- default: `direction="column"`, `align="start"`, `justify="start"`, both namespaces `""`, `_order=None`, `_hidden=set()`, `_visible_only=None` (`layout.py:380-393`). **NOTE the `direction` default is `column`, whereas `FlexContainer`/`stack` defaults to `row`** — see [CXC-ORD-OPEN] O1; this is the one place the "drop-in superset" claim is qualified.
+- scenario:
+  - when: an `ordered_stack` is constructed and nothing is ever published to its namespaces
+  - then: `_flow_children()` returns the declared child list object itself, `measure`/`_arrange_children` behave exactly as `FlexContainer`, and no child's `visible` flag is ever written
+- see-also: [CXC-ORD-SUPERSET], [CXC-ORD-ORDER-STATE], [CXC-R-ENGINE-LAYOUT]
+- part-of: [SPEC:CXC-ORDER]
+
+### [CXC-ORD-SUPERSET] INVARIANT — a strict ADDITIVE SUPERSET of `stack`: zero-diff until a state publishes
+
+- definition: with no state published the container lays out **byte-for-byte** like the `FlexContainer` it subclasses, because `_flow_children()` short-circuits to the declared list (`layout.py:404-405`). Converting an existing `stack` to an `ordered_stack` therefore changes NOTHING on glass until a publish actually drives it — which is why the console's four-card rail could be converted in place (`console.compose.yaml:1507-1523`, "this conversion is a zero-diff default; only an S4 publish changes a pixel").
+- requirement: the identity path MUST remain a genuine no-op — same layout order, same measured sizes, same arranged rects, same pixels — and MUST NOT touch any child's `visible` flag. A reimplementation that (for example) always rebuilt a filtered list, or eagerly ran `_sync_visibility()` on mount, would break this invariant even while producing the same order, because the guarantee is asserted against a rendered `stack` at `tolerance=0, max_diff_ratio=0.0`.
+- invariant-rationale (why this is load-bearing, not a nicety): it makes adoption of the primitive RISK-FREE and therefore reversible. Any surface can become bindable-order in one key, and if the driving state is never published the surface is provably unchanged. Every consumer to date ([CXC-ORD-PRODUCTION], [CXC-ICL-PANE-SWAP]) relies on that: the swap adds a container capability to a live production rail without a layout regression to re-verify.
+- caveat (stated, not corrected): the guarantee is byte-identical for a conversion that carries an EXPLICIT `direction:` (as the console rail and every test do). Converting a `stack` that relied on the implicit `row` default yields a `column` layout, because the two constructors' `direction` defaults differ ([CXC-ORD-OPEN] O1).
+- verified-by: `test_ordered_container.py::test_default_layout_is_byte_identical_to_stack` (`:78-93`) — renders the same scene as `ordered_stack` and as `stack`, asserts a pixel match at zero tolerance AND that every child's `(x, y, w, h)` coincides exactly.
+- scenario:
+  - when: a scene declares `type: ordered_stack` with `state_namespace` set, and no producer ever publishes
+  - then: the rendered surface is pixel-identical to the same scene declared as `type: stack`, and every child's arranged rect is identical
+- see-also: [CXC-ORD-CONTAINER], [CXC-ORD-PRODUCTION], [CXC-ORD-OPEN]
+- part-of: [SPEC:CXC-ORDER]
+
+### [CXC-ORD-ORDER-STATE] `state_namespace` — ONE namespace carrying EITHER a pure-reorder list OR an `{order, hidden, visible}` dict
+
+- definition: the container subscribes `state_namespace` (alias key `order_namespace`, `parser.py:1529-1530`) and applies each delivery through `apply_order_state(value)` (`layout.py:433-461`). The payload is one of four shapes, resolved by type:
+  - **a LIST / tuple** → PURE REORDER (`:457-458`): the listed ids first in the given order, every unlisted child kept in declared order after them. Visibility is NOT touched — a bare reorder never un-hides anything.
+  - **a DICT** → up to three keys, applied in a FIXED clause order: `order` (`:441-444`), then `visible` (`:445-450`), then `hidden` (`:451-456`).
+    - `order`: a list/tuple sets the explicit order; any non-list value (including `null`) CLEARS it back to declared order.
+    - `visible`: an ALLOW-LIST — only the listed ids are shown; it also clears `_hidden`. The key is IGNORED when its value is `None` (the `value.get("visible") is not None` guard, `:445`); a non-list non-`None` value clears both the allow-list and the hidden set.
+    - `hidden`: a SUBTRACTIVE hidden set — the listed ids leave the flow; it also clears the allow-list (`_visible_only = None`). A non-list value (including `null`) clears the hidden set.
+  - **`None`** → clears the ORDER only (`:459-460`); the shown-set is retained.
+  - **anything else** (a scalar, a string, a number) → no branch matches; every field keeps its current value and the delivery is a silent no-op ([CXC-ORD-OPEN] O8).
+- requirement: a reimplementation MUST accept all four shapes with exactly these semantics; MUST keep unlisted children in DECLARED order after the ordered ones (not sorted, not dropped); MUST ignore an order entry naming no child rather than raising; MUST treat `hidden` and `visible` as mutually exclusive with the LAST-APPLIED clause winning (which, given the fixed clause order, means `hidden` wins whenever a dict carries both — see [CXC-ORD-OPEN] O2); and MUST NOT raise on a malformed payload.
+- default: unset/never-published → `_order is None` → declared order. The production namespace `_app/console/collab_order` declares NO `initial:` (`console.compose.yaml:1022`), so the console rail boots in declared order.
+- verified-by: `test_list_state_reorders` (`:96-104`, list reorder + visibility untouched); `test_dict_state_reorders_and_hides_and_compacts` (`:107-118`, `{order, hidden}` reorders AND hides AND the survivors COMPACT — `c` moves up into `b`'s slot); `test_visible_allowlist_shows_only_listed` (`:138-145`); `test_visibility_is_sticky_until_changed` (`:121-135`, `{hidden: []}` restores).
+- scenario:
+  - when: `["c", "a", "b"]` is published to a rail declaring `a, b, c`
+  - then: the layout order becomes `c, a, b`, all three stay visible, and `self.children` is still `[a, b, c]`
+- scenario:
+  - when: `{"order": ["a", "b", "c"], "hidden": ["b"]}` is published
+  - then: `b.visible` is False, `b` leaves the flow, and `c` moves UP into `b`'s slot — the rail COMPACTS (`yc == ya + CARD_H + GAP`), it does not leave a hole
+- scenario:
+  - when: `{"hidden": ["b"]}` is published, then a bare `["c", "b", "a"]` reorder is published
+  - then: `b` stays hidden — visibility is STICKY across a pure reorder; publishing `{"hidden": []}` restores it
+- see-also: [CXC-ORD-SHOWN-SET], [CXC-ORD-VIS-NAMESPACE], [CXC-PS-GRANULARITY]
+- part-of: [SPEC:CXC-ORDER]
+
+### [CXC-ORD-SHOWN-SET] The shown-set — a subtractive `hidden` set XOR a `visible` allow-list, reflected onto each child's `visible` flag
+
+- definition: the shown-set is held as `_hidden` (subtractive) XOR `_visible_only` (an allow-list), resolved by `_shown()` (`layout.py:397-400`). Whenever a visibility source is active — or JUST WAS, so a clear can restore — `_commit` calls `_sync_visibility()` (`:423-429`, gated at `:486`), which writes `child.visible = self._shown(child.widget_id)` for EVERY child. A REORDER-ONLY container never touches child visibility at all.
+- consequence — the two effects of hiding, which are different mechanisms: (a) the child is excluded from `_flow_children()`, so `FlexContainer.measure` (`:262-272`) and `_arrange_children` (`:282-283`) never see it — it occupies NO space and the container's own measured size shrinks; and (b) its `visible` flag is False, so the base `Container.draw` (`:201-203`) and `hit_test_tree` (`:214-216`) skip it — no pixels, not tappable. Both are required: (a) alone would still draw it at a stale rect; (b) alone is exactly the `visible:`-binding behaviour that leaves a hole.
+- requirement: hiding MUST produce both effects; a hidden child MUST NOT contribute measured size, MUST NOT draw, and MUST NOT be hit-tested; clearing the shown-set MUST restore the child to its declared position with no other state carried over.
+- caveat (stated, not corrected): a hidden child's own `arranged_rect` is NOT zeroed — it retains the rect from the last layout in which it participated, because `_arrange_children` only assigns to children in the flow. The correct assertions for "it left the flow" are that the child is absent from `_flow_children()` and that the CONTAINER's measured size shrank — not that the child's rect collapsed to zero ([CXC-ORD-OPEN] O6).
+- default: no visibility source → `_hidden` empty, `_visible_only` None, every child shown, no `visible` flag ever written.
+- verified-by: `test_dict_state_reorders_and_hides_and_compacts` (`:107-118`, the compaction proves the no-space half); `test_visible_allowlist_shows_only_listed` (`:138-145`); `test_visibility_is_sticky_until_changed` (`:121-135`, the restore half).
+- scenario:
+  - when: `{"visible": ["c", "a"]}` is published to a rail declaring `a, b, c`
+  - then: only `a` and `c` are shown, in declared relative order (`["a", "c"]`), and `b.visible` is False
+- see-also: [CXC-ORD-VIS-NAMESPACE], [CXC-ORD-REVERSIBLE], [CXC-ORD-OPEN]
+- part-of: [SPEC:CXC-ORDER]
+
+### [CXC-ORD-VIS-NAMESPACE] INVARIANT — `visibility_namespace` is a GENUINELY SEPARATE second subscription; order and visibility do not clobber each other
+
+- definition: `visibility_namespace` is a second, independent bus subscription (`parser.py:1534-1535`) routed to `apply_visibility_state(value)` (`layout.py:463-474`), NOT a key inside the order payload. It accepts a LIST of hidden ids, or a `{id: bool}` SHOWN-map (`{k for k, v in value.items() if not _truthy(v)}` → the hidden set), or `None` (clears the hidden set). It always sets `_visible_only = None` and NEVER touches `_order`. `on_bus_state` (`:501-511`) routes by namespace: the order namespace first, the visibility namespace `elif`.
+- invariant (the property [SPEC:CXC-IC-LAUNCH] depends on): **the ORDER axis and the VISIBILITY axis have independent publishers and must not clobber each other.** A reorder published to `state_namespace` never changes the shown-set (a bare list touches only `_order`); a shown-map published to `visibility_namespace` never changes the order (`apply_visibility_state` passes `self._order` through unchanged). This is what lets [CXC-ICL-PANE-SWAP] drive a pane swap from a presence publisher on `console/instance/pane` while a human or an Intelligence concurrently reorders the rail on `_app/console/collab_order` — neither writer stomps the other. A pane swap folded into the order payload's `{hidden: [...]}` key would clobber any concurrent reorder, and vice versa; the engine provides two sources precisely so both can be used.
+- requirement: a reimplementation MUST keep the two sources as two subscriptions with two independent apply paths; a publish on either namespace MUST leave the OTHER axis's state untouched. Exactly one widget should own each namespace ([DX-LEAF-OWNS-BEHAVIOR]); two writers to one shown-set namespace is a review reject.
+- caveat (the uncoupling is per-AXIS, not per-SOURCE): the two sources are uncoupled on the order-vs-visibility axis, but they are NOT two independent visibility sources — both write the SAME `_hidden`/`_visible_only` fields. A `{hidden: [...]}` published on `state_namespace` overwrites whatever `visibility_namespace` last set, and `apply_visibility_state` clears any allow-list set through the order payload. A design that needs two concurrent visibility writers is NOT supported today.
+- truthiness of a shown-map value (`_truthy`, `layout.py:514-517`): a string is shown iff it case-insensitively strips to one of `1`, `true`, `yes`, `on`, `shown`, `show`; any other value falls back to `bool(v)`. So `{"a": "no"}` HIDES `a`.
+- default: `visibility_namespace` unset (`""`) → no second subscription is registered at all (`parser.py:1534`), and the shown-set is driven solely by the order payload.
+- verified-by: `test_separate_visibility_namespace` (`:148-159`) — publishes a hidden-id LIST and then a `{id: bool}` shown-map on the second namespace and asserts both take effect; `test_parser_builds_ordered_stack_and_subscribes` (`:177-187`) asserts BOTH namespaces are subscribed for the same widget.
+- scenario:
+  - when: a rail declares `state_namespace: dash/order` and `visibility_namespace: dash/hidden`, and `["a"]` is published to `dash/hidden`
+  - then: `a` is hidden and the rail's ORDER is unchanged; a subsequent `{"a": true, "c": false}` shown-map shows `a` and hides `c`
+- see-also: [CXC-ORD-SHOWN-SET], [CXC-ICL-PANE-SWAP], [SPEC:CXC-IC-LAUNCH]
+- part-of: [SPEC:CXC-ORDER]
+
+### [CXC-ORD-REVERSIBLE] INVARIANT — the declared child list is NEVER mutated, so z-order stays declared and every change is reversible
+
+- definition: no code path in `OrderedFlowContainer` reorders, inserts into, or removes from `self.children`. Order lives in `_order` (a list of ids) and visibility in `_hidden`/`_visible_only`; the declared tree is read-only to this container. Three consequences follow directly: (1) DRAW z-order and HIT-TEST order remain the DECLARED order (`Container.draw` `:201-203` and `hit_test_tree` `:214-216` iterate `self.children`), so overlapping children never flicker or change stacking when the layout order changes; (2) clearing the state restores the original layout exactly, because the original was never lost; (3) an external reader of the tree (the S4 personalization applier, a test, an Intelligence inspecting the scene) always sees the AUTHORED composition.
+- requirement: a reimplementation MUST NOT mutate the declared child list to express order or visibility. Callers MUST treat the value returned by `_flow_children()` as READ-ONLY: on the identity path it is the live `self.children` list object, not a copy (`layout.py:404-405`), so mutating it would mutate the tree ([CXC-ORD-OPEN] O9).
+- contrast (a different mechanism, deliberately): `intelligence/console/personalization.py :: apply_collaboration_selection` — the S4 LAUNCH-READ applier ([CXC-ICP-S4-DEFAULT-RAIL]) — DOES reorder `container.children` and write `child.visible` directly (`:300-310`). That is the persisted, launch-time curation path and is NOT this primitive; the two co-own `child.visible` at runtime ([CXC-ORD-OPEN] O5).
+- verified-by: `test_declared_child_list_is_never_mutated` (`:162-174`) — publishes `{"order": ["c","b","a"], "hidden": ["a"]}`, asserts `[c.widget_id for c in rail.children] == ["a","b","c"]` unchanged, then clears both and asserts the laid order is `["a","b","c"]` again.
+- scenario:
+  - when: a reorder + hide is published, then the order is cleared with `null` and the hidden set with `{"hidden": []}`
+  - then: the rail returns exactly to its declared layout — nothing was destroyed, so nothing must be rebuilt
+- see-also: [CXC-ORD-CONTAINER], [CXC-ORD-SHOWN-SET], [CXC-R-ENGINE-HIT]
+- part-of: [SPEC:CXC-ORDER]
+
+### [CXC-ORD-HOT-ADD] `register_added_child()` — a RUNTIME-added child appears immediately instead of being hidden by omission
+
+- definition: `register_added_child(child)` (`layout.py:490-499`) is the hot-add hook. When an allow-list is active it ADDS the new id to `_visible_only`; when an explicit order is active it APPENDS the new id to `_order` (if absent); then it sets `child.visible = self._shown(child.widget_id)`. Without it, a widget dropped into a container under an active allow-list or order would be invisible or last-by-accident — hidden by OMISSION from a state that predates it. `RenderApp.add_widget_live` calls it after appending the child and before mounting (`runtime.py:946-953`, `isinstance(parent, OrderedFlowContainer)`); the console's launch-mount calls it duck-typed via `hasattr` (`personalization.py:355-356`).
+- requirement: a container that carries an active order or allow-list MUST integrate a runtime-added child into BOTH (append to the order, admit to the allow-list) and MUST set its `visible` flag from the resolved shown-set, so a hot-added widget appears immediately ([CXC-ICP-REBIND] hot-add / live-subscribe — the D1 choice of [DEC-2026-07-25-FOLLOWUP-CALLS-SETTLED], built in the same W2 workstream as this container).
+- caveat (stated, not corrected): the hook does NOT remove the new id from `_hidden`, so a hot-added child whose id is already in the hidden set stays hidden ([CXC-ORD-OPEN] O14). It also does not request a redraw — the caller damages the added subtree.
+- default: with no order and no allow-list active, the hook only writes `child.visible` (which resolves to True unless the id is in `_hidden`).
+- verified-by: exercised end-to-end (not asserted at the hook level) by `python/tests/render/test_hot_add.py` (its `_dash()` fixture is an `ordered_stack` with a `state_namespace`, `:34-40`) and by `python/tests/render/test_console_app_surfaces.py::test_s4_hot_add_mounts_into_running_rail_and_binds` (`:111-139`, a real `rail_col` `ordered_stack`); `python/tests/render/drive_ordered_reflow.py` is the visual proof driver for [SPEC:CXC-ORDER] + hot-add. **No test asserts the hook's own three effects directly** — see [CXC-ORD-VERIFY] ORD-C7.
+- scenario:
+  - when: `{"visible": ["a", "c"]}` is active and a widget `d` is hot-added via `add_widget_live`
+  - then: `d` is admitted to the allow-list, appended to any active order, and shown immediately — not swallowed by the pre-existing allow-list
+- see-also: [CXC-ORD-SHOWN-SET], [CXC-ICP-S4-DEFAULT-RAIL], [CXC-ICP-LAUNCH-BIND]
+- part-of: [SPEC:CXC-ORDER]
+
+### [CXC-ORD-DAMAGE] INVARIANT — a redraw is requested ONLY on a real change, and the damage is scoped to this container
+
+- definition: `on_bus_state` (`layout.py:501-511`) routes the delivery to the matching apply path, which returns whether the EFFECTIVE order or shown-set changed (`_commit`, `:476-488`, comparing the new order/hidden/visible against the current), and calls `self.request_redraw()` ONLY when it did. `Widget.request_redraw()` (`python/composeio/render/widget.py:169-180`) damages `self.arranged_rect` — this container's own region — not the whole surface; a container carries a mount context (`Container.on_mount`, `layout.py:151-153`) so the call is live. A SHRINK is covered because the runtime captures the pre-update arranged rect and damages old-UNION-new for the update's target (`runtime.py:1071-1092`).
+- requirement: a reimplementation MUST gate the redraw on a real change — a delivery that resolves to the SAME effective order and shown-set MUST return without requesting a redraw — and MUST scope the damage to the container's own rect rather than escalating to a full-surface redraw. This is the container-level instance of [CXC-R-DAMAGE-ONCHANGE]: a widget MUST NOT rely on the transport to de-dupe, because retained-value replay at hot-add wire time, pattern fan-out, and whole-projection re-emits all re-deliver content the widget already reflects.
+- verified-by: `test_reflow_requests_redraw_on_change` (`:190-202`) — asserts a real reorder sets `app._dirty`, and that an IDENTICAL republish does not. Note the honest limit of that second assertion: `Namespace.publish_state` (`python/composeio/namespace.py:77-85`) only notifies subscribers when `new != old`, so an identical republish never reaches `on_bus_state` at all and the test would pass even without the container's own gate. The gate's own coverage — a DIFFERENTLY-SHAPED payload resolving to the same effective state (e.g. `{"order": ["b","a","c"]}` after the list `["b","a","c"]`) — is established by inspection of `_commit`, not by a test ([CXC-ORD-VERIFY] ORD-C8).
+- default: an unmatched namespace, or a payload that changes nothing, requests no redraw.
+- scenario:
+  - when: a rail's order state changes and the container reflows
+  - then: exactly the rail's own region is damaged (old ∪ new), and the rest of the fidelity-rich console scene is not re-rastered
+- see-also: [CXC-R-DAMAGE-ONCHANGE], [CXC-ORD-ORDER-STATE]
+- part-of: [SPEC:CXC-ORDER]
+
+---
+
+## 3. The declaration surface
+
+### [CXC-ORD-DECLARE] Declaring one in `.compose.yaml` — three accepted type spellings, two namespace keys, flex keys otherwise
+
+- definition: the parser registers `ordered_stack`, `orderedstack`, and `flow_stack` as container types (`parser.py:1473-1475`), all three constructing `OrderedFlowContainer` (`:1517-1531`). Keys read at construction: `direction` (through `_norm_direction`, so `vertical`/`horizontal` aliases apply), `align`, `justify`, `state_namespace` (**alias `order_namespace`**, first non-empty wins), and `visibility_namespace`. Every other container key (`id`, `gap`, `padding`, `width`, `align`, children, bindings, gestures, `state:`) is handled by the shared container path exactly as for a `stack`.
+- subscriptions: a non-empty `state_namespace` appends `(namespace, node)` to `comp.subscriptions` (`:1532-1533`); a non-empty `visibility_namespace` appends a SECOND entry for the same widget (`:1534-1535`). An empty string registers nothing. Initial wiring does not replay a retained value (`runtime.py:747-756` gates replay on `_running`), so a scene-declared container holds the DECLARED order at boot unless the namespace carries an `initial:` seed or a producer publishes.
+- requirement: a scene MUST declare the driving namespace in the scene's `namespaces:` block (so it is state-engine-typed and scoped) and MUST bind it to a container of one of the three registered types; a builder MUST NOT expect `visible:` attribute bindings to reflow a flex container (they set the flag but the child keeps its measured space — the reason [CXC-ICL-PANE-SWAP] uses `visibility_namespace` instead).
+- default: `direction: column`, `align: start`, `justify: start`, both namespaces empty. A `direction`-less conversion from `stack` therefore CHANGES the axis ([CXC-ORD-OPEN] O1) — declare `direction:` explicitly.
+- verified-by: `test_parser_builds_ordered_stack_and_subscribes` (`:177-187`) — asserts the parsed node is an `OrderedFlowContainer`, that both namespace keys landed on the instance, and that both namespaces appear in `comp.subscriptions` for that widget.
+- scenario:
+  - when: a scene declares `{type: ordered_stack, id: rail, direction: column, state_namespace: dash/order, visibility_namespace: dash/vis}`
+  - then: the parser builds an `OrderedFlowContainer` and registers TWO subscriptions for it; publishing to either namespace reaches `on_bus_state` with that namespace name
+- see-also: [CXC-ORD-CONTAINER], [CXC-ORD-PRODUCTION], [CXC-ORD-OPEN]
+- part-of: [SPEC:CXC-ORDER]
+
+### [CXC-ORD-PRODUCTION] Production use — the console collaboration rail, and what is deliberately NOT yet wired
+
+- definition: `intelligence/console/console.compose.yaml:1517-1523` declares the right-hand collaboration rail as `{type: ordered_stack, id: rail_col, direction: column, align: stretch, gap: 13, width: 332, state_namespace: _app/console/collab_order}`. The driving namespace is declared at `:1019-1022` as `{name: _app/console/collab_order, state_engine: json, export: true, scope: local, label: "Collaboration rail order/visibility"}` — `scope: local` (it never leaves the console) and NO `initial:` (so the rail boots in declared order). The scene comment records the conversion rationale: the reflow reaches EVERY card in the rail, not just the flex siblings a frozen absolute layout could touch, and with no state published the conversion is zero-diff.
+- not-yet-wired (recorded as fact, NOT as a gap in this primitive): `visibility_namespace` and `console/instance/pane` appear NOWHERE in `console.compose.yaml` (zero hits across `intelligence/`). The second subscription is implemented, tested, and available; the console simply does not use it yet. Wiring it is the genuine future work owned by [SPEC:CXC-IC-LAUNCH] / [CXC-ICL-PANE-SWAP] (which adds the rail key, declares the namespace with its load-bearing `initial:`, and publishes the shown-map from the launch panel). Likewise the `order_namespace` alias and the `orderedstack` / `flow_stack` type spellings have ZERO usages in the repo.
+- requirement: a builder wiring the pane swap MUST add `visibility_namespace` to the EXISTING `rail_col` declaration and MUST NOT fold the shown-map into `_app/console/collab_order` ([CXC-ORD-VIS-NAMESPACE]); no engine change, no parser change, and no new widget primitive is required, because this container already provides both sources.
+- verified-by: `test_console_app_surfaces.py::test_s4_real_console_default_roster_is_the_four_scene_cards` (`:173-184`) exercises the real `rail_col` from the shipped scene; `test_console_render_idle.py:118` and `test_deliverable_console.py:648` also read `rail_col` from the live scene.
+- scenario:
+  - when: an Intelligence publishes `{"order": ["deliverable_card", "intelligence_card"], "hidden": ["away_watch_view"]}` to `_app/console/collab_order`
+  - then: the console rail reorders and compacts in place, only the rail's region repaints, and the scene file is untouched — the change is reversible by publishing `null` + `{"hidden": []}`
+- see-also: [CXC-ORD-DECLARE], [CXC-ICL-PANE-SWAP], [CXC-ICP-S4-DEFAULT-RAIL]
+- part-of: [SPEC:CXC-ORDER]
+
+---
+
+## 4. Acceptance — the evidence this capture rests on
+
+### [CXC-ORD-VERIFY] Two-tier verdicts — each captured claim traced to its test, and the gaps named
+
+- definition: every claim in this document is traceable to a code line and, where covered, to one of the 9 tests in `python/tests/render/test_ordered_container.py`. Rows whose `verify.machine` cell says NO DIRECT TEST are honest coverage gaps in the BUILT artifact, recorded here rather than papered over — a `built` claim without a verification handle reads as "spec'd, unverified" ([CAP-MODEL-FACETS] / [SBR-TRUST]).
+
+| ID | Captured claim | verify.machine | verify.human (glass) |
+|----|----------------|----------------|----------------------|
+| ORD-C1 | Zero-diff identity: no state published → pixel-identical to `stack` ([CXC-ORD-SUPERSET]) | `test_default_layout_is_byte_identical_to_stack` — pixel compare at `tolerance=0, max_diff_ratio=0.0` plus exact per-child rect equality | on glass: the console rail after the `stack`→`ordered_stack` conversion looks unchanged until something publishes |
+| ORD-C2 | A LIST payload pure-reorders and never touches visibility ([CXC-ORD-ORDER-STATE]) | `test_list_state_reorders` — laid order follows the list; all children still `visible` | on glass: cards move; none disappear |
+| ORD-C3 | A `{order, hidden}` dict reorders AND hides AND the flow COMPACTS ([CXC-ORD-SHOWN-SET]) | `test_dict_state_reorders_and_hides_and_compacts` — `b.visible is False`, laid order `["a","c"]`, and `yc == ya + CARD_H + GAP` (no hole) | on glass: the hidden card leaves no gap — the rail closes up |
+| ORD-C4 | Visibility is STICKY across a bare reorder; clearing restores ([CXC-ORD-ORDER-STATE]) | `test_visibility_is_sticky_until_changed` — a reorder after a hide does not un-hide; `{"hidden": []}` restores all three | on glass: reordering a rail with a hidden card does not resurrect it |
+| ORD-C5 | `visible` is an allow-list ([CXC-ORD-SHOWN-SET]) | `test_visible_allowlist_shows_only_listed` — only listed ids shown, in declared relative order | on glass: an allow-list publish leaves exactly the named cards |
+| ORD-C6 | `visibility_namespace` is a genuinely separate second source, accepting a hidden-list OR a `{id: bool}` shown-map ([CXC-ORD-VIS-NAMESPACE]) | `test_separate_visibility_namespace` (both payload shapes) + `test_parser_builds_ordered_stack_and_subscribes` (both namespaces subscribed for the one widget) | on glass ([SPEC:CXC-IC-LAUNCH]): the pane swaps while a concurrent rail reorder survives — neither writer stomps the other |
+| ORD-C7 | Reversibility: `self.children` is never mutated; draw/hit-test stay declared ([CXC-ORD-REVERSIBLE]) | `test_declared_child_list_is_never_mutated` — declared list unchanged after reorder+hide; clearing restores the laid order | on glass: overlapping children keep their stacking through a reorder (no flicker) |
+| ORD-C8 | Damage is change-gated and scoped ([CXC-ORD-DAMAGE]) | `test_reflow_requests_redraw_on_change` — a real change dirties, an identical republish does not. **PARTIAL**: the bus de-dupes identical publishes (`namespace.py:82`), so the gate's own no-op path (a different payload shape → same effective state) is inspection-only | on glass: driving the rail does not re-raster the whole console |
+| ORD-C9 | Hot-add integrates with an active order/allow-list ([CXC-ORD-HOT-ADD]) | **NO DIRECT TEST of `register_added_child`'s three effects.** Exercised indirectly by `test_hot_add.py` (its parent is an `ordered_stack`) and `test_console_app_surfaces.py::test_s4_hot_add_mounts_into_running_rail_and_binds` | on glass: a widget dropped into a rail under an active allow-list appears immediately (`drive_ordered_reflow.py` is the visual driver) |
+| ORD-C10 | The parser builds all three type spellings and both namespace keys ([CXC-ORD-DECLARE]) | `test_parser_builds_ordered_stack_and_subscribes` covers `ordered_stack` + both keys. **NO TEST** covers the `orderedstack` / `flow_stack` spellings or the `order_namespace` alias (zero usages in the repo) | n/a (structural) |
+| ORD-C11 | A malformed payload is tolerated ([CXC-ORD-ORDER-STATE]) | **NO TEST.** Inspection: a scalar/string payload matches no branch in `apply_order_state` and is a silent no-op ([CXC-ORD-OPEN] O8) | n/a (structural) |
+| ORD-C12 | Duplicate-id children ([CXC-ORD-CONTAINER] step 2) | **NO TEST.** Inspection: with any state active only the FIRST child of a duplicated id lays out ([CXC-ORD-OPEN] O4) | n/a (structural) |
+
+- part-of: [SPEC:CXC-ORDER]
+
+---
+
+## 5. Open questions — where the docstring and the code disagree, or the behaviour is arguably wrong
+
+### [CXC-ORD-OPEN] FLAGGED for the architect — recorded, NOT redesigned
+
+- definition: this capture specifies what IS. The items below are places where the class docstring (the de-facto spec, `layout.py:348-378`) and the actual behaviour disagree, or where the behaviour is a defensible-but-surprising choice a from-spec reimplementer would get wrong. Each is stated as a QUESTION for the architect. **None is fixed in the prose above, and none should be "fixed" by editing this document** — a change belongs in the code, after which this capture is updated to match.
+- O1 — the `direction` default breaks the literal drop-in claim: `OrderedFlowContainer.__init__` defaults `direction="column"` (`layout.py:380`) and the parser passes `spec.get("direction", "column")` (`parser.py:1526`), while `stack`/`flex` default to `"row"` (`parser.py:1514`). The docstring says converting a `stack` to an `ordered_stack` "is a zero-diff change until a state actually drives it" — TRUE only when `direction:` is declared explicitly, as the console rail and every test do. A `stack` relying on the implicit `row` default silently becomes a column. Question: align the default to `row`, or keep `column` (the overwhelmingly common case for a rail) and amend the claim?
+- O2 — `hidden` vs `visible` is not "last key wins": the docstring says the two keys are "mutually exclusive (last key wins)". The code applies `visible` first (`:445-450`) and `hidden` second (`:451-456`), so when a dict carries BOTH, `hidden` wins REGARDLESS of key insertion order. Deterministic, but not what the docstring describes. Question: amend the docstring to "`hidden` wins", or implement true last-key-wins?
+- O3 — an allow-list cannot be cleared through its own key: `{"visible": null}` is IGNORED by the `is not None` guard (`:445`), and `{"visible": []}` sets an EMPTY allow-list (hiding everything). The only way to leave allow-list mode via `state_namespace` is to send a `hidden` key (e.g. `{"hidden": []}`), which clears `_visible_only` as a side effect (`:455`). Question: is the asymmetry with `order` (where `null` clears) intended?
+- O4 — duplicate `widget_id`s silently lose a child once any state is active: `by_id.setdefault` (`:408`) keeps the FIRST child per id and the `seen` set (`:415-420`) suppresses the rest, so with a duplicate id one child stops laying out the moment ANY order/shown-set exists — while the identity path lays out both. A silent, state-dependent divergence. Question: reject duplicate ids at parse time (fail-loud), or key the map by identity?
+- O5 — `child.visible` has three co-owners: `_sync_visibility` (`:423-429`) writes the flag for EVERY child whenever a visibility source is (or just was) active; `visible:` attribute bindings ([CXC-RM-M4] engine-addition #2) write it; and `personalization.apply_collaboration_selection` (`personalization.py:304`) writes it. Last writer wins, and no test covers the interaction. Question: should the container own the flag exclusively while a visibility source is active, and refuse/warn on a competing `visible:` binding?
+- O6 — a hidden child's `arranged_rect` is not zeroed: `_arrange_children` only assigns to children in the flow, so a hidden child retains its last rect. A machine test asserting the CHILD's "layout height collapses to zero" would FAIL even though the behaviour is correct; the sound assertions are absence from `_flow_children()` and a shrink in the CONTAINER's measured size. Recorded here because [CXC-ICL-PANE-SWAP]'s `verify-machine` is worded as "collapses its layout height to zero (not merely stops drawing it)" — spec 55 is NOT edited by this document; flagged for whoever lands its acceptance test.
+- O7 — two ids this primitive's code cites do not exist in the corpus: `[CXC-R-DAMAGE]` (cited by `layout.py:508`, `widget.py:170`, `runtime.py:195`, and by `56-terminal-widget.lts:775/1129`) and `[CXC-ICP-REBIND]` (cited by `runtime.py:905/728/910` and by `12-composeux-render-engine.lts:510/521/527-529`) are referenced everywhere and DEFINED nowhere. The nearest real nodes are [CXC-R-DAMAGE-ONCHANGE] and [CXC-ICP-LAUNCH-BIND]. This document cites them because the CODE cites them, and declares its edges to the nodes that resolve. Question: mint the two missing nodes in spec 12, or rename the citations?
+- O8 — a malformed payload is silently ignored: a scalar/string/number on `state_namespace` matches no branch (`:440-460`), so the delivery is a no-op with no warning and no redraw — no fail-loud, contrary to the platform's loud-refusal discipline elsewhere. Question: warn (preserve-and-flag) on an unrecognized payload shape?
+- O9 — the identity path returns the LIVE child list: `_flow_children()` returns `self.children` itself, not a copy (`:404-405`). All callers are read-only today, but the contract is implicit. Question: document it as read-only (done here), or return a copy and pay the allocation on the hot path?
+- O10 — the change-gate's own coverage is inspection-only: see ORD-C8. Question: add a test that publishes a differently-shaped payload resolving to the same effective state and asserts no damage?
+- O11 — accepted-but-unexercised surface: the `orderedstack` and `flow_stack` type spellings and the `order_namespace` alias have zero usages and zero tests. Question: keep as compatibility surface, or retire?
+- O12 — no embedded-tier implementation: `ordered_stack` exists only in the Python render engine (zero hits in firmware). Recorded as tier coverage, not as a defect.
+- O13 — `register_added_child` does not clear `_hidden`: a hot-added child whose id is already in the hidden set stays hidden (`:495-499`), even though the hook exists precisely to stop a dropped-in widget being "hidden by omission". Question: should a hot-add also discharge a stale hidden entry for that id?
+- status: OPEN — flagged for the architect's ratify; no item is a blocker for the consumers of this primitive.
+- part-of: [SPEC:CXC-ORDER]
+
+---
+
+## 6. Capability facet
+
+### [CAP-BINDABLE-ORDER] Bindable layout order + visibility — a live surface reorders/hides/reflows from a bus publish, reversibly
+
+- kind: capability
+- maturity: built
+- tier-coverage: console (the shipped Intelligence Console rail), Linux-node / Python render engine (any `.compose.yaml` scene the Python engine renders, windowed or headless)
+- not-covered: the embedded/MCU tiers — there is NO firmware implementation of `ordered_stack` (zero hits outside `python/`); a CYD/C3 surface cannot be reordered over the bus today
+- verified-by: 9 passing tests in `python/tests/render/test_ordered_container.py` (identity/pixel-parity, list reorder, dict reorder+hide+compact, sticky visibility, allow-list, separate visibility namespace, non-mutation/reversibility, parser+subscriptions, change-gated damage), plus production use in `intelligence/console/console.compose.yaml:1517-1523`. Coverage gaps are named explicitly in [CXC-ORD-VERIFY] (ORD-C9, C10, C11, C12).
+- depends-on: [CXC-ORD-CONTAINER]
+- see-also: [SPEC:CXC-ORDER]
+- flag: NOT yet added to [CAP-MAP]'s `see-also` roster in `49-capability-map.lts` — this task was scoped to ONE new document, so spec 49 was not edited. The `part-of: [CAP-MAP]` edge below makes the node reachable by the reverse-PART_OF walk and by `lts_find(kind=capability)` regardless; adding the roster line is a one-line follow-up for the architect.
+- part-of: [CAP-MAP]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-ORDER] DEPENDS_ON [SPEC:CXC-RENDER]
+- [SPEC:CXC-ORDER] REALIZES [DEC-2026-07-25-FOLLOWUP-CALLS-SETTLED]
+- [SPEC:CXC-ORDER] USES [CXC-R-ENGINE-LAYOUT]
+- [CXC-ORD-WHY] DOCUMENTS [SPEC:CXC-ORDER]
+- [CXC-ORD-WHY] REALIZES [DEC-2026-07-25-FOLLOWUP-CALLS-SETTLED]
+- [CXC-ORD-CONTAINER] DEPENDS_ON [CXC-R-ENGINE-LAYOUT]
+- [CXC-ORD-CONTAINER] USES [CXC-R-ENGINE-HIT]
+- [CXC-ORD-SUPERSET] DEPENDS_ON [CXC-ORD-CONTAINER]
+- [CXC-ORD-SUPERSET] UPHOLDS [CXC-R-ENGINE-LAYOUT]
+- [CXC-ORD-ORDER-STATE] DEPENDS_ON [CXC-ORD-CONTAINER]
+- [CXC-ORD-ORDER-STATE] USES [CXC-PS-GRANULARITY]
+- [CXC-ORD-SHOWN-SET] DEPENDS_ON [CXC-ORD-ORDER-STATE]
+- [CXC-ORD-SHOWN-SET] USES [CXC-R-ENGINE-HIT]
+- [CXC-ORD-VIS-NAMESPACE] DEPENDS_ON [CXC-ORD-SHOWN-SET]
+- [CXC-ORD-VIS-NAMESPACE] RELATED_TO [CXC-ORD-ORDER-STATE]
+- [CXC-ORD-REVERSIBLE] DEPENDS_ON [CXC-ORD-CONTAINER]
+- [CXC-ORD-REVERSIBLE] RELATED_TO [CXC-ICP-S4-DEFAULT-RAIL]
+- [CXC-ORD-HOT-ADD] DEPENDS_ON [CXC-ORD-SHOWN-SET]
+- [CXC-ORD-HOT-ADD] RELATED_TO [CXC-ICP-LAUNCH-BIND]
+- [CXC-ORD-HOT-ADD] RELATED_TO [CXC-ICP-S4-DEFAULT-RAIL]
+- [CXC-ORD-DAMAGE] UPHOLDS [CXC-R-DAMAGE-ONCHANGE]
+- [CXC-ORD-DAMAGE] DEPENDS_ON [CXC-ORD-ORDER-STATE]
+- [CXC-ORD-DECLARE] DEPENDS_ON [CXC-ORD-CONTAINER]
+- [CXC-ORD-DECLARE] USES [CXC-PS-GRANULARITY]
+- [CXC-ORD-PRODUCTION] DEPENDS_ON [CXC-ORD-DECLARE]
+- [CXC-ORD-PRODUCTION] RELATED_TO [CXC-ICL-PANE-SWAP]
+- [CXC-ORD-VERIFY] RELATED_TO [CXC-ORD-OPEN]
+- [CXC-ORD-OPEN] DOCUMENTS [SPEC:CXC-ORDER]
+- [CAP-BINDABLE-ORDER] DEPENDS_ON [CXC-ORD-CONTAINER]
+- [CAP-BINDABLE-ORDER] RELATED_TO [SPEC:CXC-ORDER]
+- [CXC-ORD-VIS-NAMESPACE] RELATED_TO [CXC-ICL-PANE-SWAP]
+- [CXC-ORD-VIS-NAMESPACE] RELATED_TO [SPEC:CXC-IC-LAUNCH]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-08-10
+**Updated**: 2026-08-10 (v0.1) — INITIAL CAPTURE of a primitive that was built, tested and shipped without a spec. Authored from `python/composeio/render/engine/layout.py:347-517` (+ the `_flow_children()` base hook at `:137-147`), `parser.py:1473-1535`, `runtime.py:946-953`, the 9 tests in `python/tests/render/test_ordered_container.py`, and the production wiring at `intelligence/console/console.compose.yaml:1019-1022` / `:1507-1523`. Closes the dangling `uses:`/`USES` edges carried by [CXC-ICL-PANE-SWAP] and [SPEC:CXC-IC-LAUNCH] (spec 55 was NOT edited — it is being landed concurrently). Four invariants captured: [CXC-ORD-SUPERSET] (zero-diff identity path), [CXC-ORD-VIS-NAMESPACE] (order/visibility uncoupling — the property the pane swap depends on), [CXC-ORD-REVERSIBLE] (the declared child list is never mutated), [CXC-ORD-DAMAGE] (change-gated, scoped redraw). Thirteen divergences between the de-facto docstring spec and the actual code are FLAGGED in [CXC-ORD-OPEN] and deliberately NOT corrected in the prose — notably the `direction` default (`column` vs `stack`'s `row`, which qualifies the literal zero-diff claim), the `hidden`-beats-`visible` resolution order (the docstring says "last key wins"), duplicate-id child loss under any active state, and the three co-owners of `child.visible`.
+**Status**: RATIFY-READY (capture of built behaviour). The behavioural content is not a proposal — it is a transcription of running code, each claim traced to a line and, where covered, to a test. What the architect ratifies is (a) that this document is the intended home of [SPEC:CXC-ORDER], (b) the [CAP-BINDABLE-ORDER] maturity/tier calls, and (c) the disposition of the thirteen open items in [CXC-ORD-OPEN] — each of which, if actioned, is a CODE change that this document is then updated to match. NEXT: add [CAP-BINDABLE-ORDER] to [CAP-MAP]'s `see-also` roster in 49; close the ORD-C9/C10/C11/C12 test gaps if the architect wants the `built` claim fully handled; decide O1 (the `direction` default) before any further `stack`→`ordered_stack` conversion.

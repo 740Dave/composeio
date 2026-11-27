@@ -1,0 +1,240 @@
+---
+scope: "The RATIFIED-plus-proposed shape of ComposeServer as a micro-kernel (supervise, load, config-persist, bus-provision — nothing else) plus the plugin contract that gives every capability, including the kernel's own admin surface, a uniform shape: one typed pydantic declaration deriving form, announce and registry; a requires: execution floor; and a closed-grammar, ontology-extending DSL. Captured from a design session between the composeio-hardware-architect and David, WIP capture dated in-session; not yet locked via /end_design_session."
+audience: "David (architect) — for ratify of every non-ratified claim below; the builder who will implement ComposeServer and the plugin loader; the audit that diffs this document against David's verbatim turns from the settling session."
+boundary: "IN: the micro-kernel boundary (supervise/load/config-persist/bus-provision, no privileged built-ins); the plugin contract (typed pydantic declaration deriving form+announce+registry, mandatory derived announce, dynamic re-announcing surface, reload: killed, isolation floor); the requires: execution floor (capabilities + ready: DSL, park-loud vs degrade-falsy); the DSL/ontology boundary (closed grammar, plugins extend via bus namespaces not grammar functions); the 2-mode rule-config UX (templates + raw DSL, the guided middle tier dropped per David's Q2 ruling); time as a default plugin (freshness architect-proposed / pending). OUT: the ComposeBus kernel itself and its standup/connector/locality-recursion model ([SPEC:CXC-COMPOSEBUS-KERNEL]'s subject, only cited — ComposeServer is built ON that kernel); the expression DSL's own grammar definition ([SPEC:CXC-DSL]'s subject, only cited); any build authorization — this is a design capture, not a build spec."
+not-this: "Not a ratified spec — [PLACEMENT UNRATIFIED], per [CXC-VISION-PLACEMENT]: written into corpora/platform-specs because that is where its neighbours (73, 79, 80, 81, 83, 84) already sit, most of them also UNRATIFIED, not because the placement was ruled. Not a build spec — no acceptance criteria, no MUST/SHOULD requirement predicates, no verify.machine/verify.human tiers; this mirrors the established convention of its nearest siblings (61, 79, 80, 81, 83, 84), all pre-build design captures. Not an assertion that every claim below is David's stated word — each node carries an explicit provenance property (david-ruling / architect-synthesis / architect-proposed / architect-proposed-david-blessed) per [DX-INTERPRETATION-IS-AN-INFERENCE]."
+depends-on: [61-config-over-bus.lts, 62-composeplatform-vision.lts, 84-composebus-kernel.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: concept-capture
+status: draft
+created: 2026-08-23
+updated: 2026-08-23
+---
+# ComposeServer — micro-kernel + plugin contract; PLACEMENT UNRATIFIED [SPEC:CXC-COMPOSESERVER]
+
+> ComposeServer is a micro-kernel running on the ComposeBus kernel ([SPEC:CXC-COMPOSEBUS-KERNEL]): it supervises, loads, persists config for, and bus-provisions plugins — nothing else. Any capability that CAN be a plugin MUST be one, including the WS endpoint and the admin UI; the residue left after that test defines the legitimate center. Every plugin is one typed pydantic declaration that DERIVES its own form, announce and registry entry — the author never hand-writes any of the three. A plugin raises its own isolation floor and states a `requires:` execution floor of capabilities and a readiness predicate; unmet, it is PARKED loudly rather than silently degraded. The platform's grammar is closed and platform-owned; a plugin extends the ONTOLOGY through bus namespaces, never the grammar itself.
+
+---
+
+## 1. The micro-kernel boundary
+
+### [CXC-CS-PLACEMENT] Placement is UNRATIFIED, and filename 85 was verified unused
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because its nearest relatives (61, 62, 73, 79, 80, 81, 83, 84) already sit there, several of them flagged `[PLACEMENT UNRATIFIED]` themselves — convention, not a ruling.
+- filename-number-check: 85 was verified unused across `corpora/platform-specs/` before this file was written (highest prior number in sequence was 83, with 84 authored in this same pass; 99 is a reserved conventions-document number).
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-VISION-PLACEMENT]
+
+### [CXC-CS-MICROKERNEL] ComposeServer = micro-kernel + plugins; the residue defines the legitimate center
+
+- claim: ComposeServer's kernel does exactly four things — supervise, load, config-persist, bus-provision — and nothing else. Any capability that CAN be a plugin MUST be one; what remains after every plugin-able capability is pulled out IS the legitimate center, not a design choice made independently of that test.
+- no-privileged-builtins: there are no privileged built-in services. The WS endpoint and the admin UI are themselves plugins, held to the exact same contract ([CXC-CS-PLUGIN-CONTRACT]) as any third-party capability.
+- kernel-publishes-its-own-state: the kernel publishes its own state as `_server/*` — it is a peer on its own bus, not an out-of-band authority, the same discipline [CXC-VISION-ANNOUNCE-BIND]'s level-1 device-to-bus announcement already applies to a leaf node.
+- supervisor-not-mediator: the kernel supervises plugin LIFECYCLE (start, stop, park, restart); it never sits on the data path between two plugins. A plugin publishes and subscribes on the bus directly. This is the line [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS] recurses from.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS], [CXC-VISION-ANNOUNCE-BIND]
+- hardening-note: architect-synthesis — David said "there's value in implementing as much of ComposeServer itself as plugins" (line 23298), an aspiration; the node HARDENS that into an imperative ("any capability that CAN be a plugin MUST be one"). The value→MUST hardening is the architect's, not David's stated word.
+
+---
+
+## 2. The plugin contract
+
+### [CXC-CS-PLUGIN-CONTRACT] One typed pydantic declaration derives form, announce and registry — the author writes none of the three by hand
+
+- claim: a plugin is declared as ONE typed pydantic model (`Config` plus `publishes`/`subscribes`). From that single declaration, ComposeServer DERIVES the plugin's config form, its announce payload, and its registry entry.
+- announce-is-mandatory-and-derived: every plugin announces; the author never writes the announce logic — it is generated from the same typed declaration that produces the form, so the two can never drift out of sync with each other.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-DYNAMIC-SURFACE], [CXC-CS-ISOLATION-FLOOR]
+
+### [CXC-CS-DYNAMIC-SURFACE] The plugin is authoritative over its own surface and re-announces on change; ComposeServer never caches it as static
+
+- claim: a plugin's published/subscribed surface can change at runtime, and the plugin is the sole authority over its own current surface. On any change it RE-ANNOUNCES — the same on-change discipline [CXC-VISION-ANNOUNCE-BIND] already requires of periodic announcements generally, applied specifically to surface changes. ComposeServer never treats a plugin's surface as fixed at load time; it always defers to the latest announcement.
+- change: the `reload:` field is KILLED — removed from the plugin contract as duplicative of re-announce. A plugin whose surface changed already re-announces; a separate `reload:` mechanism would be a second, redundant path to the same fact.
+- context_for_change:
+  prior_state: an earlier draft of the plugin contract carried a `reload:` field alongside the announce mechanism, as a way for a plugin to signal that ComposeServer should refresh its view of the plugin.
+  reasoning: re-announce-on-change already carries that exact signal — a `reload:` field duplicates it rather than adding capability.
+  rejected_alternative: keep `reload:` as an explicit, separate refresh signal distinct from a surface-change announcement.
+  invalidating_assumption: if a future case needs ComposeServer to refresh something OTHER than the announced surface — a case re-announce cannot express — `reload:` (or its equivalent) would need to return, scoped to that specific gap.
+  implication: the plugin loader implements exactly one refresh path (announce-driven), not two.
+- status: ratified
+- provenance: architect-proposed-david-blessed
+- provenance-note: per the dispatch instructions for this authoring pass, killing `reload:` was the architect's call, which David blessed — recorded distinctly from a claim David originated himself.
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-PLUGIN-CONTRACT], [CXC-VISION-ANNOUNCE-BIND]
+
+### [CXC-CS-ISOLATION-FLOOR] A plugin raises its own isolation FLOOR; it never forces in-process execution
+
+- claim: a plugin author MAY raise the isolation floor for their own plugin, and a plugin MUST be able to PIN its floor to `subprocess` — a HARD requirement (David's ruling 2026-08-23): if a plugin declares it must run out-of-process, ComposeServer MUST honor that. A plugin may NEVER force `inprocess`, because what can run in-process is dependent on deploy-machine characteristics and other factors unique to the deployment (David, line 23247) — forcing inprocess would lower a floor other plugins rely on ComposeServer to set. ComposeServer sets the actual isolation level to be AT LEAST the declared floor (level >= floor), and may choose stronger isolation than the floor for its own operational reasons.
+- status: proposed
+- provenance: david-ruling — BOTH halves are David's: no-force-inprocess (line 23247, with his deploy-machine-dependency reason) AND a plugin MUST be able to pin its floor to subprocess (David's Q1 ruling 2026-08-23, a HARD requirement, not merely permitted). The level >= floor formalization is architect synthesis (see level-formalization-note).
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-PLUGIN-CONTRACT], [CXC-CS-REQUIRES-FLOOR]
+- level-formalization-note: architect-synthesis — the "actual isolation level >= declared floor" formalization is the architect's, not David's words. David ruled the two directional facts (no-force-inprocess; subprocess-pin MUST be honorable); the ordering formalism expresses them.
+
+---
+
+## 3. The requires: execution floor
+
+### [CXC-CS-REQUIRES-FLOOR] Unmet requires: parks the plugin loudly; ComposeServer is the binder re-evaluating the floor continuously
+
+- claim: `requires:` names an execution floor as a set of CAPABILITIES — announced strings drawn from a registered vocabulary, unversioned in v1 — plus a `ready:` DSL readiness predicate. When the floor is unmet, the plugin is PARKED, and the admin UX names the specific unmet item rather than reporting a generic failure.
+- dynamic-rebinding: the floor is re-evaluated continuously, not once at load time — ComposeServer acts as the BINDER standing on the floor, so a plugin parked for a missing capability unparks itself the moment that capability becomes available, with no restart.
+- soft-vs-hard: a rule that merely REFERENCES a namespace degrades FALSY when that namespace is absent (soft) — the widget still runs, just evaluates the missing input as false. A `requires:` capability that is absent parks the plugin LOUDLY (hard) — the plugin does not run degraded. The author chooses which failure mode fits their plugin; the two are not the same mechanism wearing different names.
+- ready-fails-closed: the `ready:` predicate FAILS CLOSED — when no `ready_evaluator` is supplied, a declared `ready:` predicate is reported UNMET (the plugin parks) rather than assumed satisfied. A park must never be mistaken for readiness, so the ABSENCE of an evaluator parks loudly rather than silently passing. The DSL grammar itself ([SPEC:CXC-DSL]) is out of scope here; the Phase-0 interface carries `ready:` as an opaque expression the binder evaluates.
+- ready-fails-closed-provenance: architect-synthesis — realizes [DEC-PHASE0-FLOOR-SEMANTICS-FROZEN]'s `ready-decision`, formalizing this node's own park-loud grain.
+- status: proposed
+- provenance: david-ruling — David originated the requires: floor, the park-loud-not-silent rationale, the admin-UX-names-the-unmet-item behavior, and the ready: DSL predicate (line 23288). Only the soft-vs-hard degrade contrast is architect synthesis (see soft-vs-hard).
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-ISOLATION-FLOOR], [CXC-CS-ONTOLOGY]
+
+---
+
+## 4. The DSL/ontology boundary
+
+### [CXC-CS-ONTOLOGY] Grammar is closed and platform-owned; a plugin extends the ONTOLOGY via bus namespaces, never the grammar
+
+- claim: the platform's DSL grammar is CLOSED and owned by the platform, never extended per-plugin. A plugin extends what the platform can TALK ABOUT by publishing new bus namespaces — the ontology — not by adding new grammar functions.
+- why: a plugin-defined grammar function cannot cross tiers — it cannot run on the CH32 tier's evaluator — so a plugin function would fork the narrow waist the DSL is supposed to be. Extending the ontology instead keeps every tier's evaluator identical; only the set of namespaces it can reference grows.
+- realizes: [DX-NARROW-WAIST] — formats/extensions lower to the shared contract (the closed grammar plus the open namespace set) rather than forking a new grammar path per plugin.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-RULE-CONFIG-UX], [DX-NARROW-WAIST]
+
+### [CXC-CS-RULE-CONFIG-UX] Rule config UX is TWO modes (templates + raw DSL), both compiling to ONE validated DSL — the guided middle tier is dropped
+
+- claim: end-user rule authoring is TWO modes, not three (David's Q2 ruling 2026-08-23): (1) templates — a handful of basic canned choices covering the most common use cases; (2) raw DSL — the user hand-types a YAML expression that is validated on submission. Both modes compile down to the SAME validated DSL expression. There is NO "guided structured builder" middle tier: David ruled that complex logic is FORKED OUT of the graphical UX (line 23269), and a graphical logic-builder in the middle is exactly what that excludes.
+- validation-is-the-real-evaluator: validation at config time runs the REAL evaluator (the config-time P5/P6b closure), not a separate syntax-only check — so a rule that validates is a rule that will actually evaluate the same way at runtime.
+- status: proposed
+- provenance: david-ruling — David named the two poles (basic canned choices + hand-typed validated YAML) and ruled complex logic is forked OUT of the graphical UX (line 23269); his Q2 ruling 2026-08-23 confirmed TWO modes, not three, dropping the guided middle tier entirely.
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-ONTOLOGY]
+- dropped-tier: the earlier draft recorded THREE tiers (templates / guided / raw), where guided = a "structured builder". David's Q2 ruling 2026-08-23 dropped the guided middle tier entirely: a graphical logic-builder is exactly the forked-into-graphical-UX complexity he ruled OUT (line 23269). The surviving two modes both compile to one validated DSL.
+
+### [CXC-CS-DEFAULT-PLUGINS] time and freshness/last-seen ship as DEFAULT plugins, not kernel built-ins
+
+- claim: `time` ships as a DEFAULT plugin — installed by default, but still a plugin, still held to [CXC-CS-PLUGIN-CONTRACT], not special-cased into the kernel (David, line 23279: "make the time plugin part of the standard ComposeServer build"). `freshness`/last-seen is ARCHITECT-PROPOSED and PENDING — it has no origin in David's words in the settling bracket and is NOT yet agreed as a default; it is carried as a proposal, not settled policy (see freshness-status). Either way the pattern is [CXC-CS-MICROKERNEL]'s "any capability that CAN be a plugin MUST be one" applied to capabilities a deployment commonly needs.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-MICROKERNEL]
+- freshness-status: architect-proposed / pending — freshness/last-seen has NO origin in David's words in the settling bracket; only `time` is David-sourced (line 23279). It awaits David's agreement before it becomes settled default-plugin policy.
+
+---
+
+## 5. Multi-tenancy — LOCKED
+
+### [CXC-CS-MULTI-TENANCY] A single ComposeServer MAY host N per-tenant ComposeIOBus objects; plugins are ALWAYS per-tenant — LOCKED PERMANENTLY
+
+- kernel-is-sole-cross-tenant-entity: the kernel is the SOLE cross-tenant entity. Cross-tenant views (operator console, metering, audit) live in the kernel or an external tool, NEVER a plugin.
+- server-namespace: `_server/*` is per-tenant.
+- exceptions: exceptions require an explicit WAIVER or a redesign.
+- why-this-holds: the plugin contract is UNCHANGED — a plugin remains bus-agnostic ([CXC-CS-PLUGIN-CONTRACT]). Multi-tenancy is pure kernel orchestration: instantiate N buses, bind each plugin/connector to its tenant. No plugin author does anything differently.
+- deferred: access-token-per-bus is deferred as a hardening question — not yet designed.
+- parked-futures: (1) VPN leaf<->root ComposeBus federation — a connector type / segment_bridge cousin, deferred. (2) Dual-emit/mirror of specific semantics across N tenant buses — the ONE sanctioned cross-tenant path if it is ever built, and it would be a kernel-mediated mirror rule, never a shared plugin. Both explicitly deferred, not designed.
+- status: decided
+- provenance: david-ruling — David's multi-tenancy ruling, LOCKED PERMANENTLY, on [DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23].
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-MICROKERNEL], [CXC-CS-PLUGIN-CONTRACT], [SPEC:CXC-COMPOSEBUS-KERNEL]
+
+### [CXC-CS-STANDUP-OWNERSHIP] ComposeServer owns the concrete standup() implementation and multi-tenant instantiation, in composeio/composeserver.py
+
+- claim: the canonical three-step standup sequence is defined at [SPEC:CXC-COMPOSEBUS-KERNEL]'s [CXC-CBK-STANDUP] (bare bus, attach declared connectors, load plugins respecting `requires:` floors). ComposeServer is where it is INSTANTIATED and executed, and where multi-tenant N-bus orchestration happens — a new module `composeio/composeserver.py`, NOT on `ComposeIOBus` itself.
+- kernel-residue: the bus kernel itself gains only bare primitives (`attach_connector`, `connectors`, `set_liveness_oracle`, `send_message`, the hook registrars) — see [SPEC:CXC-COMPOSEBUS-KERNEL]'s [CXC-CBK-KERNEL-PRIMITIVES]. There is exactly ONE canonical standup, never two competing sequences.
+- why: [CXC-CS-MICROKERNEL] — ComposeServer supervises/loads/config-persists/bus-provisions; loading and standing up plugins is its job, not the bus kernel's.
+- status: proposed — awaiting ratify (Phase-0 autonomous build decision; see [DEC-PHASE0-STANDUP-AND-SERVER-OUTSIDE-KERNEL] for review)
+- provenance: architect-synthesis — realizes [DEC-PHASE0-STANDUP-AND-SERVER-OUTSIDE-KERNEL] (an architect-autonomous Phase-0 build decision under David's 2026-08-23 overnight autonomy grant, recorded on that DEC node for his review).
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-MICROKERNEL], [SPEC:CXC-COMPOSEBUS-KERNEL]
+
+### [CXC-CS-LOADER-PUBLISHES-ANNOUNCE] The LOADER, not the plugin, publishes each plugin's derived announce + status — closing the announce-then-bind spine
+
+- claim: ComposeServer (the loader/binder that owns `standup()`, [CXC-CS-STANDUP-OWNERSHIP]) publishes each declared plugin's DERIVED announce and status to `_server/plugins/<name>/announce` and `_server/plugins/<name>/status` on the plugin's TENANT bus, plus a `_server/status` server summary. The plugin itself never publishes its own announce — it stays bus-agnostic ([CXC-CS-PLUGIN-CONTRACT]); the loader emits it on the plugin's behalf.
+- scope: LOCAL — intra-server, PER-TENANT: each tenant bus gets its own `_server/*` surface ([CXC-CS-MULTI-TENANCY]'s per-tenant `_server/*` lock).
+- cadence: at LOAD + on-change (the [CXC-CS-DYNAMIC-SURFACE] re-announce) + PERIODIC (the loader's own BusClock tick, ~5s / `SERVER_ANNOUNCE_INTERVAL_S`). PERIODIC, not on-change-only, because a MISSING publication is itself the fault report — the same discipline that closes [CXC-VISION-ANNOUNCE-BIND]'s announce-then-bind spine.
+- caught-by: the composeio-first-bringup runtime smoke of Phase 0, 2026-08-23 — a plugin's `.announce()` was correctly DERIVED but NEVER PUBLISHED (zero callers outside its own definition, zero `_server/*` namespaces registered): a spec-conformant, statically-green plugin contract sitting over a lane with no publisher.
+- status: decided
+- provenance: architect-synthesis — decided and built in Phase 0, session s14 ([DEC-PHASE0-COMPOSESERVER-PUBLISHES-DERIVED-ANNOUNCE]).
+- decided-in-session: composeio-hardware-architect-s14-2026-08-23
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-DYNAMIC-SURFACE], [CXC-CS-STANDUP-OWNERSHIP], [CXC-CS-MICROKERNEL]
+
+---
+
+## 6. Phase 0 — locked plugin mechanics
+
+> This section folds in the 2026-08-23 bus-standup + multi-tenancy design session ([DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23]) and its Phase-0 autonomous build decisions. It makes this spec the correct oracle for the Phase-0 gap-analysis: what the plugin contract now concretely enforces, not only what it was proposed to enforce.
+
+### [CXC-CS-ISOLATION-ENCODING] Isolation is an ordered IntEnum with NO ceiling field — force-inprocess is unrepresentable BY CONSTRUCTION
+
+- claim: isolation is an ORDERED `IntEnum` (`INPROCESS=0 < SUBPROCESS=1`). A plugin declares only a FLOOR; the server sets `actual = max(floor, server_minimum)`. There is deliberately NO ceiling field, so [CXC-CS-ISOLATION-FLOOR]'s rule — a plugin may NEVER force inprocess — is enforced BY CONSTRUCTION, not by a runtime check.
+- isolation-prefer: `isolation_prefer` is a separate NON-BINDING hint, distinct from the floor.
+- freezes: this freezes [CXC-CS-ISOLATION-FLOOR]'s `level >= floor` formalization into the concrete interface Phase 1 imports.
+- why: a prohibition you cannot express is stronger than one you must remember to check — [CXC-CS-ISOLATION-FLOOR]'s park-loud grain, applied to the TYPE rather than to a guard.
+- status: proposed — awaiting ratify (Phase-0 autonomous build decision; see [DEC-PHASE0-FLOOR-SEMANTICS-FROZEN] for review)
+- provenance: architect-synthesis — realizes [DEC-PHASE0-FLOOR-SEMANTICS-FROZEN]'s `isolation-decision`, itself formalizing David's Q1 HARD-pin ruling already recorded on [CXC-CS-ISOLATION-FLOOR].
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-ISOLATION-FLOOR]
+
+### [CXC-CS-EXTRACTION-INVENTORY] The core-to-plugin extraction inventory — what bus.py currently bakes in that MUST become a plugin, and what legitimately stays kernel
+
+- must-extract: from code inspection of `bus.py`: (1) the reactive BINDINGS ENGINE (`bus.py:1016-1222`) -> the `state_manager` plugin — the kernel currently DOES transforms, violating [SPEC:CXC-COMPOSEBUS-KERNEL]'s [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS] and [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS]; extraction enforces the rule and makes `state_manager` largely an EXTRACTION, not a greenfield build. (2) the `_bus/time` publisher -> `time` plugin (receipt-clock + `BusClock` stay kernel). (3) the `_bus/heartbeat` publisher -> `liveness` plugin. (4) module discovery (`_bus/discovery`) -> a plugin. (5) log-mode namespaces -> a `log` plugin.
+- default-loaded: TWO of five actually SHED in Phase 0 (2026-08-23): (1) the reactive bindings engine -> `state_manager` plugin, binding via the post-publish hook at the exact former `_evaluate_bindings` site; (4) module discovery -> `discovery` plugin, binding via the module hook at the exact former `_bus/discovery`-send site. Both are default-loaded via `install_default(bus)` at bare-bus construction — see [CXC-CS-DEFAULT-PLUGIN-HOOKS]. THREE remain baked directly in `bus.py`, PENDING Phase 0b: (2) `_bus/time` (the 1 Hz publisher), (3) `_bus/heartbeat` + the liveness-oracle, (5) `publish_log`/log-mode namespaces. These three are PERIODIC/lifecycle-bound rather than event-driven, so extracting them requires the bus start/stop lifecycle-hook seam the event-driven hooks cannot carry — see [CXC-CS-LIFECYCLE-HOOKS].
+- legitimately-kernel: freshness verdict-PUBLISHING does not exist yet (`freshness_report` returns a plain dict) — nothing to extract there. The receipt-timestamp and the read-path verdict are legitimately kernel. The namespace registrar (`ns_announce.py`, COMPACT-WIRE) is already OUTSIDE `bus.py`, already on the registry-plugin trajectory. `countdown`'s `_countdown_claims` dict leaked into the kernel constructor and moves with `countdown` when IT becomes a plugin.
+- status: proposed — awaiting ratify (Phase-0 autonomous build decision; see [DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23]'s `extractions-determined`/`surprises-resolved` for review; corrected 2026-08-23 against the landed code and [DEC-PHASE0B-LIFECYCLE-HOOK-SEAM-AND-DEFAULT-SHEDS])
+- provenance: architect-synthesis — realizes the `extractions-determined` and `surprises-resolved` properties of [DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23]; the `default-loaded` property was corrected against the landed Phase-0 code (`origin/main` `ec83f69`) and [DEC-PHASE0B-LIFECYCLE-HOOK-SEAM-AND-DEFAULT-SHEDS], per the dispatch instruction that extraction mechanics carry the architect-synthesis tag.
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-MICROKERNEL], [CXC-CS-DEFAULT-PLUGIN-HOOKS], [CXC-CS-LIFECYCLE-HOOKS], [SPEC:CXC-COMPOSEBUS-KERNEL]
+
+### [CXC-CS-DEFAULT-PLUGIN-HOOKS] Default plugins install at bare-bus construction via generic kernel HOOK seams the kernel fires but does not own
+
+- claim: the shed capabilities ([CXC-CS-EXTRACTION-INVENTORY]) bind to the kernel through GENERIC hook seams: `register_post_publish_hook(ns, new)` fired at the exact former `_evaluate_bindings` site; `register_module_hook(module)` fired at the exact former `_bus/discovery`-send site; `set_liveness_oracle(fn)` consulted by `node_is_alive` (see [SPEC:CXC-COMPOSEBUS-KERNEL]'s [CXC-CBK-LIVENESS-ORACLE-HOOK]). A bare `ComposeIOBus()` default-installs the shed engines (`state_manager`, `discovery`) at construction via lazy `install_default(bus)` functions living in `composeio/plugins/`.
+- kernel-stays-ignorant: the hook seams keep the kernel free of any plugin's identity — it fires hooks, never imports a plugin by name on the hot path. `install_default` is the standard-build default-load [CXC-CS-DEFAULT-PLUGINS] mandates.
+- ordering-preserved: each hook fires at the IDENTICAL call site the baked-in code used, so ordering is preserved and hundreds of tests that construct bare buses keep passing unmodified.
+- status: proposed — awaiting ratify (Phase-0 autonomous build decision; see [DEC-PHASE0-DEFAULT-PLUGINS-VIA-KERNEL-HOOKS] for review)
+- provenance: architect-synthesis — realizes [DEC-PHASE0-DEFAULT-PLUGINS-VIA-KERNEL-HOOKS].
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-DEFAULT-PLUGINS], [CXC-CS-EXTRACTION-INVENTORY], [SPEC:CXC-COMPOSEBUS-KERNEL]
+
+### [CXC-CS-LIFECYCLE-HOOKS] A bus start/stop lifecycle-hook seam — register_start_hook/register_stop_hook — carries PERIODIC default plugins the event-driven hooks cannot
+
+- claim: `register_start_hook(hook(bus))` / `register_stop_hook(hook(bus))` are a GENERIC kernel hook seam, SYMMETRIC to [CXC-CS-DEFAULT-PLUGIN-HOOKS]'s `register_post_publish_hook`/`register_module_hook`: the kernel FIRES them at the exact sites it starts and stops its BusClock ticks, but does not OWN what a plugin attaches there.
+- why: the three capability sheds [CXC-CS-EXTRACTION-INVENTORY] lists as PENDING — `_bus/time` (the 1 Hz publisher), `_bus/heartbeat` + the liveness-oracle, and `publish_log` — are PERIODIC/lifecycle-bound, unlike the event-driven post-publish and module hooks already landed; a plugin attaches its periodic publisher at start and detaches it at stop with no orphan tick.
+- pattern-mirrored: the three sheds mirror the Phase-0 `state_manager`/`discovery` pattern exactly — a bare `ComposeIOBus()` installs a default engine so behavior is byte-identical before/after, and `TimePlugin`/`LivenessPlugin`/`LogPlugin` (all `default_loaded`) wear the same engine for the standup/registry path.
+- publish-log-stays-a-method: `publish_log` STAYS a callable bus method delegating to the default `LogPlugin` engine — behavior-preservation over a purer "publish to the log namespace directly" shape.
+- landed-status: LANDED 2026-08-24 on origin/main at 46dda5d (Phase 0b). register_start_hook/register_stop_hook exist in bus.py, symmetric to the event-driven hooks; TimePlugin/LivenessPlugin/LogPlugin ship default_loaded; diamond-verified (first-bringup PASS, gap-analyzer CONFORM after the P1 announce-keying fix).
+- status: proposed — awaiting ratify (Phase-0b autonomous build decision; see [DEC-PHASE0B-LIFECYCLE-HOOK-SEAM-AND-DEFAULT-SHEDS] for review)
+- provenance: architect-autonomous — decided under David's overnight autonomy grant; realizes [DEC-PHASE0B-LIFECYCLE-HOOK-SEAM-AND-DEFAULT-SHEDS].
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-DEFAULT-PLUGIN-HOOKS], [CXC-CS-EXTRACTION-INVENTORY], [SPEC:CXC-COMPOSEBUS-KERNEL]
+
+### [CXC-CS-LIVENESS-FRESHNESS-SPLIT] The four ambiguous rulings — node-liveness and freshness-classes are PLUGIN, dynamic selectors are KERNEL, critical/ACK moves to peer/critical.py
+
+- ruling: David ratified the architect's leans on four ambiguous calls, 2026-08-23: (1) node-liveness = PLUGIN (publisher + receiver), with the kernel consulting it via a sanctioned liveness-oracle hook — see [SPEC:CXC-COMPOSEBUS-KERNEL]'s [CXC-CBK-LIVENESS-ORACLE-HOOK]. (2) freshness classes (multi-namespace aggregation) = PLUGIN; a single-namespace freshness VERDICT stays kernel — the two are different grains. (3) dynamic selectors = KERNEL (addressing, like scope — not a derived fact). (4) critical/ACK helpers move to `peer/critical.py` (transport QoS, out of bus-core) — see [SPEC:CXC-COMPOSEBUS-KERNEL]'s [CXC-CBK-SEND-MESSAGE-SEAM] for the kernel-side seam this leaves behind.
+- status: decided
+- provenance: david-ruling — David ratified all four leans on [DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23]'s `ambiguous-rulings` property.
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-MICROKERNEL], [SPEC:CXC-COMPOSEBUS-KERNEL]
+
+### [CXC-CS-LIVENESS-FALLBACK-SELF-EXCLUDED] Default LivenessPlugin stays FALLBACK not oracle; a node's own heartbeat is EXCLUDED from its own liveness verdict
+
+- ruling: David ratified two liveness-semantics rulings 2026-08-24, resolving open questions [CXC-CS-LIVENESS-FRESHNESS-SPLIT] left unsettled and that the Phase-0b diamond surfaced. **D1** — the default `LivenessPlugin` REMAINS THE FALLBACK, never self-installs as the liveness oracle: the `set_liveness_oracle` seat stays EMPTY for the default plugin; the kernel falls back to the plugin's own heartbeat-receiver when the seat is empty; a richer liveness plugin later TAKES the seat and supersedes. **D2** — a node's OWN heartbeat is EXCLUDED from its OWN `node_is_alive` verdict: `node_is_alive(self.bus_id)` is answered by "am I running," not by receipt of a beat the node itself emitted; the heartbeat receiver filters `source == own bus_id`.
+- d1-rationale: preserves the clean "empty seat → built-in receiver" supersession path and the liveness/freshness split ([CXC-CS-LIVENESS-FRESHNESS-SPLIT]); self-installing would force a later richer plugin to contend for the single seat.
+- d2-rationale: a node counting its own beat toward its own liveness verdict is circular, and a self-beat can mask a dead same-bus_id peer or inflate fleet-liveness counts.
+- status: decided
+- provenance: david-ruling — ratified 2026-08-24 via `docs/composeserver/DECISIONS-phase1-plan.md` (D1, D2).
+- dsd-source: docs/composeserver/DECISIONS-phase1-plan.md (D1, D2)
+- self-alive-definition: self-alive = bus RUNNING (`is_clock_running`, set by `start()`, cleared by `stop()`) AND liveness engine INSTALLED (`LivenessEngine.is_installed`); False after `bus.stop()` or after the liveness plugin is uninstalled. Refines D2's "am I running" intent to the landed operational check — the first implementation made `_self_is_alive()` sticky-True for the whole object lifetime (true even after stop/uninstall), a gap the diamond found and this fixes. DEFERRED, NOT ratified: whether a stopped-then-restarted bus's self-liveness returns to True (resumable-pause vs terminal `bus.stop()` semantics) — the landed code re-reads True on re-`start()` as a natural resumable-pause consequence, but the terminal-vs-resumable policy itself is unresolved and flagged for David. See [DEC-PHASE1-LIVENESS-SELF-ALIVE-TRACKS-RUNNING-STATE] (provenance architect-autonomous, faithful implementation of D2's intent, not a new policy).
+- part-of: [SPEC:CXC-COMPOSESERVER]
+- see-also: [CXC-CS-LIVENESS-FRESHNESS-SPLIT], [CXC-CBK-LIVENESS-ORACLE-HOOK], [SPEC:CXC-COMPOSEBUS-KERNEL]
+
+---
+
+**Version**: 0.4 — 2026-08-24, recorded two ratified liveness-semantics rulings ([CXC-CS-LIVENESS-FALLBACK-SELF-EXCLUDED]: default `LivenessPlugin` stays fallback not oracle; a node's own heartbeat excludes from its own liveness verdict) closing the open questions the Phase-0b diamond surfaced, per `docs/composeserver/DECISIONS-phase1-plan.md` D1/D2. Prior: 0.3 — 2026-08-23, spec-catch-up amendment closing three gaps between this spec and the Phase-0 build landed at `origin/main` `ec83f69`: added [CXC-CS-LOADER-PUBLISHES-ANNOUNCE] (the announce-then-bind spine, already built) and [CXC-CS-LIFECYCLE-HOOKS] (the decided but not-yet-built start/stop hook seam), and corrected [CXC-CS-EXTRACTION-INVENTORY]'s `default-loaded` from "all five shed" to "2/5 shed in Phase 0, 3/5 pending Phase 0b" per [DEC-PHASE0B-LIFECYCLE-HOOK-SEAM-AND-DEFAULT-SHEDS]. The code already exists (or is decided and pending for the lifecycle seam); this amendment makes the spec honest, not new design.
+**Status**: Draft — awaiting architect ratify of every non-`ratified`-status claim above. §5-§6's david-ruling nodes ([CXC-CS-MULTI-TENANCY], [CXC-CS-LIVENESS-FRESHNESS-SPLIT], [CXC-CS-LIVENESS-FALLBACK-SELF-EXCLUDED]) carry David's word directly; the architect-synthesis/architect-autonomous nodes realize Phase-0/Phase-0b build decisions David authorized overnight 2026-08-23 and asked to review on return — still PENDING that review.

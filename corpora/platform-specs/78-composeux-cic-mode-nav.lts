@@ -1,0 +1,271 @@
+---
+scope: "A generic ComposeIO capability — the MODE-NAV TIER above `cic_menu`'s screen grid: the mode row (STD/DRADIS/EXT/CHRONO) plus each mode's own navigation, folded into ONE tree per [CXC-MENU-SCHEMA] (RATIFIED, audit round 1, Q1: YES), and the `selection` primitive every nav level (mode row, console row, sub-tab row, a mode's own internal options) realizes — pick-one-of-N, bound to a station-scoped namespace, subscribed AND published by soft and physical controls as co-equal peers. Fills the tier [SPEC:CXC-MENU] explicitly scoped itself OUT of ('Mode selection and mode-surface resolution are a DIFFERENT, adjacent tier this instance does not model', [CXC-MENU-CIC-INSTANCE]). EXTENDS, rather than parallels, the CIC shell's existing art: the selector is [CXC-CIC-TABROW] instanced further, not a new widget; STATION scope is exactly [CXC-CIC-DUTY-STATION], not a fresh model. Documents BSG's Colonial Console as this primitive's instance #1 — DRADIS/EXT are PRIOR-BUILT worked examples already running on (a private host name, not published), not session inventions — with CHRONO's 3-option nav (SHIP TIME / JUMP COUNT / TIMER) as the first worked case of a mode WITH its own nav beneath it, three real screen-leaves sharing one already-built `colonial_clock` widget."
+audience: [David (architect) — audit round 1 (`docs/architecture/AUDIT-cic-mode-nav.md`) is CLOSED for Q1/Q2/Q3/Q4/C1/C2/C3/C4; [DD-MODE-NAV-RADIO-NAMESPACE-RENAME] and [DD-MODE-NAV-CLOCK-WIDGET-REGISTRATION] remain his/the render-engineer's to rule, the builder who will implement the selection primitive + the mode-nav tree, the render-engineer who owns the clock-widget slot-kind registration NEEDS-CONFIRM]
+boundary: "IN: the `selection` primitive (pick-one-of-N, namespace-bound, subscribe+publish, control-is-a-peer, [CXC-MODE-NAV-SELECTION]); the mode-nav tier's selector, which EXTENDS [CXC-CIC-TABROW] rather than mints a parallel abstraction ([CXC-MODE-NAV-SELECTOR-SKIN]); the mode-nav tier's namespace levels, which EXTEND [CXC-CIC-DUTY-STATION]'s existing station-scoped convention rather than a fresh station model ([CXC-MODE-NAV-STATION-SCOPE]); the mode-nav TREE — mode row -> per-mode nav -> leaves, folded into [CXC-MENU-SCHEMA]'s single tree, RATIFIED now, not later ([CXC-MODE-NAV-TREE]); uniform screen-leaf resolution with NO `select` node-kind ([CXC-MODE-NAV-UNIFORM-LEAF]); the resolver/selector seam ([CXC-MODE-NAV-RESOLVER-SEAM]); BSG's 4-mode top level as instance #1, with DRADIS/EXT as prior-built worked examples and CHRONO's 3-option nav as the first mode-with-its-own-nav worked case ([CXC-MODE-NAV-CIC-INSTANCE], [CXC-MODE-NAV-CIC-CHRONO-INSTANCE]); the audit round-1 disposition record ([CXC-MODE-NAV-AUDIT-R1]). OUT, explicitly deferred and NOT modeled here (see [CXC-MODE-NAV-DEFERRED]): the full control/display taxonomy (`selection` / `value` / `action` / `toggle` / `indicator` / `output` / `custom`) beyond the `selection` archetype itself — CONFIRMED-real future work (the compose-bus-resident Galactica semantic object, differently-reacting button groups, the `button_matrix_4x4` PCB), not hypothetical; the Galactica semantic ship-model (damage / fuel / ammo / jump / repair / resupply); any physical-prop hookup (rotary wiring, keypad wiring, fingerprint sensor) — separate maker-project slices per the existing [CXC-CIC-ROTARY-HOOKUP] precedent, not spec'd here even for the controls this design session named."
+not-this: "Not a redefinition of [CXC-MENU]'s generic engine (schema/slug/path/walk/lint, sections 2-4 of that document) — this spec ADDS a tier above it and does not touch [CXC-MENU-PATH]'s derivation formula or [CXC-MENU-LINT]'s four checks. Not a parallel selector widget — [CXC-MODE-NAV-SELECTOR-SKIN] does not mint a new widget kind; it extends [CXC-CIC-TABROW] (generalize-don't-fork, the SAME discipline that widget already documents). Not a parallel station model — [CXC-MODE-NAV-STATION-SCOPE] does not redefine what a station is; [CXC-CIC-DUTY-STATION] already owns that, and this document only appends two namespace levels to its existing list. Not a ratification of [CXC-CIC-RADIO-MODE], which stays PROPOSED. Not a build authorization — `artifact-readiness: design-review` reflects that this document has not been through a DSD ratify pass of its own; audit round 1 closed the INTENT-FIDELITY questions, it did not authorize a build."
+depends-on: [SPEC:CXC-MENU]
+depends-on: [SPEC:CXC-CIC]
+depends-on: [SPEC:CXC-COMP]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-08-18
+updated: 2026-08-18
+---
+# ComposeUX — The Mode-Nav Tier: Selection-Bound Navigation Above `cic_menu`'s Screen Grid [SPEC:CXC-MODE-NAV]
+
+> Extends [SPEC:CXC-MENU] into the tier it named and explicitly scoped itself out of: the mode row (STD/DRADIS/EXT/CHRONO) and each mode's own navigation, folded into ONE tree ([CXC-MENU-SCHEMA]) — David ratified the fold NOW, not later (audit round 1, Q1). A generic `selection` primitive backs every nav level; a soft selector and a physical control (a 7-position rotary, a keypad) are CO-EQUAL PEERS publishing the SAME station-scoped namespace, never a locally-toggled soft button (Q2: confirmed purely bus-derived). The selector EXTENDS [CXC-CIC-TABROW] — not a parallel widget; the namespace EXTENDS [CXC-CIC-DUTY-STATION] — not a parallel station model. Every screen still resolves UNIFORMLY as a `screen` leaf ([CXC-MENU-KINDS]) — no new node-kind. BSG's Colonial Console is instance #1: DRADIS/EXT are PRIOR-BUILT worked examples running on (a private host name, not published) (C1); CHRONO's 3-option nav (SHIP TIME / JUMP COUNT / TIMER, Q3) is the first worked case of a mode with its own nav beneath it, three screen-leaves sharing the already-built `colonial_clock` widget (C4). `[PLACEMENT UNRATIFIED]` — filed as a NEW numbered doc (`78`, the next free prefix after [SPEC:CXC-MENU]'s `77`) following [DD-MENU-SPEC-HOME]'s precedent, pending the architect's own placement ruling. **Composed from the `cic-mode-nav` design session (2026-08-18); reworked per the independent audit's ratified answers (`docs/architecture/AUDIT-cic-mode-nav.md`, [CXC-MODE-NAV-AUDIT-R1]). Two forks remain OPEN: [DD-MODE-NAV-RADIO-NAMESPACE-RENAME], [DD-MODE-NAV-CLOCK-WIDGET-REGISTRATION].**
+
+---
+
+## 1. Intent & the tier this fills
+
+### [CXC-MODE-NAV-WHY] The tier [SPEC:CXC-MENU] named and scoped itself out of
+
+- definition: [SPEC:CXC-MENU]'s own instance node draws the line explicitly: *"Mode selection and mode-surface resolution are a DIFFERENT, SHALLOWER tier this resolver instance does NOT model: a mode-surface file resolves by a suffix convention (`<slug>_mode.svg`), not by the directory-join convention [CXC-MENU-PATH] derives, so folding a mode into THIS tree as a leaf would derive the WRONG path"* ([CXC-MENU-CIC-INSTANCE], its `corrected` note). This spec is that adjacent tier — not a second engine, the SAME engine ([CXC-MENU-SCHEMA] through [CXC-MENU-LINT]) applied to a tree that now carries the mode level too, reconciled with the suffix-convention mismatch by [CXC-MENU-ANNOTATION]'s existing `path` override rather than by any new mechanism ([CXC-MODE-NAV-CIC-INSTANCE]).
+- fold-is-ratified: the audit's own headline finding was that the architect had asked David "now or later?" on folding the mode row into the tree and **David never answered it in the original session** — this document's tree was built on the unanswered half. Audit round 1, Q1, closed it: *"Do you want the mode row folded into `cic_menu` as the top tree level NOW..., or is that a LATER consolidation...?"* — **David's ratify: "YES."** [CXC-MODE-NAV-TREE]'s status is now `decided`, not `proposed`.
+- role: names the seam per [DX-ENGINE-VS-POLICY] the same way [CXC-MENU-WHY] does one tier down — the GENERIC mechanism (the `selection` primitive: namespace-bound, pick-one-of-N, subscribe+publish) is engine content (sections 2-4 below) and ports to any ComposeIO app with a nav tier; BSG's 4 modes, their labels, and the ship-clock art are POLICY (section 6).
+- requirement: sections 2-4 ([CXC-MODE-NAV-SELECTION] through [CXC-MODE-NAV-RESOLVER-SEAM]) MUST NOT reference a BSG-specific mode name, an SVG element name, or the `slot:@` grammar in their DEFINITIONS (worked examples may cite BSG for concreteness, matching [CXC-MENU-WHY]'s own practice) — the primitive must be readable by an app author who has never heard of Colonial Console.
+- see-also: [DX-ENGINE-VS-POLICY], [CXC-MENU-WHY], [CXC-MENU-CIC-INSTANCE], [CXC-MODE-NAV-AUDIT-R1]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+---
+
+## 2. The `selection` primitive
+
+### [CXC-MODE-NAV-SELECTION] The `selection` primitive — pick-one-of-N, bound to a namespace, control-is-a-peer
+
+- definition: a SELECTION is the generic shape every nav level in the mode-nav tree realizes — a pick-one-of-N choice, published as an `{index, key}` payload to a namespace, with NO privileged input source. This is not a new mechanism: it is the EXISTING pattern [CXC-CIC-CREDO] and [CXC-CIC-TABROW] already implement for the console/sub-tab tab rows, named here as the GENERAL primitive so a mode row, a mode's own sub-nav (CHRONO's 3 options), and any FUTURE nav level are the same thing wearing different labels, not N different bespoke mechanisms.
+- requirement: a selection MUST publish to exactly one station-scoped namespace ([CXC-MODE-NAV-STATION-SCOPE]); EVERY realization of that selection — a soft selector widget, a physical rotary/keypad, an Intelligence — MUST publish the SAME `{index, key}` shape to the SAME namespace and MUST be indistinguishable to any subscriber, generalizing [CXC-CIC-CREDO]'s control-is-a-peer rule from the two levels it already covers (console, sub-tab) to every nav level this tree defines; a soft selector widget MUST derive its displayed selected state FROM the published namespace value and MUST NOT hold or display any locally-toggled selection state of its own — this generalizes [CXC-CIC-TABROW]'s existing per-widget requirement ("the selected indicator MUST be DERIVED from the published index, not local tap-state guesswork") from its two current instances (`row2`, `row3`) to every selector this tree mounts, and is the same invariant [DX-STATE-ON-BUS] states platform-wide.
+- on-soft-buttons-with-state: RATIFIED reading (audit round 1, Q2). David: *"we may want to have the UX 'soft buttons' have different states that they maintain"* (design session, 2026-08-18) was audited as ambiguous between (a) purely bus-derived display state (this node's reading) and (b) a genuinely stateful control. **David's ratify: "(a) — a purely bus-derived display state."** His own elaboration, verbatim: *"The pcb in ~/maker/pcb/button_matrix_4x4 is a good physical example of what we want to be able to do with virtual buttons. The Galactica software object (compose-bus resident) will maintain state about all of its subsystems. The state of these subsystems will be published. Different button groups will react in different ways to different semantic messages. When the FTL engine is ready, a big red button labeled 'JUMP READY' may start to blink on screen and in real life (different subscribers)."* (audit round 1, Q2, 2026-08-18) — this is the SAME invariant this node already states (state lives on the bus; a subscriber, soft or physical, renders it), now confirmed by David rather than inferred through [DX-STATE-ON-BUS] alone. This confirmed model is the evidentiary basis for [CXC-MODE-NAV-DEFERRED]'s control/display taxonomy note — see there for the "different control" this spec still does not build.
+- see-also: [CXC-CIC-CREDO], [CXC-CIC-TABROW], [DX-STATE-ON-BUS], [CXC-MODE-NAV-STATION-SCOPE], [CXC-MODE-NAV-SELECTOR-SKIN], [CXC-MODE-NAV-DEFERRED]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+---
+
+## 3. The selector — extending CXC-CIC-TABROW, not a parallel abstraction
+
+### [CXC-MODE-NAV-SELECTOR-SKIN] The mode-nav selector IS [CXC-CIC-TABROW], instanced further — not a new widget
+
+- definition: RECONCILED per audit (the "biggest correction"). [CXC-CIC-TABROW] already states the exact model this node used to assert as new: *"both CIC tab rows (`row2-tabs` consoles, `row3-tabs` sub-tabs) are ONE generalized tab-row widget, INSTANCED twice — NOT two separate widgets (generalize-don't-fork)... parameterized by (a) the LABEL SET / text bindings, (b) the SELECTED-INDICATOR STYLE, and (c) the indicator FILL color+opacity"* — with `selected_indicator ∈ {filled-background, pill-overlay}` as its existing style axis. The mode row and CHRONO's 3-option nav are a THIRD and FOURTH instancing of that SAME widget — a new label set (the mode names / SHIP TIME-JUMP COUNT-TIMER) and a station-scoped publish namespace ([CXC-MODE-NAV-STATION-SCOPE]) bound the SAME way `row2`/`row3` already are — not a new "selector" widget kind, and not a fork of [CXC-COMP-WIDGET-KIND]'s registered set.
+- requirement: a mode-nav nav level's selector MUST be built by extending [CXC-CIC-TABROW] (a new instancing: label set + publish namespace + a style token, reusing `filled-background`/`pill-overlay` or registering a further style value on the SAME parameter) — an author MUST NOT introduce a separate "selector" widget class, and MUST NOT amend [CXC-COMP-WIDGET-KIND]'s registered `radio`/`tab_row` slot-grammar tokens to accomplish this (that is a DIFFERENT composition layer — a per-screen `slot:` binding — that nothing in the mode-nav tier's own chrome-level selectors touches; see [DD-MODE-NAV-SELECTOR-KIND-CONSOLIDATION], now closed).
+- see-also: [CXC-CIC-TABROW], [CXC-CIC-NAV], [CXC-COMP-WIDGET-KIND], [CXC-MODE-NAV-SELECTION], [DD-MODE-NAV-SELECTOR-KIND-CONSOLIDATION]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+---
+
+## 4. STATION scope — extending CXC-CIC-DUTY-STATION, not a parallel model
+
+### [CXC-MODE-NAV-STATION-SCOPE] STATION means exactly what [CXC-CIC-DUTY-STATION] already defines; this node only appends namespace levels
+
+- definition: RECONCILED per audit (the "biggest correction"). [CXC-CIC-DUTY-STATION] already defines a duty station in full — "a display + its physical controls, operated as one CIC position," a dotted `location.instance.role` id shape (e.g. `cic.1.helm`), and a station-scoped namespace convention (`colonial_console/<station>/console`, `/subtab`, `/status`, `/focus/<domain>`, `/identity`, `/peripherals/<device_id>`). This node mints NO new station concept. Its entire content is: (1) two ADDITIONAL entries for that SAME namespace list — `colonial_console/<station>/mode` (the mode row's selection) and `colonial_console/<station>/chrono` (CHRONO's 3-option nav's selection), following the exact pattern `console`/`subtab` already set; and (2) David's design-session elaboration of the `role` segment already present in [CXC-CIC-DUTY-STATION]'s station-id shape, recorded here because it grounds that segment's LOOSE-coupling semantics in a concrete example.
+- reconciliation: [CXC-CIC-DUTY-STATION]'s station-id shape is already `location.instance.role` — `cic.1.helm` reads location=`cic`, instance=`1`, role=`helm`. David's remark is a real-world WORKED EXAMPLE of exactly that `role` segment: the physical 7-position rotary is wired to a station, and which role the station plays (helm / FTL / DC) is a CONFIGURATION fact about that station, not a hardwired identity of the rotary or the player. Nothing here amends [CXC-CIC-DUTY-STATION]'s shape; it is the shape's own worked instance, now on the graph.
+- requirement: a mode-nav selection MUST carry the `<station>` scope segment exactly as [CXC-CIC-DUTY-STATION] already requires for every CIC namespace, publishing under `colonial_console/<station>/mode` and `colonial_console/<station>/chrono` alongside the existing `console`/`subtab`/`status`/`focus`/`identity`/`peripherals` entries — an app author MUST treat these as two more lines in [CXC-CIC-DUTY-STATION]'s ONE list, not a second list; and MUST NOT encode a role or player identity anywhere but the station id's own `role` segment — player count and identity stay dynamic and outside every one of these namespaces, consistent with the loose-coupling reconciliation above.
+- namespace-delimiter: DECIDED (audit round 1, Q4) — `/`, matching [CXC-CIC-DUTY-STATION] exactly, no dual support. See [DD-MODE-NAV-NAMESPACE-CONVENTION], now closed.
+- see-also: [CXC-CIC-DUTY-STATION], [CXC-CIC-ROTARY-HOOKUP], [CXC-CIC-NAV], [DD-MODE-NAV-NAMESPACE-CONVENTION]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+---
+
+## 5. The mode-nav tree
+
+### [CXC-MODE-NAV-TREE] The tree gains a mode level at the top: mode -> per-mode nav -> leaves — RATIFIED
+
+- definition: the SAME [CXC-MENU-SCHEMA] tree ([SPEC:CXC-MENU] §2) grows one level: the top level is now the MODE ROW (STD/DRADIS/EXT/CHRONO for BSG), each mode node carrying either `children` (a mode WITH its own further nav — STD's console/sub-tab grid, CHRONO's 3-option nav) or none (a mode that IS a single full-screen surface — DRADIS, EXT, both prior-built, [CXC-MODE-NAV-CIC-INSTANCE]). No new schema field is introduced; [CXC-MENU-SCHEMA]'s existing `label` + optional `children` + optional `annotation` fully expresses a mode node.
+- change: "The menu-indexed screen resolver's tree now carries the MODE level at its top, where [SPEC:CXC-MENU] previously scoped mode selection and mode-surface resolution OUT of the tree entirely."
+- context_for_change:
+    prior_state: "[CXC-MENU-CIC-INSTANCE] (ratified, [SPEC:CXC-MENU]): the resolver instance's tree top level is STD's 7 consoles; DRADIS/EXT/CHRONO are NOT tree nodes at all — mode selection and mode-surface resolution are named as 'a DIFFERENT, SHALLOWER tier this resolver instance does NOT model', explicitly out of scope."
+    reasoning: "The mode-fold question was explicitly asked in the design session's opening turn ('now or later?') and NOT answered there — audit round 1 surfaced this as Q1, the audit's own headline finding. Folding mode in AT THE TOP, above STD's existing grid, lets [CXC-MENU-PATH]'s N-level ancestor-slug join keep working unmodified for STD (see the worked instance below) and gives DRADIS/EXT/CHRONO a place in the SAME tree for label/vocabulary purposes ([CXC-MODE-NAV-RESOLVER-SEAM]) without requiring every mode to resolve via directory-join."
+    rejected_alternative: "Keep [CXC-MENU-CIC-INSTANCE]'s scope exactly as ratified — mode selection modeled nowhere in any tree, a second, separate ad hoc structure for the mode row and CHRONO's nav (i.e., answer Q1 'later'). This was live until audit round 1; David's ratify closed it in favor of NOW."
+    counter_argument: "[CXC-MENU-CIC-INSTANCE]'s scoping-out was a considered, ratified correction (its own `corrected` note records an EARLIER draft that got this wrong the same way) — reopening it risks the same mistake: mode-SURFACE files (`<mode>_mode.svg`) do not fit the directory-join formula."
+    counter_response: "This spec does not fold mode-surface resolution into directory-join. DRADIS and EXT — the two modes with no nav of their own, and PRIOR-BUILT worked examples running on (a private host name, not published) (audit round 1, C1) — are LEAVES of the new top level and carry an `annotation.path` override pointing at their existing suffix-named surface file ([CXC-MENU-ANNOTATION]'s designed escape hatch, [CXC-MODE-NAV-CIC-INSTANCE]); only STD (already directory-join-shaped) and CHRONO (3 directory-join-shaped leaves, not a suffix file) resolve leaves by the ordinary derivation. No node in this tree derives a suffix-named path from the join formula."
+    invalidating_assumption: "That every mode which gains its OWN nav in the future (beyond CHRONO) resolves its leaves by directory-join rather than by its own suffix convention. If a future mode's sub-nav needs a non-directory-join path shape, that mode's leaves would need their own `annotation.path` overrides too, same as DRADIS/EXT today — the tree shape does not change, only how many leaves carry an override."
+    implication: "[CXC-MENU-CIC-INSTANCE]'s ratified STD-only scope is NOT repealed for the ENGINE (sections 2-4 of [SPEC:CXC-MENU] are untouched); its INSTANCE section is superseded by this document's [CXC-MODE-NAV-CIC-INSTANCE], which restates STD's binding at one level deeper (mode folded in) with byte-identical derived paths (worked below)."
+- status: decided — RATIFIED, audit round 1, Q1 (`docs/architecture/AUDIT-cic-mode-nav.md`, 2026-08-18). The architect's opening-turn question ("now or later?") was asked and unanswered in the original design session; David's audit ratify closes it explicitly: **"YES"** to folding the mode row into `cic_menu` as the top tree level NOW.
+- on-ratify: "the amendment to [CXC-MENU-CIC-INSTANCE]'s STD-only scope ([SPEC:CXC-MENU]) is now DECIDED by this spec's own audit round, mirroring the two-gate discipline [CXC-MENU-WALK] itself used for its own amendment to [CXC-COMP-MISSING]: gate one (David's ratify) is CLEAR. A second gate — whether the Relationships section's edge to [CXC-MENU-CIC-INSTANCE] upgrades from `RELATED_TO` to a typed `AMENDS` edge — stays open exactly as [CXC-MENU-WALK] left it, pending the SAME `EDGETYPE-AMENDS` profile registration neither document has yet."
+- see-also: [CXC-MENU-SCHEMA], [CXC-MENU-CIC-INSTANCE], [CXC-MENU-ANNOTATION], [CXC-MODE-NAV-CIC-INSTANCE], [CXC-MODE-NAV-AUDIT-R1]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+### [CXC-MODE-NAV-UNIFORM-LEAF] Every nav level resolves uniformly as a `screen` leaf — no `select` node-kind
+
+- definition: [CXC-MENU-KINDS]'s closed, opaque three-token vocabulary (`bespoke-svg` / `pure-widget-no-file` / `live-drop-in`) is NOT extended with a fourth "select" or "nav" token. A node that represents a CHOICE among options (the mode row, CHRONO's 3-option nav) is modeled as a tree node WITH `children`, not as a leaf annotated with a new kind — [CXC-MENU-SCHEMA]'s existing rule (presence of `children` marks a non-leaf) already expresses this with zero new vocabulary. Every LEAF, whatever nav level it terminates, resolves through the SAME [CXC-MENU-RESOLVE] and is one of the three EXISTING kinds.
+- requirement: an app author MUST NOT invent a `kind: select` or equivalent; a choice point is expressed structurally (a node with `children`), and the SELECTION mechanics that drive which child is active live in the `selection` primitive ([CXC-MODE-NAV-SELECTION]), entirely OUTSIDE [CXC-MENU-KINDS]'s vocabulary, which governs only whether a LEAF's own art file is expected.
+- worked-instance: CHRONO's 3 options (SHIP TIME / JUMP COUNT / TIMER) are three ORDINARY LEAVES under the CHRONO mode node, each defaulting to `kind: bespoke-svg` like any other leaf — nothing about "these are the 3 choices of a selector" is expressed in [CXC-MENU-KINDS] terms; it is expressed by CHRONO having `children` and by the selector widget mounted for CHRONO's nav (an extended [CXC-CIC-TABROW] instance, [CXC-MODE-NAV-SELECTOR-SKIN]) reading its option list FROM those children's labels ([CXC-MODE-NAV-RESOLVER-SEAM]).
+- see-also: [CXC-MENU-KINDS], [CXC-MENU-SCHEMA], [CXC-MODE-NAV-CIC-CHRONO-INSTANCE]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+### [CXC-MODE-NAV-RESOLVER-SEAM] The resolver never touches selection mechanics; `cic_menu` feeds both sides
+
+- definition: [CXC-MENU-RESOLVE] is UNCHANGED by this spec — it still resolves a LEAF to a `bus://` asset reference and knows nothing about selections, publishing, or namespaces. The mode-nav tree ([CXC-MODE-NAV-TREE]) is the ONE structure that feeds BOTH consumers: a SELECTOR widget at a given nav level (an extended [CXC-CIC-TABROW] instance) reads its LABEL SET (and hence its option count N) from that level's `children` in the tree, exactly as [CXC-CIC-TABROW] already reads `row3`'s five labels from the selected console's sub-tabs; the RESOLVER reads the SAME tree to turn the (mode, ...selections..., leaf) path the selections landed on into an asset reference. Neither consumer duplicates the other's structure.
+- requirement: a selector widget mounted for a given nav level MUST derive its option set from that level's tree node's `children` labels ([CXC-MENU-SCHEMA]) and MUST NOT hand-maintain a separate label list (the [CXC-MENU-CIC-INSTANCE] `measured-evidence-for-single-source` drift this spec's own tree inherits the discipline against); the resolver MUST continue to be invoked only with a fully-resolved (mode, ...) leaf path — it MUST NOT read a selection namespace itself, and a selection namespace MUST NOT carry an asset path — the two stay separate concerns joined only by the SAME tree.
+- see-also: [CXC-MENU-RESOLVE], [CXC-MENU-SCHEMA], [CXC-CIC-TABROW], [CXC-MODE-NAV-TREE]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+---
+
+## 6. BSG instance #1 — the 4-mode top level, and CHRONO's own nav
+
+### [CXC-MODE-NAV-CIC-INSTANCE] BSG's 4-mode top level: STD (children), DRADIS/EXT (prior-built override leaves), CHRONO (children)
+
+- definition: BSG's Colonial Console binds [CXC-MODE-NAV-TREE]'s shape concretely. The instance's `root` moves ONE level up from [CXC-MENU-CIC-INSTANCE]'s STD-scoped `root` — from `compose_projects/bsg/resources/screen_base_layout/std` to `compose_projects/bsg/resources/screen_base_layout` — so the new top level (the 4 modes) can derive `std` as an ordinary slug rather than folding it into `root`. `extension: svg`, `bus-namespace: cic` are unchanged. The top level carries exactly 4 nodes:
+  - `STD` (slug `std`) — HAS `children`: [CXC-MENU-CIC-INSTANCE]'s existing 7-console x 5-subtab tree, unmodified, now nested one level deeper. Its leaves' derived paths are BYTE-IDENTICAL to today's — `<new-root>/std/<console>/<subtab>.svg` equals `<old-root>/<console>/<subtab>.svg` exactly, because `<new-root>/std` equals `<old-root>`. No asset moves.
+  - `DRADIS` (slug `dradis`) — a LEAF, no `children` (DRADIS is one full-screen surface, [CXC-CIC-RADIO-MODE]). Carries `annotation: {path: "compose_projects/bsg/resources/screen_base_layout/dradis_mode.svg"}` — [CXC-MENU-ANNOTATION]'s override, because the mode-surface file follows the `<slug>_mode.svg` suffix convention, not the directory-join [CXC-MENU-PATH] would otherwise derive (`<root>/dradis.svg`, wrong).
+  - `EXT` (slug `ext`) — a LEAF, same shape as DRADIS: `annotation: {path: "compose_projects/bsg/resources/screen_base_layout/ext_mode.svg"}`, matching the existing on-disk `ext_mode.svg` [CXC-CIC-RADIO-MODE] already cites.
+  - `CHRONO` (slug `chrono`) — HAS `children`: the 3-option nav this design session adds, detailed in [CXC-MODE-NAV-CIC-CHRONO-INSTANCE].
+- provenance-correction: (audit round 1, C1) the original draft of this node treated DRADIS/EXT's override-leaf treatment as this spec's own structural invention, load-bearing on the unresolved Q1. **David's ratify: "I didn't mention DRADIS or EXT because they have been built and are running as worked examples on (a private host name, not published) (as you could see in the screenshot)."** DRADIS and EXT are therefore PRIOR-BUILT, ALREADY-RUNNING worked examples this spec documents and reconciles with the new tree shape (via [CXC-MENU-ANNOTATION]'s override), not screens this design session invented or that wait on Q1 — Q1 is separately, independently RATIFIED (audit round 1) regardless.
+- requirement: an app onboarding a mode WITH its own further nav (STD, CHRONO) MUST give that mode node `children` and let [CXC-MENU-PATH] derive its leaves' paths ordinarily; an app onboarding a mode with NO further nav (a single full-screen override, DRADIS/EXT) MUST give that mode node an `annotation.path` override rather than `children` — the choice is mechanical, not a judgment call, once the mode's own asset-naming convention (directory-join vs. suffix) is known.
+- measured-hygiene-flag: two candidate CHRONO mode-surface files already exist on disk with inconsistent spelling — `chrono_mode.svg` and `crono_mode.svg` (`compose_projects/bsg/resources/screen_base_layout/`). Now that CHRONO has `children` rather than being a single override leaf, these files may represent CHRONO's persistent chrome (analogous to STD's `colonial_base_ux.svg` base, sitting outside this tree entirely) rather than a resolvable leaf or override path — genuinely unconfirmed, flagged as a build-time hygiene item for whoever wires CHRONO's chrome, not a design fork.
+- see-also: [CXC-MENU-CIC-INSTANCE], [CXC-MENU-ANNOTATION], [CXC-MENU-PATH], [CXC-CIC-RADIO-MODE], [CXC-MODE-NAV-CIC-CHRONO-INSTANCE], [CXC-MODE-NAV-AUDIT-R1]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+### [CXC-MODE-NAV-CIC-CHRONO-INSTANCE] CHRONO's 3-option nav — SHIP TIME / JUMP COUNT / TIMER, one already-built `colonial_clock` widget
+
+- definition: CHRONO is the first worked instance of a mode WITH its own nav beneath it (besides STD). Its `children` are 3 LEAVES — label `SHIP TIME` (slug `ship-time`), label `JUMP COUNT` (slug `jump-count`), label `TIMER` (slug `timer`) — each an ORDINARY leaf ([CXC-MODE-NAV-UNIFORM-LEAF]), each deriving its own path by the standard join: `<root>/chrono/ship-time.svg`, `<root>/chrono/jump-count.svg`, `<root>/chrono/timer.svg`. A selector widget (an extended [CXC-CIC-TABROW] instance, [CXC-MODE-NAV-SELECTOR-SKIN]) mounted for CHRONO's nav publishes the selection to `colonial_console/<station>/chrono` ([CXC-MODE-NAV-STATION-SCOPE]) and reads its 3 option labels from these children.
+- label-vs-slug: (audit round 1, Q3) the ON-SCREEN label and the derived slug are DELIBERATELY different strings, and this is NOT a new mechanism — it is [CXC-MENU-SLUG]'s existing rule (lowercase, collapse non-alphanumeric runs to a hyphen) applied exactly as written. David: *"perfect. The on-screen labels should not have hyphens should be all caps and be slightly more brief, e.g. 'SHIP TIME' / 'JUMP COUNT' / 'TIMER'. file names should have hyphens, of course."* (audit round 1, Q3, 2026-08-18) — `SHIP TIME` -> `ship-time`, `JUMP COUNT` -> `jump-count`, `TIMER` -> `timer` fall out of [CXC-MENU-SLUG]'s rule with no per-node override needed, the same way [CXC-MENU-CIC-INVENTORY]'s worked table derives BSG's other 35 slugs from their console/sub-tab labels.
+- shared-art-default: (duplication, the PRIMARY behavior) needs NO sharing mechanism at all — each of the 3 leaves gets its OWN physical copy of the ship-clock SVG at its own derived path, per David's own preference for the simple path over a special case.
+- shared-art-optional: (no new mechanism needed either way) if David later prefers ONE physical file instead of 3 duplicated copies, [SPEC:CXC-MENU] already has two ways to express that with ZERO new engine work — (a) give two of the three leaves an `annotation.path` override pointing at the third leaf's file ([CXC-MENU-ANNOTATION]), or (b) author `<root>/chrono/default.svg` and delete the per-option files, letting [CXC-MENU-WALK]'s ratified ancestor-default walk resolve all 3 to it. Neither is chosen here — this is an availability note, not a decision, and needs no fork because David's own words already settle the DEFAULT (duplicate; it's fine).
+- dropped-elements: DONE, not a future MUST (audit round 1, C3 — corrected). The original draft asserted that any baked-in `slot:button@ship-time` / `@jump-countdown` / `@timer` elements in CHRONO's screen art "MUST be dropped" as a forward-looking requirement. David: *"I was vague, because I have not worked through enough of Colonial UX to have a full inventory of my UX element needs. We should not guess at what we may need in the future... It was an architect inference, and I have removed them."* (audit round 1, C3, 2026-08-18) — this node now documents the DONE state (the per-option buttons are already removed; selection is already owned by the mounted selector widget) rather than mandating a future removal, and this spec does NOT extrapolate a general "never bake in per-screen controls" rule from it — David explicitly flagged the inventory of future UX element needs as unsettled and not to be guessed at.
+- clock-widget-slot: each CHRONO leaf's clock display is a live slot named `slot:colonial_clock@<binding>`, conforming to [CXC-COMP-SLOT]'s ratified `slot:<widget>@<binding>` grammar ([DEC-CXC-COMP-SLOT-DELIMITER-AT]) — `colonial_clock` is the `<widget>` token (underscore, matching [CXC-COMP-WIDGET-KIND]'s existing underscore-bearing tokens like `tab_row`/`led_bar`).
+- widget-provenance: (audit round 1, C4 — corrected) the original draft treated `colonial_clock` as an architect-introduced placeholder token, unverified against David's own words. David: *"I did suggest that we rename the 7 segment widget to 'colonial_clock' earlier this session and it was built — it's running on my glass right now."* (audit round 1, C4, 2026-08-18) — `colonial_clock` is therefore DAVID-ORIGINATED (via the rename request) and ALREADY BUILT AND LIVE, not an unverified architect invention — the rename itself happened earlier in the same session, outside the 5-turn `cic-mode-nav` bracket the extractor scoped to, which is why the original draft could not see its provenance. What remains open is narrower and stays flagged: whether `colonial_clock` is formally REGISTERED as a [CXC-COMP-WIDGET-KIND] interaction kind (vs. expressed as a style variant of an existing kind) — see [DD-MODE-NAV-CLOCK-WIDGET-REGISTRATION], still open, render-engineer territory.
+- see-also: [CXC-MENU-ANNOTATION], [CXC-MENU-WALK], [CXC-MENU-SLUG], [CXC-COMP-SLOT], [CXC-COMP-WIDGET-KIND], [CXC-MODE-NAV-CIC-INSTANCE], [DD-MODE-NAV-CLOCK-WIDGET-REGISTRATION], [CXC-MODE-NAV-AUDIT-R1]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+---
+
+## 7. Explicitly deferred — acknowledged, not modeled
+
+### [CXC-MODE-NAV-DEFERRED] What this design session raised that this spec deliberately does NOT model
+
+- definition: the design session surfaced several statements beyond the `selection` archetype and the mode-nav fold. Per this task's explicit scope instruction, they are acknowledged HERE — so nothing below reads as silently dropped — and modeled NOWHERE in this document.
+- the-control-display-taxonomy-is-confirmed-real: (audit round 1, C2 — strengthened, not hypothetical) David: *"the way we are using radio_button_group is functionally duplicative of a tab group, and we may well in the future need to have a different control that actually functions as a set of buttons or interactive elements responding to semantic messages."* (design session, 2026-08-18) named a genuinely DIFFERENT future control; this spec's [CXC-MODE-NAV-SELECTOR-SKIN] correction uses only the first half of that sentence (the tab/radio duplication) and this line makes the LINK explicit rather than silently absorbing the second half into "settled." Audit round 1, C2, confirms the future need is REAL, not hypothetical, and grounds it concretely: *"The pcb in ~/maker/pcb/button_matrix_4x4 is a good physical example of what we want to be able to do with virtual buttons. The Galactica software object (compose-bus resident) will maintain state about all of its subsystems. The state of these subsystems will be published. Different button groups will react in different ways to different semantic messages. When the FTL engine is ready, a big red button labeled 'JUMP READY' may start to blink on screen and in real life (different subscribers)."* This is the `action`/`toggle`/`indicator` region of the full control/display taxonomy (`selection` / `value` / `action` / `toggle` / `indicator` / `output` / `custom`) this spec's scope explicitly excludes — not modeled here, but no longer a hypothetical placeholder: it is CONFIRMED future work with a named physical reference (`~/maker/pcb/button_matrix_4x4`) and a named worked scenario (JUMP READY, differently-reacting button groups, on-screen and real-world subscribers of the SAME published state).
+- the-value-archetype-timer-keypad: "I will do something similar on the timer screen, I'll use a physical keypad to set the countown timer to, say 33 minutes instead of creating touch interfaces." (design session, 2026-08-18) — this describes SETTING a value (a duration), a different control archetype (`value`, not `selection`) from the full taxonomy this spec's scope explicitly excludes. Not modeled; parked for the follow-on session that specs the full taxonomy.
+- the-semantic-ship-model: "yes, we will will have in the real world props momentary action buttons, actual toggle switches on/off state, illuminated buttons, thermal printers and even completely custom props like the thrust controller. Not all of these will have an on-screen doppelganger, but they will be mapped to a much more complex semantic model of the Galactica itself that can degade with damage, run low on fuel, run out of ammo, jump, be repaired and be resupplied." (design session, 2026-08-18) — explicitly excluded by this task's scope. Not modeled here at all.
+- the-fingerprint-sensor-aside: "This is what lead me to realize that having a fingerprint sensor would add some interesting gameplay mechanics." (design session, 2026-08-18) — a gameplay idea sparked by the station/role discussion ([CXC-MODE-NAV-STATION-SCOPE]), not part of the settled mode-nav design. Not modeled; parked as a future idea, not a requirement of this spec.
+- physical-hookup-not-spec-d-here: the 7-position rotary switches, the timer keypad, the `button_matrix_4x4` PCB, and any future fingerprint sensor are physical peripherals; their wiring is a SEPARATE maker-project slice, pattern-referenced the same way [CXC-CIC-ROTARY-HOOKUP] already treats the existing console/sub-tab rotaries — this spec only requires that whatever hardware realizes a selection publish the same namespace a soft selector would ([CXC-MODE-NAV-SELECTION]).
+- see-also: [CXC-CIC-ROTARY-HOOKUP], [CXC-MODE-NAV-SELECTION]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+---
+
+## 8. Acceptance — machine signal + glass gate per surface
+
+### [CXC-MODE-NAV-VERIFY] Acceptance — machine signal and glass gate per surface
+
+- definition: each requirement carries a machine signal AND, for a human-perceptible surface, an explicit glass gate ([CXC-MENU-VERIFY] precedent). MODE-NAV-C1 through MODE-NAV-C5 test the GENERIC primitive/tree shape with neutral fixtures; MODE-NAV-C6 through MODE-NAV-C8 test the BSG instance specifically.
+
+| ID | Requirement | verify.machine | verify.human (glass) |
+|----|-------------|-----------------|------------------------|
+| MODE-NAV-C1 | A selection publishes the same `{index, key}` shape to the same namespace regardless of which realization (soft widget, physical control, Intelligence) issued it ([CXC-MODE-NAV-SELECTION]) | a fixture publishes the identical payload from two simulated sources and asserts the subscriber-observed state is byte-identical | on glass: toggling CHRONO's nav via the touch selector and via a simulated rotary publish shows the identical active option |
+| MODE-NAV-C2 | A soft selector's displayed active state is DERIVED from the published namespace value, never a local toggle ([CXC-MODE-NAV-SELECTION], confirmed Q2) | a test publishes a selection change from a source OTHER than the widget under test and asserts the widget's rendered active state updates | on glass: an out-of-band publish (e.g. from an Intelligence) moves the on-screen selector without the screen being touched |
+| MODE-NAV-C3 | A choice point in the tree is expressed by `children`, never a new [CXC-MENU-KINDS] token ([CXC-MODE-NAV-UNIFORM-LEAF]) | a lint pass over the mode-nav tree fixture asserts no node other than the 3 registered [CXC-MENU-KINDS] tokens appears anywhere in the tree's `annotation.kind` fields | n/a (structural) |
+| MODE-NAV-C4 | A mode-nav selector is an EXTENDED [CXC-CIC-TABROW] instance, never a new widget class ([CXC-MODE-NAV-SELECTOR-SKIN]) | a code-inspection test asserts every mode-nav selector instance is constructed from the same `TabWidget`/`ConsoleTabWidget` lineage [CXC-CIC-TABROW] documents, with no sibling "selector" class introduced | n/a (structural) |
+| MODE-NAV-C5 | The resolver never reads a selection namespace, and a selection namespace never carries an asset path ([CXC-MODE-NAV-RESOLVER-SEAM]) | a property test asserts `resolve()`'s signature and return value are unaffected by any published selection state, and that no selection payload fixture contains a `bus://` value | n/a (structural) |
+| MODE-NAV-C6 | STD's leaves resolve to byte-identical paths after the mode fold ([CXC-MODE-NAV-CIC-INSTANCE]) | a snapshot test asserts every one of the 35 STD (console, sub-tab) derived paths under the new 4-mode tree equals its pre-fold path from [CXC-MENU-CIC-INVENTORY] | n/a (structural) |
+| MODE-NAV-C7 | DRADIS and EXT — prior-built, already running on (a private host name, not published) — resolve via their `annotation.path` override, never via directory-join ([CXC-MODE-NAV-CIC-INSTANCE]) | a fixture asserts `resolve(DRADIS)` returns the override path exactly and that removing the override makes [CXC-MENU-PATH]'s derivation produce a DIFFERENT (wrong) path, proving the override is load-bearing | on glass: DRADIS and EXT continue showing their existing, already-built mode surface under the new tree, unchanged from (a private host name, not published)'s current behavior |
+| MODE-NAV-C8 | CHRONO's 3 options (SHIP TIME / JUMP COUNT / TIMER) resolve to 3 distinct leaves sharing the same art by default, with no baked-in per-option buttons — a done state, not a pending one ([CXC-MODE-NAV-CIC-CHRONO-INSTANCE]) | a snapshot test asserts `resolve(CHRONO > ship-time/jump-count/timer)` returns 3 distinct `bus://` paths; a screen-content test asserts no `slot:button@{ship-time,jump-count,timer}` element exists in any CHRONO leaf's SVG (regression coverage for art David has already cleaned up) | on glass: switching CHRONO's nav selector cycles the `colonial_clock` screen between its 3 states with no on-screen duplicate button row |
+
+- part-of: [SPEC:CXC-MODE-NAV]
+
+---
+
+## 9. Design Decisions
+
+### [DD-MODE-NAV-NAMESPACE-CONVENTION] DECIDED — `/`-delimited, matching [CXC-CIC-DUTY-STATION] exactly, no dual support
+
+- decision: whether the mode-nav tier's selection namespaces ([CXC-MODE-NAV-STATION-SCOPE]) use the EXISTING ratified [CXC-CIC-DUTY-STATION] convention (`colonial_console/<station>/<level>`, `/`-delimited) or David's illustrative `station_n::colonial_ux::tab_1_selected` shape (`::`-delimited, root `colonial_ux`).
+- chosen: `/`-delimited, the EXISTING [CXC-CIC-DUTY-STATION] convention. DECIDED — David ratified, audit round 1, Q4.
+- rationale: David's own words settle both the visual-preference question (he finds `::` reads more like a namespace, `/` more like a file path) AND the practical one (not worth churning the existing convention or maintaining two). `mode` and `chrono` join `console`/`subtab`/`status`/`focus`/`identity`/`peripherals` as more `colonial_console/<station>/<level>` entries, zero impact on [CXC-CIC-TABROW]'s existing publishers.
+- status: decided
+- resolved-by: audit round 1, Q4, `docs/architecture/AUDIT-cic-mode-nav.md`
+- part-of: [SPEC:CXC-MODE-NAV]
+
+### [DD-MODE-NAV-SELECTOR-KIND-CONSOLIDATION] CLOSED — the existing art ([CXC-CIC-TABROW]) already resolves it; no widget-kind or grammar change needed
+
+- decision: whether [CXC-COMP-WIDGET-KIND]'s registered `radio`/`tab_row` slot-grammar tokens should consolidate, given [CXC-MODE-NAV-SELECTOR-SKIN]'s observation that they express one interaction model.
+- chosen: CLOSED — no amendment to [CXC-COMP-WIDGET-KIND]'s registered set is needed, because the mode-nav tier's own selectors never touch that registry in the first place. [CXC-CIC-TABROW] already generalizes `row2`/`row3` as ONE widget with a style axis (`filled-background`/`pill-overlay`) — the CIC shell's own chrome-level tab rows, a DIFFERENT layer from a per-screen `slot:radio@…`/`slot:tab_row@…` composed binding. The mode row and CHRONO's nav are new instancings of [CXC-CIC-TABROW] at that SAME chrome layer, per [CXC-MODE-NAV-SELECTOR-SKIN] — they never mint or bind a `slot:` label at all, so [CXC-COMP-WIDGET-KIND]'s registered tokens are simply not exercised by this spec.
+- david-confirms-the-duplication-is-real: "the way we are using radio_button_group is functionally duplicative of a tab group" (design session, 2026-08-18) — correctly diagnosed the CONCEPTUAL duplication; [CXC-CIC-TABROW]'s pre-existing generalize-don't-fork treatment is what already resolves it in practice, one layer down from where [CXC-COMP-WIDGET-KIND]'s tokens live.
+- residual-note: a NARROWER question — whether a per-screen composed SVG's own `slot:radio@…`/`slot:tab_row@…` bindings (a mechanism this spec's mode-nav tier does not use) should ALSO consolidate at the [CXC-COMP-WIDGET-KIND] registry level — is real but genuinely OUT of this spec's scope; nothing here resolves or needs to resolve it, since no [CXC-MODE-NAV-*] node emits either token.
+- invalidating_assumption: that no mode-nav selector will EVER need to be expressed as a per-screen `slot:` binding rather than CIC-shell chrome. If one does, this closure would need reopening against [CXC-COMP-WIDGET-KIND] specifically.
+- status: closed
+- resolved-by: audit round 1 (coordinator instruction: "check whether the existing art already rules it; if so, close citing that") + [CXC-CIC-TABROW]'s pre-existing generalize-don't-fork precedent
+- see-also: [CXC-CIC-TABROW], [CXC-COMP-WIDGET-KIND], [CXC-MODE-NAV-SELECTOR-SKIN]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+### [DD-MODE-NAV-RADIO-NAMESPACE-RENAME] OPEN — should [CXC-CIC-RADIO-MODE]'s `radio` namespace segment rename to `mode`?
+
+- decision: [CXC-CIC-RADIO-MODE] (itself still PROPOSED, not ratified) names its namespace segment `colonial_console/<station>/radio` — named after the WIDGET SHAPE (a radio row), the same naming-by-appearance tension [CXC-MODE-NAV-SELECTOR-SKIN] notes in [CXC-COMP-WIDGET-KIND]'s registry. This spec's [CXC-MODE-NAV-STATION-SCOPE] otherwise names namespace levels by SEMANTIC MEANING (`console`, `subtab`, `mode`, `chrono`) per [CXC-PS-GRANULARITY]'s "one namespace per meaning." Whether the mode row's namespace should rename `radio` -> `mode` for consistency is open. NOT ruled by David in audit round 1 — carried forward unchanged.
+- alternatives: (a) rename `radio` -> `mode` as part of ratifying both [CXC-CIC-RADIO-MODE] and this spec together — CONSISTENT naming, but touches an already-drafted sibling spec's vocabulary; (b) leave `radio` as-is and treat it as a historical exception (the mode row predates this spec's naming discipline) — lowest churn, inconsistent naming persists.
+- invalidating_assumption: that [CXC-CIC-RADIO-MODE] is still unbuilt at ratify time. If it has already shipped under `radio` before this fork is resolved, (a) becomes a migration, not a naming choice at design time.
+- status: open
+- see-also: [CXC-CIC-RADIO-MODE]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+### [DD-MODE-NAV-CLOCK-WIDGET-REGISTRATION] OPEN — NEEDS-RENDER-ENGINEER-CONFIRM: does `colonial_clock` register as a [CXC-COMP-WIDGET-KIND] interaction kind?
+
+- decision: [CXC-MODE-NAV-CIC-CHRONO-INSTANCE] names each CHRONO leaf's clock slot `slot:colonial_clock@<binding>`. `colonial_clock` is DAVID-ORIGINATED (a rename of the prior 7-segment widget, requested and built earlier this session, already running on his glass — audit round 1, C4) but is NOT yet in [CXC-COMP-WIDGET-KIND]'s formally registered set (`button`, `radio`, `tab_row`, `text`, `readout`/`value`, `gauge`, `graph`, `table`, `led_bar`, …). Whether it registers as a genuinely new interaction kind, or is better named as a STYLE of an existing kind (e.g. a `readout` or `gauge` variant, per [CXC-COMP-WIDGET-KIND]'s own "appearance is not a kind" rule), is unresolved. NOT ruled by David in audit round 1 — explicitly render-engineer territory, carried forward unchanged.
+- needs-confirm: "⛔ NEEDS-RENDER-ENGINEER-CONFIRM. Unverified here: whether the ship-clock display (analog dial? digital readout? both, per mode?) is a genuinely distinct INTERACTION model from the existing registered kinds, or an appearance variant of `gauge`/`readout` that should not mint a new token at all — mirrors [CXC-MENU-SLOT-SIZING]'s own precedent of flagging an unregistered widget question rather than asserting an answer."
+- alternatives: (a) register `colonial_clock` as a new interaction kind (Arm A, matching [DD-MENU-SLOT-SCENE-GRAMMAR]'s precedent of registering `scene` as a new kind rather than amending the grammar); (b) express it as a style parameter on an existing kind (`gauge` or `readout`), no new token.
+- invalidating_assumption: that the clock's rendering genuinely differs in INTERACTION (not just appearance) from an existing kind. The widget itself is already built and live — this decision is about its REGISTRY status, not its existence.
+- status: open
+- see-also: [CXC-COMP-WIDGET-KIND], [CXC-MENU-SLOT-SIZING], [DD-MENU-SLOT-SCENE-GRAMMAR], [CXC-MODE-NAV-CIC-CHRONO-INSTANCE]
+- part-of: [SPEC:CXC-MODE-NAV]
+
+---
+
+## 10. Audit disposition — round 1
+
+### [CXC-MODE-NAV-AUDIT-R1] Audit round 1 — 4 questions + 4 corrections, all dispositioned
+
+
+
+## Relationships
+
+### Semantic
+
+[SPEC:CXC-MODE-NAV] DEPENDS_ON [SPEC:CXC-MENU]
+[SPEC:CXC-MODE-NAV] DEPENDS_ON [SPEC:CXC-CIC]
+[SPEC:CXC-MODE-NAV] DEPENDS_ON [SPEC:CXC-COMP]
+[SPEC:CXC-MODE-NAV] UPHOLDS [DX-ENGINE-VS-POLICY]
+[SPEC:CXC-MODE-NAV] UPHOLDS [DX-NARROW-WAIST]
+[SPEC:CXC-MODE-NAV] UPHOLDS [DX-STRUCTURE-SURVIVES]
+[SPEC:CXC-MODE-NAV] RELATED_TO [CXC-VISION-SEMANTIC-REALIZATION]
+[CXC-MODE-NAV-WHY] RELATED_TO [CXC-MENU-CIC-INSTANCE]
+[CXC-MODE-NAV-WHY] DOCUMENTS [CXC-MODE-NAV-AUDIT-R1]
+[CXC-MODE-NAV-SELECTION] DEPENDS_ON [CXC-CIC-CREDO]
+[CXC-MODE-NAV-SELECTION] RELATED_TO [CXC-CIC-TABROW]
+[CXC-MODE-NAV-SELECTION] UPHOLDS [DX-STATE-ON-BUS]
+[CXC-MODE-NAV-SELECTOR-SKIN] DEPENDS_ON [CXC-CIC-TABROW]
+[CXC-MODE-NAV-SELECTOR-SKIN] UPHOLDS [DX-NARROW-WAIST]
+[CXC-MODE-NAV-SELECTOR-SKIN] RELATED_TO [CXC-COMP-WIDGET-KIND]
+[CXC-MODE-NAV-STATION-SCOPE] DEPENDS_ON [CXC-CIC-DUTY-STATION]
+[CXC-MODE-NAV-STATION-SCOPE] UPHOLDS [DX-NARROW-WAIST]
+[CXC-MODE-NAV-TREE] DEPENDS_ON [CXC-MENU-SCHEMA]
+[CXC-MODE-NAV-TREE] RELATED_TO [CXC-MENU-CIC-INSTANCE]
+[CXC-MODE-NAV-UNIFORM-LEAF] DEPENDS_ON [CXC-MENU-KINDS]
+[CXC-MODE-NAV-RESOLVER-SEAM] DEPENDS_ON [CXC-MENU-RESOLVE]
+[CXC-MODE-NAV-CIC-INSTANCE] DEPENDS_ON [CXC-MODE-NAV-TREE]
+[CXC-MODE-NAV-CIC-INSTANCE] DEPENDS_ON [CXC-MENU-CIC-INSTANCE]
+[CXC-MODE-NAV-CIC-INSTANCE] DEPENDS_ON [CXC-MENU-ANNOTATION]
+[CXC-MODE-NAV-CIC-INSTANCE] RELATED_TO [CXC-CIC-RADIO-MODE]
+[CXC-MODE-NAV-CIC-CHRONO-INSTANCE] DEPENDS_ON [CXC-MODE-NAV-CIC-INSTANCE]
+[CXC-MODE-NAV-CIC-CHRONO-INSTANCE] DEPENDS_ON [CXC-COMP-SLOT]
+[CXC-MODE-NAV-CIC-CHRONO-INSTANCE] DEPENDS_ON [CXC-MENU-SLUG]
+[CXC-MODE-NAV-CIC-CHRONO-INSTANCE] RELATED_TO [CXC-MENU-WALK]
+[CXC-MODE-NAV-DEFERRED] RELATED_TO [CXC-CIC-ROTARY-HOOKUP]
+[CXC-MODE-NAV-VERIFY] RELATED_TO [CXC-MENU-VERIFY]
+[DD-MODE-NAV-NAMESPACE-CONVENTION] DOCUMENTS [CXC-MODE-NAV-STATION-SCOPE]
+[DD-MODE-NAV-RADIO-NAMESPACE-RENAME] DOCUMENTS [CXC-MODE-NAV-CIC-INSTANCE]
+[DD-MODE-NAV-RADIO-NAMESPACE-RENAME] RELATED_TO [CXC-CIC-RADIO-MODE]
+[DD-MODE-NAV-SELECTOR-KIND-CONSOLIDATION] DOCUMENTS [CXC-MODE-NAV-SELECTOR-SKIN]
+[DD-MODE-NAV-SELECTOR-KIND-CONSOLIDATION] RELATED_TO [CXC-CIC-TABROW]
+[DD-MODE-NAV-CLOCK-WIDGET-REGISTRATION] DOCUMENTS [CXC-MODE-NAV-CIC-CHRONO-INSTANCE]
+[CXC-MODE-NAV-AUDIT-R1] DOCUMENTS [CXC-MODE-NAV-TREE]
+[CXC-MODE-NAV-AUDIT-R1] DOCUMENTS [CXC-MODE-NAV-CIC-INSTANCE]
+[CXC-MODE-NAV-AUDIT-R1] DOCUMENTS [CXC-MODE-NAV-SELECTOR-SKIN]
+[CXC-MODE-NAV-AUDIT-R1] DOCUMENTS [CXC-MODE-NAV-STATION-SCOPE]
+
+---
+
+**Version**: 0.2 — REWORKED per audit round 1 (`docs/architecture/AUDIT-cic-mode-nav.md`, 2026-08-18); supersedes v0.1's unratified premise on the mode-fold and its two parallel-abstraction defects
+**Created**: 2026-08-18
+**Status**: `[PLACEMENT UNRATIFIED]`. Audit round 1 CLOSED: Q1, Q2, Q3, Q4, C1, C2, C3, C4, plus [DD-MODE-NAV-NAMESPACE-CONVENTION] and [DD-MODE-NAV-SELECTOR-KIND-CONSOLIDATION]. Still OPEN: [DD-MODE-NAV-RADIO-NAMESPACE-RENAME], [DD-MODE-NAV-CLOCK-WIDGET-REGISTRATION]. `artifact-readiness: design-review` — this document has not been through its OWN DSD ratify pass (audit round 1 closed intent-fidelity questions, not a build authorization). Do not land.

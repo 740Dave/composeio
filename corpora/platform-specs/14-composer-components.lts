@@ -1,0 +1,156 @@
+---
+scope: "Config-level component reuse for ComposeUX — a `components:` section that defines a parameterized widget shape ONCE, referenced via `use:` and stamped N times with per-instance overrides. DRYs the config, not just the renderer class. A pure load-time expansion; no renderer or binding-engine change."
+audience: "ComposeUX serialization + app authors; device_monitor implementers (spec 15) who stamp components at runtime"
+boundary: "One new top-level section (`components:`) + one widget key (`use:`) + a load-time expander. Renderers, bindings, state engines unchanged — they only ever see fully-expanded widgets. Runtime namespace interpolation (${ns}) is untouched and orthogonal (COMP-3)."
+not-this: "Not a templating language (no loops/conditionals in v1); not runtime composition (that is device_monitor, spec 15); not a way to reuse renderer CODE (that is the widget class, already reused); not a macro over namespaces/modules (widgets only, v1)."
+depends-on: [04-composer-serialization.lts, 13-mcp-action-binding.lts]
+origin: "Design conversation 2026-07-05 (David). After building three CommandWidgets that differed only by binding, the observation: the widget CLASS was reused but the widget CONFIG was copy-pasted. Class-reuse without config-reuse is half the pattern."
+domain: plt.cux
+---
+# ComposeUX Components [SPEC:CIO-UX-COMPONENTS]
+
+> ComposeUX already reuses widget **classes**: one `GaugeRenderer` serves every gauge, one `CommandRenderer` serves every command button (spec 13). But an author who wants three command buttons still copy-pastes three near-identical `binding:` blocks. That is class-reuse without config-reuse — half the DRY. A **component** closes the other half: define the shape once, stamp it with overrides. Crucially, this is a *load-time expansion* — the component vanishes before the layout builder runs, so nothing downstream learns a new concept. And the same components become the vocabulary a `device_monitor` (spec 15) stamps at runtime from discovered capabilities: the abstraction that survives both author-time and runtime instancing is the correct one.
+
+---
+
+## [COMP-1] The gap: class-reuse ≠ config-reuse
+
+Three CommandWidgets in the Fleet HUD differed only in `{label, tool, args, confirm}`, yet each spelled out a full `type: CommandWidget` + nested `binding:` structure. The renderer was reused; the *configuration* was triplicated. The smell: change the command-button's binding shape (add a field, rename a key) and you edit it in N places. A component makes the shape single-sourced.
+
+> test: If adding a field to a widget's binding shape requires editing every instance of that widget, config-reuse has failed.
+
+---
+
+## [COMP-2] The `components:` section + `use:`
+
+A top-level `components:` map. Each entry declares `params`, optional `defaults`, and a `widget` template:
+
+```yaml
+components:
+  command-button:
+    params: [label, tool, args, confirm, result_ns]   # the knobs this component exposes
+    defaults: {args: {}, confirm: false, result_ns: null}  # optional params; null => optional-and-prunable
+    widget:                                            # the shape, single-sourced
+      type: CommandWidget
+      label: "{{label}}"
+      binding:
+        type: mcp_action
+        tool: "{{tool}}"
+        args: "{{args}}"
+        confirm: "{{confirm}}"
+        result_namespace: "{{result_ns}}"
+```
+
+A widget entry references it with `use:` and supplies param values inline; **layout keys pass straight through**:
+
+```yaml
+widgets:
+  - {use: command-button, label: "540 status", tool: fleet540.fw_status, result_ns: velo540_action, row: 1, column: 0}
+```
+
+---
+
+## [COMP-3] Two-phase resolution — `{{param}}` (compile) vs `${ns}` (runtime)
+
+The pivotal design decision. ComposeUX already resolves `${ns}` **at runtime** (mcp_action interpolates live namespace values into args, MCPA-2). Components resolve `{{param}}` **at load time**. Two sigils, two phases, no collision:
+
+| Sigil | Phase | Resolved by | Example |
+|---|---|---|---|
+| `{{param}}` | compile (config load) | the component expander | `tool: "{{tool}}"` → `tool: "fleet540.fw_status"` |
+| `${ns}` | runtime (operation) | the binding engine | `args: {host: "${active_host}"}` → the live selection |
+
+They compose cleanly: a component may bake a `{{param}}` into an arg that *also* carries a runtime `${ns}`. Expansion fills the parameter and leaves the runtime reference untouched for the binding engine.
+
+**Substitution rule — type-preserving:** a value that is *exactly* `"{{x}}"` is replaced by the param's **native value** (dict, bool, number, list — not stringified). A `{{x}}` embedded in a larger string interpolates as text. This is why `args: "{{args}}"` yields a real dict and `confirm: "{{confirm}}"` yields a real bool, not the strings `"{...}"` / `"false"`.
+
+**Absent-optional rule:** an unfilled optional param resolves to nothing and its key is **pruned** — `result_namespace: "{{result_ns}}"` with no `result_ns` supplied disappears rather than becoming `null`, so the renderer's `if result_ns is not None` stays honest.
+
+---
+
+## [COMP-4] Expansion is a load-time transform — zero downstream change
+
+The expander runs once, right after config load, before namespace registration and `build_layout`:
+
+```
+load_config(yaml) ──► expand_components(cfg) ──► build_bus / build_layout (unchanged)
+                         │  walks modules[].widgets[]
+                         │  every {use: X, ...} → deep-copy components[X].widget,
+                         │  substitute {{params}}, overlay layout keys
+                         ▼
+                       cfg with only concrete widgets — `components:` consumed, `use:` gone
+```
+
+The layout builder and every renderer see **only fully-expanded widgets** — they never learn what a component is. This is the layering payoff: components are a serialization-tier concept (spec 04), invisible to the render tier. Canonical home is the composer's load path so *every* surface gets it; the Fleet HUD ships the reference implementation (`dashboard/components.py`).
+
+---
+
+## [COMP-5] Validation + passthrough
+
+- **Layout keys pass through** untouched from the `use:` entry to the expanded widget: `row, column, colspan, rowspan, padding, weight_x, weight_y`. They are never params.
+- **Required vs optional** = a param with a `defaults` entry is optional; one without is **required**. Missing a required param at the call site → hard error naming the component and the missing params. Fail at load, not at render. A `null` default marks a param **optional-and-prunable** (unfilled → its key vanishes, per COMP-3), which is how a runtime binder (device_monitor) can stamp a component and simply omit knobs it has no value for.
+- **Unknown component** (`use: nope`) → hard error listing known components.
+- **Params = defaults overlaid by call-site values**; call-site keys that are neither params nor layout keys are a soft warning (probable typo).
+- Expansion is **not recursive in v1** (a component's `widget` may not itself contain `use:`). Nesting is a deliberate future step (COMP-7 anti-pattern guard).
+
+---
+
+## [COMP-6] Worked example — the three buttons, single-sourced
+
+**Before** (spec 13, triplicated binding):
+```yaml
+- {type: CommandWidget, label: "console", binding: {type: mcp_action, tool: fleetsoak.console_tail, args: {n: 5}, result_namespace: velo540_action}, row: 0, column: 0}
+- {type: CommandWidget, label: "status",  binding: {type: mcp_action, tool: fleet540.fw_status, args: {}, result_namespace: velo540_action}, row: 1, column: 0}
+- {type: CommandWidget, label: "power",   binding: {type: mcp_action, tool: fleetpower.power_cycle, args: {target: velocloud540}, confirm: true, result_namespace: velo540_action}, row: 2, column: 0}
+```
+
+**After** (one shape, three data rows):
+```yaml
+components:
+  command-button: { params: [label, tool, args, confirm, result_ns], defaults: {args: {}, confirm: false}, widget: {...COMP-2...} }
+
+widgets:
+  - {use: command-button, label: "console", tool: fleetsoak.console_tail, args: {n: 5}, result_ns: velo540_action, row: 0, column: 0}
+  - {use: command-button, label: "status",  tool: fleet540.fw_status,     result_ns: velo540_action, row: 1, column: 0}
+  - {use: command-button, label: "power",   tool: fleetpower.power_cycle, args: {target: velocloud540}, confirm: true, result_ns: velo540_action, row: 2, column: 0}
+```
+
+Byte-identical expanded output; the binding shape now lives in exactly one place.
+
+---
+
+## [COMP-7] Why device_monitor is the real test (forward to spec 15)
+
+A component that only serves author-time copy-paste is a convenience. The design earns its keep if the **same** component can be stamped **at runtime, by a machine, from a discovered capability** — e.g. a `device_monitor` that sees a device advertise a `power_cycle` capability and stamps `command-button` for it, no human in the loop. That requirement back-pressures this spec:
+
+- Components must be **addressable by name** and **instantiable programmatically** (not just by YAML sugar) — the expander's `_instantiate(name, params)` is a public entry point, not a parser-internal.
+- Params must be **typed and declared**, so a runtime binder can fill them from capability metadata without guessing.
+- Expansion must be **pure** (no I/O, deterministic) so it is safe to run per-discovery.
+
+Spec 15 consumes this: `device_monitor` maps `capability → {use: component, params}` and stamps via the same expander. Components are the **vocabulary**; device_monitor is a **runtime binder** over it.
+
+---
+
+## Derived constraints
+
+| Constraint | Follows from | Rationale |
+|---|---|---|
+| Components expand at load, before layout | COMP-4 | Render tier never learns a new concept |
+| `{{param}}` and `${ns}` never collide | COMP-3 | Two phases: compile vs runtime |
+| Exact-token substitution preserves type | COMP-3 | `args`/`confirm` must stay dict/bool, not string |
+| Unfilled optional param prunes its key | COMP-3 | Keep `is not None` checks honest downstream |
+| `_instantiate(name, params)` is a public API | COMP-7 | device_monitor stamps components at runtime |
+| Expansion is pure + deterministic | COMP-7 | Safe to run per-discovery event |
+
+## Anti-patterns
+
+| Anti-pattern | Violates | Do instead |
+|---|---|---|
+| Copy-paste a widget's binding block N times | COMP-1 | Define a component, `use:` it |
+| String-interpolate a dict/bool param | COMP-3 | Exact-token `"{{x}}"` → native value |
+| Put loops/conditionals in a component | not-this | Author explicit widgets, or use device_monitor (15) for dynamic sets |
+| Reference `${param}` expecting compile-time fill | COMP-3 | `${}` is runtime; use `{{}}` for params |
+| Nest `use:` inside a component's widget (v1) | COMP-5 | Flatten in v1; nesting is a scoped future step |
+
+---
+
+**Version**: 0.1 · **Created**: 2026-07-05 · **Status**: Draft → implementing. Reference expander `dashboard/components.py`; Fleet HUD (`apps/fleet-hud`) is the first consumer. Canonical home is the composer load path (spec 04) so every surface inherits it. Runtime stamping validated by spec 15 (device_monitor).

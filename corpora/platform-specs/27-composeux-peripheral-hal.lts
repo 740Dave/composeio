@@ -1,0 +1,185 @@
+---
+scope: "ComposeUX Peripheral HAL — a tiered hardware-abstraction model for binding physical peripherals to ComposeBus namespaces. A declarative sensor HAL covers the long tail of value/edge sensors (config-only, zero code); a reusable-driver tier covers standard bus-register parts; and a direct-integration escape covers stateful protocol devices. The generalization of the NFC/audio peripheral pattern ([CXC-NFC-PATTERN]). Captured 2026-07-10 (David)."
+audience: "ComposeUX/ComposeIO architects, embedded + Linux-node developers, integrators"
+boundary: "IN: the tiered HAL model, the declarative sensor descriptor, the value-map + engine semantics, the direct-integration escape for stateful devices, the per-platform realization, and the boundary test. OUT (until shaped): the exact descriptor schema, the driver-registry mechanism, and the [CXC-HAL-OPEN] decisions."
+not-this: "Not a replacement for bus-native pub/sub (a HAL peripheral IS a namespace publisher/subscriber); not a driver framework that hides the bus; not a promise that every device is declarative (stateful devices are direct-integration by design)."
+depends-on: [16-composeux-bindings-behaviors.lts, 20-composeux-headless-widgets.lts, 26-composeux-nfc.lts, 25-composeux-audio.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: concept-capture
+---
+# ComposeUX Peripheral HAL [SPEC:CXC-HAL]
+
+> Everything is bus-native: a peripheral maps to a namespace. The HAL is only about *how much of that mapping is declarative vs. coded*. A reed switch is a config line; an R503 fingerprint sensor is a driver. The boundary is not the device — it is the interaction shape.
+
+---
+
+## 1. Intent
+
+### [CXC-HAL-INTENT] Make Binding Reality Cheap
+
+- problem: today, wiring a physical sensor to a namespace means writing code. That makes "bind reality in incrementally" ([CXC-HW-INTENT]) expensive for the *common* case — a reed switch, a PIR, a pot — which is 90% of real sensors.
+- definition: a tiered Hardware Abstraction Layer that binds physical peripherals to ComposeBus namespaces, so the common sensor is a **declarative descriptor** (config-only) and only genuinely stateful devices need code. It is the input-side dual + generalization of the output actuator backends (Canvas/display, Audio) and the promotion of [CXC-NFC-PATTERN].
+- payoff: emulate a whole system in headless YAML, then bind a reed switch to `door/state` by adding a descriptor line — not a driver.
+- part-of: [SPEC:CXC-HAL]
+
+---
+
+## 2. The Tiers
+
+### [CXC-HAL-TIERS] Three Tiers, One Boundary Test
+
+- **Tier 1 — declarative HAL (config-only, zero pipeline code)**: value/edge sensors on GPIO/ADC — digital (reed, PIR, hall, limit/tilt, button) and analog (pot, thermistor, LDR, analog distance). A descriptor reads the pin, debounces/scales, applies the value-map, and publishes: `{sensor: reed, pin: 4, engine: binary, publish: door/state, debounce_ms: 20}`. The board profile's GPIO/ADC HAL does the read; no pipeline code per sensor.
+- **Tier 2 — HAL + reusable chip driver**: standard bus-register parts over I2C/SPI (BME280, VL53L0X, an accelerometer) — and **NFC/PN532 lives here** ([SPEC:CXC-NFC]). The per-chip driver is code, but the pipeline stays uniform (read → value → publish), so the config just *wires* it: `{sensor: bme280, bus: i2c, addr: 0x76, publish: env/temp}`. Adding a chip = adding a driver, not touching the pipeline.
+- **Tier 3 — direct integration (bespoke, NOT a generic HAL)**: stateful devices with their own command/response protocol — **R503 fingerprint**, GPS (NMEA), a configurable barcode scanner. They have operations + state (enroll/match/delete, template counts, packet handshakes), not just a value. A dedicated driver exposes their operations as **bus commands + events** (`fingerprint/enroll` → `fingerprint/enrolled`; a scan → `fingerprint/matched` = id) — still bus-native, but coded.
+- **the boundary test**: *a value/event with no state beyond "read" → HAL (Tier 1/2); operations, state, or a multi-step protocol → direct integration (Tier 3).*
+- part-of: [SPEC:CXC-HAL]
+
+### [CXC-HAL-FACE] The Boundary Is Per-Interaction-Face, Not Per-Device
+
+- insight: a device can straddle. The R503's **runtime face** — "scan → matched id → publish" — is HAL-shaped (it looks exactly like NFC, Tier 2). Its **management face** — enroll / delete / manage templates — is Tier 3. So a device may expose a **declarative HAL face for its steady-state read AND a direct-integration face for its operations**. The seam runs through the device, not around it.
+- consequence: don't ask "is this a HAL device?"; ask "which of its *interactions* are value/event (HAL) vs. operations (direct)?" — and wire each accordingly.
+- part-of: [SPEC:CXC-HAL]
+
+---
+
+## 3. Realization
+
+### [CXC-HAL-PLATFORM] Define-Once Descriptor, Per-Platform Driver
+
+- the descriptor (what sensor, which pin/bus/addr, engine, publish-namespace, debounce/scale, value-map) is **define-once** — the same way a widget config is. The HAL *implementation* is per-platform, like the Canvas and Audio backends:
+  - **MCU (ESP32)**: C++ in the board profile — GPIO/ADC/I2C read loops publishing to the (on-device or bridged) bus. Ties to the reactive embedded tier ([CXC-RM-EMBED-REACTIVE]).
+  - **Linux node (MinnowBoard / Pi)**: Python — libgpiod (the fleet already has it), ADC, I2C reads publishing to ComposeBus; the Class-B lure's I2C/serial is literally the transport.
+- board-profile fact: which peripherals a device has (and their pins/addresses) is declared in the board profile ([CXC-RM-M5]), exactly like the display driver, audio backend, and NFC reader. The descriptor names `door/state`; the profile maps it to pin 4 on this board — the fungible-device pattern ([CXC-R-BOOT-FUNGIBLE]).
+- semantics: the state **engine** (binary / tri_level / continuous_0_255 / enum / json) + the **value-map** ([CXC-BIND-C8]) turn a raw read into meaning, uniformly across all tiers.
+- part-of: [SPEC:CXC-HAL]
+
+### [CXC-HAL-PATTERN] Completes the Peripheral-Binding Picture
+
+- with this, the peripheral model is whole: **inputs** (touch, the Tier-1/2 sensor HAL, Tier-3 device drivers) publish; **outputs** (Canvas/display, Audio) actuate; all namespace-scoped (internal or bus, [CXC-NFC-SCOPE]), all board-profile facts, all define-once descriptors over per-platform drivers. [CXC-NFC-PATTERN]'s observation is now this spec.
+- part-of: [SPEC:CXC-HAL]
+
+### [CXC-HAL-DEVICE] The Device's Local Bus Is First-Class; Sensing and Emit-Scope Are Orthogonal to Headed/Headless (David 2026-07-10)
+
+- correction: reading a sensor does NOT imply headless, and emitting does NOT imply the shared bus. The CYD is the counterfactual — a **headed** device (it renders) that ALSO reads peripherals (its 4-pin JST connectors). Two orthogonal axes, both hanging off the device's **local bus**:
+  - **headed vs headless** = does the device's composition contain render widgets. "Headless" is just "no render widgets," not "no display AND a sensor."
+  - **emit-scope** = per-namespace, a **transport** decision, NOT part of the HAL. A HAL sensor publishes to a **local namespace**; whether that namespace is also **bridged** to the shared ComposeBus (e.g. MQTT :1883) is the device transport's per-namespace bridge policy.
+- the local bus is the substrate: a device runs its own in-process bus; HAL inputs publish to it, widgets/audio consume from it, logic runs on it — none of which requires the shared bus to exist. The device's "space" IS its local bus.
+- the same read, three reaches: **local-only** (drives the CYD's own display, fully self-contained, works disconnected) · **also bridged** (other participants see it) · **both** (render locally + report). It is the SAME publish; only the bridge policy differs — so [CXC-NFC-SCOPE]'s "internal vs bus" is precisely local-bus-only vs local-bus-plus-bridge.
+- all four quadrants are real: headed×local (a self-contained sensor+display appliance) · headed×bridged (a display that also reports) · headless×local (local logic only) · headless×bridged (the classic sensor node). The CYD spans them.
+- deploy implication (observation, not a forced merge): a **device config is a composition** — render widgets + HAL descriptors + headless logic on one local bus + a bridge policy. The display-config path ([CXC-R-BOOT], `bus://assets/displays/<id>`) and the headless-roster path ([CXC-HW-DEPLOY]) are two faces of this one device model; the reactive CYD that both renders AND senses is what would unify them. Flagged for [CXC-RM-EMBED-REACTIVE], not merged now.
+- part-of: [SPEC:CXC-HAL]
+
+---
+
+### [CXC-HAL-TOPOLOGY] First-Class vs Relayed — Same Semantic Contract, Different Topology (David 2026-07-10)
+
+- concept: a device participates in ComposeBus in one of two **topologies**, with the SAME semantic contract (the namespaces it emits/consumes). Orthogonal to the HAL tier and to headed/headless:
+  - **first-class** — directly on a ComposeBus transport: CAN (on-chip TWAI or an external controller like MCP2515), MQTT over WiFi, or in-process. It puts semantic messages on the bus itself. (CAN transport + hardware acceptance masks: [CXC-PS-CAN].)
+  - **relayed (peripheral / daughtercard)** — NOT running a ComposeBus transport at all; attached over a local link (I2C/SPI/UART) to a **host** that is first-class. The host's HAL driver ([CXC-HAL-TIERS]) maps the peripheral's interface to/from semantic namespaces — the device is a bus participant **by proxy**.
+- load-bearing property: the semantic contract is **transport-agnostic** (DP-CIO-6, "transport is an implementation detail"). A device+daughtercard emits the SAME messages (`panel/btn/7 = pressed`, `fingerprint/matched = id3`) whether first-class on CAN or relayed I2C→host→MQTT. So you **develop in one topology and deploy in the other** — bench it as a relayed I2C peripheral on an ESP32 host, deploy it first-class on CAN in the field, identical semantics. Topology is a deployment choice, not a redesign.
+- distinct from a **transport bridge**: the `can_mqtt_bridge` service joins two bus transports (CAN network ↔ MQTT network) where devices on both sides are first-class; a **relay** is a peripheral not on any bus transport, reachable only through its host. Both are "topology," but the relay IS the HAL relationship viewed as bus participation.
+- the motivating case — **the CH32V003** (the ~10¢ RISC-V MCU that *inspired* ComposeIO): it sits BELOW the reactive-engine floor (≈2 KB RAM — it cannot hold the DSL/bindings/behavior engine), so it never runs the full reactive stack. It does the physical peripheral **management** — debounce + illuminate a 16-switch matrix via 2× MCP23017; drive R503 fingerprint enrollment state — and participates as either:
+  - **first-class-minimal** — a fixed, compiled semantic mapping emitted/consumed over CAN (no on-chip DSL): a "dumb but semantic" bus endpoint (needs an external CAN controller; the CH32V003 has no on-chip CAN).
+  - **relayed** — a HAL peripheral (Tier 2/3) presenting a clean interface over I2C/serial to an ESP32/MinnowBoard host that runs the smarts (value-maps, DSL, bindings) and maps it to the bus.
+  - realized: (a local path, not published) is exactly this — a CH32V003 as HAL/state-monitor for 16 illuminated momentary switches (2× MCP23017 over I2C: U1@0x20 = button inputs, U2@0x21 = LED outputs), presenting a **UART** interface to a host ESP32 that is the bus participant. And the CH32V003 FTL Jump Button (`composeio/firmware/ftl_jump_button/`, "the First Physical ComposeIO Module") is the working precedent for the semantic side — it publishes `ftl_jump` / subscribes `ftl_jump_led` using CRC-16 namespace hashes matching Python `namespace_hash()`.
+- trivial "head": a CH32V003 driving a **2×20 character LCD** is a **text-output HAL peripheral**, not a Canvas surface — it maps a couple of namespaces to text rows. Even the floor device's "head" is HAL-shaped, not a ComposeUX render surface.
+- three orthogonal axes: **(HAL tier: declarative / driver / direct-integration) × (topology: first-class / relayed) × (headed / headless)** — a device picks a point in each. The CH32V003 = (driver/direct) × (either topology) × (headless or trivial-text-head).
+- part-of: [SPEC:CXC-HAL]
+
+---
+
+### [CXC-HAL-ACTUATE] Output Actuators Mirror Input Sensors — "Define Once, Actuate Many" (David 2026-07-10, grounded in 3 real boards)
+
+- symmetry: the HAL has a symmetric OUTPUT side, not just display + audio. Input Tier 1 = read GPIO/ADC → publish a namespace; **Output Tier 1 = subscribe a namespace → drive GPIO/PWM/relay/low-side-switch**. Input Tier 2 = a bus-register sensor via a driver; **Output Tier 2 = a physical actuator via a driver** (an H-bridge / motor controller / shift register). Display (the Canvas contract) and audio ([SPEC:CXC-AUDIO]) are the rich, special-cased actuators; simple physical actuators (lights, relays, motors) are the Tier-1/2 output HAL.
+- grounded in three real boards ((a local path, not published)), which also instantiate the participation topology ([CXC-HAL-TOPOLOGY]):
+  - **button_matrix_4x4** — RELAYED daughtercard: CH32V003 HAL for 16 illuminated momentary switches (2× MCP23017 over I2C), UART to a host ESP32. Input AND output, relayed.
+  - **rack_triple_gauge** — FIRST-CLASS actuator board (ESP32-C3 SuperMini): MCP23017 → 3× L293D → 3× stepper motors (physical dials) + 2N2222 PWM backlights. Output Tier 2 (stepper via driver).
+  - **lego_dots** — FIRST-CLASS actuator board (ESP32-C3): 12× GPIO → 150R → BC337 low-side switch for 12× 12/24 V lights. Output Tier 1 (direct).
+- **define-once resonance (the highlight)**: the triple-gauge's **physical stepper needle and the on-screen `GaugeWidget` are the SAME `gauge/value` namespace driving two actuator backends** — a motor vs Canvas pixels. Define-once extends past *render* into *physical actuation*: bind `engine/temp` once, and it moves a needle on a screen OR a needle on a real dial. The render-engine's "define once, render many" generalizes to **"define once, actuate many."**
+- topology note: in the as-designed boards, first-class = an ESP32-class MCU (the **ESP32-C3 SuperMini** is the reference first-class actuator MCU); the CH32V003 fills the relayed-HAL role. CH32-first-class-on-CAN remains the future floor option.
+- **BACKLOG — DMX-over-RS-485 actuator backend (David 2026-07-10, immersive theatrical experiences)**: a ComposeBus widget (headed or headless) that subscribes to *semantic* namespaces and emits **DMX512 over an RS-485 transceiver** (e.g. a MAX485 / isolated RS-485 board) — Output Tier 2, one node owning a DMX universe. The point is the semantic seam: a bus message like `scene/cue = "storm"` or `house/lights = 0.2` maps (via a fixture/channel descriptor + the value-map/engine machinery) to DMX channel bytes, so the *show* is authored in ComposeBus semantics, not raw channels. Define-once resonance ([CXC-HAL-ACTUATE]) extends to stagecraft: a `lighting/wash` namespace can drive a physical DMX fixture AND an on-screen preview simultaneously. Design notes to shape: continuous 44 Hz DMX frame refresh from a latched channel array (the RS-485 emit is a background frame pump, not per-message — the bus message updates channels, a timer streams the universe); fixture descriptor (semantic-name → {start_channel, channel-map, ranges}); scene/cue → multi-channel expansion; 512-channel universe ceiling + multi-universe future. Natural Tier-2 driver on a first-class ESP32-C3/S3 (UART2 → DE/RE-gated MAX485). Relates to [CXC-AUDIO] (both are timed-stream actuators off latched bus state) and the embedded-reactive tier ([SPEC:CXC-EMBED-REACTIVE]).
+- **WLED adaptor — bringing an existing WLED fleet onto the bus (David 2026-07-10; best open-source on-ramp)**: WLED is **already MQTT-native**, so a WLED device is bus-adjacent — the common case needs NO firmware fork. A ComposeBus **WLED adaptor** (headed/headless, Output Tier 2) subscribes semantic namespaces and drives WLED via its MQTT topics + **JSON API** (`/json/state`): switch presets/effects/palettes/brightness/segments. Semantic seam identical to DMX (`scene/mood = "storm"` → preset id; `house/lights = 0.2` → brightness), and the same define-once resonance (`lighting/wash` → WLED strip + on-screen preview + a DMX fixture, all from one namespace). The integration is a **spectrum**, build bottom-up: (1) **driven semantic adaptor** [this — works with the whole existing fleet TODAY, zero firmware]; (2) **pixel-stream render surface** via WLED's realtime DDP/E1.31-sACN protocols = a WLED matrix as an actual low-res ComposeUX DISPLAY — SCHEDULED as its own render pass ([CXC-RM-WLED], sequenced last); (3) **first-class participant** = a WLED *usermod* running the on-chip reactive core over CAN / its own transport ([CXC-HAL-TOPOLOGY]) — heavy future, only where a specific device needs local autonomy. Recommendation: DON'T start with the usermod; the MQTT/JSON adaptor is the clean seam and, because WLED is ubiquitous among makers, the single best community adoption on-ramp for the open-source release. Sibling to the DMX item above.
+- part-of: [SPEC:CXC-HAL]
+
+---
+
+### [CXC-HAL-RELAY-ACTUATOR] The Declarative Relay-Bank Actuator — Break-Before-Make, "Actuate Many" (David 2026-08-05, hardware-verified: an ESP32 4-relay fan controller)
+
+- what-it-is: an **Output Tier-1 declarative relay-bank actuator** — a concrete specialization/realization of [CXC-HAL-ACTUATE]'s output side. Where the binary actuator maps ONE namespace to ONE pin, this maps ONE **semantic enum** namespace (e.g. `office_fan/speed` = `off|low|medium|high`) to a **bank of relays** through a value→pin state map. **Config-only** (no per-device code): the descriptor lives in the fetched `.compose.yaml` `relay_actuator:` block, config-fetched on boot exactly like every ESP32-class device ([CXC-ER-DEVICE]) and re-fetchable live over the bus ([CXC-ER-REMOTE-RESTART], `_device/<id>/restart`). Realized in `firmware/reactive_core/src/relay_actuator.{h,cpp}` (lowered from the config by `controller_config` into a `RelayActuatorSpec`).
+- descriptor schema (the `relay_actuator:` block — verbatim field semantics from the two shipped configs):
+  - `subscribes` — the enum namespace this actuator drives (the one semantic input; a human / an Intelligence / any bus peer publishes a speed, the device subscribes + actuates).
+  - `active_high` — the relay **energizes on GPIO HIGH** (`false` inverts the drive polarity).
+  - `dead_time_ms` — the **break-before-make dead-time** (ms) between opening all relays and closing the target.
+  - `default` — the state **asserted at boot**. NOTE the **YAML-1.1 quoting gotcha**: write `"off"` quoted — a bare `off`/`on` parses as a boolean, not the enum string.
+  - `pins` — **ALL** owned relay GPIOs. Every one is de-energized on a break, **including any spare** (e.g. `RY1` here).
+  - `states` — a list of `{value, pin}`: each enum value → the **single** relay pin energized for that state; **`pin: none` = all relays open** (the `off` state has no energized pin).
+- **NORMATIVE INVARIANT — break-before-make (motor safety), MUST**: on every state change the device MUST (1) open **ALL** owned relays, (2) wait `dead_time_ms`, THEN (3) close the **single** target relay. Two speed relays are **NEVER** closed simultaneously — overlapping speed taps back-feed the fan windings. **~80 ms is the verified-safe dead-time.** Realized as a `tick(millis)` sequencer: `on_value` de-energizes every owned pin immediately (the BREAK) and arms the MAKE for `now + dead_time_ms`; `tick()` closes the single target once due. A re-command mid-sequence re-breaks and re-arms; an **unknown enum value is WITHHELD** (relays left as-is) so a bad command never thrashes the motor.
+- verified realization: a generic **ESP32-WROOM-32E integrated 4-relay board**, **active-HIGH**, pinout `RY1=GPIO32 (spare) · RY2=GPIO33 · RY3=GPIO25 · RY4=GPIO26`; a **3-speed AC tap fan** wired `low=RY2 · medium=RY3 · high=RY4`, `off` = all relays open (no master relay — a speed-tap fan needs none). Powered externally at **12 V DC**. Realized by **`office_fan`** and **`office_hepa`** — **identical** board + `reactive_core` firmware, differing ONLY by device id + namespace (`office_fan/speed` vs `office_hepa/speed`). Firmware `firmware/reactive_core/src/relay_actuator.{h,cpp}`, host-tested in `env:native_test` (config lowering + a break-before-make ordering check + dead-time + reload).
+- compliance (CXC-HAL-C1..C6 — the first compliance rows in this spec):
+  - **CXC-HAL-C1** — break-before-make ordering honored: on every change ALL owned relays open, `dead_time_ms` elapses, THEN the one target closes (the break emits synchronously in `on_value`; the make fires from `tick()` once due).
+  - **CXC-HAL-C2** — two speed relays never co-closed: `on_value` de-energizes every owned pin unconditionally before arming any make; a mid-sequence re-command re-breaks first.
+  - **CXC-HAL-C3** — `default` asserted at boot: `configure()` de-energizes every owned pin at pin-config (the safe-OFF baseline), then the shell asserts `default` (`"off"`) — the fan starts OFF.
+  - **CXC-HAL-C4** — `pin: none` opens all: a pin-less state (off) leaves every relay open with no make armed.
+  - **CXC-HAL-C5** — config-fetched, not baked: pins / value→pin map / polarity / dead-time all come from the fetched `.compose.yaml` (lowered to `RelayActuatorSpec`); NO pins are compiled into firmware; a live re-fetch (`_device/<id>/restart`) re-lowers the HAL without a reflash.
+  - **CXC-HAL-C6** — unknown value withheld: an enum value absent from `states` is withheld (relays untouched), never a motor thrash.
+- seam (deferred, NOT wired): the subscribed enum is a plain namespace — today published by a bus peer; tomorrow a local ReactiveCore binding could DERIVE it from a sensor namespace (e.g. HEPA speed ← a particulate namespace) and publish the SAME enum this actuator already subscribes — no change here; the seam is left open.
+- part-of: [SPEC:CXC-HAL]
+
+---
+
+## 4. Open Decisions (before build)
+
+### [CXC-HAL-OPEN] What Needs Deciding
+
+- **descriptor schema + home**: where do sensor descriptors live — the board profile, a `sensors:` block in the design config, or both (profile = pins, config = namespaces)? Leaning both, on the fungible-device split.
+- **driver registry**: how a Tier-2 chip driver is registered/discovered (a table like the widget/behavior introspection tables?).
+- **debounce/scale/rate**: the standard descriptor knobs (debounce, sample rate, scale/offset, deadband) — bound the set.
+- **direct-integration convention**: the bus-command/event shape for Tier-3 devices — reuse the CommandWidget/`composer/*` command convention?
+- **HAL vs headless overlap**: a Tier-1 sensor descriptor is arguably a tiny headless widget (read→publish). Decide whether the HAL is its own thin runtime, a headless-widget subtype, or a board-profile facility that feeds the bus the runtime already reads.
+- part-of: [SPEC:CXC-HAL]
+
+### Input Value Conditioning — Both Rails Must Be Emittable (2026-08-15, hardware-forced: a throttle that could never say "full") [CXC-HAL-CONDITION]
+
+- what-it-is: the INPUT dual of [CXC-HAL-ACTUATE]'s output scaler. One shared pipeline — invert -> clamp -> EMA -> scale -> deadband — through which EVERY analog value published by an ESP32-class controller passes. Realized as a PURE function in `firmware/reactive_core/src/signal_conditioning.{h,cpp}`, host-tested in `env:native_test`.
+- invariant: A value-conditioning pipeline MUST be able to emit BOTH RAILS (0 and out_max), for EVERY combination of invert / deadband / ema, and a quiet-bus optimization MUST NEVER make a rail unreachable. 0 and out_max are SEMANTIC — a consumer reads out_max as 'the control is against the stop' — so a pipeline that can only ever say out_max-1 is misreporting a physical fact, not merely losing a code.
+- rule-round-never-truncate: the raw->out scale MUST round (`(raw * out_max + full/2) / full`), never truncate. Rounding is not a nicety: it is what makes the scale an exact MIRROR, f(x) + f(full-x) == out_max for every input code. C's truncating divide is NOT mirror-symmetric — measured, it violates the mirror on 4080 of 4096 codes — and it biases every code DOWNWARD, which costs nothing at the bottom rail but costs the TOP RAIL ENTIRELY: under truncation `val == out_max` requires raw == full EXACTLY, a preimage of ONE code in 4096.
+- rule-rails-escape-the-deadband: the deadband MUST NOT suppress a transition INTO a rail. Latched at out_max-1 with deadband=2, a computed out_max is delta 1 and is suppressed FOREVER — an ABSORBING state one code short of the stop. The escape MUST be guarded on `val != last_emitted`, or holding at a rail re-publishes every sample and reintroduces exactly the chatter the deadband exists to kill.
+- rule-rail-exit-escapes-too: the escape is BIDIRECTIONAL — the deadband MUST NOT suppress a transition OUT OF a rail either. `at_rail` MUST therefore be evaluated over BOTH `val` AND `last_emitted`, not over `val` alone. Testing only the new value cures the absorbing state on ENTRY and leaves its exact MIRROR on EXIT: latched at out_max with deadband=2, a computed out_max-1 is delta 1 and is suppressed FOREVER, so a lever that has left the stop keeps reporting 'against the stop'. That is the SAME lie as the original defect with the sign flipped, and it is the more dangerous half — the original defect under-reported a control that was at maximum; this one over-reports a control that is not. Measured on the live dual-throttle (deadband 2, 20 Hz): the value is wrong for up to 1.6 s during a slow release, and PERMANENTLY when the lever is parked one code below the stop.
+- why-a-one-directional-rule-was-not-enough: the invariant above says both rails must be EMITTABLE, which is a statement about REACHABILITY, and reachability was tested by driving each channel INTO each rail. A rail is not merely a value to be reached, it is a state to be LEFT, and 'emittable' silently scoped only the arriving edge. The rail-reachability test suite (invert x deadband x ema, all combinations) passed at full strength while the exit was stranded on every one of them — a test matrix can be exhaustive over the wrong axis. State the rule over the TRANSITION (either endpoint is a rail), never over the destination.
+- why-invert-was-blamed-and-was-innocent: the defect presented as an INVERT bug — the inverted channel latched at 254 while the uninverted one reached 255 — but invert was only the REVEALER. An uninverted channel reaches its top rail through the ADC's hard SATURATION (a whole band of input voltage pins raw to full scale); an inverted channel must instead reach it through the ADC's noisy, offset ZERO end, where code 0 is not reliably produced. Truncation's downward bias is invisible on the saturating side and fatal on the other. The asymmetry was created by the ARITHMETIC, not by the device — and it also broke the UNINVERTED channel at deadband 2 and 4, which is the proof it was never a per-channel fault.
+- why-it-had-no-test: the arithmetic lived INLINE in `controller_main.cpp`'s loop(), a file `env:native_test` cannot compile. There was NO SEAM AT WHICH IT COULD BE TESTED, so a defect in the path every channel shares was invisible to every per-channel check. Extracting the pure function IS half the fix; a per-channel test structurally cannot see a shared-path defect.
+- residual-only-calibration-can-close: rounding widens the top code's preimage from 1 to 9 ADC codes, so the pipeline absorbs up to 8 codes of ADC zero-offset — measured IDENTICALLY for invert=0 and invert=1, which is the machine-checkable statement that the arithmetic asymmetry is gone. Beyond 8 codes the rail is unreachable by arithmetic alone and only per-channel CALIBRATION can recover it. The input path has no `in_min`/`in_max` vocabulary today; the OUTPUT path already does (`ActuatorSpec.in_min`), so closing this is a convergence, not an invention.
+- part-of: [SPEC:CXC-HAL]
+
+### Calibration / Safety Bands — the residual closed by CONSTRUCTION, not arithmetic (2026-08-15, David's ruling) [CXC-HAL-CONDITION-BANDS]
+
+- what-it-is: `in_min` / `in_max` on the INPUT `SensorSpec`, in RAW ADC CODES — the calibrated span whose ends are pinned to the rails. This is the convergence [CXC-HAL-CONDITION] predicted in its own `residual-only-calibration-can-close` property: the OUTPUT path already had `in_min`/`in_max` (`ActuatorSpec`, `actuator_hal.cpp` `_map_scaled`) and `python/composeio/maker/mcu_config.py` already DOCUMENTED the two paths as 'the same clamped linear map' while the input path had no `in_min` at all. The sentence is now true.
+- rule: raw <= in_min publishes 0; raw >= in_max publishes out_max; between them the SAME rounded, mirror-exact clamped linear map. Unset (0/0) means in_min=0, in_max=adc_max — byte-identical to the pre-band map, so every already-deployed wire that declares neither is unaffected.
+- why-not-dead-range: ⛔ THE BANDS ARE A SAFETY MECHANISM AND MUST NOT BE 'OPTIMIZED' AWAY AS WASTED RANGE. [CXC-HAL-CONDITION]'s rounding rule removed the ARITHMETIC's contribution to unreachable rails; it could not remove the DEVICE's. Measured residual: 8 codes of ADC zero-offset, identically on invert=0 and invert=1. Past that the rail's preimage is a code the ADC never produces, and NO rounding scheme reaches it — the pot's own end-resistance and the SAR ADC's offset put the far rail outside the input domain entirely. The band moves rail-reachability from 'the arithmetic is unbiased' (an argument about a formula) to 'each rail owns a whole neighbourhood of raw codes' (a structural property no offset inside the band can defeat). A future reader WILL see the end codes all mapping to one output and read it as waste; it is the only thing standing between a lever at its mechanical stop and a bus reporting 97%.
+- measured: the host test's boundary report, the SAME instrument before and after — survivable ADC zero-offset goes 8 codes -> 115 codes with a 96-code band at each end (`env:native_test`, 304 -> 329 checks). The instrument still reports where it GIVES UP rather than merely passing.
+- units-are-load-bearing: the band is declared in RAW ADC CODES, never in output units. Expressed on the output scale its width would silently rescale whenever the engine changed — and the very change that introduced it moved `throttle/*` from `continuous_0_255` to `continuous_0_100`, so a band authored in output units would have quietly narrowed by 2.55x at the exact moment it was first needed.
+- provenance: David 2026-08-15: '0% thrust should not just be 0 on the 255 pot readout scale, but a small safety band, say 0-5, and the same on the high end, 250-255 should be 100%.' 6 codes of 256 == 2.34% of full scale == 96 of 4095 on the 12-bit ADC.
+- part-of: [SPEC:CXC-HAL]
+
+---
+
+## Relationships
+
+### Semantic
+[CXC-HAL-RELAY-ACTUATOR] REALIZES [CXC-HAL-ACTUATE]
+[CXC-HAL-RELAY-ACTUATOR] RELATED_TO [CXC-ER-DEVICE]
+[CXC-HAL-RELAY-ACTUATOR] RELATED_TO [CXC-ER-REMOTE-RESTART]
+[CXC-HAL-CONDITION] MIRRORS [CXC-HAL-ACTUATE]
+[CXC-HAL-CONDITION] RELATED_TO [CXC-ER-DEVICE]
+[CXC-HAL-CONDITION-BANDS] UPHOLDS [CXC-HAL-CONDITION]
+[CXC-HAL-CONDITION-BANDS] MIRRORS [CXC-HAL-ACTUATE]
+[CXC-HAL-CONDITION-BANDS] RELATED_TO [CXC-ER-DEVICE]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-07-10
+**Status**: CONCEPT CAPTURE (David 2026-07-10). Framing settled — tiered HAL (declarative value/edge sensors → reusable-driver bus parts → direct-integration stateful devices), the per-interaction-face boundary, define-once descriptor over per-platform drivers. Generalizes [CXC-NFC-PATTERN]; the input dual of the audio/display actuators. [CXC-HAL-OPEN] decisions need shaping before build. Natural fit with the embedded-reactive tier + the MinnowBoard lure sensors; not blocking Pass 4.
+
+**[CXC-HAL-RELAY-ACTUATOR] ADDED — the Output Tier-1 declarative relay-bank actuator, hardware-verified (2026-08-05).** A sibling under [CXC-HAL-ACTUATE] capturing the shipped ESP32 4-relay fan controller: a `relay_actuator:` descriptor lowering a semantic ENUM namespace (`<device>/speed` = off|low|medium|high) to a bank of relays via a value→pin map, with a **break-before-make + dead-time MUST** (open ALL relays → wait `dead_time_ms` → close the single target; two speed relays never co-closed — motor safety; ~80 ms verified). Config-only, config-fetched on boot like every ESP32-class device and re-fetchable live ([CXC-ER-DEVICE]/[CXC-ER-REMOTE-RESTART]). Verified on a generic ESP32-WROOM-32E 4-relay board (active-HIGH; RY1=GPIO32 spare, RY2=GPIO33, RY3=GPIO25, RY4=GPIO26; low/med/high = RY2/RY3/RY4) by `office_fan` + `office_hepa` (identical board+firmware, differ only by id + namespace); firmware `firmware/reactive_core/src/relay_actuator.{h,cpp}`, host-tested in `env:native_test`. Compliance rows CXC-HAL-C1..C6 (the spec's first) + a new `## Relationships` block (REALIZES [CXC-HAL-ACTUATE]; RELATED_TO [CXC-ER-DEVICE] + [CXC-ER-REMOTE-RESTART]). **Architect: compliance numbering started at C1 (this spec had none — the "continue numbering" instruction had nothing to continue); a `## Relationships` section was added because this spec previously carried none (edges lived only in `part-of:` properties).**

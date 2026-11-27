@@ -1,0 +1,155 @@
+---
+scope: "The RATIFIED shape of what bus_storage broadcasts when any asset changes — a compact, content-addressed, decentralized {old-hash -> new-hash} change event, bus-wide, carrying no asset name and no device targeting — plus the recovery mechanism for a device that MISSED an event, which is recorded as an ARCHITECT INFERENCE and explicitly NOT ratified. Captured from a design session with David, 2026-08-19."
+audience: "David (architect) — for ratify of the inference sections and for placement, per [CXC-VISION-PLACEMENT]'s open placement question; the builder who will implement the bus_storage change-broadcast and the device-side subscribe-and-swap behaviour; the audit that diffs this document against David's verbatim turns."
+boundary: "IN: the change-event wire shape (content hash pair, no asset id, no device targeting); why old plus new rather than new alone; the delta/patch-transfer addressing this enables (future, unbuilt); the recovery mechanism for a device that missed an event (INFERENCE, not ratified); per-transport retention behaviour; the 3x-repeat alternative that was considered and rejected; the live partial precedent in uart_mqtt_bridge. OUT: bus_storage's own REST/API surface ([SPEC:CXC-BUSSTORE]'s subject); the config-over-bus chunk/transfer protocol itself ([SPEC:CXC-CONFIG-BUS]'s subject, consumed here not restated); the ESP32 receive-path coalescing mailbox fix (a separate, already-dispatched build, noted as related and deliberately not folded in); any build authorization — this is a design capture, not a build spec."
+not-this: "Not a ratified spec — [PLACEMENT UNRATIFIED], per [CXC-VISION-PLACEMENT]: this document was written into corpora/platform-specs because that is where its neighbours (60, 61, 62, 79) already sit UNRATIFIED, not because the placement was ruled; corpora/bus-storage exists as a registered but currently-empty corpus and is a candidate home David may prefer. Not a build spec — no acceptance criteria, no MUST/SHOULD requirement predicates, no verify.machine/verify.human tiers; that is deliberate, per the dispatch that produced this document. Not an assertion that the recovery mechanism is decided — [CXC-ACN-RECOVERY] is architect inference from 'decentralized push,' not David's stated words, and is flagged as such throughout rather than promoted to fact, per [DX-INTERPRETATION-IS-AN-INFERENCE]. Not a description of bus_storage's REST surface, its config-versioning scheme, or its asset-namespace convention — those are [SPEC:CXC-BUSSTORE]'s subject and are only cited here at the one seam ([CXC-BUSSTORE-CONFIG-LIFECYCLE]) that names the gap this document fills."
+depends-on: [61-config-over-bus.lts, 62-composeplatform-vision.lts, 73-bus-storage.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: concept-capture
+status: draft
+created: 2026-08-19
+updated: 2026-08-19
+---
+# Asset Change Notification Over ComposeBus — content settled with David, PLACEMENT UNRATIFIED [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+
+> When any bus_storage asset changes, bus_storage broadcasts a compact, content-addressed `{old-hash -> new-hash}` event bus-wide — no asset name, no device targeting, a consumer self-selects by the hash it currently holds. This is `[CXC-VISION-COMPACT-WIRE]`'s fingerprint-not-bytes pillar applied to the one seam `[CXC-BUSSTORE-CONFIG-LIFECYCLE]` names as absent in its own source: "the head may push an unsolicited transfer when bus storage changes." The change-event SHAPE is RATIFIED. The mechanism a device uses to recover a MISSED event is this architect's inference from "decentralized push" — NOT David's stated words — and is marked as such rather than promoted to fact.
+
+---
+
+## 1. Intent
+
+### [CXC-ACN-PLACEMENT] Placement is UNRATIFIED, and it is the architect's guess, not David's
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because [SPEC:CXC-CONFIG-BUS] (61), [SPEC:CXC-VISION] (62) and [SPEC:CXC-BUSSTORE] (73) — its three closest relatives — already sit there, two of them ALSO flagged `[PLACEMENT UNRATIFIED]` ([CXC-VISION-PLACEMENT], [CXC-BUSSTORE-PLACEMENT]). That is convention, not a ruling.
+- candidate-alternative: a registered `bus-storage` corpus already exists (`corpora/bus-storage`) but is currently empty (a `.gitkeep` only) — a plausible home for a document specifically about what bus_storage broadcasts, and one this capture does not choose between.
+- filename-number-check: 80 was verified unused across `corpora/platform-specs` before this file was written (highest prior number in sequence was 79; 99 is a reserved conventions-document number).
+- part-of: [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+- see-also: [CXC-VISION-PLACEMENT], [CXC-BUSSTORE-PLACEMENT]
+
+### [CXC-ACN-PRECEDENT] The live partial precedent — uart_mqtt_bridge already logs the same idea, scoped narrower
+
+- claim: `services/uart_mqtt_bridge/config_server.py` already implements a nascent, narrower form of this design. Cited as existing precedent, not as the thing being specified.
+- evidence: measured 2026-08-19 — on a bus_storage asset change the config server logs `scene for <device> CHANGED (<oldhash> -> <newhash>) — unsolicited push` and content-hashes the transfer it sends. Same fingerprint idea, same old-then-new pairing.
+- source: services/uart_mqtt_bridge/config_server.py (content_hash / "unsolicited" logging path)
+- scope-difference: the precedent is scoped to ONE device's scene config, pushed unsolicited by the head that holds it — not the bus-wide, asset-type-agnostic, device-self-selecting broadcast this document ratifies. The two are compatible in spirit and not yet unified in code.
+- part-of: [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+
+---
+
+## 2. The ratified change-event shape
+
+### [CXC-ACN-SHAPE] Decentralized, content-addressed change event — {old-hash -> new-hash}, bus-wide, no asset id
+
+- decision: when any bus_storage asset changes, bus_storage broadcasts a compact `{old-content-hash -> new-content-hash}` record, bus-wide.
+- no-identity: the event carries NO asset name or id and NO device targeting. A consumer self-selects by the hash it currently holds.
+- collision-safety: two assets never collide because their content hashes differ, so the hash pair alone is sufficient addressing — nothing else is needed to disambiguate which asset changed.
+- quote: David — "even asset-id is unnecessary. Just {old→new} is sufficient as long as widgets that sub for the old hash value and then sub for the new one when it arrives."
+- wire-forcing: never the full asset on the wire. The ESP32 bus payload cap is 512 B (2048 B on Qualia); a full scene YAML (~9.6 KB) would be dropped as "payload too large." The fingerprint-not-bytes rule is enforced BY THE WIRE, not merely elegant.
+- asset-type-agnostic: not limited to scene YAML — any bus_storage asset (fonts, icons, SVG, configs). David's example: "change the composeIO logo -> one old->new push."
+- relates-to: [CXC-VISION-COMPACT-WIRE]
+- status: ratified
+- part-of: [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+- see-also: [CXC-BUSSTORE-CONFIG-LIFECYCLE]
+- producer-status: BUILT + LANDED 2026-08-20 (main e307fd9): services/bus_storage/{server.py,change_notify.py} — an asset-tree PUT that changes content emits a RETAINED {old->new} sha256 STATE event on composeio/global/bus_storage/asset/changed (publish moved inside the per-path lock so concurrent same-asset writes cannot leave the retained event stale), no asset id, best-effort/loud-degrade (PUT never blocked), payload ~302B < 512B cap. Independent QA PASS_WITH_NOTES, both notes fixed. SCOPE (architect ruling 2026-08-20): the asset tree (/api/v1/assets/) ONLY; unifying the config + workload stores into asset-change-notify is a future follow-on per [CXC-ACN-PRECEDENT]. Consumer/subscribe-and-swap (P-b), recovery ([CXC-ACN-RECOVERY]) and delta ([CXC-ACN-DELTA]) remain unbuilt seams.
+
+### [CXC-ACN-OLDNEW] Why old-then-new, not just new — two independent reasons
+
+- claim: `old -> new` (not just `new`) earns its place for TWO reasons, either one of which would justify carrying both hashes.
+- reason-delta-address: it is the addressing for a future delta/patch transfer — a device holding `old` requests the patch `old -> new` instead of re-pulling the whole asset. See [CXC-ACN-DELTA].
+- reason-stateless: it lets change-advertisement be fully stateless — nothing, not even bus_storage itself, tracks which device holds which file. A device that holds `old` recognizes itself as addressed by the event; bus_storage never enumerates subscribers.
+- consequence: a widget's own subscribe-and-swap behaviour becomes the entire addressing mechanism — "widgets that sub for the old hash value and then sub for the new one when it arrives" (David).
+- status: ratified
+- part-of: [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+
+### [CXC-ACN-DELTA] The old-hash addressing is the precondition for delta/patch transfer — direction ratified, mechanism unbuilt
+
+- claim: the `old -> new` pair is the addressing a future delta/patch transfer would use. This is the REAL efficiency prize on classic CAN's 8-byte frames, where a full-asset transfer is expensive.
+- mechanism-sketch: a device holding `H_old` requests the patch `H_old -> H_new` instead of re-pulling the whole asset.
+- scale-context: [CXC-CONFIG-BUS-BUDGET] arithmetic — a 6 KB asset at 6 usable bytes per CAN frame is roughly 1,000 frames, ~130-260 ms of bus time even at the far end of a relay chain. A delta transfer against a small change would be a small fraction of that.
+- status: ratified
+- status-scope: the status above covers only the ADDRESSING PRECONDITION (carrying old-hash), already ratified as part of [CXC-ACN-SHAPE]. The delta/patch TRANSFER MECHANISM itself is a future direction — not built and not specified further here.
+- depends-on: [CXC-CONFIG-BUS-BUDGET]
+- part-of: [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+
+---
+
+## 3. Recovery of a missed event — ARCHITECT INFERENCE, not ratified
+
+### [CXC-ACN-RECOVERY] Device-pull recovery against a content-lineage index — INFERRED, not David's stated words
+
+- inference-marker: architect-inference — NOT RATIFIED. David ratified the decentralized change-event SHAPE ([CXC-ACN-SHAPE]). The recovery MECHANISM below is this architect's inference from "decentralized push," per [DX-INTERPRETATION-IS-AN-INFERENCE] — it must be confirmed or corrected by David/the audit before it is cited as settled.
+- inferred-direction: device-pull recovery. A device that missed an event pulls "what superseded `H_old`?" against a bus_storage content-lineage index (any historical hash -> current), keyed by the hash the device currently holds, answered O(1).
+- what-it-preserves: keeps asset-id off the wire, honoring the content-addressing [CXC-ACN-SHAPE] ratifies — the device never needs to know or send an asset name to recover.
+- what-it-reintroduces: a low-rate reconcile-pull as the backstop — the liveness heartbeat's device-initiated dual. A device that has not seen a change event in some window re-asks the lineage index rather than trusting silence means "unchanged."
+- inferred-rejected-alternative: publisher-push with a stable asset-id as the retained-current handle, plus a heartbeat. Bounded and poll-free, but puts asset-id back on the wire — which [CXC-ACN-SHAPE] specifically avoids.
+- hinges-on: the choice between these two hinges on David's "fully decentralized" intent, stated for the change-event shape itself but not confirmed for the recovery mechanism specifically. Both directions are recorded here so neither is silently foreclosed by only writing down the one this architect leans toward.
+- open-for-ratify: yes — this whole node.
+- part-of: [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+- see-also: [CXC-ACN-RETENTION]
+
+---
+
+## 4. Retention per transport
+
+### [CXC-ACN-RETENTION] MQTT retain works directly; classic CAN has none and needs the membrane relay
+
+- claim: where a transport supports it, retention makes reconcile-on-subscribe direct — MQTT `retain=1` on the change-event topic means a subscriber that joins late still receives the latest `{old -> new}` state without polling.
+- can-gap: classic CAN has no retained-message concept. A CAN device therefore cannot rely on the bus itself to hold the latest change event for it.
+- can-backstop: on CAN, a device instead relies on the membrane relay holding the manifest, plus the low-rate liveness heartbeat ([CXC-VISION-SCOPE-MEMBRANE]) — this continuation ties directly to [CXC-ACN-RECOVERY] and carries the SAME inference-not-ratified status, since it depends on which recovery mechanism is confirmed.
+- status: ratified
+- status-scope: the status above covers only the MQTT-retain / no-CAN-retention FACT — a property of the transports, not a design choice. The CAN backstop's SHAPE inherits [CXC-ACN-RECOVERY]'s unratified, architect-inference status.
+- part-of: [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+- see-also: [CXC-VISION-SCOPE-MEMBRANE], [CXC-ACN-RECOVERY]
+
+---
+
+## 5. Rejected alternative — the 3x-repeat pattern
+
+### [CXC-ACN-REJECTED-REPEAT] "Going once, going twice" was considered and explicitly rejected
+
+- change: the 3x-repeat ("going once, going twice, gone") announcement pattern was considered and rejected for the asset-change broadcast.
+- context_for_change:
+  prior_state: an early framing treated the change event as needing delivery-guarantee repetition — a fixed small number of rebroadcasts to raise the odds a listener catches at least one, in the style of a best-effort broadcast convention.
+  reasoning: a fixed repeat count is a delivery-guarantee mindset grafted onto a state-model system. Retained state (where the transport supports it), reconcile-on-subscribe, and a low-rate liveness heartbeat together cover every outage duration a listener could have — unlike a bounded retry count, which only covers outages shorter than the repeat window.
+  rejected_alternative: 3x-repeat broadcast of the {old, new} hash pair on every change.
+  counter_argument: a repeated broadcast costs almost nothing on a low-traffic bus and buys immediate best-effort redundancy with no reconcile-pull machinery required.
+  counter_response: the redundancy is bounded and silent past its window. A device asleep or disconnected longer than the repeat interval ends up in exactly the same missed state a single broadcast would have left it in — the repeat buys nothing for the failure case that actually matters (a long outage) and adds bus traffic for the case that does not (a device that was already listening).
+  invalidating_assumption: that retain/reconcile-on-subscribe is actually available and built for every transport in the fleet. Classic CAN has no retained-message concept ([CXC-ACN-RETENTION]), so on a CAN segment the backstop is the membrane relay's manifest plus a heartbeat, not transport-level retention. If a future CAN deployment lacks a relay capable of holding that manifest, this rejection's grounds narrow for that segment and should be revisited there specifically.
+  implication: no repeat-count constant to tune and no bounded-outage assumption baked into the wire — but the reconcile-pull/heartbeat backstop this rejection depends on must actually be built and proven per transport ([CXC-ACN-RECOVERY], [CXC-ACN-RETENTION]). The rejected pattern's simplicity does not disappear; it moves into an obligation this document has not yet discharged.
+- status: rejected
+- part-of: [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+
+---
+
+## 6. Related, deliberately not folded in
+
+### [CXC-ACN-RELATED-MAILBOX] The ESP32 receive-path coalescing mailbox — separate, already dispatched
+
+- claim: the ESP32 receive-path coalescing mailbox (fixing a 16-deep FIFO overflow) is a SEPARATE spec/build, already dispatched independently of this capture.
+- no-node-yet: no FactLattice node id was found for it in the registered corpora as of this capture (2026-08-19) — it is not referenced by a bracketed id here, to avoid minting a reference against a guessed id that may not match whatever id it is eventually given.
+- relation: it touches the same devices this document's consumers run on, but it is a receive-path buffering fix, not a change-notification design question. Kept explicitly separate per the dispatch that produced this document.
+- part-of: [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-ASSET-CHANGE-NOTIFY] DEPENDS_ON [SPEC:CXC-CONFIG-BUS]
+- [SPEC:CXC-ASSET-CHANGE-NOTIFY] DEPENDS_ON [CXC-VISION-COMPACT-WIRE]
+- [CXC-ACN-SHAPE] REALIZES [CXC-VISION-COMPACT-WIRE]
+- [CXC-ACN-SHAPE] RELATED_TO [CXC-BUSSTORE-CONFIG-LIFECYCLE]
+- [CXC-ACN-RETENTION] RELATED_TO [CXC-VISION-SCOPE-MEMBRANE]
+
+### Causal
+
+- [CXC-ACN-OLDNEW] PRECONDITION_FOR [CXC-ACN-DELTA]
+- [CXC-ACN-SHAPE] PRECONDITION_FOR [CXC-ACN-RECOVERY]
+- [CXC-ACN-RECOVERY] PRECONDITION_FOR [CXC-ACN-RETENTION]
+
+---
+
+**Version**: 0.1 — 2026-08-19. Design capture from a session with David; content marked `status: ratified` reflects his stated words or direct arithmetic/fact, content marked architect-inference in [CXC-ACN-RECOVERY] (and the dependent continuation in [CXC-ACN-RETENTION]) does not and awaits his confirm.
+**Status**: Draft — `[PLACEMENT UNRATIFIED]`.

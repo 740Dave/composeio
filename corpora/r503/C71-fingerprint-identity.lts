@@ -1,0 +1,326 @@
+---
+scope: "The fingerprint identity model: the entity graph (person, character, role, capability, game module, casting, template, device), the five-hop match chain of which the sensor owns only the first, the enroll-everywhere-differentiate-in-RBAC rule, the cast as the working set, the declarative roster push and its trigger, population headroom, template portability, and the fingerprint_service that owns the superset-to-subset push. Identity above the seam; the sensor below it knows only finger-to-slot."
+audience: "The author of fingerprint_service; the author of the RBAC and casting model; the author of the enrollment station; any consumer reasoning about who a device lets in."
+boundary: "IN: the entity model, the match chain, the RBAC scope model, the cast and its push, population and portability, and the service's ownership rules. OUT: the sensor electricals (C70), the HAL operation set (C72), and the bus message shapes (C73). The push contract itself is C73; this document names its trigger and its declarative semantics."
+not-this: "Not a permission engine and not a database schema. It is the model a builder holds so the parts below it stay dumb: the sensor knows only hop 1, and the service owns everything the sensor must not learn."
+domain: plt.cux
+status: draft
+created: 2026-08-18
+artifact-readiness: design-review
+confidentiality: internal-only
+---
+
+# Fingerprint Identity — The Entity Model And The Cast [SPEC:CXC-FPID]
+
+> Identity is a chain from a finger to a decision. The sensor answers only the first link; everything
+> else is a lookup the service owns. This document is the model, not an essay: each entity, rule, and
+> ownership boundary is one node with one id, so a schema and a test cite exactly one of them.
+
+---
+
+## The seam
+
+### [CXC-FPID-SEAM] The template is the seam — moved, never parsed
+
+- definition: The template is the boundary between the identity layer and the sensor. Above the seam a template is an opaque blob belonging to a person; below it, it is vendor feature-extraction the HAL moves and never reads. Nothing above the HAL looks inside a template.
+- constraint: The identity layer MUST treat a template as opaque bytes. It MUST NOT parse, compare, or hash a template to establish identity.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-SENSOR-KNOWS-ONLY-HOP-1] The sensor knows only finger-to-slot, and must not acquire the concept of a character
+
+- constraint: A fingerprint sensor knows only hop 1: which slot a presented finger matches. It MUST NOT hold a person, character, role, capability, or module concept, and MUST NOT hold a slot-to-permission map.
+- rationale: One fingerprint node then serves a hatch, a scoreboard, and a who-is-aboard display with no special case in any of them. The tell that this was violated is a driver constant naming a game role, or a device-local map from slot to permission.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+## The entity model
+
+### [CXC-FPID-ENTITY-PERSON] Person — owns the templates and keys the device index
+
+- definition: A person is the real human. A person owns their templates and is what a device's slot index is ultimately keyed by, through the roster. A person is stable across games.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ENTITY-CHARACTER] Character — the in-game identity, stable across castings and linked to a role
+
+- definition: A character is an in-game identity that links to a role. It is stable across castings: the same character can be played by different people in different sessions.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ENTITY-ROLE] Role — the named permission bundle, mapping to a set of capabilities
+
+- definition: A role is a named permission bundle that maps to a set of capabilities. It is its own layer, not an attribute of a character, because roles are shared across characters and carry capabilities beneath them.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ENTITY-CAPABILITY] Capability — the join between the RBAC map and the device map
+
+- definition: A capability is the atom of permission. The RBAC map takes role to capabilities; the device map takes a device to the one capability it gates. Capability is what those two maps meet on.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ENTITY-MODULE] Game module — scopes character availability, never permission
+
+- definition: A game module is a scenario. Casting is scoped to a module. A module controls which characters are available, never what permission a character holds; permission is the role's, globally.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ENTITY-CASTING] Casting — the module-scoped person-to-character binding, session-scoped and mutable
+
+- definition: A casting is the binding (module, person, character). It is session-scoped and mutable: recasting a role to a different person is an ordinary operation.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ENTITY-TEMPLATE] Template — the finger itself, an opaque vendor blob belonging to the person
+
+- definition: A template is a single enrolled finger, an opaque vendor blob. It belongs to the person, not to a character or a casting, so recasting moves no template.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ENTITY-DEVICE] Device — the event's address, the one capability it gates, and the only home of location
+
+- definition: A device is a fingerprint node on the bus. It is the address every event carries, it gates exactly one capability, and it optionally carries a location. location is an attribute of the device and appears in no event's vocabulary.
+- constraint: A device event MUST carry the device as its address, never location as a payload field. location is nullable device configuration whose absence is a legitimate state.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ORDINAL-SEMANTICS] Ordinal — which of a person's templates, a position and never an anatomical fact
+
+- definition: An ordinal names which of a person's templates a slot holds (1 or 2 today). It is a position in a list, carrying no anatomical meaning, and nothing branches on it.
+- constraint: A consumer MUST NOT infer which physical finger an ordinal refers to, and MUST NOT branch on an ordinal value.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+## The match chain and RBAC
+
+### [CXC-FPID-MATCH-CHAIN] Five hops from finger to decision, and the sensor answers only the first
+
+- definition: A decision is a five-hop chain: finger→slot (the sensor, hop 1), slot→person (the device's own resolver, hop 2 — device-internal, never leaving the device), person→casting, casting→character→role, role→capability set (hops 3–5). Ownership is by WHEN, not by who: the service AUTHORS hops 3–5 at PUSH time — it resolves person→casting→character→role→capability and pushes the device its slot-to-person bridge plus the full RBAC table — and the device RESOLVES all five hops LOCALLY at MATCH time from that pushed data. The service is never in the match path; when a finger arrives, nothing off-device resolves a hop.
+- constraint: A person with no casting, no character, or no role is a LEGAL state, not a fault. The chain simply ends early and yields the empty capability set. RULED by David.
+- evidence-granted-e2e: PROVEN 2026-08-24 — a real finger presented on dev/s3-fp1 resolved through the full five-hop chain on REAL hardware: finger→slot (local match on the R503's own matcher) → slot→person (the device bridge) → person→casting→character→role (David → Chief Tyrol → deck_chief) → role→capability (open_hatch) — publishing a GRANTED auth_event on the bus, glass-confirmed by the blue 3-flash ring result and the announced `feedback_profile: r503-2ch` (see [CXC-R503-AURALED]). CAVEAT: this chain resolved correctly only after the device's HAL had rebound to the real sensor (post-reboot); the fork defect DEFECT-ARMED-ROSTER-LOADED-R503-DEVICE-78C389 had masked the chain beforehand by matching against the mock while the real sensor sat unused, so no hop past hop 1 was ever exercised against real hardware until the rebind fix — see [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR].
+- status: ruled
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-RBAC-SCOPE-MODEL] Roles are global and stable; physical reachability does the scoping
+
+- constraint: Roles are global and stable. Differentiation of what a person may do at a device is done by physical reachability plus the one capability the device gates, never by enrolling different people on different devices. RULED by David.
+- rationale: A module controls character availability, not permission. Scoping by reachability is why the enrolled set can be identical fleet-wide.
+- status: ruled
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-AUTH-OUTCOME] The three-valued authentication outcome the device resolves and publishes
+
+- definition: When a device reads a finger, its firmware resolves ONE of three outcomes through the bridge: granted (an enrolled member whose role includes this device's gated capability), denied (an enrolled member whose role does not), or unrecognized (a finger enrolled nowhere on this device — an intruder). granted and denied carry the resolved player and character; unrecognized carries neither.
+- constraint: All three outcomes are PUBLISHED as the device auth_event, including unrecognized; none is suppressed. The device exposes no match command, no score, and no physical slot: the resolution and the gate are computed on the device from pushed RBAC, and only the auth_event crosses the bus. A new fact is published as state, never a request for a handler to run.
+- rationale: RULED by David — the three-valued outcome was approved in an earlier spec version and lost in the bloat; it is restored. Publishing all three, unrecognized included, is deliberate: we cannot predict how the data integrates into future gameplay, and silence throws it away.
+- reconciliation: The thinner user_detected (person) and access_granted (boolean) pair is retired and folded into this one outcome. Its published wire form is the device auth_event specified in the bus contract.
+- status: ruled
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-DEVICE-BRIDGE] The device-private bridge — slot to person, character, and RBAC, built during install
+
+- definition: Each device holds a private bridge from physical slot to a logical entry: the person and ordinal, the character, and the RBAC that entry carries. The bridge is built DURING install: as the device installs the ordered push one template at a time, it binds the slot the HAL allocated for template K to entry K's logical identity, character, and RBAC. The push arrives as an ordered list, so install order is the binding key and no slot is ever named on the wire.
+- constraint: The bridge is device-private and a slot index never leaves it. On match the sensor returns a slot to the device, the device resolves it through the bridge to a person, character, and role, looks the role up in its small global role-to-capability table, and resolves the three-valued outcome — granted, denied, or unrecognized — that it publishes as the auth_event. The gate is evaluated on the device, not on the bus and not by the service — RULED, see [DD-FPID-RBAC-EVAL-LOCUS], [CXC-FPID-AUTH-OUTCOME].
+- rationale: This is the concrete form of the sensor-knows-only-hop-1 boundary and the slot-never-crosses guarantee. RBAC is pushed INTO the device so a fingerprint node decides its own gate from local state, with no round trip and no service in the authentication path.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-RING-HIDES-DENIAL] The local ring shows denied and unrecognized as the same red — the ring is not a mirror of the event
+
+- constraint: The device's local feedback ring MUST show granted with whichever colour the ratified feedback table assigns to a successful match — the concrete colour mapping is NOT restated here and is the authority of [SPEC:CXC-R503-SENSOR-UX] (currently blue, per the physical part's 2-channel Red+Blue colour set; a full-colour sibling could differ without this node needing an edit) — and MUST show BOTH denied and unrecognized as the same RED, indistinguishable from each other. A human at the sensor MUST NOT be able to tell recognized-but-denied-by-RBAC from unrecognized, or a denied cast member learns the game knows it is them.
+- rationale: RULED by David, load-bearing. The published auth_event carries the true three-valued outcome for gameplay; the ring deliberately collapses denied and unrecognized to one red. The ring is not a mirror of the event. It is the same information-hiding the HAL expresses as reject_silent rendering identically to a genuine non-match. Delegating the concrete "granted" colour to the ratified table (rather than restating it here) is a correction: this node previously asserted granted is GREEN, which is physically impossible on the 2-channel Red+Blue part in hand (no green channel — see [CXC-R503-AURALED]) and contradicted the ratified table (granted = blue). The firmware has always rendered blue; the spec was wrong, not the code.
+- tell: A ring or feedback state that differs between the denied and the unrecognized outcome is the violation.
+- status: ruled
+- part-of: [SPEC:CXC-FPID]
+- see-also: [SPEC:CXC-R503-SENSOR-UX]
+
+## The cast and the push
+
+### [CXC-FPID-ENROLL-EVERYWHERE] Every device carries the whole current cast, and nobody else
+
+- constraint: Every fingerprint device carries EVERY member of the current cast, and no one else. Everywhere quantifies over devices, never over the whole library. Differentiation happens in the role's capabilities, never in who is enrolled.
+- rationale: If different devices carried different subsets, a person present at one device would be absent at another and the cast would not be portable across the fleet. The device is bounded (the current cast); the library is unbounded and never resides on a device. Each device's HAL maps the shared cast to its own physical storage, so no cross-device physical-index agreement is needed.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-WORKING-SET] The cast is the working set, and it is identical fleet-wide
+
+- claim: The working set for a module IS its cast.
+- definition: The working set for a module is exactly its cast. Every fingerprint device receives the same set, so the push is one set broadcast to every device, and each device's HAL maps that set to its own physical storage.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-PUSH-TRIGGER] Starting a game is the roster-push trigger
+
+- definition: "Start a game" is the moment the working set is finally decided, so it is the natural trigger for the roster push. Pick the module, cast the players, and the push falls out as a consequence rather than as a remembered chore.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ROSTER-SYNC-MODE] The declarative complete set is primitive; add is sugar the service expands
+
+- constraint: The roster message declares the COMPLETE desired working set for a device, and every device converges to the declared set. The declarative set is the only sync mode. An incremental "add" is sugar the service expands into a complete set before it pushes; it is never a wire primitive, because a delta protocol cannot express completeness.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ROSTER-STAMP] The roster stamp is the set UUID — testimony, and there is no hash
+
+- definition: A device holds a roster stamp: the template_set_uuid of the set it currently holds. It is the device's own testimony about which set it has, cheap and continuous, surviving power cycles. It detects a missed push, a partial push, and a stale device.
+- constraint: The stamp is the UUID and nothing else. There is NO hash of the roster or of any template. Identity of a set is its UUID; completeness of a set is its entry count. A low-end MCU cannot hash up to twenty templates to defend an edge case, and the audit that would have consumed a hash is removed.
+- rationale: The stamp is the device's claim about itself; it does not prove slot N holds person X. That is acceptable because the sensor is experiential and no security decision rests on the stamp.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+## Sizing and portability
+
+### [CXC-FPID-POPULATION-HEADROOM] The device ceiling is announced, never hard-coded
+
+- constraint: The device ceiling is the sensor's announced slot_count divided by templates-per-person, never hard-coded. slot_count is read from the announce (the device's ACTUAL capacity); templates-per-person is the SERVICE-SIDE policy of [CXC-FPID-ONE-OR-TWO-TEMPLATES], NOT a device capability (the sensor has no person concept). Cast-size times templates-per-person must not exceed the announced slot count. This is a CAPACITY check on a logical cast; the service reads slot_count for sizing and never allocates a specific index.
+- note-slot-stability-dropped: An earlier draft carried a second ceiling about keeping a per-person physical slot number stable across an unbounded library. That requirement existed only to service the slot-allocation leak and is removed: the device owns physical allocation per push, so the service never holds a slot number to keep stable.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-DO-NOT-HARD-CODE-THE-BOUND] Express person-to-slots as a list; never encode "two"
+
+- constraint: Express the relation as person to a list of slots. Do NOT encode the count "two" in a schema, a struct, a column pair, a fixed-size array, or a message field. A bound for the current population belongs in configuration, not in a type.
+- rationale: A limit sized exactly for today goes one short the moment a new consumer joins. The tell is a finger_1 / finger_2 field pair rather than a list, or a validator that rejects a third.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-ONE-OR-TWO-TEMPLATES] One or two templates per person
+
+- constraint: A person is enrolled with one or two templates. Two is the game-design default and one is a legitimate enrollment. Two is a design parameter, not a type, so a bandaged finger mid-campaign costs a slot rather than an enrollment session.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-OVERFLOW-FAILS-LOUD] A push over capacity surfaces the failure; a partial push is never a success
+
+- constraint: A roster push that exceeds the device's announced capacity MUST surface the failure. Never drop a template silently and never report a partial push as success. The HAL propagates the sensor's capacity error as a typed failure; it does not log and continue. Loud means the push fails, the device's roster stamp does not advance, and the service reports the device as unconverged.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-FULL-RESYNC-COST-DERIVED] The resync cost is derived from announced figures, and is affordable between rounds
+
+- definition: A full resync costs the working-set size times the sensor's announced template_size_bytes. Both are announced, neither is a constant of this layer. It is affordable between rounds and MUST NOT be fired mid-scene.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-TEMPLATE-PORTABILITY] A vendor swap re-enrolls everyone
+
+- constraint: Templates are not portable between sensor vendors, so a vendor swap means re-enrolling everyone. This is inherent to biometric templates — a template is a vendor's feature extraction, not an image — and no abstraction removes it. It is a property to plan around, not a flaw to fix, and it requires no hash to state.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+## Ownership and the service
+
+### [CXC-FPID-SLOT-ALLOCATION-OWNER] The device owns physical slot allocation; the service owns only logical identity
+
+- constraint: The service works in LOGICAL identities only: (person, ordinal). It never names, allocates, or learns a physical slot. The DEVICE owns physical-slot allocation and owns the slot-to-person map internally, so a different sensor maps the same logical identities to its own physical storage.
+- rationale: A physical slot index is one sensor's storage model. An agnostic service that handed out integer slot indices would bake the R503's addressing into the layer meant to serve any fingerprint device — the same leak class as the deleted RPC surface, one abstraction lower. Capacity (slot_count) still crosses so the service can size a cast; assigning specific indices does not.
+- status: draft
+- part-of: [SPEC:CXC-FPID]
+
+### [DD-FPID-RING-IS-DEVICE-OWNED] The device owns the feedback ring, always, as the only writer
+
+- constraint: The device software owns the feedback ring at all times, including mid-enrollment. There is exactly one writer, so there is no arbitration. RULED by David: this may cost additional semantic messages, and that is preferable to split control.
+- rationale: One writer is the cheapest node that fully owns the ring. Two writers would need arbitration the design does not want.
+- status: ruled
+- part-of: [SPEC:CXC-FPID]
+
+### [CXC-FPID-FINGERPRINT-STORAGE-SERVICE] fingerprint_service is a new bus service, and the reason is a kill switch
+
+- decision: RULED by David — fingerprint_service is a NEW ComposeBus service, not an extension of the generic artifact store.
+- rationale: Fingerprint templates are biometric data that need their own retention and a hard delete. A dedicated service gives them a kill switch and a delete semantics the generic store does not have. This is not a fork of a widget across backends; it is a distinct service with distinct data-lifecycle obligations.
+- naming: RENAMED (this pass) from fingerprint_storage to fingerprint_service, id unchanged. The service is the logical AUTHORITY — persons, casts, roles, and the roster push — not a byte store; the byte STORE is the separate fingerprint_template_store (see C74), which this rename does not touch.
+- status: ruled
+- part-of: [SPEC:CXC-FPID]
+
+### [DD-FPID-DELETE-IS-TOTAL] At six months of inactivity, totally delete the templates and the person record
+
+- decision: RULED by David — at six months of inactivity, totally delete both the templates AND the person record. The bytes are actually removed, not marked, not tombstoned.
+- rationale: Biometric PII with no retained tombstone. Total delete of both was chosen over the architect's proposal to hard-delete templates and tombstone the person record for historical resolution.
+- status: ruled
+- part-of: [SPEC:CXC-FPID]
+
+## Open decisions
+
+### [DD-FPID-DEVICE-ANNOUNCEMENT-SHAPE] The shape of the device announcement — RULED
+
+- decision: RULED by David (2026-08-18). The announce carries device_id, the one gated capability, optional location, and the three EXTERNALLY-CONSUMED capability fields {slot_count, template_size_bytes, supports_readback} — not the whole payload; max_templates_per_person was removed from capabilities() entirely as a category error (the sensor has no person concept).
+- lean: The earlier six-field lean is SUPERSEDED by the decision above, after a consumer audit (C73). Retained, published at boot and on change. The full shape is landed in C73 as the device announce.
+- status: ruled
+- part-of: [SPEC:CXC-FPID]
+
+### [DD-FPID-TEMPLATE-REF-IS-SERVICE-PRIVATE] A template reference is a service-private id, with no hash
+
+- decision: Proposed reconciliation of the original ruling to the no-hashing rule.
+- lean: A template reference is an opaque service-private identifier owned by fingerprint_service. The original tied it to a template hash; the hash is removed. The reference identifies a stored template within the service; it is not derived from the template bytes and is never computed on the device.
+- status: proposed
+- part-of: [SPEC:CXC-FPID]
+
+### [DD-FPID-VERIFICATION-IS-ONE-TIER] Two-tier hash verification is removed; the roster stamp is the only tier
+
+- decision: Proposed reconciliation to the no-hashing rule.
+- lean: The original defined a tier-2 identity audit that read templates back and compared hashes. That tier is removed entirely: a low-end MCU cannot hash up to twenty templates to defend an edge case. The only tier is the roster-stamp UUID testimony. read_template survives as a HAL operation for parity and readback, but no hash-based identity proof is computed.
+- status: proposed
+- part-of: [SPEC:CXC-FPID]
+
+### [DD-FPID-RBAC-EVAL-LOCUS] The device holds the full role-to-capability table and evaluates its own gate — RULED
+
+- decision: RULED by David, 2026-08-18 — the device holds the FULL role-to-capability table and evaluates its own gate locally. NOT the precomputed-boolean option.
+- constraint: On match(K) the device resolves the bridge to the entry's person, character, and role, looks the role up in a small global role-to-capability table held on the MCU, and resolves the outcome: granted if the role includes THIS device's one gated capability, denied if it does not, and unrecognized if the finger matched no installed template. The service never pre-evaluates the gate and never ships a yes/no.
+- rationale: Keeping the table on the MCU is what makes RBAC genuinely pushed INTO the device rather than the service pre-evaluating: the device decides its own gate from local state with no service in the authentication path, the same cheapest-node-owns-behavior rule the whole design follows. Roles are stable and global, so the table is tiny and bounded.
+- consequence: The push delivers two RBAC parts: the per-entry role rides in each entry's rbac field, and the small global role-to-capability table rides the push as a whole. The payload shape is otherwise unchanged.
+- status: ruled
+- part-of: [SPEC:CXC-FPID]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-FPID-ENTITY-CHARACTER] DEPENDS_ON [CXC-FPID-ENTITY-ROLE]
+- [CXC-FPID-ENTITY-ROLE] DEPENDS_ON [CXC-FPID-ENTITY-CAPABILITY]
+- [CXC-FPID-ENTITY-CASTING] DEPENDS_ON [CXC-FPID-ENTITY-MODULE]
+- [CXC-FPID-ENTITY-CASTING] DEPENDS_ON [CXC-FPID-ENTITY-PERSON]
+- [CXC-FPID-ENTITY-CASTING] DEPENDS_ON [CXC-FPID-ENTITY-CHARACTER]
+- [CXC-FPID-ENTITY-TEMPLATE] DEPENDS_ON [CXC-FPID-ENTITY-PERSON]
+- [CXC-FPID-ENTITY-DEVICE] DEPENDS_ON [CXC-FPID-ENTITY-CAPABILITY]
+- [CXC-FPID-MATCH-CHAIN] DEPENDS_ON [CXC-FPID-SENSOR-KNOWS-ONLY-HOP-1]
+- [CXC-FPID-RBAC-SCOPE-MODEL] PART_OF [CXC-FPID-MATCH-CHAIN]
+- [CXC-FPID-WORKING-SET] DEPENDS_ON [CXC-FPID-ENROLL-EVERYWHERE]
+- [CXC-FPID-ROSTER-SYNC-MODE] DEPENDS_ON [CXC-FPID-WORKING-SET]
+- [CXC-FPID-ROSTER-STAMP] PART_OF [CXC-FPID-ROSTER-SYNC-MODE]
+- [CXC-FPID-POPULATION-HEADROOM] DEPENDS_ON [CXC-FPID-ENROLL-EVERYWHERE]
+- [CXC-FPID-ONE-OR-TWO-TEMPLATES] DEPENDS_ON [CXC-FPID-DO-NOT-HARD-CODE-THE-BOUND]
+- [DD-FPID-DELETE-IS-TOTAL] PART_OF [CXC-FPID-FINGERPRINT-STORAGE-SERVICE]
+- [CXC-FPID-SLOT-ALLOCATION-OWNER] PART_OF [CXC-FPID-FINGERPRINT-STORAGE-SERVICE]
+- [CXC-FPID-AUTH-OUTCOME] DEPENDS_ON [CXC-FPID-MATCH-CHAIN]
+- [CXC-FPID-AUTH-OUTCOME] DEPENDS_ON [CXC-FPID-DEVICE-BRIDGE]
+- [CXC-FPID-RING-HIDES-DENIAL] DEPENDS_ON [DD-FPID-RING-IS-DEVICE-OWNED]
+- [CXC-FPID-RING-HIDES-DENIAL] CONTRAST_WITH [CXC-FPID-AUTH-OUTCOME]
+- [CXC-FPID-RING-HIDES-DENIAL] DEPENDS_ON [SPEC:CXC-R503-SENSOR-UX]
+- [CXC-FPID-DEVICE-BRIDGE] DEPENDS_ON [CXC-FPID-SENSOR-KNOWS-ONLY-HOP-1]
+- [CXC-FPID-DEVICE-BRIDGE] DEPENDS_ON [CXC-FPID-RBAC-SCOPE-MODEL]
+- [DD-FPID-RBAC-EVAL-LOCUS] PART_OF [CXC-FPID-DEVICE-BRIDGE]
+- [CXC-FPID-ORDINAL-SEMANTICS] PART_OF [CXC-FPID-ENTITY-TEMPLATE]
+- [CXC-FPID-TEMPLATE-PORTABILITY] DEPENDS_ON [CXC-FPID-SEAM]
+
+### Causal
+
+- [CXC-FPID-PUSH-TRIGGER] CAUSES [CXC-FPID-ROSTER-SYNC-MODE]
+- [CXC-FPID-ROSTER-SYNC-MODE] CAUSES [CXC-FPID-DEVICE-BRIDGE]
+- [CXC-FPID-ENROLL-EVERYWHERE] PRECONDITION_FOR [CXC-FPID-POPULATION-HEADROOM]
+- [CXC-FPID-OVERFLOW-FAILS-LOUD] PREVENTS [CXC-FPID-ROSTER-STAMP]
+- [CXC-FPID-FINGERPRINT-STORAGE-SERVICE] ENABLES [DD-FPID-DELETE-IS-TOTAL]
+
+### Temporal
+
+- [CXC-FPID-PUSH-TRIGGER] BEFORE [CXC-FPID-FULL-RESYNC-COST-DERIVED]
+- [CXC-FPID-SLOT-ALLOCATION-OWNER] BEFORE [CXC-FPID-ENROLL-EVERYWHERE]
+
+---
+
+**Version**: 1.1
+**Status**: Draft — the model survives from the original as a set of rules rather than an essay. Ruled nodes carried: short-chain-is-legal, roles-global-and-stable, ring-is-device-owned, storage-is-a-new-service, delete-is-total, and rbac-eval-locus (David, 2026-08-18 — the device holds the full role table and gates locally). Slot-allocation corrected: the device owns physical allocation and the slot-to-person-character-rbac bridge; the service works in logical (person, ordinal) only and a slot never crosses the bus. Hashing removed throughout: identity is the set UUID, completeness is the entry count. Device-announcement shape, template-reference form, and the one-tier verification are proposed for the architect. [CXC-FPID-MATCH-CHAIN] carries its first REAL-hardware proof (2026-08-24): a GRANTED end-to-end run resolved all five hops on the physical part, with the caveat that this only became possible once [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] (C72) closed the mock/real-sensor fork that had masked it.

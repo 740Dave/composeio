@@ -1,0 +1,974 @@
+---
+scope: "The document-structure contract that makes a .lts document able to ADDRESS ITSELF and to ASSERT what it contains. Four parts: (1) the REQUIRED document root form — frontmatter including `audience` and `elements`, and the document id declared IN THE H1 — made a linted contract so file 73 cannot repeat the lapse, plus the repair of the five files that fail it; (2) `elements` as MANDATORY frontmatter declaring the document's own element namespace, narrowest-covering, expressing AUTHORED INTENT rather than current output, and checked by the linter without ever becoming the containment mechanism; (3) the INFLATION CHECK — a bracket whose text matches a declared element prefix but which produced NO NODE is a reported failure, scoped to structural positions on a measured census, plus the three converse checks; (4) the bracketed-key silent-loss class, and the general rule that a control which does not exercise a shape found in live corpora certifies a narrower class than its name claims."
+audience: [factlattice-maintainer, the builder implementing the linter rules and the five-file repair, composeux-architect (ratifies before dispatch; no decision point in this document is open any longer), David (ruled the root form, the mandatory element declaration and the bracketed-key verdict, all 2026-08-11), anyone who later asks why the parser was NOT taught a second document-root spelling, why `elements` may not be derived from what a file already mints, or why `- [ID]: description` is flagged rather than minted as an untyped edge]
+elements: [DRI-*, DD-DRI-*]
+boundary: "IN: the REQUIRED document root form and its lint finding ([DRI-ROOT-REQUIRED]); the h1 id form per document tag, including the two non-SPEC documents ([DRI-ROOT-BY-DOCTYPE]); the repair of the five non-conformant files and the recorded rejection of the parser-side alternative ([DRI-REPAIR]); the no-migration compatibility requirement ([DRI-NO-MIGRATION]); the MANDATORY `elements` declaration, its narrowness rule and the intent-not-output rule that makes it an instrument rather than a mirror ([DRI-ELEMENTS-DECL], [DRI-ELEMENTS-NARROW], [DRI-ELEMENTS-INTENT]); the inflation check, its normalization rule, its measured scope and the three converse checks ([DRI-INFLATION], [DRI-INFLATION-MATCH], [DRI-INFLATION-SCOPE], [DRI-CONVERSE]); the bracketed-key silent-loss class and the control cases that must exercise it in the LIVE shape ([DRI-BRACKET-KEY], [DRI-CONTROL-CASES]); the general control-narrowness rule ([DRI-CONTROL-SHAPE]); why element ids must NOT be re-namespaced ([DRI-ID-GRAMMAR]); the error matrix and the two-tier acceptance bar. OUT: any parser change to document-root recognition (RULED OUT by David 2026-08-11, recorded with its evidence at [DRI-REPAIR]); any change to the 67 conforming files BEYOND adding the newly-required `elements` key; any migration of existing element ids (explicitly FORBIDDEN, [DRI-ID-GRAMMAR]); the six other open silent-loss classes; the SL register's numbering authority, which is read at merge time, not restated."
+not-this: "Not a second document-root spelling. David ruled 2026-08-11 that teaching the parser a bare-line root would install the two-conventions problem this corpus spent the day removing — P2 Notation Freedom was for ENCODING flexibility, not for two spellings of one construct. Not a new containment mechanism: containment stays STRUCTURALLY DERIVED from heading nesting, and the `elements` declaration is a checksum over it, never a second source of truth. Not an OPT-IN declaration — as an opt-in the inflation check fires zero times until somebody volunteers, and a rule that reports zero looks exactly like a rule that works ([DRI-ELEMENTS-DECL]). Not a declaration DERIVED from the nodes a file currently mints — that would be a control fitted to its own result, and it is the single most likely wrong implementation ([DRI-ELEMENTS-INTENT]). Not a re-namespacing of element ids: the colon is already the doctype separator, so [CXC-IH:5A] parses as doctype CXC-IH plus id 5A, and 5A fails the id grammar — proposing it would MANUFACTURE the exact silent loss this spec exists to end. Not an untyped edge: David ruled 2026-08-11 that `- [ID]: description` is FLAGGED with a finding carrying its repair and mints NOTHING — minting an untyped edge would install an edge state the model does not have, which is a MODEL change riding in on a parser convenience, and it would resolve this ambiguous-key case in the opposite direction to the same day's ruling on parenthetical qualifier drops ([DD-DRI-BRACKET-KEY-VERDICT]). Every decision point in this document is now CLOSED."
+depends-on: [44-lts-engine-consolidation.lts]
+depends-on: [29-composeux-embedded-reactive.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-08-11
+---
+# Document Root and Element Inflation [SPEC:LTS-DOC-ROOT]
+
+> Five documents in this corpus declare their own identity on a bare line after the h1, and for all five
+> that identity DOES NOT EXIST as a node. Their `domain`, `status`, `premise` and `thesis` attach to
+> nothing; a prefix query cannot enumerate them; their children carry `parent_section: null` and no
+> CONTAINS edge, so "open this spec and show me its elements" returns nothing. The five are EXACTLY the
+> five files with no frontmatter — identical sets — which is what settled the remedy: this is one
+> authoring lapse with two symptoms, not a second convention in use. David ruled on 2026-08-11 that the
+> five are REPAIRED to the established pattern and the parser is NOT taught a second spelling. So this
+> spec makes the document root form a REQUIRED, LINTED contract (a repair alone lets file 73 repeat the
+> lapse), then keeps the three parts that never depended on where the root lives. Every document MUST
+> declare its own element namespace in frontmatter — mandatory, because as an opt-in the check below
+> fires zero times until somebody volunteers, and a rule that reports zero looks exactly like a rule that
+> works. That declaration is a checksum over structurally-derived containment, never the containment
+> mechanism, and it states what the author AUTHORED as an element — including ids that currently fail to
+> mint, because those failures are what the instrument is for. On top of it the INFLATION CHECK reports a
+> bracket authored AS an element that fell through to prose. Last, the bracketed-key silent-loss class is
+> named, with the general rule it proves — a control that does not exercise the shape found in live
+> corpora certifies a narrower class than its name claims.
+
+---
+
+## 0. What is broken, measured
+
+### [DRI-THESIS] A document that cannot address itself cannot be queried, traversed, or rendered as a unit
+
+- premise: a `.lts` document is a container that serializes a graph fragment. If the container itself is
+  not a node, every question of the form "what is in this document" degrades from a traversal into a
+  filename guess, and every property the author wrote ABOUT the document attaches to nothing.
+- requirement: a document MUST have exactly one root node, and that root MUST be reachable by the same
+  mechanisms as any other node — `lts_find(prefix=...)`, `lts_node(id)`, and a CONTAINS traversal to its
+  children.
+- key-insight: the failure is not a missing FEATURE. Heading-nesting containment, structural CONTAINS
+  edges and `parent_section` all work today and are verified working in the 67 conforming files. The five
+  broken files fail at ONE point — the line the author wrote their id on is not a heading, so it mints
+  nothing — and every downstream absence follows mechanically from that single point.
+- consequence: the remedy is therefore an AUTHORING repair plus a rule that prevents recurrence, not a
+  parser change ([DRI-REPAIR] records why, with the measurement that decided it).
+- criticality: high
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-MEASURED] The census: the bare-line set and the no-frontmatter set are IDENTICAL
+
+- census: all 72 `.lts` files under `corpora/` were classified by where the document id sits and by
+  whether they carry frontmatter.
+
+| Form | Count | Result today |
+|------|-------|--------------|
+| id in the h1 — `# Title [TAG:ID]`, with frontmatter | **67** | root mints; children carry `parent_section` + structural CONTAINS |
+| id on a BARE LINE after a bracketless h1, and NO frontmatter | **5** | **no root node exists**; ~20 property lines orphaned per file; children `parent_section: null` |
+| neither an h1 id nor a bare-line declaration | **0** | — |
+
+- the decisive measurement: the five files with a bare-line root are EXACTLY the five files with no
+  frontmatter. Identical sets, no overlap error, no third case. That is what establishes this as ONE
+  authoring lapse with two symptoms rather than a second convention in use, and it is the evidence
+  David's ruling rests on ([DRI-REPAIR]).
+- the five: `design-excellence/design-excellence-composeplatform.lts`,
+  `insights-and-warts/insights_and_warts.lts`, `platform-specs/40-decisions-tab.lts`,
+  `platform-specs/41-intelligence-host-spawner.lts`, `platform-specs/42-idle-tracking.lts`. Their
+  declared-but-unminted ids are `SPEC:CXC-INTELLIGENCE-HOST`, `SPEC:CXC-DECISIONS-TAB`,
+  `SPEC:CXC-IDLE-TRACKING`, `DOC-DX`, `LEDGER:INSIGHTS-WARTS` (written UNBRACKETED on purpose —
+  bracketing an id that by construction does not exist would mint a dangling reference from this spec).
+- second population: 4 further files carry frontmatter but no `audience` key, which is a standing
+  ratified requirement. **5 + 4 = 9 files fail the frontmatter/h1 half of the required form**, and that 9
+  is the exact positive control for that half's first run ([DRI-ACCEPT], DRI-C1).
+- third population, and it is the whole corpus: **0 of 72 files declare `elements` today — including the
+  exemplar.** That is the exact count the newly-required key must report on its first run: 72 findings,
+  one per document, and any other number means the rule is not reading every file ([DRI-ACCEPT], DRI-C1B).
+  A baseline of zero is not an embarrassment; it is what makes the first run a real measurement instead
+  of a confirmation.
+- coverability, measured (this is what makes the requirement feasible rather than aspirational): **67 of
+  71 files are coverable by at most THREE element patterns.** Requiring a narrowest-covering declaration
+  is therefore a one-line-per-file act for the overwhelming majority. The four files that are NOT
+  coverable in three are the interesting ones — a document whose ids do not fall into three families is
+  either carrying several documents' worth of subject matter or naming its nodes ad hoc, and the
+  declaration is what surfaces that. Those four MUST be named by the first run rather than exempted
+  ([DRI-ELEMENTS-NARROW]).
+- corroboration, independently derived: the `.lts` domain profile's own
+  [GUIDANCE-UNTAGGED-H1] note names the same five files and states the same consequence — "they mint no
+  document node and no `document_tag` ... invisible to any query addressing a document by tag" — from a
+  separate corpus scan. Two derivations, one number.
+- **D1 — the root does not exist.** Verified by direct query: `CXC-INTELLIGENCE-HOST`,
+  `CXC-DECISIONS-TAB` and `CXC-IDLE-TRACKING` return no node. Cause: the parser mints ids only from
+  BRACKETED HEADINGS, so a column-0 bracketed line in a body is read as prose.
+- **D2 — a bracketed id in the PROPERTY KEY position mints nothing and warns nothing.** `CXC-IH-EDGES`
+  in spec 41 is titled "Decompositional edges this realizes" and its entire body is three lines of the
+  shape shown at [DRI-BRACKET-KEY]. Live result: `properties: {}`, `edges: {}`, `edge_total: 0`, and
+  `lts_lint` reports ZERO findings of any kind on those lines. A node that exists to declare three edges
+  declares none, silently. Cause is two anchors agreeing: `_PROP_SIMPLE_RE` requires a lowercase key, and
+  the coverage near-miss classifier's `_KEY_COLON_RE` also anchors on a letter, so the line is not even a
+  near-miss. Measured: 3 occurrences, all in spec 41.
+- **D3 — the SL-1 control is narrower than the class it claims.** `lts_selfcheck` passes
+  `CASE-SL1-SYMBOL` ("a symbol-prefixed key does not parse, and IS flagged") — but that control authors
+  an emoji-prefixed key. Every other bracketed line in the control file is either a P4 nested VALUE or a
+  Relationships triple. NONE is `- [ID]: description`. The control never exercises D2's shape, and a
+  green selfcheck reads as "SL-1 is handled".
+- provenance: David and the composeux-architect, 2026-08-11, verified against the live engine (query,
+  lint and selfcheck), not inferred from the grammar.
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+---
+
+## 1. The required document root form
+
+### [DRI-ROOT-REQUIRED] Frontmatter with `audience` and `elements`, and the id IN THE H1 — a linted contract, not a convention
+
+- requirement: every `.lts` document MUST open with a YAML frontmatter block, and that block MUST include
+  `audience` (a standing ratified rule this node makes MECHANICALLY ENFORCED rather than remembered) and
+  `elements` (ruled mandatory by David 2026-08-11; the rule and its reasoning are at
+  [DRI-ELEMENTS-DECL]).
+- requirement: every `.lts` document MUST declare its id in its `h1`, in the form
+  `# Title [TAG:ID]`. The id MUST NOT be declared on any other line.
+- requirement: a file failing either rule MUST produce a lint finding, and that finding MUST name BOTH
+  the rule it broke AND the conforming exemplar — `corpora/platform-specs/29-composeux-embedded-reactive.lts`
+  — so the fix is obvious from the message alone without opening a spec.
+- rationale (why the exemplar is in the message, not just the rule): a finding that states a rule leaves
+  the author to reconstruct the shape; a finding that names a file the author can open and copy removes
+  the reconstruction entirely. The corpus already pays for findings nobody acts on, and the difference is
+  almost always whether the remedy was in the message.
+- exemplar, stated so the rule has one referent and not a paraphrase: spec 29 carries `scope`,
+  `audience`, `boundary`, `not-this`, `depends-on`, `domain`, `confidentiality`, `artifact-readiness` in
+  frontmatter; then `# ComposeUX Reactive Embedded Tier [SPEC:CXC-EMBED-REACTIVE]`; then a blockquote
+  summary; then element headings each carrying `- part-of: [SPEC:CXC-EMBED-REACTIVE]`. It is the exemplar
+  for everything EXCEPT `elements`, which no file carries yet — spec 29 needs `elements: [CXC-ER-*]`
+  added like every other file, and saying so here keeps the exemplar honest rather than exempt.
+- default (STATED): the check runs on EVERY `.lts` in the corpus with no opt-out and no per-file
+  suppression. A structural contract with an escape hatch is a convention again, which is the state this
+  node exists to leave.
+- severity: `audience` missing is an ERROR (a ratified requirement with 4 live violations, a bounded and
+  closable set). `elements` missing is an ERROR (72 live violations on day one — see the migration note
+  below). A missing frontmatter BLOCK is an ERROR. A bracketless h1 is an ERROR.
+- migration note (stated so the first run is not mistaken for a broken linter): the `elements` rule
+  begins at 72 of 72 failing, because the key is new. That is expected and it is the point — the count is
+  a worklist with an exact size, and it goes to zero by adding one line per file. It MUST NOT be softened
+  to a warning to make the first run look better; a warning at 72 is a warning nobody reads, and the
+  denominator argument at [DRI-ELEMENTS-DECL] is precisely about not letting this check report a
+  comfortable number.
+- error-case: an `h1` carrying a bracketed id that fails the id grammar (lowercase, punctuation, a
+  leading digit) MUST be reported as a bracketless h1 with the failed condition named. It MUST NOT be
+  normalized and accepted — the uppercase requirement is the mechanical signal that separates an id from
+  ordinary bracketed prose.
+- error-case: a file with MORE than one `h1`, or with a bracketed id on a second `h1`, MUST be an error
+  naming both lines. One document, one root; picking a winner silently makes a reference to the loser
+  permanently dangling with no finding.
+- error-case: a bracketed id appearing at column 0 on a non-heading line anywhere in the first 10 lines
+  of a file whose h1 is bracketless MUST be named in the finding as the probable intended root, so the
+  message says "you wrote it here, it belongs in the h1" rather than only "your h1 has no id". This is
+  the one place the bare-line form is acknowledged: as a diagnostic hint, never as a parse.
+- scenario:
+  - when: the check is run over the corpus for the first time
+  - then: exactly 9 files are named for the frontmatter/h1 half — the 5 with no frontmatter and no h1 id,
+    and the 4 with frontmatter lacking `audience` — and separately all 72 are named for the missing
+    `elements` key; every finding names spec 29
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-ROOT-BY-DOCTYPE] The h1 id form for EVERY document type, not just `[SPEC:…]`
+
+- requirement: the rule is expressed over the document tag, and the tag MUST be one the domain profile or
+  FactLattice core already registers. A repair MUST NOT invent a tag to fit a file.
+- registered tags and their h1 form:
+
+| Tag | Source | h1 form | Live example |
+|-----|--------|---------|--------------|
+| `SPEC` | core | `# Title [SPEC:ID]` | `# ComposeUX Reactive Embedded Tier [SPEC:CXC-EMBED-REACTIVE]` |
+| `SYSTEM` | core | `# Title [SYSTEM:ID]` | 1 document |
+| `PROJECT` | core | `# Title [PROJECT:ID]` | 1 document |
+| `LEDGER` | domain profile | `# Title [LEDGER:ID]` | `# ... [LEDGER:PRINCIPLES]`, `[LEDGER:STRATEGIES]`, `[LEDGER:DELIV-LEDGER]` |
+| `REGISTRY` | domain profile | `# Title [REGISTRY:ID]` | `[REGISTRY:PROJECTS]` |
+| `PROFILE` | domain profile | `# Title [PROFILE:ID]` | `[PROFILE:PROFILE-COMPOSEIO]` |
+
+- requirement: the two non-SPEC documents among the five are repaired to REGISTERED tags, and their ids
+  are preserved unchanged ([DRI-NO-MIGRATION]):
+  - `insights_and_warts.lts` already declares the tag `LEDGER` on its bare line; the repair moves it into
+    the h1 as `[LEDGER:INSIGHTS-WARTS]` and changes nothing else about the identity.
+  - `design-excellence-composeplatform.lts` declares `DOC-DX` with NO tag at all. `DOC` is not a
+    registered document tag; `DOC-DX` is an id whose type prefix is `DOC`. The repair takes the tag from
+    the nearest sibling precedent — `principles.lts` is `[LEDGER:PRINCIPLES]`, and a design-excellence
+    principles corpus is the same shape — giving `[LEDGER:DOC-DX]`.
+- note (small, deliberately NOT a decision node): registering a `DOC` tag in the profile is the
+  alternative to reusing `LEDGER`, and it is one line in
+  `corpora/intelligence-console/platform-composeio-profile.lts`. It is left as a profile-registration
+  question rather than a design fork because under EITHER answer the document ends with a registered tag
+  in its h1 and no doctype-filtered query silently omits it — which was the only force the question ever
+  had. Whoever performs the repair takes `LEDGER` unless the profile has gained `DOC` by then.
+- requirement: a document whose h1 carries a bracketed id with NO tag (`# Title [ID]`) MUST be reported.
+  An untagged root is invisible to every `find(doctype=…)`, and a query that silently omits one document
+  is the same defect shape this spec removes.
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-REPAIR] Repair the five files to the exemplar — and the RECORDED REJECTION of the parser-side alternative
+
+- requirement: each of the five files is repaired by (a) adding a frontmatter block carrying at minimum
+  `scope`, `audience`, `elements`, `boundary`, `not-this`, `domain`, `confidentiality`,
+  `artifact-readiness`, per the exemplar plus the newly-required `elements` key; (b) moving the bracketed
+  id from the bare line INTO the h1; (c) leaving the `- key: value` lines exactly where they are,
+  directly beneath the h1, where they now attach to the newly-minted root instead of to nothing.
+- requirement: the bare line's trailing description becomes the document's blockquote summary line
+  immediately after the h1, matching the exemplar. It MUST NOT be discarded — it is the one-sentence
+  statement of what the document is, and it is the only place several of these documents have one.
+- requirement: the repair MUST NOT rename any node id, in the h1 or below it ([DRI-NO-MIGRATION]).
+- the five, with their repaired h1:
+
+| File | Repaired h1 id | Also needs |
+|------|----------------|-----------|
+| `40-decisions-tab.lts` | `[SPEC:CXC-DECISIONS-TAB]` | frontmatter incl. `audience` |
+| `41-intelligence-host-spawner.lts` | `[SPEC:CXC-INTELLIGENCE-HOST]` | frontmatter incl. `audience`; also carries the 3 bracketed-key lines ([DRI-BRACKET-KEY]) |
+| `42-idle-tracking.lts` | `[SPEC:CXC-IDLE-TRACKING]` | frontmatter incl. `audience` |
+| `insights_and_warts.lts` | `[LEDGER:INSIGHTS-WARTS]` | frontmatter incl. `audience` |
+| `design-excellence-composeplatform.lts` | `[LEDGER:DOC-DX]` | frontmatter incl. `audience`; tag chosen per [DRI-ROOT-BY-DOCTYPE] |
+
+- change: "REJECTED — teaching the parser to mint a document root from a bare `[TAG:ID]` line following a
+  bracketless h1. Ruled by David 2026-08-11. The five files are REPAIRED to the established pattern
+  instead, and the pattern is made a linted contract ([DRI-ROOT-REQUIRED])."
+- context_for_change:
+    prior_state: "This spec's first draft specified the bare-line root as a parser rule (a
+      root-declaration line recognised on the first non-blank line after a bracketless h1, binding
+      properties, content span and nesting), on the reasoning that it routed an existing, working
+      containment mechanism to five files already authored in that form and required no edit to the
+      conforming majority."
+    reasoning: "The census removed the premise. The five bare-line files are EXACTLY the five files with
+      no frontmatter — identical sets — so the bare-line form is not a second convention in use, it is
+      one authoring lapse with two symptoms. Those files are simultaneously non-conformant on a standing
+      ratified rule (`audience` is REQUIRED frontmatter), so they must be edited regardless; the parser
+      change would therefore have bought nothing and cost a second spelling of one construct."
+    rejected_alternative: "Recognise the bare-line root in the parser and leave the five files as
+      authored. Its real strength was that it needed no edit to any file and introduced no new semantics
+      — every clause was an existing rule applied to a newly-minted node. That strength evaporates once
+      the files must be edited anyway."
+    counter_argument: "P2 Notation Freedom exists precisely so a parser can accept more than one surface
+      form for the same abstract construct, and this would have been one more accepted form."
+    counter_response: "Notation Freedom is for ENCODING flexibility — the same knowledge expressed in a
+      different notation (a YAML block, a table, a list) — not for two spellings of one construct. Two
+      spellings is the two-conventions problem this corpus spent the day removing: every consumer must
+      then handle both, every author must choose, and the choice carries no meaning. The cost is
+      permanent and the benefit was five files."
+    invalidating_assumption: "That the bare-line form is confined to an already-non-conformant set that
+      must be edited for other reasons. If a bare-line root ever appears in a file that is otherwise
+      fully conformant — frontmatter complete, `audience` present — then it IS a second convention in
+      genuine use, the lapse theory is falsified, and the parser-side answer must be reconsidered on its
+      merits. Also invalidated if the population grows large enough that repair cost exceeds the cost of
+      the second spelling, though at 5 of 72 it is nowhere near."
+    implication: "R1 leaves this spec entirely. [DD-DRI-ROOT-TITLE] and [DD-DRI-UNTAGGED-ROOT] dissolve
+      with it — with the id in the h1 there is one title rule and one existing form — and the untagged-id
+      question survives only as the small note at [DRI-ROOT-BY-DOCTYPE]. R2, R3 and R4 are untouched:
+      none of them ever depended on where the root lives."
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-NO-MIGRATION] Zero changes to the 67 conforming files, and zero changes to any node id
+
+- requirement (LOAD-BEARING for adoption): the repair and the new lint rules MUST NOT require an edit to
+  any of the 67 files that already carry frontmatter and mint a root from their h1.
+- requirement: no node id may be renamed, re-prefixed or re-namespaced by this work — not a document
+  root, not an element ([DRI-ID-GRAMMAR] states why the tempting migration is actively wrong).
+- testability: this is checkable as a whole-corpus diff and it is the cheapest gate in the spec — parse
+  the corpus before and after, assert the node set for the 67 conforming files is byte-identical and that
+  exactly five roots plus their structural edges appeared.
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+---
+
+## 2. The element declaration — MANDATORY, narrowest, and about intent
+
+### [DRI-ELEMENTS-DECL] Every document MUST declare its element namespace in frontmatter — mandatory, not optional
+
+- definition: `elements` is a REQUIRED frontmatter key whose value is one or more element-prefix
+  PATTERNS. It declares what this document claims to contain. It has NO effect on the graph.
+- requirement: every `.lts` document MUST carry `elements` in frontmatter. A document that does not is a
+  lint finding at ERROR severity, exactly as a missing `audience` is ([DRI-ROOT-REQUIRED]).
+- rationale (this is why mandatory, and it is the argument this corpus keeps re-earning): as an OPT-IN,
+  the inflation check ([DRI-INFLATION]) fires ZERO times until somebody volunteers a declaration — and a
+  rule that reports zero looks exactly like a rule that works. There is no way, from the outside, to tell
+  a clean corpus from an unrun check. Mandatory is what gives the check a DENOMINATOR: every document is
+  in scope, so a zero is a measurement rather than an absence of measurement.
+- requirement (the whole point, and a builder MUST NOT weaken it): containment remains STRUCTURALLY
+  DERIVED from heading nesting. The declaration MUST NOT create, suppress, re-parent or filter a single
+  edge. There is exactly one source of truth for the graph, and this is a checksum over it — the same
+  relationship a control digest has to its control file, and it is worth exactly as much for the same
+  reason: a digest that can change the artifact it digests certifies nothing.
+- grammar: a pattern is `PREFIX*` — an id-grammar prefix followed by a TRAILING wildcard only. In
+  frontmatter the canonical form is a YAML list, `elements: [CXC-ER-*]` or
+  `elements: [DRI-*, DD-DRI-*]`; a single bare pattern is accepted for the common one-family case. A
+  mid-pattern wildcard MUST be refused at lint time.
+- rationale (trailing-glob only): it is the same restriction the platform's subscription pattern language
+  already carries, for the same reason — a trailing glob over a hyphen-structured name is a prefix test,
+  which is total, order-free and cheap, while a mid-pattern glob demands a matcher and admits patterns
+  whose intended meaning two readers will not agree on. Reusing a decided rule prevents a second pattern
+  language in one corpus.
+- rationale (why frontmatter, not a root property): frontmatter is where document-level metadata already
+  lives and is readable WITHOUT parsing the body, which is exactly the property the missing-key check
+  needs — the linter must be able to say "this document declares nothing" about a document it may not be
+  able to parse fully. It also puts `elements` beside `audience`, so one glance at a frontmatter block
+  answers whether a file conforms.
+- requirement: the ROOT's own id is exempt from the misfiled check ([DRI-CONVERSE]). A root id names the
+  document and is routinely outside its own element family — `CXC-INTELLIGENCE-HOST` is not in
+  `CXC-IH-*` — and a rule that forced it inside would either rename five roots or produce five permanent
+  findings.
+- worked example (shown indented so this document's own parse is not perturbed; spec 41 after repair):
+
+        ---
+        scope: "..."
+        audience: "..."
+        elements: [CXC-IH-*]
+        domain: plt.cux
+        ---
+        # IntelligenceHost — the console spawns carried-identity peer intelligences [SPEC:CXC-INTELLIGENCE-HOST]
+
+        > The console-owned harness that instantiates N parallel intelligences.
+
+- dogfooding: this document carries `elements: [DRI-*, DD-DRI-*]` in its own frontmatter. The declaration
+  is inert until the check ships; it is authored now so the first implementation has a live two-pattern
+  example that is not one of its own fixtures.
+- see-also: [DRI-ELEMENTS-NARROW], [DRI-ELEMENTS-INTENT], [DRI-INFLATION]
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-ELEMENTS-NARROW] The pattern MUST be the NARROWEST that covers — a namespace nobody owns is not a namespace
+
+- requirement: the declared pattern MUST be the narrowest prefix that covers the document's elements. A
+  broader prefix that happens to cover is NOT acceptable merely because it matches.
+- measured, and it is why this rule exists: `CXC-*` covers 100% of spec 29's elements and is WORTHLESS,
+  because nearly every spec in the corpus uses `CXC-`. The useful declaration is `CXC-ER-*`. A pattern
+  that covers everything discriminates nothing: under `CXC-*` the misfiled check can never fire, the leak
+  check can never fire, and the inflation check's candidate set becomes the whole corpus's vocabulary. A
+  declaration that cannot fail is not an assertion.
+- requirement: a pattern declared by MORE THAN ONE document is itself a finding, naming every document
+  that declares it. A namespace nobody owns is not a namespace — it is a prefix — and the shared case
+  means either the family should be split or the documents should be merged. (This is the same condition
+  as [DRI-CONVERSE]'s SHARED-FAMILY warning, raised here to a rule about the DECLARATION rather than an
+  observation about the nodes.)
+- feasibility, measured: **67 of 71 files are coverable by at most THREE patterns**, so the narrowness
+  requirement is a one-line act for the overwhelming majority and does not force anyone to enumerate
+  their nodes. The requirement is bounded by that measurement, not by optimism.
+- requirement: the FOUR files not coverable in three patterns MUST be named by the first run and MUST NOT
+  be exempted. A document whose ids do not fall into a small number of families is either carrying
+  several documents' worth of subject matter or naming its nodes ad hoc; both are worth knowing and
+  neither is fixed by widening the pattern.
+- default (STATED): the ceiling is THREE patterns per document. Above three, the file is reported as
+  over-fragmented rather than refused — the declaration still stands and the checks still run, but the
+  count is surfaced so the underlying condition is visible instead of absorbed.
+- error-case: a declared pattern that is a strict prefix of another declared pattern in the SAME document
+  (`CXC-*` alongside `CXC-ER-*`) MUST be refused. The broader one makes the narrower one dead text and
+  re-introduces exactly the worthless-coverage case this node forbids.
+- scenario:
+  - when: spec 29 declares `elements: [CXC-*]`
+  - then: the linter refuses it, names `CXC-ER-*` as the narrowest pattern covering the document's actual
+    element ids, and states that `CXC-*` is declared by many documents
+- see-also: [DRI-CONVERSE]
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-ELEMENTS-INTENT] ⛔ The declaration expresses AUTHORED INTENT, not current output — do NOT derive it from what a file mints
+
+- requirement (LOAD-BEARING; the single most likely wrong implementation of this whole spec): `elements`
+  covers every id the document AUTHORS as an element, INCLUDING ids that currently fail to inflate. It
+  MUST NOT be derived, generated, or auto-populated from the set of nodes a file currently MINTS.
+- rationale: a declaration derived from current output is a control fitted to its own result. Every
+  existing file would pass by construction, the inflation check would report zero on the corpus it was
+  written for, and the zero would be indistinguishable from success. That is precisely the failure D3
+  already documents one layer down — the SL-1 control that passes because it exercises a shape the live
+  corpus does not contain — reproduced at the level of the whole check rather than one case.
+- worked consequence, stated because the natural implementation is the wrong one: spec 41 contains
+  `[CXC-IH:5A]`, which never minted. Under this rule that file still declares `CXC-IH-*`, so the
+  inflation check FAILS on it. **That failure is the instrument working.** An implementation that
+  produced a declaration under which spec 41 passes has removed the only evidence the check was ever
+  going to find.
+- requirement: any tooling that OFFERS a declaration (a scaffold, a fixer, an agent) MUST present it as a
+  starting suggestion derived from minted nodes AND state, in the same breath, that the author must widen
+  it to cover ids they intended but which did not mint. It MUST NOT write the derived value silently.
+- error-case: a corpus-wide run in which the inflation check reports ZERO findings against declarations
+  that were machine-derived MUST be treated as UNVALIDATED, not as clean. The correct response is to
+  check whether any declaration was derived, not to publish the zero.
+- testability: this is checkable directly — take a file with a known non-minting authored id, derive a
+  declaration from its minted nodes, and assert the derived declaration does NOT cover the known id.
+  That assertion failing is what a fitted control looks like from the inside.
+- criticality: high
+- see-also: [DRI-CONTROL-SHAPE]
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+---
+
+## 3. The inflation check and its three converses
+
+### [DRI-INFLATION] A bracket that matches a declared element prefix and produced NO NODE is an INFLATION FAILURE
+
+- definition: INFLATION is the gap between what a document declared it would contain and what it actually
+  minted. An inflation failure is a bracket in the file whose text matches a declared element prefix but
+  for which no node exists — a thing authored AS an element that fell through to prose.
+- requirement: for every document with a declared `elements` set, the linter MUST report every inflation
+  failure, naming the file, the line, the bracket text as written, and the normalized form that matched
+  the declared prefix.
+- rationale (this is the sharp part, and it is why the check is worth building): every other check in
+  this spec catches an OUTCOME — a node that is missing, a declaration that is empty. This one catches
+  INTENT. A mis-punctuated `[CXC-IH:5A]`, a lowercase `[cxc-ih-5a]`, a typo'd `[CXC-IH-5AA]` — today all
+  three are indistinguishable from a sentence, and the corpus has no mechanism that can tell an author
+  they wrote a node and got prose. Declaring the namespace is what makes the author's intent
+  machine-readable at all.
+- requirement: resolution is CORPUS-scoped, not file-scoped. A bracket is an inflation failure only when
+  its raw text is the id of NO node anywhere in the corpus. A bracket that resolves to a real node in
+  another file is NOT inflation; it is a reference, and if it matches this file's declared prefix it is a
+  namespace leak instead ([DRI-CONVERSE]). Getting this scope wrong in either direction is the difference
+  between a useful check and one that fires on every cross-file reference.
+- severity: ERROR. The declaration is MANDATORY ([DRI-ELEMENTS-DECL]), so every document is held to one
+  and the check has a denominator; downgrading the answer to a warning would put the finding in the same
+  bucket as the backlog it is meant to be read against.
+- requirement: because the declaration is mandatory, the inflation check runs on EVERY document. Its
+  finding count on the corpus is therefore a real measurement of the corpus's element hygiene rather than
+  a measurement of how many authors opted in — which is the whole reason the declaration was made
+  mandatory rather than offered.
+- error-case: a bracket that matches a declared prefix, mints no node, AND whose normalized form is a
+  valid id that also does not exist anywhere — that is the common typo, and the finding MUST say so
+  rather than emitting two overlapping findings for one line.
+- scenario:
+  - when: spec 41 declares `elements: CXC-IH-*` and a body line references `[CXC-IH:5A]`
+  - then: the linter reports an inflation failure at that line, states that `CXC-IH:5A` normalizes to
+    `CXC-IH-5A` which matches the declared prefix, and that no such node exists — today this line
+    produces nothing at all
+- see-also: [DRI-INFLATION-MATCH], [DRI-INFLATION-SCOPE]
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-INFLATION-MATCH] The normalization rule — the check must see through the punctuation that broke the id
+
+- requirement: candidacy is decided on a NORMALIZED form of the bracket text, because the failures worth
+  catching are precisely those where the punctuation is what broke it. Raw prefix comparison would miss
+  `[CXC-IH:5A]` entirely, since `CXC-IH:5A` does not start with `CXC-IH-`, and missing that case would
+  leave the check unable to catch the exact example that motivated it.
+- normalization (total, deterministic, applied in this order):
+
+| # | Step |
+|---|------|
+| N1 | take the raw characters between `[` and the first `]` |
+| N2 | uppercase |
+| N3 | replace every run of characters outside `[A-Z0-9]` with a single `-` |
+| N4 | strip leading and trailing `-` |
+
+- requirement: a declared pattern `PREFIX*` matches when the normalized text starts with the normalized
+  PREFIX. The comparison is a prefix test and nothing more — no edit distance, no fuzzy match, no token
+  reordering. A heuristic that guesses at similarity is how a widened matcher manufactures findings, and
+  the corpus has already paid for one widened matcher fabricating edges from prose.
+- worked table (declared `CXC-IH-*`):
+
+| Bracket as written | Normalized | Candidate? | Verdict |
+|--------------------|-----------|-----------|---------|
+| `[CXC-IH-5A]`, node exists | `CXC-IH-5A` | yes | clean — it minted |
+| `[CXC-IH:5A]` | `CXC-IH-5A` | yes | **inflation failure** — mis-punctuated, mints nothing |
+| `[cxc-ih-5a]` | `CXC-IH-5A` | yes | **inflation failure** — lowercase is prose to the parser |
+| `[CXC-IH-CONSOLE]`, no such node | `CXC-IH-CONSOLE` | yes | **inflation failure** — typo or unauthored element |
+| `[CXC-SUB-DECLARE]` | `CXC-SUB-DECLARE` | no | not a candidate — different family |
+| `[see the IH notes]` | `SEE-THE-IH-NOTES` | no | not a candidate — does not match the prefix |
+
+- error-case: a normalized form that is EMPTY after N4 (a bracket of pure punctuation) MUST be discarded
+  as a non-candidate, not compared. This is the guard that keeps markdown link syntax and ASCII art out
+  of the finding set.
+- testability: the whole rule is table-drivable, and the table above is the test's first six rows.
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-INFLATION-SCOPE] SETTLED by census — the check scans STRUCTURAL POSITIONS only
+
+- decision (settled, not open): the inflation check scans only STRUCTURAL POSITIONS — a bracket that is
+  the leading token of a heading, or the leading token of a column-0 list item. Those two positions are
+  exactly where D1 and D2 occurred. Brackets in prose, table cells and property values are NOT scanned.
+- census (run 2026-08-11 across the corpus; this is the measurement that decided it):
+
+| Quantity | Count |
+|----------|-------|
+| brackets in STRUCTURAL positions | 2,462 |
+| brackets in PROSE positions | 5,617 |
+| of those prose brackets, resolving to NO node | 489 |
+| of those, matching their OWN document's element family | **215** |
+
+- consequence, and it is decisive: a whole-file scan would fire **215 findings on legitimate prose
+  references** — an author naming a planned, hypothetical or cross-discussed element id in a sentence,
+  which is a normal and frequent act that this very document performs repeatedly. At ERROR severity that
+  is not a noisy check, it is a check that gets switched off, and a switched-off check costs more than
+  every miss it would have caught.
+- rationale (why the recall loss is affordable): the structural positions are where an author who
+  INTENDED a node actually writes one. A mis-punctuated id written inline in running prose is a real miss
+  and is knowingly accepted, because 215 false errors is the price of catching it and the corpus has
+  already measured what a widened predicate costs — a naive "a `- ` line with a colon" rule ran 96% false
+  positive on this same corpus, and the near-miss classifier's own source records deliberately declining
+  recall to hold precision.
+- requirement: the finding count on a clean corpus is itself an acceptance criterion (DRI-C10), not an
+  afterthought. A check whose false-positive rate is not measured has not been validated.
+- documents: [DRI-INFLATION]
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-CONVERSE] The three converse checks — misfiled, dead declaration, namespace leak
+
+- requirement: a declared `elements` set MUST be checked in both directions. Inflation asks "did
+  everything the author intended as an element become one?"; the converses ask "is everything that became
+  one supposed to be here, and is every declaration doing work?"
+
+| Check | Condition | Severity | Remedy stated in the finding |
+|-------|-----------|----------|------------------------------|
+| **MISFILED** | a node minted in this file whose id matches NONE of the declared patterns (root exempt) | error | declare the pattern, or move the node to the document that owns its family |
+| **DEAD DECLARATION** | a declared pattern with ZERO minted nodes in this file | warning | drop the pattern, or author the elements it promised |
+| **NAMESPACE LEAK** | a node in ANOTHER file whose id matches this file's declared pattern, where that other file does not itself declare the pattern | warning | move the node, or declare the pattern in both roots if the family legitimately spans them |
+
+- rationale (why dead declaration is a warning and misfiled is an error): a misfiled node means the graph
+  and the declaration disagree about a node that EXISTS — a reader following the declaration will miss
+  it. A dead declaration is a promise not yet kept, which is the normal state of a spec being written;
+  making it an error would punish authoring order.
+- rationale (why leak is a warning): an amendment document extending a spec's family is a legitimate
+  shape, and the remedy — declare the pattern in both roots — is one line. An error would force a naming
+  migration to satisfy a bookkeeping rule.
+- requirement: the leak check requires corpus scope and MUST NOT be attempted from a single-file lint. A
+  single-file run MUST report the leak check as NOT RUN rather than as passing, because a check that
+  reports green while skipped is the whole defect class in miniature.
+- error-case: two files declaring the SAME pattern, both minting nodes under it, is NOT a leak (both
+  declared it) but MUST be reported as a SHARED-FAMILY warning naming both files, since a reader of
+  either root now has an incomplete list.
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+---
+
+## 4. The bracketed-key silent-loss class and the control that never exercised it
+
+### [DRI-BRACKET-KEY] A bracketed id in the KEY position must either PARSE or be FLAGGED — never both-nothing
+
+- definition: the shape is a column-0 list item whose body opens with a bracketed id followed by a colon
+  and a description. Spec 41's `CXC-IH-EDGES` node — titled "Decompositional edges this realizes" —
+  consists of exactly three such lines and nothing else (indented here; a live example, one line shown):
+
+        - [DX-LEAF-OWNS-BEHAVIOR]: the Host owns spawn/lifecycle; the intelligence owns its own work.
+
+- measured: `properties: {}`, `edges: {}`, `edge_total: 0`, zero lint findings of any kind. Cause is two
+  anchors agreeing: `_PROP_SIMPLE_RE` requires a lowercase key, so nothing parses; and the coverage
+  near-miss classifier's `_KEY_COLON_RE` also requires the line to open with a letter, so the line is not
+  even classified as a near-miss. It is prose to both, and prose produces no finding by design.
+- requirement: this shape MUST NOT remain in the both-nothing state. Which of the two remedies applies
+  was DECIDED by David on 2026-08-11 at [DD-DRI-BRACKET-KEY-VERDICT]: **FLAG, do not mint.** The line
+  produces a finding that NAMES it and mints NO edge, and the finding's message MUST carry the repair —
+  write `- [ID] **Title**` to mint a NODE, or move the line under `## Relationships` as
+  `- [SRC] VERB [TARGET]` to mint a TYPED edge. The current outcome — a node that exists to declare three
+  edges declaring none, silently — was unacceptable under either branch and is now closed under this one.
+- requirement: the class MUST be registered in the silent-loss register with a name, a measured count,
+  and a control case. The register at
+  `docs/improvement_suggestions/coordination/silent-loss-classes.md` is the numbering authority and is
+  READ, not restated here; at its v5 state the highest assigned number is SL-18, so this class takes the
+  next free number at merge time rather than one reserved by this document.
+- measured count for the register: 3 occurrences, all in `41-intelligence-host-spawner.lts` — which is
+  also one of the five files being repaired ([DRI-REPAIR]), so both edits land in one pass on one file.
+- criticality: high
+- see-also: [DD-DRI-BRACKET-KEY-VERDICT], [DRI-CONTROL-CASES]
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-CONTROL-SHAPE] A control that does not exercise a LIVE shape certifies a narrower class than its name claims
+
+- principle (this is the generalizable result, and it outlives the specific defect): a control case named
+  for a CLASS but authored around one INSTANCE certifies only that instance. The name then travels — into
+  a passing selfcheck, into a status table, into an agent's summary — carrying an assurance the control
+  never produced.
+- evidence: `CASE-SL1-SYMBOL` is named "a symbol-prefixed key does not parse, and IS flagged". Its body
+  authors an emoji-prefixed key. The class it NAMES covers every non-`[a-z]` opening character in the key
+  position; the shape found in live corpora — an opening `[` — is one of those, and the control does not
+  contain it. The selfcheck was green while the corpus lost three edges.
+- requirement: every silent-loss class MUST have its control cross-checked against a CORPUS SHAPE CENSUS
+  — the actual line shapes that occur in real documents — and not only against shapes invented while
+  writing the control. Where the census produces a shape the control does not contain, the control MUST
+  be extended or the class MUST be renamed to what it actually covers.
+- requirement: where no live shape backs a class, that class MUST be labelled THEORETICAL in the register
+  (two classes already are), so the difference between "checked against reality" and "checked against
+  imagination" stays visible in the one place people read.
+- rationale: the corpus already contains the proof that a positive control can be satisfied by the wrong
+  thing — a detector that fired correctly fourteen times and named the wrong file every time. The lesson
+  compounds here: a control's SHAPE COVERAGE is as load-bearing as its assertion, and neither is implied
+  by the other.
+- consequence for reviewers: "the selfcheck is green" is not an answer to "is this class handled". The
+  answerable question is "which live shapes does the control contain", and it must be answerable by
+  reading the control.
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+### [DRI-CONTROL-CASES] The control cases this spec requires, authored in the LIVE shape
+
+- requirement: the selfcheck control file MUST gain the cases below. Each MUST be authored in the shape
+  found in a live corpus, and each MUST assert BOTH what was minted and what was flagged — a case
+  asserting only one half is how a both-nothing outcome passes.
+
+| Case | Shape authored in the control | Asserts |
+|------|-------------------------------|---------|
+| bracketed key, key position | a column-0 list item opening `- [ID]: description` inside a node body | the ruled verdict at [DD-DRI-BRACKET-KEY-VERDICT] — a finding NAMES the line, NO edge is minted, and the message contains both repairs (`- [ID] **Title**`, and the `## Relationships` triple) |
+| missing frontmatter | a file opening directly with an h1, no `---` block | an error naming the rule and the exemplar |
+| frontmatter without `audience` | a complete block with `audience` removed | an error naming the rule and the exemplar |
+| frontmatter without `elements` | a complete block with `elements` removed | an error naming the rule and the exemplar |
+| over-broad declaration | a file whose elements are `PFX-SUB-*` declaring `PFX-*` | an error naming the narrowest covering pattern ([DRI-ELEMENTS-NARROW]) |
+| shared declaration | two files declaring the same pattern | a finding naming both |
+| **derived declaration** | a file with an authored id that never minted, plus a declaration built only from its minted nodes | the derived declaration does NOT cover the known id — the assertion that catches a fitted control ([DRI-ELEMENTS-INTENT]) |
+| bracketless h1 | `# Title` with no id, plus a column-0 `[TAG:ID]` line below it | an error naming the h1 rule AND naming the bare line as the probable intended root |
+| non-SPEC tags | an h1 bearing `[LEDGER:ID]` and one bearing `[REGISTRY:ID]` | both clean — the rule is over all registered tags, not `SPEC` alone |
+| untagged h1 id | `# Title [ID]` with no doctype | a finding — an untagged root is invisible to `find(doctype=…)` |
+| two h1 ids | two `h1` lines each carrying an id | an error naming both lines; no precedence resolution |
+| inflation, mis-punctuated | a declared `elements` prefix plus a `[PFX:5A]`-shaped bracket in a STRUCTURAL position | an inflation failure naming the raw and normalized forms |
+| inflation, lowercase | the same with a lowercase bracket | an inflation failure |
+| inflation, non-candidate | a bracket of pure punctuation; a bracket from a different family; **and a matching bracket in PROSE** | NO finding on any of the three — the precision half, including the 215-case exclusion ([DRI-INFLATION-SCOPE]) |
+| misfiled / dead / leak | a node outside every declared pattern; a pattern with no nodes; a node in a second file under this file's pattern | one finding each, at the severities in [DRI-CONVERSE] |
+
+- requirement: the non-candidate row is not optional, and its prose sub-case is the one that guards
+  [DRI-INFLATION-SCOPE]'s ruling. A check whose control contains only positives measures recall and says
+  nothing about the false-positive rate, and the false-positive rate is what decides whether a check
+  survives contact with a 72-file corpus.
+- see-also: [DRI-CONTROL-SHAPE]
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+---
+
+## 5. The constraint that forecloses the tempting migration
+
+### [DRI-ID-GRAMMAR] Element ids are CORRECT as authored and MUST NOT be re-namespaced — the colon is taken
+
+- fact (checked in the grammar, 2026-08-11): node ids match `^[A-Z][A-Z0-9_\-]*$`. Uppercase, digits,
+  underscore and HYPHEN are permitted. There is no colon, no dot, and an id may not begin with a digit.
+- fact: the colon is ALREADY the doctype separator. The parser's own contract reads
+  `# Title [DOCTYPE:ID] -> document_tag=DOCTYPE`, which is why `[SPEC:CXC-MODULES]` yields
+  `document_tag: "SPEC"`. That is also exactly what makes [DRI-ROOT-BY-DOCTYPE]'s table work.
+- requirement (a REJECTED design, recorded so a future reader does not re-derive it): element ids MUST
+  NOT be re-namespaced into a `[FAMILY:ELEMENT]` form such as `[CXC-IH:5A]`. Under the existing grammar
+  that parses as doctype `CXC-IH` plus id `5A`; `5A` begins with a digit and fails the id grammar; so the
+  line mints NOTHING. The migration that looks like it would clarify element namespacing would
+  manufacture, corpus-wide and by construction, the exact silent-loss failure this spec exists to end.
+- key-insight: `CXC-IH-HOST` already reads as CXC / IH / HOST. The hyphen is the only separator ids have,
+  and it is sufficient — a prefix pattern over a hyphen-structured id is exactly the trailing-glob test
+  [DRI-ELEMENTS-DECL] needs. Nothing about the current ids is deficient; what was missing was a way to
+  DECLARE the family, which is what the `elements` property adds without touching a single id.
+- consequence: any proposal to change element id shape must first change the id grammar and the doctype
+  separator, which are load-bearing for every document in every corpus. That cost is not in scope here
+  and the benefit is nil, so this is closed, not open.
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+---
+
+## 6. The decision point — CLOSED, ruled by David 2026-08-11
+
+### [DD-DRI-BRACKET-KEY-VERDICT] Does `- [ID]: description` PARSE into an edge, or get FLAGGED for re-authoring?
+
+- decision: CLOSED — RULED by David 2026-08-11: **FLAG. Do not mint.** A column-0 list item of the shape
+  `- [ID]: description` is reported as a NAMED FINDING and mints NO edge. The finding's message MUST
+  carry the repair, because the repair is trivial and the author must be handed what they meant
+  EXPLICITLY rather than have it guessed for them: write `- [ID] **Title**` to mint a NODE, or move the
+  line under `## Relationships` as `- [SRC] VERB [TARGET]` to mint a TYPED edge. Both repairs are
+  well-formed under today's grammar and neither requires a parser change.
+- context: the shape's author intent is not in doubt — spec 41's node is literally titled
+  "Decompositional edges this realizes" and its three lines name three targets. The question is whether a
+  parser may act on an intent whose TYPE is nowhere on the line.
+- rationale: the edge TYPE is not in the syntax — it lives in the SECTION TITLE. Minting an untyped edge
+  from this line therefore means inventing a semantic the author never wrote, and an invented edge is a
+  SUBSTITUTION. This corpus has already established that a substitution is strictly worse than a LOSS: a
+  missing edge is DETECTABLE — by the inflation check, the three converse checks and the line accounting
+  specified in this very document — and a plausible wrong one is not. SL-18 is the recorded instance:
+  `zb.ds.GOVERNS` silently became `GOVERNS` and the result looked well-formed, which is exactly why
+  nothing caught it. The corpus has ALREADY paid for a widened matcher fabricating an edge to a target
+  named `"-55]"`, emitted from a verb matched as a substring, with line accounting blind to it because
+  the line was CONSUMED.
+- rationale: CONSISTENCY ACROSS THE CLASS, and this is the decisive new evidence. David ruled
+  identically, hours earlier on 2026-08-11, on the parenthetical / em-dash qualifier drops
+  (`- key (qualifier): value`) — for the same reason and with the same repair shape: FLAG the line, do
+  not guess at the key, and repair by moving the qualifier into the VALUE. That class is live in this
+  very document, at 28 `near_miss_qualified_key_paren` findings across specs 58 and 59 alone. Ruling MINT
+  here would resolve two ambiguous-key situations in OPPOSITE directions and make the format incoherent
+  with itself. Consistency across the class is part of the ruling, not a decoration on it.
+- rationale: the marginal cost of the flag branch is now approximately zero — three lines in one file,
+  re-authored as either `- realizes: [DX-LEAF-OWNS-BEHAVIOR]` or a Relationships triple, and that file is
+  `41-intelligence-host-spawner.lts`, which is already being edited for [DRI-REPAIR].
+- alternatives: (a) PARSE AS AN EDGE — genuinely defensible, and its strongest form is not the weak
+  `RELATED_TO` default: mint the edge with an explicit UNTYPED marker, so the graph records "the author
+  declared a relationship here and did not type it" rather than either dropping it or guessing. That
+  preserves the knowledge, is honest about what is known, and would recover three edges without any
+  authoring change — and it generalizes to every future document that uses the shape. Its cost is a new
+  edge state that every consumer must now handle, and the format currently has no untyped edge. (b)
+  PARSE AS A PROPERTY whose key is the bracketed id — cheapest to implement and it stops the loss, but it
+  produces a property key that is not a property key by the grammar, and a downstream consumer filtering
+  on lowercase keys drops it again silently. (c) DO NOTHING and rely on the inflation check to catch it —
+  insufficient: the targets are ids from another family (`DX-*`), so a `CXC-IH-*` declaration would not
+  make them candidates, and the loss would stay invisible.
+- consequence: three downstream statements in this document lose their disjunction and become decided
+  behaviour. [DRI-CONTROL-CASES]' bracketed-key row asserts that a finding NAMES the line and that NO
+  edge is minted, rather than "whichever branch ratifies". [DRI-BOUNDARIES] row 24 states FLAG as the
+  required behaviour. DRI-C15 asserts the finding exists rather than asserting a disjunction. No model
+  change is required, and no consumer that enumerates edge types gains a case.
+- consequence: had (a) been ratified instead, an untyped-edge state would have entered the model, the
+  control case at [DRI-CONTROL-CASES] would assert the edge exists rather than that a finding names the
+  line, and every consumer that enumerates edge types would gain a case. That is a MODEL change and it
+  belongs to the architect, not to a linter fix — which is exactly why this was a decision node and not
+  a default.
+- change: "RULED — `- [ID]: description` is FLAGGED as a named finding and mints NO edge; the finding
+  carries its own repair. The rejected branch is minting an explicitly UNTYPED edge. Ruled by David
+  2026-08-11, consistently with the same day's ruling on parenthetical qualifier drops."
+- context_for_change:
+    prior_state: "The node stood at status `proposed` — FLAG, do not parse — with branch (a), an
+      explicitly UNTYPED edge, recorded as genuinely defensible and unresolved. The corpus meanwhile
+      carried three authored edges in `41-intelligence-host-spawner.lts` that reached no parser branch,
+      produced `edges: {}`, `edge_total: 0`, and zero lint findings of any kind."
+    reasoning: "The edge TYPE is not in the syntax; it is in the section title. Minting from this line
+      invents a semantic the author never wrote, and an invented edge is a SUBSTITUTION rather than a
+      loss. A missing edge is detectable by the checks this spec already specifies; a plausible wrong one
+      is not, and it is not detectable by anything, which is why SL-18 (`zb.ds.GOVERNS` silently becoming
+      `GOVERNS`) survived a green selfcheck. The corpus has already paid once for a widened matcher
+      fabricating an edge to the target `-55]`. Decisively, the same ruling was made hours earlier on
+      the parenthetical qualifier drops, for the same reason and with the same repair shape: two
+      ambiguous-key situations resolved in opposite directions would make the format incoherent with
+      itself, so consistency across the class is part of the ruling."
+    rejected_alternative: "Mint an explicitly UNTYPED edge. At full strength this is the best argument
+      available for the other side: it recovers [CXC-IH-EDGES]' three real, genuinely-intended lost edges
+      with no authoring change at all; it is HONEST about what is known, recording 'the author declared a
+      relationship here and did not type it' rather than either dropping the knowledge or guessing a
+      verb; and it GENERALISES to every future document that reaches for the shape, so the fix scales
+      while the flag branch's repair cost scales with the population. It is not a weak `RELATED_TO`
+      default and it should not be dismissed as one."
+    counter_argument: "An untyped edge is not a fabrication — it asserts strictly less than the author
+      wrote, never more, so it cannot be the SUBSTITUTION the ruling objects to. Refusing it therefore
+      chooses a certain, measured loss of three real edges over a marker that is honest by construction."
+    counter_response: "Conceded that an untyped edge does not fabricate a VERB. What it fabricates is a
+      STATE: the model has no untyped edge, so minting one introduces an edge state the model does not
+      have. That is a MODEL change riding in on a parser convenience, and it arrives without any of the
+      consumer work a model change owes — every enumeration of edge types, every renderer, every
+      traversal that switches on type gains an unhandled case, silently, on the first document that uses
+      the shape. The three real edges are recoverable for the cost of three re-authored lines in a file
+      that is already being edited for [DRI-REPAIR]. The objection is to inventing the state HERE, as a
+      side effect, rather than to the state existing."
+    invalidating_assumption: "That the untyped-edge state stays ABSENT from the model. If FactLattice
+      ever gains a first-class untyped or `mentions`-style edge as a RATIFIED concept — declared in the
+      model, handled by every consumer, and arrived at on its own merits rather than as a parser
+      convenience — then this decision reopens and (a) becomes free, because the cost this ruling
+      declines to pay will already have been paid. Secondarily invalidated by population: this shape is 3
+      occurrences in one file of 72, and if a census of other corpora finds it is a common authoring
+      idiom, the flag branch's migration cost scales with that population while (a)'s fabrication risk
+      does not."
+    implication: "[DRI-CONTROL-CASES]' bracketed-key row, [DRI-BOUNDARIES] row 24 and DRI-C15 all lose
+      their disjunction and state the FLAG outcome. [DRI-BRACKET-KEY]'s requirement is no longer
+      conditional. The three lines in `41-intelligence-host-spawner.lts` are re-authored in the same pass
+      as [DRI-REPAIR]. The silent-loss class still takes its register number at merge time; the ruling
+      settles the class's REMEDY, not its number."
+- status: decided
+- invalidating_assumption: "That the untyped-edge state stays ABSENT from the model. If FactLattice ever
+  gains a first-class untyped or `mentions`-style edge as a RATIFIED concept — declared in the model,
+  handled by every consumer, and arrived at on its own merits rather than as a parser convenience — then
+  this decision reopens and (a) becomes free, because the cost this ruling declines to pay will already
+  have been paid. Secondarily invalidated by population: this shape is 3 occurrences in one file of 72,
+  and if a census of other corpora finds it is a common authoring idiom, the flag branch's migration cost
+  scales with that population while (a)'s fabrication risk does not."
+- documents: [DRI-BRACKET-KEY]
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+---
+
+## 7. Error and boundary matrix
+
+### [DRI-BOUNDARIES] Every condition a builder would otherwise have to invent an answer for
+
+| # | Condition | Required behaviour |
+|---|-----------|--------------------|
+| 1 | conforming file — frontmatter with `audience`, id in the h1 | clean; no rule in this spec touches it ([DRI-NO-MIGRATION]) |
+| 2 | no frontmatter block at all | ERROR naming the rule and the exemplar (spec 29) |
+| 3 | frontmatter present, `audience` absent | ERROR naming the rule and the exemplar |
+| 4 | h1 carries no bracketed id | ERROR; the finding also names any column-0 bracketed line in the first 10 lines as the probable intended root |
+| 5 | column-0 `[TAG:ID]` line after a bracketless h1 | NEVER parsed as a root; it is a diagnostic hint inside finding 4 ([DRI-REPAIR]) |
+| 6 | h1 id fails the id grammar (lowercase, punctuation, leading digit) | treated as a bracketless h1, with the failed condition named; never normalized |
+| 7 | h1 id carries no doctype (`# Title [ID]`) | finding — invisible to `find(doctype=…)` ([DRI-ROOT-BY-DOCTYPE]) |
+| 8 | h1 id carries a tag no profile or core registers | ERROR; a repair MUST NOT invent a tag |
+| 9 | two `h1` lines, or a second bracketed h1 id | ERROR naming both lines; no precedence resolution |
+| 10 | non-SPEC document (`LEDGER`, `REGISTRY`, `PROFILE`, `SYSTEM`, `PROJECT`) | same rule, same severity; the tag table at [DRI-ROOT-BY-DOCTYPE] is exhaustive |
+| 11 | repair would require renaming a node id | FORBIDDEN — preserve the id, change only its position ([DRI-NO-MIGRATION]) |
+| 12 | no `elements` key in frontmatter | ERROR — mandatory; 72 of 72 files on day one ([DRI-ELEMENTS-DECL]) |
+| 12a | `elements` declared as a prefix broader than the document's family (`CXC-*`) | ERROR naming the narrowest covering pattern ([DRI-ELEMENTS-NARROW]) |
+| 12b | the same pattern declared by more than one document | finding naming every declaring document — a namespace nobody owns is not a namespace |
+| 12c | two declared patterns in one document, one a strict prefix of the other | ERROR — the broader makes the narrower dead text |
+| 12d | more than three patterns needed to cover one document | reported as over-fragmented; declaration stands, checks still run; 4 live files ([DRI-ELEMENTS-NARROW]) |
+| 12e | a declaration DERIVED from the nodes the file currently mints | UNVALIDATED, never clean — a control fitted to its own result ([DRI-ELEMENTS-INTENT]) |
+| 12f | an authored id that never minted, under a declared pattern | the declaration MUST still cover it, so inflation FAILS — that failure is the instrument working |
+| 13 | `elements` pattern with a mid-pattern wildcard | ERROR at lint time; trailing glob only |
+| 14 | `elements` declared, bracket matches, node exists in THIS file | clean |
+| 15 | `elements` declared, bracket matches, node exists in ANOTHER file | not inflation — a reference; evaluate for NAMESPACE LEAK instead |
+| 16 | `elements` declared, bracket matches, node exists NOWHERE, STRUCTURAL position | INFLATION FAILURE (error), naming raw + normalized form |
+| 17 | the same in a PROSE position | NO finding — 215 legitimate live cases ([DRI-INFLATION-SCOPE]) |
+| 18 | bracket normalizes to empty (pure punctuation) | discard as non-candidate; never compare |
+| 19 | node minted in this file matching no declared pattern | MISFILED (error) — root id exempt |
+| 20 | declared pattern with zero minted nodes | DEAD DECLARATION (warning) |
+| 21 | node under this file's pattern living in a file that does not declare it | NAMESPACE LEAK (warning), naming both files |
+| 22 | two files declaring the SAME pattern, both minting under it | SHARED-FAMILY warning naming both; not a leak |
+| 23 | leak check requested from a single-file lint | report NOT RUN; never report it as passing |
+| 24 | `- [ID]: description` in a node body | FLAG with a finding naming the line and carrying both repairs; mint NO edge — DECIDED 2026-08-11 ([DD-DRI-BRACKET-KEY-VERDICT]); never both-nothing, never an invented edge type |
+| 25 | any proposal to re-namespace element ids as `[FAMILY:ELEMENT]` | REFUSE — parses as doctype + invalid id and mints nothing ([DRI-ID-GRAMMAR]) |
+
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+---
+
+## 8. Acceptance — two tiers, machine and glass
+
+### [DRI-ACCEPT] Every requirement has a machine signal; every author-facing surface has a glass gate
+
+- rule: a machine signal certifies the parse and the finding. Anything whose value is an AUTHOR reading a
+  message also needs a glass gate, because a finding that is technically emitted and practically
+  unreadable is the failure mode this whole class of work exists to end.
+
+| ID | Requirement | `verify.machine` | `verify.human` (glass) |
+|----|-------------|------------------|------------------------|
+| DRI-C1 | **The required-form rule catches EXACTLY the 9 known violators on its first run** ([DRI-ROOT-REQUIRED]) | `tests/test_document_root_form.py::test_first_run_names_exactly_nine` — assert the finding set is exactly the 5 no-frontmatter files plus the 4 missing `audience`; no more, no fewer | — |
+| DRI-C1B | **The `elements` rule reports EXACTLY 72 on its first run** ([DRI-ELEMENTS-DECL]) | `::test_elements_baseline_is_all_seventy_two` — assert every `.lts` in the corpus is named, including the exemplar; any other number means the rule is not reading every file | — |
+| DRI-C1C | **A DERIVED declaration is caught, not trusted** ([DRI-ELEMENTS-INTENT]) | `tests/test_element_declaration.py::test_derived_declaration_misses_authored_id` — build a declaration from a file's minted nodes only; assert it does NOT cover that file's known non-minting authored id | — |
+| DRI-C1D | Narrowest-covering is enforced ([DRI-ELEMENTS-NARROW]) | `::test_overbroad_pattern_refused` (a `PFX-*` over `PFX-SUB-*` elements errors and the message names the narrowest), `::test_shared_pattern_reported`, `::test_prefix_of_sibling_refused`, `::test_over_three_patterns_reported` — and a corpus run asserting exactly 4 files are over-fragmented | — |
+| DRI-C2 | Every finding names the rule AND the exemplar | `::test_finding_names_rule_and_exemplar` — assert `29-composeux-embedded-reactive.lts` appears in every message | an author shown one finding can fix the file without opening a spec |
+| DRI-C3 | The rule covers non-SPEC tags ([DRI-ROOT-BY-DOCTYPE]) | `::test_all_registered_tags_accepted` — `LEDGER`, `REGISTRY`, `PROFILE`, `SYSTEM`, `PROJECT` h1 forms are clean; an unregistered tag errors | — |
+| DRI-C4 | A bracketless h1 names the probable intended root | `::test_bare_line_named_as_hint_not_parsed` — assert the column-0 bracketed line appears in the message AND that no node was minted from it | — |
+| DRI-C5 | The five repairs mint their roots ([DRI-REPAIR]) | `::test_repaired_files_mint_roots` — after repair, each of the five declared ids resolves to a node with the expected `document_tag`, carries the document's own properties, and CONTAINS every deeper heading | in the console spec browser, opening one of the five lists its elements instead of an empty pane |
+| DRI-C6 | **Zero change to the 67 conforming files** ([DRI-NO-MIGRATION]) | `::test_conforming_files_unchanged` — full-corpus parse before/after; assert the node set, property maps and edge set for those 67 files are identical, and that exactly 5 roots plus their structural edges appeared | — |
+| DRI-C7 | No node id was renamed by the repair | `::test_no_id_renamed` — the corpus id set after repair is a strict superset of the id set before, with exactly 5 additions | — |
+| DRI-C8 | `elements` changes NO edge ([DRI-ELEMENTS-DECL]) | `tests/test_element_declaration.py::test_declaration_is_inert_on_graph` — parse a file with and without the declaration; assert the edge set and `parent_section` values are byte-identical | — |
+| DRI-C9 | Inflation normalization ([DRI-INFLATION-MATCH]) | `tests/test_inflation.py::test_normalization_table` — table-driven over the six rows of the worked table, positives AND negatives | — |
+| DRI-C10 | **Prose brackets are NOT scanned** ([DRI-INFLATION-SCOPE]) | `::test_prose_position_not_scanned` — a matching, unresolvable bracket in prose, in a table cell and in a property value each yield NO finding; plus a corpus run asserting the total is far below the 215 a whole-file scan would emit | David or the architect reads the full finding list and judges every entry actionable |
+| DRI-C11 | Inflation resolution is CORPUS-scoped ([DRI-INFLATION]) | `::test_cross_file_reference_is_not_inflation` — a bracket resolving to a node in another file yields no inflation finding | — |
+| DRI-C12 | Inflation catches the mis-punctuated live case | `::test_mispunctuated_id_flagged` — `[CXC-IH:5A]` under `elements: CXC-IH-*` in a structural position yields a finding naming both forms | the finding text names the raw form, the normalized form, and the declared prefix it matched |
+| DRI-C13 | The three converses ([DRI-CONVERSE]) | `::test_misfiled`, `::test_dead_declaration`, `::test_namespace_leak` — one finding each at the specified severity | — |
+| DRI-C14 | Leak check reports NOT RUN in single-file mode | `::test_leak_not_run_is_not_pass` — assert the result is distinguishable from a pass | — |
+| DRI-C15 | Bracketed key is FLAGGED and mints nothing ([DRI-BRACKET-KEY], [DD-DRI-BRACKET-KEY-VERDICT]) | `tests/test_bracket_key.py::test_bracket_key_is_flagged_and_mints_no_edge` — assert exactly one finding names the line, assert the edge count is UNCHANGED by the line, and assert the message contains both repair forms; the disjunction is gone because the verdict was ruled 2026-08-11 | an author shown the finding re-authors the line correctly without opening this spec |
+| DRI-C16 | The control exercises the LIVE shapes ([DRI-CONTROL-CASES]) | `tests/test_selfcheck_shape_coverage.py::test_control_contains_live_shapes` — assert the control file literally contains each shape in the [DRI-CONTROL-CASES] table, including the prose sub-case of the non-candidate row | a reviewer can answer "which live shapes does this control contain" by reading the control |
+
+- requirement: DRI-C1, DRI-C1B, DRI-C1C, DRI-C6 and DRI-C10 are the gates. DRI-C1 and DRI-C1B are the
+  positive controls with exact counts — 9 and 72 — and a rule that finds a different number has either
+  missed a known violator or invented one. **DRI-C1C is the gate that protects every other measurement in
+  this spec**: a build that passes it cannot have fitted the declaration to its own result, and a build
+  that fails it has produced a corpus of declarations under which the inflation check can never find
+  anything. A build failing DRI-C6 has broken 67 working documents to fix 5. A build failing DRI-C10 has
+  shipped a check that will be switched off.
+- part-of: [SPEC:LTS-DOC-ROOT]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:LTS-DOC-ROOT] DEPENDS_ON [SPEC:LTS-ENGINE-CONSOLIDATION]
+- [SPEC:LTS-DOC-ROOT] RELATED_TO [SPEC:CXC-EMBED-REACTIVE]
+- [DRI-MEASURED] DEPENDS_ON [DRI-THESIS]
+- [DRI-ROOT-REQUIRED] UPHOLDS [DRI-THESIS]
+- [DRI-ROOT-REQUIRED] DEPENDS_ON [DRI-MEASURED]
+- [DRI-ROOT-BY-DOCTYPE] DEPENDS_ON [DRI-ROOT-REQUIRED]
+- [DRI-ROOT-BY-DOCTYPE] DEPENDS_ON [DRI-ID-GRAMMAR]
+- [DRI-REPAIR] DEPENDS_ON [DRI-ROOT-REQUIRED]
+- [DRI-REPAIR] DEPENDS_ON [DRI-ROOT-BY-DOCTYPE]
+- [DRI-REPAIR] UPHOLDS [DRI-NO-MIGRATION]
+- [DRI-NO-MIGRATION] UPHOLDS [DRI-ROOT-REQUIRED]
+- [DRI-ELEMENTS-DECL] DEPENDS_ON [DRI-ROOT-REQUIRED]
+- [DRI-ELEMENTS-NARROW] DEPENDS_ON [DRI-ELEMENTS-DECL]
+- [DRI-ELEMENTS-INTENT] DEPENDS_ON [DRI-ELEMENTS-DECL]
+- [DRI-ELEMENTS-INTENT] UPHOLDS [DRI-CONTROL-SHAPE]
+- [DRI-ELEMENTS-NARROW] RELATED_TO [DRI-CONVERSE]
+- [DRI-INFLATION] DEPENDS_ON [DRI-ELEMENTS-DECL]
+- [DRI-INFLATION] DEPENDS_ON [DRI-ELEMENTS-INTENT]
+- [DRI-INFLATION-MATCH] DEPENDS_ON [DRI-INFLATION]
+- [DRI-INFLATION-MATCH] DEPENDS_ON [DRI-ID-GRAMMAR]
+- [DRI-INFLATION-SCOPE] DOCUMENTS [DRI-INFLATION]
+- [DRI-CONVERSE] DEPENDS_ON [DRI-ELEMENTS-DECL]
+- [DRI-BRACKET-KEY] RELATED_TO [DRI-MEASURED]
+- [DRI-CONTROL-SHAPE] RELATED_TO [DRI-MEASURED]
+- [DRI-CONTROL-CASES] DEPENDS_ON [DRI-CONTROL-SHAPE]
+- [DRI-CONTROL-CASES] DEPENDS_ON [DRI-BRACKET-KEY]
+- [DRI-CONTROL-CASES] DEPENDS_ON [DRI-INFLATION-SCOPE]
+- [DRI-ID-GRAMMAR] UPHOLDS [DRI-NO-MIGRATION]
+- [DRI-ELEMENTS-DECL] USES [DRI-ID-GRAMMAR]
+- [DRI-BOUNDARIES] DEPENDS_ON [DRI-ROOT-REQUIRED]
+- [DRI-BOUNDARIES] DEPENDS_ON [DRI-INFLATION]
+- [DRI-ACCEPT] DEPENDS_ON [DRI-BOUNDARIES]
+- [DD-DRI-BRACKET-KEY-VERDICT] DOCUMENTS [DRI-BRACKET-KEY]
+- [DRI-ELEMENTS-DECL] EXEMPLIFIES [DRI-THESIS]
+- [DRI-CONTROL-SHAPE] EXEMPLIFIES [DRI-THESIS]
+- [DRI-REPAIR] EXEMPLIFIES [DRI-THESIS]
+
+### Entity
+
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-THESIS]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-MEASURED]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-ROOT-REQUIRED]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-ROOT-BY-DOCTYPE]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-REPAIR]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-NO-MIGRATION]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-ELEMENTS-DECL]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-ELEMENTS-NARROW]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-ELEMENTS-INTENT]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-INFLATION]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-INFLATION-MATCH]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-INFLATION-SCOPE]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-CONVERSE]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-BRACKET-KEY]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-CONTROL-SHAPE]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-CONTROL-CASES]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-ID-GRAMMAR]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DD-DRI-BRACKET-KEY-VERDICT]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-BOUNDARIES]
+- [SPEC:LTS-DOC-ROOT] CONTAINS [DRI-ACCEPT]
+
+### Temporal
+
+- [DRI-ROOT-REQUIRED] BEFORE [DRI-REPAIR]
+- [DRI-REPAIR] BEFORE [DRI-ELEMENTS-DECL]
+- [DRI-ELEMENTS-DECL] BEFORE [DRI-ELEMENTS-NARROW]
+- [DRI-ELEMENTS-NARROW] BEFORE [DRI-INFLATION]
+- [DRI-ELEMENTS-DECL] BEFORE [DRI-INFLATION]
+- [DRI-INFLATION] BEFORE [DRI-CONVERSE]
+- [DRI-CONTROL-CASES] BEFORE [DRI-ACCEPT]
+
+### Causal
+
+- [DRI-MEASURED] CAUSES [DRI-REPAIR]
+- [DRI-ROOT-REQUIRED] PREVENTS [DRI-THESIS]
+- [DRI-REPAIR] ENABLES [DRI-ELEMENTS-DECL]
+- [DRI-ELEMENTS-DECL] PRECONDITION_FOR [DRI-INFLATION]
+- [DRI-ELEMENTS-DECL] PRECONDITION_FOR [DRI-CONVERSE]
+- [DRI-ELEMENTS-NARROW] ENABLES [DRI-CONVERSE]
+- [DRI-ELEMENTS-INTENT] PREVENTS [DRI-CONTROL-SHAPE]
+- [DRI-INFLATION-SCOPE] PREVENTS [DRI-INFLATION]
+- [DRI-ID-GRAMMAR] PREVENTS [DRI-INFLATION]
+- [DRI-CONTROL-SHAPE] CAUSES [DRI-CONTROL-CASES]
+- [DRI-MEASURED] CAUSES [DRI-BRACKET-KEY]
+
+---
+
+**Version**: 0.4
+**Created**: 2026-08-11
+**Status**: Draft — ALL DECISION POINTS CLOSED. Revised 2026-08-11 after David's THIRD ruling:
+**[DD-DRI-BRACKET-KEY-VERDICT] is CLOSED — FLAG, do not mint.** `- [ID]: description` produces a NAMED
+FINDING carrying its own repair (write `- [ID] **Title**` for a NODE, or a `## Relationships` triple for
+a TYPED edge) and mints NO edge. The edge TYPE is not in the syntax — it is in the section title — so
+minting means inventing a semantic the author never wrote, and an invented edge is a SUBSTITUTION, which
+this corpus has established is strictly worse than a LOSS: a missing edge is detectable by the very
+checks in this spec, a plausible wrong one is not (SL-18, where `zb.ds.GOVERNS` silently became
+`GOVERNS`; and the widened matcher that already fabricated an edge to `-55]`). The decisive evidence is
+CONSISTENCY: David ruled identically hours earlier the same day on the parenthetical qualifier drops
+(`- key (qualifier): value`, 28 live in specs 58 and 59 alone), for the same reason and with the same
+repair shape, and resolving two ambiguous-key situations in opposite directions would make the format
+incoherent with itself. The rejected branch — mint an explicitly UNTYPED edge, which would have
+recovered [CXC-IH-EDGES]' three real lost edges and generalised — is KEPT at full strength in the node
+with its `invalidating_assumption`: the objection is to inventing the untyped-edge STATE here as a
+parser convenience, not to the state existing, so a first-class ratified untyped edge reopens this on its
+merits. Revised 2026-08-11 after David's second ruling: **`elements` is a
+HARD REQUIREMENT in frontmatter on every document**, not an optional declaration — as an opt-in the
+inflation check fires zero times until somebody volunteers, and a rule that reports zero looks exactly
+like a rule that works ([DRI-ELEMENTS-DECL]). Two clauses make the mechanism non-decorative and both are
+in the spec text: the pattern must be the NARROWEST that covers, and a pattern shared across documents is
+itself a finding ([DRI-ELEMENTS-NARROW], measured — `CXC-*` covers 100% of spec 29 and is worthless;
+`CXC-ER-*` is the useful declaration; 67 of 71 files are coverable by at most three patterns, and the
+four that are not must be named); and the declaration expresses AUTHORED INTENT, never current output
+([DRI-ELEMENTS-INTENT]) — a declaration derived from a file's minted nodes is a control fitted to its own
+result, would let every existing file pass by construction, and is the same failure D3 documents one
+layer down. Baseline for the new key: **0 of 72 files declare `elements` today, including the exemplar**,
+so the first run reports 72. Also revised 2026-08-11 after David's first ruling: the parser is NOT taught
+a bare-line document root; the five non-conformant files are REPAIRED to the exemplar
+(`29-composeux-embedded-reactive.lts`) and the document root form becomes a REQUIRED, LINTED contract.
+The rejection is recorded with its evidence and its `invalidating_assumption` at [DRI-REPAIR], not
+silently deleted. Two decision points DISSOLVED with R1 (`DD-DRI-ROOT-TITLE`, `DD-DRI-UNTAGGED-ROOT` —
+with the id in the h1 there is one title rule and one existing form; the untagged-id question survives as
+the note at [DRI-ROOT-BY-DOCTYPE]). One decision point was SETTLED by census and is now a plain node:
+[DRI-INFLATION-SCOPE], structural-positions-only, decided by 215 measured false positives a whole-file
+scan would emit. NO decision point remains open. What still gates dispatch is not a fork but a normal
+ratify of the whole document, plus the register number: the silent-loss class named at [DRI-BRACKET-KEY]
+takes its number
+at merge time from `docs/improvement_suggestions/coordination/silent-loss-classes.md` (highest assigned
+at v5: SL-18); this document deliberately reserves none. Node ids are NOT migrated and MUST NOT be
+([DRI-ID-GRAMMAR]).
+**Intelligence**: composed by `factlattice-editor` from the composeux-architect's narrative brief and
+revised against David's 2026-08-11 ruling; grounded against `factlattice/parser.py`,
+`factlattice/coverage.py`, `factlattice/selfcheck/control.lts`, the `.lts` domain profile
+`corpora/intelligence-console/platform-composeio-profile.lts`, the exemplar
+`29-composeux-embedded-reactive.lts`, the five non-conformant documents, and the silent-loss register.

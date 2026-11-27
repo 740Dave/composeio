@@ -1,0 +1,303 @@
+---
+scope: "The ratified-in-conversation decision to CONSOLIDATE bus_storage and document_store into ONE store with a SINGLE face, bus://. Both services turned out — per the architect's finding from the evidence — to be the same primitive (HTTP-fronted local store, collections + blobs + a path-containment guard); David's own words were the softer, comparative 'far more similar than initially expected' (transcript L30807). This document records the decision, the evidence that drove it, the capability-by-capability disposition of what document_store bundled, the consumer repoint surface, the kill list, and the supersession/amendment edges into the existing decision graph. It is architect-synthesis from the design conversation, not a code-conversion pass — there is no 'sources say' claim here to reconcile, only a decision to build against."
+audience: "The architect performing the independent design-audit this document is explicitly gated on before it lands; then, once landed, the builder implementing the consolidation and factlattice-gap-analyzer ruling the eventual CODE current/behind/ahead of it."
+boundary: "IN: the consolidation decision itself, its evidence, the three-way disposition of doc://'s bundled capabilities (get/list/query), the consumer repoint surface, the kill list, the two typed supersession/amendment edges into the decision graph, and the pre-integration/post-integration evidence slots this decision still owes. OUT: the actual migration execution (the live-traffic census, the consumer code changes, the cutover itself) — those are EMPTY evidence slots here, not claims; a verified security model for the unified store's access control; and any re-litigation of [SPEC:CXC-BUSSTORE] or [CXC-DOCSTORE]'s own content, which this document depends on and extends rather than restates."
+not-this: "NOT an outstanding design-audit — the independent design-audit this document was gated on (a three-agent design-diamond: gap-analyzer + first-bringup + qa) has RUN and PASSED with zero MUST violations; the verdict lives on this document's own `lifecycle-position` and on [DEC-STORAGE-CONSOLIDATE-ONE-FACE]'s, both now `committed`. This document is placed in the corpus on the audit's own verdict, not by its author's self-certification — the guard that held it back is satisfied, not bypassed. NOT a security review of the unified store. NOT a claim that any consumer has been repointed — [CXC-STORE-CONSUMER-SEAMS], [CXC-STORE-CONSUMER-SEAMS-YAML] and [CXC-STORE-CONSUMERS] name a surface to migrate, they do not report a migration. NOT further re-litigation of [DD-STORE-QUERY-DISPOSITION] — David ratified the query-drop (DSD D1 = A, 2026-09-03); the node is DECIDED, not an open lean. NOT a record of the document_store HTTP-face discrepancy the architect verified pre-audit — David ruled it omitted as moot given the kill (DSD D3 = B); the reasoning lives on [DEC-STORAGE-CONSOLIDATE-ONE-FACE]'s `http-face-discrepancy-omitted` property, not as its own node."
+depends-on: [73-bus-storage.lts, 82-document-store-containment.lts, 86-composebus-request-response.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+lifecycle-position: committed — diamond-verified (gap-analyzer + first-bringup + qa, zero MUST violations), landed on origin/main
+created: 2026-09-02
+---
+
+# bus_storage and document_store consolidate into ONE store, ONE face [SPEC:CXC-STORE]
+
+> **PLACEMENT RATIFIED, AUDIT PASSED, LANDED.** This document captured a design decision reached
+> in conversation and was held for an INDEPENDENT design-audit before landing — the same
+> self-certification guard [CXC-BUSSTORE-CONVERSION-STATUS] applies to a code-conversion pass
+> applies here to a decision-conversion pass: the author of a decision does not get to be its
+> only reviewer. That audit — a three-agent design-diamond (gap-analyzer + first-bringup + qa) —
+> RAN and PASSED with ZERO MUST violations; its findings are applied throughout this document
+> (v0.3, below). Placement is now RATIFIED into `corpora/platform-specs/`
+> ([CXC-STORE-PLACEMENT]) — 92 was the first free numeric prefix, chosen by listing, not
+> counting. The code implementing this decision has LANDED on origin/main.
+>
+> `lifecycle-position` says the same thing a query can read: **`committed — diamond-verified
+> (gap-analyzer + first-bringup + qa, zero MUST violations), landed on origin/main`**.
+
+---
+
+## 0. The decision, its provenance, and placement
+
+### [DEC-STORAGE-CONSOLIDATE-ONE-FACE] bus_storage SURVIVES, document_store is KILLED, the store exposes ONE face — bus://
+
+- decision: bus_storage and document_store are collapsed into ONE store. bus_storage SURVIVES as the store; document_store is KILLED — its service, its ComposeServer plugin, its SQLite doc DB and its second containment guard are all removed. The store exposes a SINGLE face, `bus://` (path-addressed bytes/blobs). The `doc://` scheme and its server-side query engine are RETIRED (see `doc-scheme-retirement-scope` — "retired" is qualified, not unqualified gone).
+- doc-scheme-retirement-scope: "RETIRED" means the WIRE face is ONE — `bus://` — and no `doc://` reaches any `:8421` path, because document_store is killed; the one-face MUST is MET. `doc://` SURVIVES as a client-side read-time compat alias: `python/composeio/resolve.py`'s `resolve_doc` (via its `_doc_to_bus` translator) and `render/engine/assets.py` translate a `doc://<collection>/<id>` string to `bus://<collection>/<id>.json` at resolve time, because stored documents may still carry `doc://` cross-references. This alias does NOT rewrite in-doc cross-references — `tools/migrate_document_store_to_bus.py` copies each migrated JSON document's `data` verbatim (re-serialized, not field-rewritten) — so a `doc://` string embedded inside a document (e.g. an app doc's `surface` field) is PERMANENT until an OPTIONAL cutover cross-reference-rewrite pass runs; see [CXC-STORE-CUTOVER-XREF-REWRITE]. Diamond finding: gap-analyzer P1 + qa note 3, 2026-09-02.
+- why-one-face-not-two: David's stated reason, in his own plain terms rather than technical framing — a "not dual-interface" preference: "we'd be keeping bus://" (transcript L30858).
+- why-one-face-not-two-architect-framing: the architect's added technical justification for the same conclusion, not David's words — a dual `bus://` + `doc://` interface is a narrow-waist violation, two faces over one primitive being exactly the N×M fan-out [DX-NARROW-WAIST] exists to prevent, when N+M (one face, capabilities that need it extended to meet it) was available.
+- why-bus_storage-survives: named directly in [CXC-STORE-EVIDENCE-SCALE] — it is the live, load-bearing store; document_store's catalog is thin by comparison and its distinguishing capability (server-side query) is disposed of separately in [DD-STORE-QUERY-DISPOSITION] rather than carried forward as a reason to keep it as the survivor.
+- http-face-discrepancy-omitted: moot because we're deprecating document_store; revisit ONLY if the deprecation is reversed (David 2026-09-03).
+- provenance: david-ruling, transcript L30807 ("kill doc_storage altogether") and L30858 ("we'd be keeping bus://").
+- dsd-source: docs/architecture/DSD-storage-consolidation.md
+- lifecycle-position: committed — diamond-verified (gap-analyzer + first-bringup + qa, zero MUST violations), landed on origin/main.
+- supersedes: [DEC-DOCSTORE-BUS-QUERY-FACE]
+- see-also: [DX-NARROW-WAIST]
+- see-also: [DX-COLLAPSE-TRANSPORT]
+- see-also: [SPEC:CXC-BUSSTORE]
+- see-also: [CXC-DOCSTORE]
+- see-also: [CXC-BUS-QUERY]
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-PLACEMENT] Placement is RATIFIED — the spec stays in platform-specs/, and 92 was chosen by listing rather than by counting
+
+- placement-status: RATIFIED (architect's call, 2026-09-02, following the design-diamond's PASS). The spec stays filed in `corpora/platform-specs/`. Rationale: this document is a SPEC carrying evidence slots, a consumer census, and pre-/post-integration questions — not merely a decision node, so it does not belong filed with the decision graph alone; its dependencies (`73-bus-storage.lts`, `82-document-store-containment.lts`, `86-composebus-request-response.lts`) all live in `platform-specs/`; and spec 73, [SPEC:CXC-BUSSTORE], already set the precedent of a service spec filed there ([CXC-BUSSTORE-PLACEMENT]).
+- number-chosen: 92. The directory was listed; 00-91 and 99 are taken, 92 is the first free prefix.
+- ratification-resolved: whether this decision belongs filed alongside service specs at all, or whether it should live with the decision graph it supersedes/amends instead — RESOLVED above, by the architect, as part of the design-audit this document was gated on: `platform-specs/`, for the reasons in `placement-status`.
+- see-also: [CXC-VISION-PLACEMENT]
+- part-of: [SPEC:CXC-STORE]
+
+---
+
+## 1. The evidence
+
+### [CXC-STORE-EVIDENCE-FORK] The path-containment guard is a 3-way fork, already drifted
+
+- observation: the identical containment invariant — a request-supplied path segment resolving strictly inside its storage root, or 403/400 — is implemented THREE separate times: `services/bus_storage/server.py`, `services/document_store/server.py`, and `plugins/document_store.py`. [CXC-DOCSTORE-CONTAINMENT]'s own `not-shared-with-bus_storage` property already records the document_store copy as deliberate, not accidental — a second implementation, hand-kept in sync.
+- consequence: consolidation de-forks this permanently — ONE store means ONE containment guard, not three implementations of the same rule that can (and, per [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS], will) drift.
+- see-also: [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS]
+- see-also: [CXC-BUSSTORE-CONTAINMENT]
+- see-also: [CXC-DOCSTORE-CONTAINMENT]
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-EVIDENCE-COLOCATION] The two services already share one data root
+
+- observation: on NODERED_HOST, document_store's `docstore.db` plus its `blobs/` directory already live INSIDE bus_storage's `/var/lib/composeio` directory, alongside `assets/`. They are two HTTP faces over one co-located filesystem tree today, not two independently-deployed stores that happen to resemble each other.
+- consequence: the data move at cutover is near-nil — see [CXC-STORE-DATA-ABSORPTION] for the caveat that "near-nil" still requires a fresh verified copy, not a trust-the-existing-tree assumption.
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-EVIDENCE-SCALE] bus_storage is the live, load-bearing store; document_store is a thin catalog
+
+- bus_storage-scale: 1.5 GB across 89 files — device scene `.compose.yaml` files fetched over `bus://assets/displays/*` and booted by devices, plus fonts, icons and CIC screen art. This is the natural survivor: it is what devices actually depend on to boot.
+- document_store-scale: 46 docs across 10 collections, 26 blobs — apps, surfaces, board_profiles, components, bsg_planets, recipes, fleet_devices. A catalog, not a load-bearing fleet dependency.
+- part-of: [SPEC:CXC-STORE]
+
+---
+
+## 2. What `doc://` bundled, and where each part goes
+
+### [CXC-STORE-CAP-GET] get-by-id becomes a bus:// blob at a path — no loss
+
+- disposition: `doc://c/id` becomes `bus://c/id.json` — a JSON blob at a path. No capability lost; this is a pure re-addressing.
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-CAP-LIST] list-a-collection becomes a bus:// prefix-list — realized via a new /api/v1/blob route reusing the existing listing helper
+
+- disposition: `doc://` listing a collection becomes a `bus://` prefix-list — `bus://apps/` returning ids. This is realized by a new `/api/v1/blob` route family in `services/bus_storage/server.py`, rooted at `BLOB_ROOT = DATA_DIR`, whose prefix-LIST endpoint is built on the shared `_list_one_level()` helper — the SAME helper that backs asset listing (`ASSETS_DIR`), extracted from the asset-listing handler so the two listing shapes cannot drift.
+- citation-correction: CORRECTED (diamond gap-analyzer P2, 2026-09-02). This node previously named `list_namespace_ids()` as the realization of the `bus://` prefix-list. That was FACTUALLY WRONG: `list_namespace_ids()` lists the compiled CONFIG namespace registry (`config_dir/*.bin`), an unrelated surface — not doc blobs. No code changed by this correction; it is a spec-text fix only.
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-CAP-QUERY] where-clause query — the one capability bus:// lacks, usage is thin
+
+- what-bus-lacks: server-side `where`-clause filtering (`query_docs(collection, where=...)`). This is the ONE capability `bus://` does not already have a shape for.
+- usage-is-thin: ONE real caller — the `DocPicker` widget — over a 46-doc store whose largest collection holds 5 docs.
+- see-also: [DD-STORE-QUERY-DISPOSITION]
+- part-of: [SPEC:CXC-STORE]
+
+### [DD-STORE-QUERY-DISPOSITION] Drop the server-side query engine — DECIDED, ratified by David
+
+- decision: DROP the server-side query engine and the second SQLite doc DB. `DocPicker` filters CLIENT-SIDE instead — list + get + filter, trivial at 46 docs / 5-doc largest collection, and more decentralization-aligned: the leaf owns its own filtering rather than a coordinator owning it on the leaf's behalf. [CXC-BUS-QUERY] (the platform's existing bus-native query responder) is the escape hatch IF server-side query is ever needed at scale.
+- lifecycle-position: decided
+- status: decided
+- resolution: ratified by David — DSD D1 = A ("Ratify the query-drop now"), 2026-09-03. See `dsd-source`.
+- dsd-source: docs/architecture/DSD-storage-consolidation.md
+- rationale: usage of the dropped capability is thin — ONE real caller ([CXC-STORE-CAP-QUERY]'s `DocPicker`) over a 46-doc store whose largest collection holds 5 docs — so a server-side query engine is disproportionate machinery to carry forward into the unified store, and dropping it removes a second SQLite doc DB the consolidation would otherwise have to keep alive for one thin caller.
+- honest-residual: server-side field-filtering goes away. This is named plainly rather than absorbed silently — a real capability is being dropped, not merely relocated.
+- default-order: client-side `query_docs` (`python/composeio/resolve.py`) has NO default temporal order — callers must pass `order_by` if order matters. The retired server engine defaulted to `ORDER BY updated_at DESC`; `updated_at` was server-row metadata, never preserved in the JSON-blob store, so newest-first is not even reconstructable client-side from the blob alone. [CXC-STORE-EV-04] (DocPicker equivalence) HOLDS regardless — `DocPicker` always passes `order_by`; the only caller that omits it, admin's `compact_query`, uses the returned order for a displayed string only, not for selection — benign. Diamond finding: qa note 1, 2026-09-02.
+- alternatives: keep the server-side query engine and carry it into the unified store as a genuine second query surface — rejected because usage is thin enough (one caller, 46 docs) that the machinery does not pay for itself; OR build the [CXC-BUS-QUERY] responder now instead of on-demand later — rejected in favor of building it on-demand, see `invalidating-assumption`.
+- invalidating_assumption: every collection stays small enough that a leaf-side filter in `DocPicker` is cheap. If any collection grows large enough that client-side filtering hurts, the answer is the platform's EXISTING bus-native query mechanism, [CXC-BUS-QUERY] (a query responder OVER the store) — NOT a second storage interface. That growth is the condition that reopens this decision.
+- flagged-for-ratify: no — ratified 2026-09-03. See `resolution` and `dsd-source`.
+- see-also: [CXC-STORE-CAP-QUERY]
+- see-also: [CXC-BUS-QUERY]
+- part-of: [SPEC:CXC-STORE]
+
+---
+
+## 3. The consumer repoint
+
+### [CXC-STORE-CONSUMER-SEAMS] The two client seams that must repoint doc:// / :8421 to bus://
+
+- seam-resolve: `python/composeio/resolve.py` — `resolve_doc`, `query_docs`, `put_doc`.
+- seam-docstore-client: `python/composeio/docstore.py` — `DocumentStoreClient`.
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-CONSUMER-SEAMS-YAML] The YAML/config repoint surface — not just the two Python seams
+
+- consumer-docstore-viewer: `apps/compose_platform_launch_bar/docstore_viewer.compose.yaml` — the Document-Storage viewer app.
+- consumer-launch-bar-tile: `apps/compose_platform_launch_bar/launch_bar.compose.yaml` tile 5, the "Document Storage" launcher tile, which routes to `_app/docstore/open`.
+- consumer-shell-launcher: `apps/composeux-shell/launcher.compose.yaml` — `doc://surfaces/launcher`.
+- consumer-minnow-turbot-restore: `compose_projects/minnow-bringup/*.compose.yaml` and `turbot-bringup.compose.yaml` — restore pick-lists that are themselves document_store queries.
+- consumer-deploy-compose: `services/document_store/deploy/docker-compose.yml` — not repointed, dies with the service.
+- dsd-source: docs/architecture/DSD-storage-consolidation.md
+- see-also: [CXC-STORE-CONSUMER-SEAMS]
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-CONSUMERS] The ~5 consumers that move doc:// / :8421 to bus:// / the unified store
+
+- consumer-shell: `apps/composeux-shell/shell.py` — the launcher.
+- consumer-admin: `admin/admin_app.py`.
+- consumer-bsg: the BSG engine, `compose_projects/bsg/engine/`.
+- consumer-widgets: `python/composeio/render/widgets/store_browser.py` and `doc_picker.py` — `doc_picker.py` is also where [DD-STORE-QUERY-DISPOSITION]'s client-side filter lands.
+- consumer-pixel-comparison: `python/scripts/pixel_comparison.py`.
+- part-of: [SPEC:CXC-STORE]
+
+---
+
+## 4. The kill
+
+### [CXC-STORE-KILL] document_store service, its ComposeServer plugin, the SQLite doc DB, and the second containment guard are removed
+
+- removed-service: the standalone `document_store` HTTP service.
+- removed-plugin: document_store's ComposeServer plugin.
+- removed-database: the second SQLite doc DB.
+- removed-guard: the second (`plugins/document_store.py` / `services/document_store/server.py`) path-containment guard implementation — see [CXC-STORE-EVIDENCE-FORK].
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-DATA-ABSORPTION] The catalog's 46 docs and 26 blobs are absorbed as bus:// path-addressed blobs
+
+- absorption: document_store's 46 docs and 26 blobs are absorbed as `bus://` path-addressed blobs.
+- byte-identity-precision: CORRECTED (diamond qa note 4, 2026-09-02) — the migration (`tools/migrate_document_store_to_bus.py`) is BINARY byte-identical for the 26 binary blobs (`blob.read_bytes()` copied straight through `put_bytes`, no re-encoding) and JSON SEMANTICALLY-identical, NOT byte-identical, for the 46 JSON docs — each is re-serialized (`json.dumps(json.loads(row["data"]))`) rather than copied as raw bytes. This is safe because every consumer `json.loads`s the blob straight back to a dict; no consumer depends on JSON byte layout (key order, whitespace). Corrects any prior unqualified "byte-identical" claim about the JSON half of the migration.
+- near-nil-caveat: because the two services already share one data root ([CXC-STORE-EVIDENCE-COLOCATION]), the data MOVE is near-nil — but "near-nil" is not "none": do a FRESH verified copy at cutover rather than trusting the existing tree, per the stale-snapshot caveat already recorded against this same data by [DEC-(a private host name, not published)-HOST-STORAGE-AS-PLUGINS-DAY-ONE-2026-09-02] — its own rationale property notes (a private host name, not published)'s document_store counts may "coincidentally match" a stale WAL snapshot rather than reflect a genuinely current copy.
+- see-also: [DEC-(a private host name, not published)-HOST-STORAGE-AS-PLUGINS-DAY-ONE-2026-09-02]
+- part-of: [SPEC:CXC-STORE]
+
+---
+
+## 5. Supersessions and amendments into the decision graph
+
+### [CXC-STORE-SUPERSESSION-NOTE] What this decision supersedes and amends, and why
+
+- supersedes-docstore-bus-query-face: [DEC-DOCSTORE-BUS-QUERY-FACE] decided document_store gets a bus query face, additive to its HTTP API. That decision is MOOT once document_store is killed — there is no HTTP API left for a bus face to be additive TO, and the request/response idiom it established ([CXC-BUS-QUERY-IDIOM]) survives independently as platform vocabulary, per [CXC-BUS-QUERY]'s own framing as "the platform's FIRST request/response idiom... other query services will copy." The idiom is not retired; the decision to build it specifically for document_store's HTTP-additive face is.
+- amends-private-host-plugin-topology: [DEC-(a private host name, not published)-HOST-STORAGE-AS-PLUGINS-DAY-ONE-2026-09-02] decided ComposeServer on COMPOSEIO_MQTT_BROKER hosts bus_storage / document_store / fingerprint_template_store (+ time) as per-tenant plugins. This decision AMENDS that topology: document_store is no longer hosted-as-a-plugin — it is killed. Only bus_storage, fingerprint_template_store, and time remain plugins under that decision's topology.
+- moots-the-plugin-http-face-question: the document_store-plugin HTTP-face question (additive-vs-bus-native) that [DEC-(a private host name, not published)-HOST-STORAGE-AS-PLUGINS-DAY-ONE-2026-09-02] left open is thereby MOOT — there is no document_store plugin left to carry an HTTP face.
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-DOCSTORE-PLUGIN-QUESTION-MOOT] The document_store-plugin HTTP-face question is moot
+
+- moot-because: [DEC-(a private host name, not published)-HOST-STORAGE-AS-PLUGINS-DAY-ONE-2026-09-02] left open whether a hosted document_store plugin's HTTP face should be additive-vs-bus-native. With document_store killed under [DEC-STORAGE-CONSOLIDATE-ONE-FACE], there is no document_store plugin left to carry that question — it is moot, not answered.
+- part-of: [SPEC:CXC-STORE]
+
+---
+
+## 6. Pre-integration questions — for the design-audit and for cutover
+
+### [CXC-STORE-PRE-CENSUS] Has a live-traffic census on :8421 confirmed no external consumer before the kill?
+
+- question: EMPTY. A live-traffic census on `:8421`, using the logging-tarpit approach already adopted for the (a private host name, not published) migration ([DEC-(a private host name, not published)-ADOPT-LOGGING-TARPIT] — 410 Gone + log every request), has not yet been run against document_store's port. This must catch any consumer outside [CXC-STORE-CONSUMER-SEAMS] / [CXC-STORE-CONSUMERS] before the kill proceeds.
+- see-also: [DEC-(a private host name, not published)-ADOPT-LOGGING-TARPIT]
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-PRE-SECRETS] Does the unified store's access model account for secrets already living in assets? — QA finding recorded, flagged for David at cutover
+
+- question: RECORDED (diamond qa note 2, 2026-09-02) — no longer EMPTY, but NOT resolved: this is a DAVID-decision item for the cutover access model, not a land-blocker. The new `/api/v1/blob/<path>` route is rooted at `BLOB_ROOT = DATA_DIR` — the WHOLE data directory — reached through the SAME single `_resolve_contained` containment guard as every other route. That WIDENS the pre-existing unauthenticated surface this node and [CXC-BUSSTORE-PRE-AUTH] already park: the blob route can GET/PUT/DELETE anywhere under `DATA_DIR`, including `configs/`, `assets/` (and so `assets/fleet/private/*.creds`), and `namespace_registry.json` — not only the 10 real doc collections. Separately, `PUT /api/v1/blob/configs/<id>.bin` writes a device config while BYPASSING the dedicated config route's `.meta.json` checksum-metadata sidecar — `_handle_config_put`'s `X-ComposeIO-Metadata` header handling has no equivalent in `_handle_blob_put`.
+- not-a-land-blocker-because: no spec clause forbids rooting the blob route at DATA_DIR, and the 10 real collection names (apps, surfaces, board_profiles, components, bsg_planets, recipes, fleet_devices, …) do not collide with `configs/` / `assets/` / `workloads/`, so nothing breaks today. Containment itself holds — `_resolve_contained` still refuses traversal. This is an ACCESS-MODEL question for cutover, not a containment defect.
+- flagged-for: David, at the cutover access-model decision — whether the blob route should refuse `configs/` and `assets/fleet/private/` (or require auth) before the store carries live secrets at scale.
+- see-also: [CXC-BUSSTORE-PRE-AUTH]
+- part-of: [SPEC:CXC-STORE]
+
+---
+
+## 7. Post-integration evidence slots — EMPTY until something real fills them
+
+### [CXC-STORE-EV-01] Every consumer in [CXC-STORE-CONSUMER-SEAMS], [CXC-STORE-CONSUMER-SEAMS-YAML] and [CXC-STORE-CONSUMERS] repoints and round-trips against the unified store
+
+- evidence: EMPTY.
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-EV-02] The fresh verified copy at cutover matches document_store's live count, not a stale snapshot's
+
+- evidence: EMPTY. Falsifiable against [CXC-STORE-DATA-ABSORPTION]'s near-nil-caveat: 46 docs / 10 collections / 26 blobs, verified against the LIVE writer, not a count that merely happens to match. Verification standard per `byte-identity-precision`: BINARY byte-identical for the blobs, JSON SEMANTICALLY-identical for the docs — do not require byte-identity of the re-serialized JSON.
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-CUTOVER-XREF-REWRITE] Optional cutover step — rewrite in-doc doc:// cross-references to bus://
+
+- status: OPTIONAL, not required to satisfy the one-face MUST — the wire already carries one face regardless (see [DEC-STORAGE-CONSOLIDATE-ONE-FACE]'s `doc-scheme-retirement-scope`).
+- what: a pass over migrated documents that rewrites embedded `doc://<collection>/<id>` cross-reference strings (e.g. an app doc's `surface` field) to `bus://<collection>/<id>.json`, so the compat alias in `resolve.py` / `assets.py` stops being load-bearing at read time.
+- why-optional: `resolve_doc` / `_doc_to_bus` already translate `doc://` at read time and will keep doing so correctly and permanently; this step only retires the alias's necessity, it does not fix a defect.
+- when: EV-02-adjacent — natural to run alongside the fresh verified copy at cutover ([CXC-STORE-EV-02]), since both touch the migrated document set, but it is a SEPARATE, optional pass, not a precondition of EV-02.
+- see-also: [CXC-STORE-EV-02]
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-EV-03] The :8421 census in [CXC-STORE-PRE-CENSUS] ran and found no consumer outside the named migration surface
+
+- evidence: EMPTY.
+- part-of: [SPEC:CXC-STORE]
+
+### [CXC-STORE-EV-04] DocPicker's client-side filter is functionally equivalent to the dropped server-side query, at current scale
+
+- evidence: EMPTY. Falsifiable against [DD-STORE-QUERY-DISPOSITION]: the same `where`-shaped queries `DocPicker` issues today must return the same results filtered client-side, over the same 46-doc / 5-doc-largest-collection store.
+- part-of: [SPEC:CXC-STORE]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [DEC-STORAGE-CONSOLIDATE-ONE-FACE] SUPERSEDES [DEC-DOCSTORE-BUS-QUERY-FACE]
+- [DEC-STORAGE-CONSOLIDATE-ONE-FACE] REALIZES [DX-NARROW-WAIST]
+- [DEC-STORAGE-CONSOLIDATE-ONE-FACE] REALIZES [DX-COLLAPSE-TRANSPORT]
+- [CXC-STORE-EVIDENCE-FORK] EXEMPLIFIES [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS]
+- [CXC-STORE-KILL] SUPERSEDES [CXC-DOCSTORE-CONTAINMENT]
+- [CXC-STORE-DOCSTORE-PLUGIN-QUESTION-MOOT] DOCUMENTS [DEC-STORAGE-CONSOLIDATE-ONE-FACE]
+- [DD-STORE-QUERY-DISPOSITION] RELATED_TO [CXC-BUS-QUERY-DOCSTORE]
+- [CXC-STORE-CAP-GET] PART_OF [CXC-STORE-SUPERSESSION-NOTE]
+- [CXC-STORE-PLACEMENT] RELATED_TO [CXC-VISION-PLACEMENT]
+- [CXC-STORE-CONSUMER-SEAMS-YAML] RELATED_TO [CXC-STORE-CONSUMER-SEAMS]
+- [CXC-STORE-CUTOVER-XREF-REWRITE] RELATED_TO [CXC-STORE-EV-02]
+
+### Causal
+
+- [CXC-STORE-EVIDENCE-SCALE] PRECONDITION_FOR [DEC-STORAGE-CONSOLIDATE-ONE-FACE]
+- [CXC-STORE-EVIDENCE-COLOCATION] PRECONDITION_FOR [CXC-STORE-DATA-ABSORPTION]
+- [CXC-STORE-PRE-CENSUS] PRECONDITION_FOR [CXC-STORE-KILL]
+- [CXC-STORE-PRE-CENSUS] PRECONDITION_FOR [CXC-STORE-EV-03]
+- [CXC-STORE-EVIDENCE-FORK] CAUSES [DEC-STORAGE-CONSOLIDATE-ONE-FACE]
+- [DD-STORE-QUERY-DISPOSITION] PRECONDITION_FOR [CXC-STORE-EV-04]
+
+### Entity
+
+- [CXC-STORE-EV-01] GROUNDS [CXC-STORE-CONSUMER-SEAMS]
+- [CXC-STORE-EV-01] GROUNDS [CXC-STORE-CONSUMER-SEAMS-YAML]
+- [CXC-STORE-EV-02] GROUNDS [CXC-STORE-DATA-ABSORPTION]
+- [CXC-STORE-EV-03] GROUNDS [CXC-STORE-PRE-CENSUS]
+- [CXC-STORE-EV-04] GROUNDS [DD-STORE-QUERY-DISPOSITION]
+
+---
+
+**Version**: 0.3 — 2026-09-02, diamond-resolution amendments applied by factlattice-editor after
+the three-agent design-diamond (gap-analyzer + first-bringup + qa) ran and PASSED with ZERO MUST
+violations: [CXC-STORE-CAP-LIST]'s disposition corrected — the `bus://` prefix-list is realized by
+the new `/api/v1/blob` route family (`BLOB_ROOT = DATA_DIR`) reusing the existing
+`_list_one_level()` helper, NOT by generalizing `list_namespace_ids()` (gap-analyzer P2); `doc://`'s
+"RETIRED" framing on [DEC-STORAGE-CONSOLIDATE-ONE-FACE] qualified via its new
+`doc-scheme-retirement-scope` property — no `doc://` reaches the wire, but it survives as a
+permanent client-side read-time compat alias, with the optional cutover cross-reference-rewrite
+pass named at [CXC-STORE-CUTOVER-XREF-REWRITE] (gap-analyzer P1 + qa note 3); `query_docs`'s lack
+of a default temporal order recorded on [DD-STORE-QUERY-DISPOSITION] via `default-order`, with
+[CXC-STORE-EV-04]'s equivalence holding regardless (qa note 1); the migration's byte-identity
+precision corrected on [CXC-STORE-DATA-ABSORPTION] and [CXC-STORE-EV-02] — BINARY byte-identical
+for blobs, JSON SEMANTICALLY-identical for docs (qa note 4); [CXC-STORE-PRE-SECRETS] filled with
+the qa access-model finding — the `/api/v1/blob` route's DATA_DIR-wide reach and the
+config-checksum-sidecar bypass — flagged for David's cutover decision, not a land-blocker (qa note
+2); [CXC-STORE-PLACEMENT] RATIFIED — the spec stays in `platform-specs/`; and the document's
+lifecycle advanced to `committed` — the code has LANDED on origin/main this session.
+**Status**: Ratified — placement RATIFIED, diamond-verified, landed. [DD-STORE-QUERY-DISPOSITION]
+remains DECIDED (ratified by David, DSD D1, 2026-09-03) — the server-side query engine is dropped,
+`DocPicker` filters client-side, and [CXC-BUS-QUERY] remains the named escape hatch if scale ever
+forces the question back open (see the node's `invalidating_assumption`).
+[CXC-STORE-PRE-CENSUS] stays EMPTY — the live-traffic census is a live cutover-time step, not
+resolved by a design-audit. [CXC-STORE-PRE-SECRETS] is no longer EMPTY (see the diamond's qa note
+2, applied above) but remains a DAVID-decision item, not a land-blocker. The four post-integration
+evidence slots (section 7) remain EMPTY by design — they are the live-cutover worklist, not
+something a design-audit fills.

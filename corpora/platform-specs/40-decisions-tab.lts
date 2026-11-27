@@ -1,0 +1,48 @@
+---
+scope: "The console Decisions tab — view decisions by project. A two-pane surface (the project roster LEFT, the selected project's decision visualization RIGHT) whose picture is bounded by a QUERY over the decision graph rather than a whole-graph render, and whose value is the legibility of each edge TYPE, with SUPERSEDES first-class. Now GENERALIZED into the corpus-agnostic Graph Viewer widget."
+audience: "the ComposeUX architect; the builder implementing the console Decisions / Graph-Viewer surface; David, who owns the open viz-metaphor call"
+boundary: "IN: the two-pane layout, the query-is-the-frame rule, the edge-semantic legibility rules, the open viz-metaphor question, and the generalization note that carries this widget forward. OUT: the final viz metaphor, which is an OPEN QUESTION to resolve before build; and the corpus-agnostic widget's own design — the style/projection profile, the pulled data path and the retired emitter — which lives in [SPEC:CXC-GRAPH-VIEWER]."
+not-this: "Not the final answer on the visualization metaphor — this draft records ONLY the Architect's lean (query-driven + edge-semantic, supersedes-first-class). Not a full-graph force-directed render, which is explicitly ruled out. Not a per-corpus fork: the shared layout/render engine is parameterized, never forked."
+elements: CXC-DT-*
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: concept-capture
+---
+# Decisions Tab — Visualization Spec (initial draft) [SPEC:CXC-DECISIONS-TAB]
+
+- status: draft
+- status-note: the Architect's proposed approach; the viz metaphor is an OPEN QUESTION (David has no preconceived opinion)
+- pinned-to: [DEC-DECISIONS-TAB]
+- source: MAGMA-lite (740Dave/factlattice) queried per project (decisions + typed edges + lifecycle)
+
+> The console Decisions tab — view decisions by project.
+
+---
+
+### [CXC-DT-LAYOUT] Two-pane: project LEFT, decision visualization RIGHT
+- LEFT: the project roster (`self/projects` / projects.lts). Select a project → its decision corpus loads.
+- RIGHT: the selected project's decision visualization ([CXC-DT-QUERY-DRIVEN] + [CXC-DT-EDGE-SEMANTICS]).
+- part-of: [SPEC:CXC-DECISIONS-TAB]
+
+### [CXC-DT-QUERY-DRIVEN] The QUERY is the frame — never the whole-graph hairball
+- rule: DO NOT render the full graph force-directed. At 70+ nodes / 100+ edges it is an unreadable tangle that proves edges exist but HIDES their meaning — the opposite of the goal. Instead: select a decision (or a filter) and MAGMA-`traverse` its NEIGHBORHOOD; render that small, readable subgraph. `traverse` (BFS from a node over typed edges) is exactly this affordance. The whole graph is never shown at once; the query bounds the picture.
+- part-of: [SPEC:CXC-DECISIONS-TAB]
+
+### [CXC-DT-EDGE-SEMANTICS] Make each edge TYPE legible — supersedes is NOT just another line
+- the decision graph has a SMALL edge alphabet; the value is its legibility, not drawing every line.
+- SUPERSEDES: the superseded node DIMS + strikes through, a single arrow to its heir — "this was replaced" reads at a glance (David's live-supersession point: a decision made overnight then superseded displays AS superseded).
+- DEPENDS_ON: a directed LAYERED edge (lay out by dependency depth — a DAG reads far better than force-directed).
+- CONTAINS: nesting. re-derive-via/relates-to: faint, secondary.
+- part-of: [SPEC:CXC-DECISIONS-TAB]
+
+### [CXC-DT-OPEN] OPEN QUESTION — the viz metaphor (future session)
+- Is edge-semantic-layered-DAG-over-a-query-neighborhood the right model, or a different metaphor (an interconnected node-graph, a lifecycle timeline, something else)? A genuine design exploration. This draft records ONLY the Architect's lean (query-driven + edge-semantic, supersedes-first-class); it is not the final answer. Resolve before build.
+- part-of: [SPEC:CXC-DECISIONS-TAB]
+
+### [CXC-DT-GENERALIZED] GENERALIZED — this widget is now the corpus-agnostic Graph Viewer widget
+- generalized-by: [SPEC:CXC-GRAPH-VIEWER]
+- GENERALIZATION NOTE (2026-08-05): the approved design (David 2026-08-05) generalizes this decisions_tab widget into a corpus-AGNOSTIC graph widget — decisions become ONE corpus among many (defects, insights-and-warts, the platform specs, any loaded FactLattice corpus). The widget is PARAMETERIZED by CORPUS + a declarative per-corpus STYLE/PROJECTION profile ([CXC-GV-STYLE-PROFILE]); the shared layout/render engine (`_layout_dag`/`_layout_timeline`/`_layout_force`, edge routing, hit-test) is NOT per-corpus-forked.
+- RETAINED (generalized, not rewritten): [CXC-DT-QUERY-DRIVEN] (the query is the frame — never the whole-graph hairball) and [CXC-DT-EDGE-SEMANTICS] (each edge TYPE legible) hold for every corpus; each corpus supplies its own edge alphabet + badge field via its profile.
+- DATA PATH CHANGED: the widget no longer subscribes the pushed `self/decisions` feed — its `{nodes, edges}` projection is PULLED by a DIRECT lts-engine query on open + refresh ([CXC-GV-DATA-PATH]); the `decisions_publisher` bus emitter is retired ([CXC-GV-EMITTER-RETIRED]). The widget's `_coerce_nodes`/`_coerce_edges` and topology-only contract are unchanged.
+- see-also: [SPEC:CXC-GRAPH-VIEWER]
+- part-of: [SPEC:CXC-DECISIONS-TAB]

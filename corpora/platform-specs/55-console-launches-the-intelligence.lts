@@ -1,0 +1,1515 @@
+---
+scope: "Making the Intelligence Console the ENTRY POINT to a harnessed Intelligence. When no instance is CONNECTED — which means REACHABLE (`channel/alive`) *and* HARNESSED (`self/daemons[intelligence_launcher]`), because a bare `claude` with the channel MCP publishes a perfect heartbeat and still cannot self-compact — the context pane swaps its frozen gauge for a Launch affordance; pressing it publishes an `_app/intelligence/open` intent that the EXISTING `app_launcher` daemon turns into a TERMINAL running the launcher harness (a human terminal must exist, because the launcher is a transparent PTY proxy and the human answers Claude Code's startup dialogs). Covers the two-signal presence model and its four states, the swap mechanism, the launch intent + its control-is-a-peer dedupe, the terminal spawn, the cold-start-with-bootstrap rule, the launch cwd, the singleton's flip from supersede to yield-if-held, the `degraded` third verdict value with its triggers, hysteresis and rendering, and the two-tier acceptance bar."
+audience: "The builder wiring the launch affordance + the app_launcher terminal target; the composeux-architect, who has now closed the last of this spec's decision points (there are ZERO open); anyone who later asks why the console spawns a Terminal instead of a headless child, or why a fresh heartbeat is not enough to call an Intelligence connected."
+boundary: "IN: the TWO-SIGNAL presence model + its staleness and unknown rules ([CXC-ICL-PRESENCE]); the `degraded` THIRD verdict value — its two triggers, its hysteresis, its rendering on the header + the gauge card, and its own slice ([CXC-ICL-PRESENCE], [DD-ICL-DEGRADED], [CXC-ICL-SLICES] slice 5); the four states + the swap mechanism ([CXC-ICL-VISIBILITY], [CXC-ICL-PANE-SWAP], [CXC-ICL-PANEL]); the `_app/intelligence/open` intent + payload + the harness-keyed peer guard ([CXC-ICL-INTENT], [CXC-ICL-PEER-GUARD]); the spawn-once dedupe reusing `spawned_windows` ([CXC-ICL-SPAWN-ONCE]); the singleton re-ratification and the retirement of the CLI entry point ([CXC-ICL-SINGLETON-YIELD], [CXC-ICL-CLI-UNSUPPORTED]); the terminal spawn, the launch cwd, the cold-start-with-bootstrap rule, the one entry script ([CXC-ICL-TERMINAL], [CXC-ICL-CWD], [CXC-ICL-COLD], [CXC-ICL-ENTRY]); the error/boundary matrix and the acceptance bar. OUT: the `/compact` actuation relay itself ([CXC-IC-LIFECYCLE] — consumed, never changed); the launcher's PTY proxy internals and its harness monitor ([CXC-IC-MONITOR]); `daemon_watch`'s own probe logic (consumed, never changed); the headless multi-intelligence fleet spawner ([CXC-IH-HOST], whose `interactive` mode explicitly defers to the launcher — see [CXC-ICL-SCOPE-BOUNDARY]); the fleet roster UI ([CXC-IH-CONSOLE]); the Launch Bar's `_app/harness/open` FOCUS tile ([CXC-LB-ROSTER] tile 2 — untouched, and distinct: see [DD-ICL-INTENT-KEY]); RESUMING a specific prior session ([CXC-ICL-COLD]); the terminal widget that may one day host the PTY in-console ([SPEC:CXC-TERM] — cross-referenced, not specified here)."
+not-this: "Not a new spawner — `intelligence/tools/app_launcher.py` gains ONE table row, a payload argument, and a launch handle ([CXC-ICL-TERMINAL], [CXC-ICL-SPAWN-ONCE]); no second launch daemon is created ([DD-LB-LAUNCH-MECHANISM] holds). Not a new liveness namespace or a new harness prober — BOTH signals exist and are already on the bus (`channel/alive` via `channel_bridge`, `self/daemons` via `daemon_watch`); the console READS them and mints nothing ([CXC-ICL-PRESENCE]). Not a ONE-signal presence model — a fresh heartbeat proves REACHABLE, never HARNESSED, and a design that conflates them hides the button in exactly the case it was built for. Not a new dedupe mechanism — `spawned_windows` already implements spawn-once and is already the shared seam ([CXC-ICL-SPAWN-ONCE]). Not a `launching` pane state — the anti-double-spawn guarantee lives in the daemon, where it also covers the bus path ([DD-ICL-NO-LAUNCHING-STATE]). Not an auto-answered startup dialog — keystroke injection into Claude Code's TUI dialogs was tried, collided with the human, and hung ([CXC-ICL-CONSTRAINT-PTY]); it stays out of scope forever. Not an engine addition — the pane swap uses `ordered_stack`'s existing `visibility_namespace` ([SPEC:CXC-ORDER])."
+depends-on: [34-composeux-intelligence-console.lts, 41-intelligence-host-spawner.lts, 48-compose-launch-bar.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+created: 2026-08-10
+---
+# The Console Launches (and Re-attaches to) the Intelligence [SPEC:CXC-IC-LAUNCH]
+
+> The launcher harness is what makes an Intelligence's `/compact` SELF-DIRECTED ([CXC-IC-LIFECYCLE]) —
+> it owns the child's PTY and types `/compact <direction>` when the instance emits a directive. Today
+> starting a harnessed instance is a terminal ritual the human must know and perform, so the DEFAULT
+> way an Intelligence runs is UNHARNESSED and therefore unable to compact itself at all. This spec
+> makes the Console the entry point: when no instance is connected, the context pane stops showing a
+> frozen gauge and shows a Launch affordance; pressing it publishes an intent that the existing
+> `app_launcher` turns into a Terminal running the harness. It is "control is a bus peer, not a
+> center" applied to INSTANTIATION: a human press and an Intelligence publishing the identical intent
+> are indistinguishable downstream — and, because they are, the anti-double-spawn guarantee is placed
+> where BOTH paths pass through it.
+
+---
+
+## 1. The loop this closes, and the constraint that shapes it
+
+### [CXC-ICL-THESIS] The harness must be the DEFAULT path, not expert knowledge
+
+- premise: David, 2026-08-10 — "You're not instantiated in the harness that allows you to invoke slash
+  commands, like /compact. Seems like the right process would be to launch the Intelligence Console
+  and, if it doesn't 'see' a connected instance, for the context pane to change what it shows to a
+  'Launch ComposeUX-Architect' button that fires up the launcher app, instantiates a new claude
+  instance, and connects the IC to the newly instantiated instance."
+- requirement: with NO instance connected, the console's context pane MUST present a launch
+  affordance instead of its context gauge, and pressing it MUST result in a harnessed instance —
+- rationale: a capability reachable only by a remembered shell ritual is a capability that is not
+  taken. The self-directed-`/compact` loop is the single most load-bearing lifecycle behaviour this
+  platform has, and it is currently OFF by default because starting it correctly is tacit knowledge.
+  Moving the entry point onto the glass converts the harness from expert-knowledge into the default.
+- consequence: **(the second failure this closes)** today a dead or never-started instance leaves
+  the
+  gauge rendering its LAST value. That is the silent-staleness class this system keeps hitting — a
+  surface that looks healthy while the thing it measures is absent. The swap is as much an honesty
+  fix as a launch feature.
+- relates-to: [CXC-ICL-CONSTRAINT-PTY], [CXC-ICL-VISIBILITY]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-CONSTRAINT-PTY] The console CANNOT spawn a headless instance — the launcher is a TRANSPARENT proxy and the HUMAN answers the dialogs
+
+- constraint: **(LOAD-BEARING; most other choices in this spec follow from it)**
+  `intelligence/launcher/launcher.py` spawns `claude` under `pty.fork()` and then GETS OUT OF THE
+  WAY. It forwards the human's terminal to/from the child BYTE-FOR-BYTE, puts its own stdin into raw
+  mode, and does exactly three things on top of that wire (actuation relay, harness monitor, session
+  pin). The human sees the real Claude Code TUI — including every startup dialog — and answers those
+  dialogs THEMSELVES.
+- evidence: **(why it is transparent)** an earlier version tried to auto-drive the startup by
+  watching PTY
+  output and injecting menu keystrokes. In a real run it FAILED — blind injection into Claude Code's
+  full-screen TUI startup dialogs COLLIDED WITH THE HUMAN AND HUNG. That is bug #2 in the launcher's
+  rebuild notes (`intelligence/launcher/README.md`, "Why this design (a live shakedown)"), and the
+  transparent proxy is the fix, not an accident.
+- requirement: **(therefore)** a console-initiated launch MUST spawn a **TERMINAL WINDOW** running
+  the
+  harness entry script, so that a real human terminal exists for the launcher to proxy. It MUST NOT
+  spawn `claude` (or `launcher.py`) as a detached background subprocess with `stdout/stderr` to
+  `DEVNULL` — that is the current `app_launcher._spawn_argv` idiom and it would produce an instance
+  sitting on an unanswerable dialog with nobody attached, i.e. a launch that silently never completes.
+- forbidden: **(permanently)** auto-answering startup dialogs by keystroke injection, in any form,
+  under any
+  flag. Re-proposing it re-opens a defect that was already paid for on the glass.
+- not-implied-by-the-above: **(the correction, David 2026-08-10)** the transparent-proxy constraint
+  bans
+  auto-answering DIALOGS. It does NOT ban the launcher's re-register BOOTSTRAP — a prompt typed into
+  the instance's ordinary entry area AFTER startup settles. The bootstrap works and is now the DEFAULT
+  for a console-initiated cold start; see [CXC-ICL-COLD]. These two were conflated in `launcher.py`'s
+  own prose, which is why that prose is corrected as part of this build.
+- upholds: [CXC-IC-LIFECYCLE]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-SCOPE-BOUNDARY] This is the PRIMARY-instance launch, not the fleet spawner — and the three do not overlap
+
+- definition: three launch-shaped things now exist in this corpus and a builder WILL confuse them.
+  This node is the disambiguation, stated once.
+
+| Surface | What it does | Mode | Owner |
+|---------|--------------|------|-------|
+| [CXC-IH-HOST] `IntelligenceHost` | spawns N parallel PEER intelligences (a builder alongside the architect) | **headless only** — `spawn()` RAISES `NotImplementedError` for `mode="interactive"`, with the message "interactive spawn is deferred to launcher.Launcher (PTY)" | `intelligence/host/host.py` |
+| [CXC-LB-ROSTER] tile 2 `_app/harness/open` | FOCUSES the already-running harness; ratified as a `HOST` kind, never spawns (David 2026-07-29) | n/a | `app_launcher` TARGET_TABLE |
+| **THIS spec** `_app/intelligence/open` | brings the PRIMARY instance INTO EXISTENCE when none is connected | **interactive** — a Terminal + the PTY launcher | `app_launcher` TARGET_TABLE, one new row |
+- consequence: `IntelligenceHost` is not a candidate consumer for this intent — it structurally cannot
+  serve it, and the refusal is in its own code, not an oversight. `app_launcher` is therefore the ONE
+  spawner ([DD-LB-LAUNCH-MECHANISM] holds unchanged, ratified again by David 2026-08-10: "the button
+  has to spawn a terminal running transport.sh — reuse what's present") and gains exactly one row.
+- constraint: this spec MUST NOT modify `_app/harness/open`'s HOST/focus semantics. A ratified decision
+  is not silently re-interpreted because a new need arrived; the new need gets a new key
+  ([DD-ICL-INTENT-KEY]).
+- relates-to: [CXC-IH-CONSOLE]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+---
+
+## 2. Presence — reuse the ONE computation, mint no new liveness
+
+### [CXC-ICL-PRESENCE] Presence is TWO signals — `channel/alive` proves REACHABLE, `self/daemons` proves HARNESSED, and only both together mean CONNECTED
+
+- correction: **(David, 2026-08-10, verified live on this machine — this inverts the original
+  brief)**
+  `channel/alive` freshness alone is NOT sufficient presence. Observed simultaneously, on the very
+  session that raised this:
+
+  | Signal | Value | Means |
+  |--------|-------|-------|
+  | `intelligence/architect/channel/alive` | PRESENT, fresh | an Intelligence is REACHABLE |
+  | `self/daemons[intelligence_launcher].status` | `down` (no process, flock unheld, recorded pid 82381 dead) | it is NOT HARNESSED |
+
+  That combination is a bare `claude` with the `composeio-channel` MCP loaded and NO launcher: it
+  publishes a perfect heartbeat and it CANNOT self-`/compact`, because no launcher owns its PTY to
+  type the command. The missing capability is the entire reason this feature exists.
+- consequence: **(the defect this node prevents)** a console that hides the Launch affordance
+  whenever
+  `channel/alive` is fresh would auto-connect to a session like that one, hide the button, and leave
+  the human with an Intelligence that silently cannot compact itself. The affordance would never
+  appear in exactly the situation it was built for — a one-signal design is not merely incomplete, it
+  is inverted.
+- definition: **(signal 1 — REACHABLE)** `intelligence/<id>/channel/alive`, published by
+  `channel.mjs`
+  (the MCP channel server running INSIDE the instance, ~5 s cadence) and relayed onto the bus by
+  `channel_bridge`. Live payload, observed 2026-08-10:
+  `{"ts": 1786382845886, "id": "architect", "pid": 83035, "start": 1786214825852, "delivery": "ok", "unacked": 1}`.
+  It is ALREADY reduced to a verdict by `python/composeio/render/widgets/link_health.py` —
+  arrival-stamped freshness (`time.monotonic()` per beat, immune to clock skew) against
+  `FRESH_THRESHOLD_S = 12.0` (~2 missed beats, so one dropped beat does not flip it), combined with
+  the transport's `is_connected` — and PUBLISHED to `console/link/state` as
+  `engaged` / `channel_offline` / `bus_offline`, plus the THIRD value `degraded` that
+  [DD-ICL-DEGRADED] adds (see the requirement below).
+- definition: **(signal 2 — HARNESSED)** `self/daemons`, published by
+  `intelligence/publisher/daemon_watch.py` every 5 s at global scope, carrying an entry per daemon:
+  `{"<daemon-id>": {"status": "up"|"down"|"duplicate", "pids": [...], "flock_pid": N, "flock_held": bool, ...}}`.
+  The entry of interest is `intelligence_launcher`, whose registered probe is
+  `DaemonSpec("intelligence_launcher", "intelligence-launcher-{id}", "launcher/launcher.py")` — the
+  flock holder UNIONED with a process scan, exactly the two ways a launcher can be present.
+  `status == "up"` means HARNESSED.
+- requirement: **(mint nothing)** this spec MUST NOT create a liveness namespace, a presence daemon,
+  a
+  harness prober, or a second freshness timer. Both signals exist, are live, and are already on the
+  bus. The console READS them.
+- requirement: **(two signals is NOT a fork — do not "de-fork" them)** [DX-NARROW-WAIST] forbids a
+  SECOND
+  computation of the SAME fact. Reachability and harnessing are DIFFERENT facts with different
+  sources, so reading both is correct. What remains forbidden is re-deriving reachability: the panel
+  MUST take reachability from `console/link/state` and MUST NOT subscribe `channel/alive` for a
+  freshness verdict of its own. (It may read the alive payload for the cosmetic last-seen line,
+  [CXC-ICL-PANEL] — a render of the last value, not a computation.)
+- requirement: **(the scene must DECLARE `self/daemons` — it does not today)**
+  `console.compose.yaml`
+  carries NO `self/daemons` namespace declaration. It MUST gain one
+  (`{name: self/daemons, state_engine: json, export: true, scope: global, label: "Daemon liveness"}`),
+  or the panel's subscription is inert and the harness signal silently never arrives — which would
+  land the pane permanently in the "harness unknown" rendering below.
+- default: **(harness staleness)** a `self/daemons` older than `DAEMONS_FRESH_S` (**default 15.0 s**
+  — 3 x
+  the 5 s publish cadence, one more beat of tolerance than the channel's 2, because a slower publisher
+  deserves a wider window) is UNKNOWN, not `down`.
+- requirement: **(UNKNOWN is its own answer, and it renders the GAUGE with a marker)** when the
+  harness
+  signal is stale or absent while reachability is `engaged`, the pane shows the LIVE GAUGE plus an
+  explicit `harness: unknown` marker. It does NOT show the warning pane and it does NOT hide the
+  gauge. Rationale: treating unknown as UNHARNESSED would replace a good gauge with a false alarm
+  every time `daemon_watch` blips; treating it as HARNESSED silently would restore the original
+  defect. Preserve-and-flag is this corpus's answer to exactly this shape, and it is the only option
+  that is neither a false alarm nor a silent guess.
+- known-hazard: **(the watcher's `episodic` flag must NOT be inherited)** `daemon_watch` marks
+  `intelligence_launcher` as `episodic=True`, whose comment reads "it runs ONLY while a Claude session
+  is hosted under the harness, so 'down' is its normal resting state, not a defect." That is correct
+  FOR THE WATCHER — it suppresses a staleness canary so the defect sink does not cry wolf. The CONSOLE
+  MUST NOT inherit that reading. Under this spec, `intelligence_launcher == down` WHILE the channel is
+  alive is precisely the anomaly worth surfacing. Same fact, two consumers, two correct
+  interpretations; a builder who reuses the watcher's "down is fine" logic here reproduces the defect.
+- default: **(headless)** `link_health.compute_state` returns `engaged` when `connected is None` —
+  no
+  external bus transport, i.e. a headless render or a local-only demo window. With no `self/daemons`
+  either, the harness signal is UNKNOWN, so a headless render shows the gauge (plus the marker, which
+  a capture test pins). Every existing capture stays byte-identical except for that marker's addition,
+  which is re-baselined ONCE and reviewed ([CXC-ICL-ACCEPT] ICL-C6).
+- requirement: **(DEGRADED delivery IS surfaced — a THIRD VERDICT VALUE, computed ONCE;
+  [DD-ICL-DEGRADED] RESOLVED by David 2026-08-10, reversing the deferral)** `delivery != "ok"` or a
+  climbing `unacked`
+  means the channel is up but NOT DELIVERING. `link_health` MUST read them and FOLD them into the
+  SINGLE verdict it already publishes, so `console/link/state` takes the values
+  `engaged` / `degraded` / `channel_offline` / `bus_offline`. EVERY consumer — the header dot, the
+  header `link_label`, the composer's `composer_send_label`, and the launch panel — reads that ONE
+  value (the full consumer list matters: see the `map:`-entry requirement below, which is where this
+  slice most plausibly ships broken). The panel MUST NOT derive `degraded` from the alive payload
+  itself; a second derivation lets the dot and the pane disagree with no way for a human to tell which
+  is lying, and the ONE-computation rule stated above admits no exception for this fact.
+- requirement: **(what `degraded` means for the four states — RATIFIED, composeux-architect
+  2026-08-10; the previous pass PROPOSED this and flagged it, this is that ratify)** `degraded` is a
+  REACHABLE-side
+  value — the channel is up, and a reachable, harnessed instance therefore still EXISTS — so it
+  resolves as `reachable = yes` in [CXC-ICL-VISIBILITY]'s truth table. It consequently NEVER withholds
+  the gauge and NEVER reveals the launch button: offering to launch a SECOND instance because the
+  first one's channel is slow would be actively wrong, and it is `absent` / `unharnessed`, not this,
+  that the button exists for. It renders as a MARKER on the state already shown, by exact analogy to
+  the `harness: unknown` marker, so NO fifth row is added to [CXC-ICL-VISIBILITY]'s table.
+- requirement: **(state PRECEDENCE — one ordered cascade, stated so it is not derived)** the verdict
+  is
+  computed as `bus_offline` > `channel_offline` > `degraded` > `engaged`. Offline BEATS degraded: an
+  instance whose heartbeat has gone stale is not "degraded", it is GONE, and a degraded reading over a
+  dead channel would be a slower, less honest version of the frozen gauge this spec exists to remove.
+- requirement: **(WHERE the marker renders — two surfaces, and no third derivation)** (a) the HEADER
+  carries it ALWAYS — the `link_health` dot plus the `link_label` beside it, which are on screen in
+  every state, connected or not; (b) the `intelligence_card` carries a `channel: degraded` marker
+  whenever the GAUGE is the shown surface, as a bound label reading `console/link/state` DIRECTLY (an
+  attribute `map:` binding, the same idiom `link_label` already uses in the same scene) — no new
+  namespace and no `console/instance/harness`-style derived channel, because the verdict is already
+  published. The `instance_launch_panel` needs NO `degraded` rendering at all: its ONLY degraded
+  knowledge is `reachable = yes`, which is the truth-table rule above.
+- requirement: **(EVERY `map:` consumer of `console/link/state` gains a `degraded` entry — this is
+  the most likely way this slice ships broken)** besides the dot that publishes it,
+  `console/link/state` has
+  bound consumers in `console.compose.yaml` TODAY — the header `link_label` (text + colour) and the
+  composer's `composer_send_label` (text + colour) — and an attribute `map:` with no key for the
+  arriving value falls back to its `default:`, which for BOTH of them is the HEALTHY look ("ENGAGED"
+  green, "SEND" dark ink). A third verdict value with no map entries would therefore render a degraded
+  channel as a green ENGAGED header: exactly the silent-staleness lie this spec exists to remove,
+  reintroduced by omission. Every `map:` binding on this namespace MUST gain a `degraded` key in the
+  SAME commit, and [CXC-ICL-ACCEPT] ICL-C19 leg (b) is the mechanical guard.
+- defaults: **(the `degraded` RENDERING, stated so nothing is guessed; PROVISIONAL pending David's
+  glass)**
+  - the dot: `theme.warn` (amber) and NOT beating — it falls into `link_health`'s EXISTING non-engaged
+    branch, so the change is one more `elif`, not a new visual mode. It shares amber with `bus_offline`
+    deliberately; the `link_label` beside it is what NAMES which one, exactly as `channel_offline` and
+    `bus_offline` already share the not-beating rest state.
+  - `link_label`: text `DEGRADED`, colour amber `0xF5 0xA6 0x23` — the SAME amber `bus_offline`
+    already uses in that map, not a new ink
+  - `composer_send_label`: text `DEGRADED`, colour amber — David sees that a send may not land AS he
+    types it, which is the failure that label was added for in the first place
+  - the `intelligence_card` marker: `channel: degraded — messages may not be arriving`
+- defaults: **(the `degraded` THRESHOLDS — concrete enough to build, and explicitly TUNABLE on the
+  glass; PROVISIONAL)** computed in `link_health` and NOWHERE else ([DD-ICL-DEGRADED]'s binding
+  constraint).
+  - `degraded` is TRUE when EITHER (i) the latest `channel/alive` payload has `delivery != "ok"`, OR
+    (ii) `unacked` is STRICTLY INCREASING across `DEGRADED_CLIMB_N` (**default 3**) consecutive alive
+    payloads.
+  - it returns to normal only after `DEGRADED_RECOVER_N` (**default 1**) full payload carrying
+    `delivery == "ok"` AND a non-increasing `unacked` — deliberate HYSTERESIS, so a single blip cannot
+    flap the header dot, which is the most-watched pixel in this console.
+  - both runs count PAYLOAD ARRIVALS, not seconds. A channel that stops publishing therefore cannot
+    recover out of `degraded` by going silent; it ages into `channel_offline` by freshness instead,
+    per the precedence cascade above.
+  - a payload with NO `delivery` key reads as `"ok"` (an absent field is not evidence of failure); a
+    payload with no `unacked` key RESETS the climb run (no evidence either way); any non-increasing
+    `unacked` observation resets the run to zero; and the first payload after mount has no predecessor,
+    so it can never itself be a climb.
+- known-hazard: **(these numbers are DEFENSIBLE, not MEASURED — and the retuning observation is
+  named)**
+  3-and-1 is chosen by symmetry with `FRESH_THRESHOLD_S`'s "~2 missed beats" reasoning, NOT from a
+  measured distribution of `unacked` on a healthy channel, because nobody has watched one. The retune
+  signals are stated so the glass gate can settle them ([CXC-ICL-ACCEPT] ICL-C20): if David sees the
+  header amber while the Intelligence is demonstrably receiving — a reply arrives to a message sent
+  INSIDE the amber window — the trigger is TOO EAGER, and `DEGRADED_CLIMB_N` rises or the set of
+  `delivery` values that count narrows. If he hits another "looked sent, never seen" episode while the
+  header stayed green, it is TOO LAX, and it falls or gains an absolute `unacked` ceiling. Retuning a
+  NUMBER is in scope for that gate; widening a threshold to silence a FLAP is not — that is the retreat
+  [DD-ICL-DEGRADED]'s invalidating assumption forbids, whose correct answer is its alternative (b).
+- verify-machine: a test asserts the panel subscribes BOTH `console/link/state` and `self/daemons`;
+  that it contains no second freshness constant for reachability and never reads `delivery`/`unacked`
+  itself (the `degraded` verdict arrives ONLY via `console/link/state`); and a truth-table test driving
+  all four combinations of (reachable, harnessed) plus both unknown cases and the `degraded`
+  reachability value, asserting the [CXC-ICL-VISIBILITY] rendering for each — including that a state-2
+  launch intent carries the recovery id ([DD-ICL-UNHARNESSED-ACTION]), never the canonical one.
+- relates-to: [CXC-ICL-VISIBILITY]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-VISIBILITY] ONE rule — the gauge shows when CONNECTED, and connected means BOTH signals; the four states are named
+
+- decision: **(David 2026-08-10)** the rule is unchanged — "the button is visible only when no
+  instance is
+  connected" — but CONNECTED now means REACHABLE **and** HARNESSED ([CXC-ICL-PRESENCE]). The four
+  combinations are named, and each has one rendering. There is still no `launching` state
+  ([DD-ICL-NO-LAUNCHING-STATE]).
+
+| # | State | reachable | harnessed | The pane shows | The button |
+|---|-------|-----------|-----------|----------------|-----------|
+| 1 | `live` | yes | yes | the `intelligence_card` context gauge — EXACTLY as today | not present |
+| 2 | `unharnessed` | yes | **no** | a WARNING card: "reachable but NOT harnessed — this Intelligence cannot self-compact" and, as the offered action, a RECOVERY launch that leaves the running session alone | present, enabled, labeled "Launch recovery instance" — it publishes the intent under the DISTINCT recovery id `recovery-architect-2`, never the canonical id ([DD-ICL-UNHARNESSED-ACTION], RESOLVED David 2026-08-10) |
+| 3 | `orphaned` | no | yes | a WARNING card: "a launcher is running for this id but its channel is silent — check its Terminal window" | present but **DISABLED** |
+| 4 | `absent` | no | no | the launch card | present, enabled, "Launch ComposeUX-Architect" |
+| — | `harness_unknown` | yes | UNKNOWN | the gauge, plus a `harness: unknown` marker ([CXC-ICL-PRESENCE]) | not present |
+| — | `bus_unreachable` | `bus_offline` | any | the launch card body reading "BUS OFFLINE — cannot reach the launcher" | present but **DISABLED** |
+
+- requirement: **(`degraded` adds NO row to this table)** the third verdict value `degraded`
+  resolves as
+  `reachable = yes` here and changes nothing else — states 1-4 are selected EXACTLY as if the verdict
+  read `engaged`, so a degraded+harnessed instance is state 1 `live` (the gauge, no button) and a
+  degraded+unharnessed one is state 2. The condition is carried by the header and by a marker on
+  whichever surface is already shown ([CXC-ICL-PRESENCE]), never by a fifth state and never by a fifth
+  row. A builder who adds one has coupled a DELIVERY fault to a PRESENCE decision, which is how the
+  launch button appears beside a perfectly live Intelligence.
+- requirement: **(state 2 is NOT healthy and MUST say so)** `unharnessed` is the state that
+  motivated this
+  correction. It is the ONLY state where everything looks fine — a live gauge would render, the header
+  dot beats green, messages send and arrive — while the instance silently lacks the one capability the
+  harness exists to provide. The pane MUST name the loss in words ("cannot self-compact"), not merely
+  withhold the gauge, because a human with no gauge would reasonably conclude the instance is dead
+  rather than crippled.
+- requirement: **(state 3 DISABLES the button — a launch there cannot succeed)** with a launcher
+  already
+  holding `intelligence-launcher-<id>`, a second launcher YIELDS and exits ([CXC-ICL-SINGLETON-YIELD]).
+  Offering an enabled button that will provably do nothing is the same lie as offering one while the
+  bus is down. The disabled body names where to look instead.
+- requirement: **(no frozen gauge, ever)** in states 2, 3 and 4 the `intelligence_card` MUST NOT be
+  drawn
+  and MUST NOT occupy layout space. Leaving a dimmed gauge alongside the warning reproduces exactly the
+  stale-value failure this spec exists to remove.
+- requirement: **(there is NO `launching` STATE)** the window between the press and the first
+  `channel/alive` beat is real and can be a minute or more — the Terminal is opening, Claude Code is
+  starting, and the human is answering startup dialogs at human pace. Through all of it the instance is
+  not connected, so BY THIS RULE THE BUTTON REMAINS ON SCREEN AND REMAINS PRESSABLE. That is
+  deliberate. A second press is a HARMLESS NO-OP because the anti-double-spawn guarantee lives in the
+  consuming daemon ([CXC-ICL-SPAWN-ONCE]), not in the widget.
+- rationale: **(why the guard is NOT a UI state — this is the load-bearing part)** a UI latch would
+  protect
+  the human path and leave the BUS path unguarded, because an Intelligence publishing
+  `_app/intelligence/open` never consults the widget. That asymmetry is precisely what
+  control-is-a-peer exists to prevent ([CXC-LB-CREDO]). Putting spawn-once in the daemon means a
+  double-click and a double-publish get the identical dedupe, and the widget stays a pure intent
+  emitter with no lifecycle knowledge.
+- requirement: **(the `bus_offline` variation is a RENDERING, not a state)** when
+  `console/link/state == bus_offline` the intent physically cannot reach `app_launcher` — it is an
+  out-of-process daemon reachable only over the global bus ([CXC-LB-RIBBON-BUS-BOUND] is the same
+  class: a publish that never leaves the process). The panel therefore renders its button DISABLED with
+  the body reading "BUS OFFLINE — cannot reach the launcher". This is expressed as an attribute
+  `map:` binding on the already-published `console/link/state` — the identical idiom the header's
+  `link_label` already uses in the same scene — so it adds NO branch, no timer, and no second state
+  machine. A button that cannot work must not look pressable; that is honesty, not a state.
+- scenario:
+  - when: the instance exits and `channel/alive` stops
+  - then: within `FRESH_THRESHOLD_S` (12 s) the gauge is REPLACED by the launch panel — not frozen,
+    not dimmed
+- scenario:
+  - when: a bare `claude` runs with the channel MCP loaded but no launcher, so `channel/alive` is fresh
+    and `self/daemons[intelligence_launcher].status` is `down`
+  - then: the pane shows the `unharnessed` WARNING naming the lost self-compact capability — it does
+    NOT show a healthy gauge
+- scenario:
+  - when: the human presses the button and, 20 s later, presses it again while still answering dialogs
+  - then: the button was on screen and accepted both presses; exactly ONE Terminal exists
+    ([CXC-ICL-SPAWN-ONCE])
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+---
+
+## 3. The pane swap — an existing engine primitive, no new widget seam
+
+### [CXC-ICL-PANE-SWAP] The swap rides `ordered_stack`'s `visibility_namespace` — the ONE mechanism that removes a child from FLOW
+
+- definition: the collaboration rail in `intelligence/console/console.compose.yaml` is ALREADY an
+  `ordered_stack` ([SPEC:CXC-ORDER]) carrying `state_namespace: _app/console/collab_order`. That
+  container's `_flow_children()` excludes hidden ids from LAYOUT, so a hidden card leaves the flow, the
+  rail reflows, and nothing is drawn or hit-tested.
+- requirement: the rail gains ONE key — `visibility_namespace: console/instance/pane` — and the launch
+  panel is declared as a rail child immediately after `intelligence_panel`. The shown-map published on
+  `console/instance/pane` is `{"intelligence_panel": <bool>, "instance_launch_panel": <bool>}`, exactly
+  one of which is true.
+- requirement: **(why NOT a plain `visible:` binding)** `visible:` bindings exist ([CXC-RM-M4]
+  engine-addition #2, `visible: {namespace:, when:, invert:, default:}`) and DO work — but a plain
+  `FlexContainer._flow_children()` returns the declared child list regardless of the `visible` flag, so
+  a `visible: false` card still CONSUMES ITS MEASURED HEIGHT and leaves a hole in the rail. The
+  `visibility_namespace` path is the one that reflows. A builder who reaches for `visible:` here will
+  ship a 300px gap.
+- requirement: **(why NOT a fixed-height `pixel_stack` overlay)** `IntelligenceCard.measure` is
+  DYNAMIC —
+  its height is `HEAD_H + MEM_H + GAUGE_H + 3*ROW_H + reg_extra + SUB_CAP_H + chips_h + PAD_BOTTOM`,
+  where `reg_extra` and `chips_h` vary with the expanded registry and the live subagent chips. Any
+  fixed-height slot would clip it. Rejected for that reason, recorded so it is not re-proposed.
+- requirement: **(`visibility_namespace` is a SEPARATE source — no clobber)** the shown-map MUST go
+  on its
+  own namespace, NOT into `_app/console/collab_order`'s `{hidden: [...]}` key. `state_namespace` is the
+  human/Intelligence-drivable rail REORDER channel; a presence publisher writing full state there would
+  clobber any concurrent reorder, and vice versa. The engine already provides the two independent
+  sources; use both.
+- requirement: **(the declared namespace + its `initial:`)** `console/instance/pane` is declared in
+  the
+  scene's `namespaces:` block as `{state_engine: json, export: true, scope: local, initial:
+  {intelligence_panel: true, instance_launch_panel: false}}`. `scope: local` because the swap decision
+  is computed in-console and no out-of-process peer drives it. The `initial:` is LOAD-BEARING: without
+  it the launch panel is shown-by-default at boot and occupies rail space before any publish, which
+  breaks the no-regression bar ([CXC-ICL-ACCEPT] ICL-C6).
+- constraint: **(zero engine change)** no new widget primitive, no parser change, no new binding
+  kind. If a
+  builder finds they need one, that is a signal the design drifted — stop and re-ratify.
+- finding: **(spec gap, flagged for ratify — NOT a blocker)** `[SPEC:CXC-ORDER]` is cited by
+  `layout.py`, `parser.py`, `console.compose.yaml` and `test_ordered_container.py`, but NO `.lts`
+  document carrying that id exists in this corpus. The primitive is real, tested, and in production;
+  its SPEC is a docstring. A builder following the reference will find nothing. This spec depends on
+  that primitive, so the gap is named here rather than inherited silently — authoring the missing
+  document is a separate, small task ([DD-ICL-PANE-OWNER] is unaffected either way).
+- verify-machine: a scene test asserts the rail declares `visibility_namespace: console/instance/pane`,
+  that `console/instance/pane` is declared with the stated `initial:`, and that publishing
+  `{"intelligence_panel": false, "instance_launch_panel": true}` removes the card from
+  `_flow_children()` AND collapses its layout height to zero (not merely stops drawing it).
+- uses: [SPEC:CXC-ORDER]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-PANEL] The launch panel — a rail card that owns the swap and the press, and NOTHING about lifecycle
+
+- definition: a new widget `instance_launch_panel`
+  (`python/composeio/render/widgets/instance_launch_panel.py`), a rail card in the console-theme card
+  idiom, sized `width: 332` to match the rail.
+- requirement: **(it owns the shown-map — ONE publisher)** the panel subscribes BOTH
+  `console/link/state`
+  and `self/daemons`, resolves [CXC-ICL-VISIBILITY]'s state from the two, and publishes the shown-map
+  to `console/instance/pane` ON CHANGE ONLY. It hides ITSELF in `live` and `harness_unknown` and
+  reveals the card. Exactly one widget writes that namespace; a second writer is a review reject
+  ([DX-LEAF-OWNS-BEHAVIOR] — the leaf owns its behaviour).
+- requirement: **(the harness marker is the card's, not the panel's)** in `harness_unknown` the
+  panel is
+  HIDDEN, so the `harness: unknown` marker cannot be drawn by it. The marker is a small bound label on
+  the `intelligence_card` side, driven by a derived namespace `console/instance/harness` (values
+  `up` / `down` / `unknown`) that the panel publishes alongside the shown-map. One publisher, two
+  consumers — the panel and the card — and no second derivation.
+- requirement: **(press publishes and STOPS)** on press the panel publishes the launch intent
+  ([CXC-ICL-INTENT]) and nothing else. It does not spawn, does not block, does not await the spawn, and
+  does NOT latch, disable, or time itself out. This is the widget-owns-intent / launcher-owns-runtime
+  split every existing launcher enforces ([CXC-LB-CREDO], [CXC-LB-INTENT-BINDING]), and it is why the
+  panel carries no lifecycle logic at all.
+- requirement: **(the button's enabled-ness and body follow the STATE, by a bound map)** `enabled`
+  and the
+  body text bind to the panel's own resolved state (`unharnessed` / `orphaned` / `absent` /
+  `bus_unreachable`) via attribute `map:` bindings, exactly as the header `link_label` in the same
+  scene binds text+colour to `console/link/state`. Enabled in `unharnessed` and `absent`; DISABLED in
+  `orphaned` and `bus_unreachable` ([CXC-ICL-VISIBILITY]). No conditional code path beyond the state
+  resolution itself.
+- requirement: **(`degraded` is READ as reachable, and rendered nowhere here)** in the panel's state
+  resolution the verdict value `degraded` is treated EXACTLY as `engaged` — `reachable = yes` — so the
+  panel keeps hiding itself in `live` and `harness_unknown` and the launch button is never revealed by
+  a delivery fault ([CXC-ICL-PRESENCE], [CXC-ICL-VISIBILITY]). The panel adds NO `degraded` body, NO
+  `degraded` marker and NO `degraded` branch: the condition is carried by the header (always on screen)
+  and by the `intelligence_card`'s marker (when the gauge is the shown surface). A `degraded` string
+  appearing anywhere in this module other than the reachable-mapping is a review reject.
+- defaults: **(the four bodies, stated so they are not invented)**
+  - `absent` — "No Intelligence is running." / button "Launch ComposeUX-Architect"
+  - `unharnessed` — "Reachable, but NOT harnessed — this Intelligence cannot self-compact. Launch a
+    recovery instance (`recovery-architect-2`); the running session is left untouched." / button
+    "Launch recovery instance" ([DD-ICL-UNHARNESSED-ACTION] — this is a RECOVERY/fallback mode, and the
+    body MUST NOT instruct the human to exit anything; the distinct id is what makes the second
+    instance safe)
+  - `orphaned` — "A launcher is running for this id but its channel is silent. Check its Terminal
+    window." / button disabled
+  - `bus_unreachable` — "BUS OFFLINE — cannot reach the launcher." / button disabled
+- requirement: **(the last-seen line — honesty about what is gone)** when a `channel/alive` payload
+  was
+  seen this session the panel renders the identity it last saw: `pid` and a human-readable age since
+  `start` (e.g. "last seen: pid 83035, up 46h"). With none ever seen it renders "no instance has
+  connected this session". It MUST NOT render a context percentage — the last known context level is
+  exactly the stale number this spec removes. (This is a RENDER of the last payload the panel received;
+  it is not a freshness computation — the verdict still comes from `console/link/state`,
+  [CXC-ICL-PRESENCE].)
+- requirement: **(COSMETIC ONLY ([DD-ICL-LAUNCH-HINT], RESOLVED David 2026-08-10 — it ships))** for
+  `LAUNCH_HINT_S`
+  (**default 90.0 s**) after this panel last published an intent, its sub-line reads
+  "launch requested — answer the dialogs in the Terminal window" instead of the last-seen line. This
+  changes NO behaviour: the button stays enabled, a press still publishes, and the daemon still
+  dedupes. It exists only so the human is not left wondering whether the press registered. It is a
+  label, not a state — it has no effect on the shown-map, on `enabled`, or on the intent.
+- defaults: **(every value stated, so nothing is guessed)**
+  - `link_state_namespace` = `console/link/state`
+  - `pane_namespace` = `console/instance/pane`
+  - `intent_namespace` = `_app/intelligence/open`
+  - `alive_namespace` = `intelligence/architect/channel/alive` (READ-ONLY, for the last-seen line only)
+  - `intelligence_id` = `architect` (the scene passes it; it is CARRIED, never guessed —
+    [CXC-IC-SELF-IDENTITY])
+  - `label` = `Launch ComposeUX-Architect`
+  - `width` = `332`; height = natural measure (the rail reflows; it is never asked to match the gauge
+    card's height)
+  - `LAUNCH_HINT_S` = `90.0`
+- scenario:
+  - when: `console/link/state` publishes `channel_offline`
+  - then: the panel publishes `{"intelligence_panel": false, "instance_launch_panel": true}` and the
+    rail reflows with the launch card in the gauge card's place
+- scenario:
+  - when: `console/link/state` returns to `engaged`
+  - then: the panel publishes `{"intelligence_panel": true, "instance_launch_panel": false}` and the
+    live gauge returns — with NO console bounce
+- scenario:
+  - when: `console/link/state` publishes `bus_offline`
+  - then: the panel is shown with its button disabled and the "BUS OFFLINE" body; a press publishes
+    nothing
+- verify-machine: widget unit tests for the two configurations, the `bus_offline` disabled rendering,
+  the on-change-only publish, and the hint's expiry under an injected clock ([DD-ICL-LAUNCH-HINT] is
+  RESOLVED, so this leg is unconditional). A test asserts the panel module contains NO dedupe, NO timer
+  that gates publishing, and NO spawn — and specifically that `LAUNCH_HINT_S` is read ONLY where the
+  sub-line's text is chosen.
+- verify-human: David sees the launch card where the gauge was, presses it, and — after answering the
+  dialogs — watches the gauge come back in the SAME console window ([CXC-ICL-ACCEPT] ICL-C11).
+- realizes: [DX-LEAF-OWNS-BEHAVIOR]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+---
+
+## 4. The intent — control is a peer, including for instantiation
+
+### [CXC-ICL-INTENT] `_app/intelligence/open` — a new row on the EXISTING `_app/*/open` plane
+
+- definition: the launch intent is `_app/intelligence/open`, published at GLOBAL scope
+  (`composeio/global/_app/intelligence/open`), carrying an optional payload
+  `{"id": "<intelligence-id>"}`.
+- requirement: **(it must fit the EXISTING subscription — do not widen it)** `app_launcher`
+  subscribes
+  `composeio/global/_app/+/open` and extracts `<target>` from the last three topic segments. Naming the
+  intent `_app/intelligence/open` means it is received with NO subscription change, NO new topic
+  pattern, and NO second daemon. An intent named `_app/harness/launch` would NOT be received at all —
+  the wildcard requires `open` as the final segment. This is why the key is `intelligence` and the verb
+  is `open` ([DD-ICL-INTENT-KEY]).
+- requirement: **(payload plumbing — the one real signature change)** `AppLauncher.open()` today
+  takes only
+  `target` and the payload is discarded after `parse_intent`. It MUST become
+  `open(target: str, payload: Any = None) -> str`, with `payload` threaded from `on_message`. Every
+  existing call site passes nothing and behaves identically. Without this the launch cannot be
+  per-`<id>` and the multi-instance future ([CXC-IH-5A]) is closed off at birth.
+- requirement: **(payload parsing is DEFENSIVE, and the id is VALIDATED)** the id is read from the
+  bus
+  envelope (`{val: {...}}`) or the bare dict; it MUST match `^[a-z0-9][a-z0-9_-]{0,31}$` and MUST
+  otherwise be REFUSED with a log line, never substituted. It becomes a path segment (`INSTANCE_HOME`)
+  and a shell word ([CXC-ICL-TERMINAL]); an unvalidated id is a command-injection vector.
+- default: absent or empty payload id => `architect`. Stated, not inferred.
+- requirement: **(`parse_intent` already tolerates this payload — do not change it)** `parse_intent`
+  reads
+  `d.get("open", d.get("path", True))`, so `{"id": "architect"}` evaluates truthy and opens. A falsy
+  token (`""`, `off`, `none`, `false`, `0`, `close`) is a no-op, as for every other `_app/*` intent.
+  This spec MUST NOT alter `parse_intent`; it is shared with the doc/decisions launchers.
+- scenario:
+  - when: a human presses the launch button, OR an Intelligence publishes
+    `_app/intelligence/open = {"id": "architect"}`
+  - then: the identical intent is on the bus and `app_launcher` takes the identical path — the two
+    triggers are indistinguishable downstream (this IS acceptance criterion ICL-C5)
+- uses: [CXC-LB-INTENT-BINDING], [CXC-LB-INTENT-TABLE]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-SPAWN-ONCE] Spawn-once reuses `spawned_windows` SKIP — but the handle must model the LAUNCH, not `osascript`
+
+- requirement: the anti-double-spawn guarantee is `spawned_windows.SpawnedWindows(SKIP)`, keyed on the
+  INTELLIGENCE ID, reused by reference. `app_launcher` already holds exactly that tracker; the
+  `intelligence` target uses `key = f"intelligence:{id}"`. SKIP's documented semantics are precisely
+  what is wanted: "a launch whose key is already live YIELDS (return the incumbent, spawn nothing)".
+  No new lock, no new module, no new policy.
+- known-hazard: **(LOAD-BEARING — the naive reuse silently does nothing)** `SpawnedWindows` decides
+  liveness with `_alive(proc)` = `proc.poll() is None`. For a terminal target the spawned process is
+  `osascript`, which returns in MILLISECONDS after telling Terminal to run the script. Register that
+  handle and the key is reaped almost immediately, the second press spawns a second Terminal, and the
+  guard reads as present while doing nothing. This is the single most likely way this slice ships
+  broken.
+- requirement: **(the fix is a HANDLE, and the tracker was built for it)** `spawned_windows` is
+  deliberately duck-typed — "a process handle is anything with `.poll()` (alive iff it returns None)
+  ... this keeps the tracker testable with a fake proc and unentangled from paho/skia". The
+  `intelligence` target therefore registers a `LaunchHandle`, not the `osascript` `Popen`:
+  - `LaunchHandle.poll()` returns `None` (ALIVE) while the launch is still in flight, and `0` once it
+    is not, so `SpawnedWindows.reap()` clears the slot on its own with no extra bookkeeping.
+  - In flight means: the id's `channel/alive` has NOT yet been seen since this launch, AND fewer than
+    `LAUNCH_SETTLE_S` (**default 90.0 s**) have elapsed since the spawn.
+  - It keeps the `osascript` `Popen` as `.inner` for logging/diagnostics only.
+  Both terminating conditions are required: the alive-arrival is the SUCCESS exit (the guard hands off
+  to [CXC-ICL-PEER-GUARD]), and the timeout is the FAILURE exit (a launch the human abandoned must not
+  block a retry forever).
+- rationale: **(for 90 s)** the human must answer the startup dialogs before `channel.mjs` starts
+  beating,
+  so this is a human-latency interval, not a machine one. Too short reopens the double-spawn; too long
+  blocks a legitimate retry. It is a module constant, not a magic number at the call site.
+- consequence: **(this is what lets [CXC-ICL-VISIBILITY] have no third state)** because the dedupe
+  is in
+  the daemon, the button may stay on screen and pressable for the whole launch window. A double-click
+  and a double-publish receive the identical `skipped` outcome, which is what keeps the human path and
+  the bus path symmetric.
+- scenario:
+  - when: the intent is published twice, 1 s apart, and no `channel/alive` has arrived
+  - then: exactly one Terminal is spawned and the second call returns the tracker's `skipped` action
+- scenario:
+  - when: the human abandons the launch and `LAUNCH_SETTLE_S` elapses with no `channel/alive`
+  - then: the `LaunchHandle` reads not-alive, the tracker reaps the slot, and the next press launches
+    fresh
+- verify-machine: (a) two `open("intelligence")` calls 1 s apart under an injected clock => exactly ONE
+  spawn, the second returning the `skipped` action; (b) a third call after `LAUNCH_SETTLE_S` => a fresh
+  spawn; (c) a call after the id's `channel/alive` arrives => the slot is reaped and the PEER GUARD
+  (not the tracker) is what refuses; (d) a REGRESSION test that registering the raw `osascript` handle
+  instead of the `LaunchHandle` FAILS leg (a) — so the naive reuse cannot come back unnoticed.
+- uses: [DX-NARROW-WAIST]
+- relates-to: [CXC-ICL-PEER-GUARD]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-PEER-GUARD] Never launch beside a LIVE HARNESS — and the guard keys on HARNESSED, not on reachable
+
+- requirement: **(the predicate, corrected)** `app_launcher` MUST refuse the `intelligence` target
+  when
+  that id is already **HARNESSED** — `self/daemons[intelligence_launcher].status == "up"` and fresh
+  ([CXC-ICL-PRESENCE]). It MUST NOT refuse merely because `channel/alive` is fresh.
+- rationale: **(why reachability is the WRONG predicate here)** the `unharnessed` state
+  ([CXC-ICL-VISIBILITY] state 2) is a fresh `channel/alive` with NO launcher. That is precisely the
+  case where a launch is LEGITIMATE and needed. A guard keyed on reachability would refuse it — the
+  same inversion, one layer down, that [CXC-ICL-PRESENCE] corrects at the pane. The two guards read the
+  same two signals and must key on the same halves of them.
+- known-hazard: **(what the guard protects)** two launchers relaying `intelligence/<id>/out` would
+  DOUBLE-INJECT every actuation ([CXC-IC-SINGLETON]). Under [CXC-ICL-SINGLETON-YIELD] a second launcher
+  now YIELDS rather than reaping the first, so the failure mode is no longer "a stray intent kills a
+  working harness" — it is "a Terminal opens, the launcher yields loudly, and nothing happens." That is
+  a much better failure, but it is still a wasted window and a confusing one, so the guard refuses
+  BEFORE spawning rather than relying on the yield.
+- requirement: **(how the launcher knows)** `app_launcher` subscribes
+  `composeio/global/self/daemons` and
+  stamps arrival time (`time.monotonic()`), treating the map as authoritative while
+  `now - last_arrival <= DAEMONS_FRESH_S` (**default 15.0 s**, the SAME constant the panel uses —
+  defined once and asserted equal by a test, never typed twice). It ALSO subscribes
+  `composeio/global/intelligence/+/channel/alive` for the [CXC-ICL-SPAWN-ONCE] handle's success-exit,
+  which is a different use of a different signal.
+- default: **(UNKNOWN harness state ALLOWS the launch)** with `self/daemons` stale or absent, the
+  launcher
+  PROCEEDS. The pane will not be offering the button in that case anyway ([CXC-ICL-PRESENCE] renders
+  the gauge under `harness_unknown`), so an intent arriving there came from an Intelligence that asked
+  deliberately, and [CXC-ICL-SINGLETON-YIELD] makes the downside a loud no-op rather than a reap.
+  Refusing on unknown would make a `daemon_watch` outage silently disable launching entirely.
+- requirement: on `open("intelligence", ...)` with the id HARNESSED, the launcher logs and returns
+  `already harnessed (refused): <id>` and spawns NOTHING. It MUST NOT reap, kill, or supersede
+  anything — this spec never terminates a running Intelligence or a running launcher.
+- known-hazard: **(the decide-then-spawn race, stated because it WILL be hit)** the harness check
+  and the
+  spawn are not atomic. A launcher can come up in the window between the check and the Terminal
+  actually starting it. The narrowing is [CXC-ICL-SPAWN-ONCE] (at most one spawn per settle window)
+  plus the flock itself (at most one LAUNCHER — and under [CXC-ICL-SINGLETON-YIELD] deterministically
+  the INCUMBENT, with the loser exiting loudly). The race cannot produce two relaying launchers, only,
+  at worst, one wasted Terminal carrying a visible explanation. That residual is ACCEPTED and named.
+- scenario:
+  - when: `self/daemons` reports `intelligence_launcher: up` and the intent is published
+  - then: nothing spawns, nothing is reaped, and the return reads `already harnessed (refused)`
+- scenario:
+  - when: `channel/alive` is fresh but `intelligence_launcher` is `down` (the unharnessed case)
+  - then: the launch PROCEEDS — reachability alone never refuses
+- verify-machine: publish `self/daemons` with `intelligence_launcher: up`, drive
+  `open("intelligence", {"id": "architect"})` under an injected clock, assert ZERO spawns and the
+  `already harnessed (refused)` return; then publish `status: down` WITH a fresh `channel/alive` and
+  assert the spawn HAPPENS (the regression guard for the corrected predicate); then let `self/daemons`
+  go stale and assert the spawn still happens.
+- upholds: [CXC-IC-SINGLETON]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-SINGLETON-YIELD] The launcher's singleton becomes YIELD-IF-HELD + LOUD — a re-ratification of [CXC-IC-SINGLETON]
+
+- decision: `launcher.py` acquires `intelligence-launcher-<id>` with **yield-if-held**
+  (`acquire_singleton`), not **supersede** (`acquire_singleton_superseding`). On a held lock it does
+  NOT spawn `claude`; it reports LOUDLY and exits.
+- premise: **(David, 2026-08-10)** "My design intent is to remove myself from having to call the
+  transport.sh from the CLI, and for that to not even be a supported invocation path. Intent is launch
+  the IC, auto-connect to a running ComposeIO-Architect, and if none running, launch one from within
+  the IC."
+- why-supersede-existed: **(and why the reason expires)** the code's own comment states it —
+  "A plain yield-if-held flock would make a RESUME start exit and SILENTLY fail the restart, so we
+  SUPERSEDE." That is a workaround for an UNCOORDINATED world with multiple entry points, where a
+  lingering predecessor could block a legitimate relaunch and the human would never learn why. With
+  the IC as the SOLE entry point ([CXC-ICL-CLI-UNSUPPORTED]) that race cannot arise: the console
+  refuses to launch beside a live harness ([CXC-ICL-PEER-GUARD]) instead of racing a flock, so a held
+  lock stops being a routine condition to bulldoze and becomes an ANOMALY worth reporting.
+- requirement: **(LOUD, not silent — the original defect must not return)** on a held lock the
+  launcher
+  MUST print, to the Terminal the human is looking at, the holder's pid, the lock name, and the
+  instruction to check the existing session — then exit non-zero, which under [CXC-ICL-TERMINAL] leaves
+  the window OPEN with the message visible. The silent-restart-failure that supersede was built to
+  prevent is cured by VISIBILITY, not by bulldozing: the human now finds out immediately, in the window
+  they just opened, which is the one place they are certainly looking.
+- rejected-alternative: **("the console owns the lifecycle explicitly and never needs supersede")**
+  it
+  CANNOT, and the reason is structural, not preferential. `app_launcher` spawns
+  `osascript -e 'tell application "Terminal" to do script ...'`; `osascript` returns in milliseconds
+  and the resulting shell — and the `launcher.py` beneath it — are children of **Terminal.app**, not of
+  `app_launcher`. The console therefore never holds a handle on the launcher process and structurally
+  cannot reap it. (This is the same fact that makes [CXC-ICL-SPAWN-ONCE] need a `LaunchHandle`.) With
+  no ownership possible through this seam, the flock is the ONLY coordination point, so it must be the
+  one that behaves correctly.
+- requirement: **(unconditional, no env flag)** the flip applies to EVERY invocation, not only
+  console-initiated ones. A conditional supersede would mean the dangerous behaviour survives on
+  exactly the path being deprecated. It is also strictly safer for a human running the script by hand
+  today: the current behaviour reaps a live, working harness; the new behaviour refuses and says so.
+- spec-drift-to-reconcile: **(flagged, cross-referenced so it is recorded ONCE)**
+  [CXC-TERM-SINGLETON] in
+  [SPEC:CXC-TERM] requires the terminal widget to acquire the lock via `acquire_singleton_superseding`
+  and states "this spec MUST NOT change `acquire_singleton_superseding`'s semantics... If superseding
+  turns out to be wrong for a windowed host, that is a re-ratification of [CXC-IC-SINGLETON], not a
+  local exception." THIS NODE IS THAT RE-RATIFICATION. [CXC-TERM-SINGLETON] MUST be updated to
+  yield-if-held + the degraded banner when this lands, and its hazard framing ("a human running
+  `transport.sh` would supersede and reap the console's child") is resolved from the other direction:
+  under [CXC-ICL-CLI-UNSUPPORTED] that human path ceases to exist. Whichever spec builds first carries
+  the change; the second reconciles.
+- scenario:
+  - when: a launcher is started for an id whose lock is already held
+  - then: no `claude` is spawned, the holder's pid is named in the Terminal, and the process exits
+    non-zero with the window still open
+- scenario:
+  - when: the previous launcher crashed
+  - then: the flock released on death, the lock is free, and the launch proceeds normally — a crash
+    never blocks a restart, which is the one property supersede genuinely bought and which yield
+    retains
+- verify-machine: a test acquires the lock out-of-process, runs the launcher, and asserts (a) NO child
+  spawn, (b) a non-zero exit, (c) the holder pid appears in stderr; plus a grep guard that
+  `acquire_singleton_superseding` has no remaining caller in `launcher.py`.
+- verify-human: David confirms the message is legible in the Terminal window when he triggers it
+  deliberately — a loud failure nobody can read is a silent one.
+- re-ratifies: [CXC-IC-SINGLETON] (the launcher case only; the flock NAME, the one-launcher-per-id
+  invariant, and the double-injection rationale are all unchanged — only the collision POLICY moves)
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-CLI-UNSUPPORTED] CLI `transport.sh` invocation becomes UNSUPPORTED — the IC is the sole entry point
+
+- decision: **(David, 2026-08-10)** calling `transport.sh` from the CLI is not merely discouraged,
+  it
+  ceases to be a SUPPORTED invocation path. The supported flow is: launch the IC; it auto-connects to a
+  running harnessed Architect; if none is running, it launches one.
+- consequence: **(for `transport.sh`)** it SURVIVES as an internal implementation detail that
+  `launch-instance.sh` composes with ([CXC-ICL-ENTRY]), not as a user-facing entry point. Its
+  human-facing documentation — the usage banner, the "run this from the SAME directory" instruction,
+  and the `README.md` "transport.sh" section — MUST be re-framed as internal, so a future reader does
+  not restore the CLI ritual from the docs after the code stopped supporting it.
+- constraint: **(what "unsupported" does and does not mean)** the script is not deleted and is not
+  booby-trapped. Running it by hand still works and is the debugging path; what changes is that it
+  carries no compatibility promise, and that the singleton behaviour it inherits is now
+  yield-if-held + loud ([CXC-ICL-SINGLETON-YIELD]) rather than reap-the-incumbent.
+- dependency: **(flagged)** if the terminal widget ([SPEC:CXC-TERM]) lands, the IC hosts the PTY
+  itself and
+  invokes `launcher.py` directly — at which point `transport.sh` has no remaining caller and may retire
+  ENTIRELY. This spec does not retire it, because that decision belongs with whichever slice makes the
+  last caller disappear. Recorded here so the retirement is a planned step and not an orphan discovered
+  later.
+- rationale: the whole coordination story in this spec — one guard, one flock owner, one lifecycle —
+  rests on there being ONE entry point. Every multi-entry-point defense this corpus has written
+  (supersede, the double-injection guard, [CXC-TERM-SINGLETON]'s degraded banner) is a cost paid for a
+  second door. Closing the door is cheaper than defending it.
+- relates-to: [CXC-ICL-SINGLETON-YIELD], [CXC-ICL-ENTRY]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+---
+
+## 5. The spawn — a Terminal, a cwd, and a bootstrapped cold start
+
+### [CXC-ICL-TERMINAL] Extend the EXISTING `TERMINAL` kind — but it must use `osascript`, because `open -a` passes no arguments
+
+- ratified: David, 2026-08-10 — "Agree that the button has to spawn a terminal running transport.sh —
+  reuse what's present." `app_launcher` is extended; no new spawner is written.
+- what-is-already-present: `app_launcher` DOES carry a `TERMINAL` spawn kind, and `_terminal_argv`
+  returns `["open", "-a", "Terminal", <script>]` on darwin and `None` elsewhere. NO table row uses it
+  today, and its own docstring flags it: "this opens the launcher with no per-Intelligence id/env — the
+  exact harness invocation is unresolved and awaits David's ratification." This node is that
+  resolution.
+- known-hazard: **(why `open -a` alone cannot serve it)** `open -a Terminal <file>` runs the file
+  with **NO
+  ARGUMENTS** and in the **USER'S LOGIN ENVIRONMENT**, not the launcher's. There is therefore no way to
+  pass the intelligence id — so `open -a` can only ever launch the DEFAULT instance, and the
+  control-is-a-peer per-id payload ([CXC-ICL-INTENT]) would be silently dropped. (`transport.sh` is
+  worse still under `open -a`: its `SESSION="${1:?usage...}"` exits immediately with a usage message,
+  producing a Terminal that flashes and dies.)
+- requirement: `_terminal_argv` is CHANGED to
+  `["osascript", "-e", 'tell application "Terminal" to do script "<CMD>"', "-e", 'tell application "Terminal" to activate']`,
+  where `<CMD>` is a fully-formed command line built by the launcher. `do script` runs an arbitrary
+  command WITH arguments in a new Terminal window; `activate` raises it. Raising is REQUIRED, not
+  cosmetic: a Terminal spawned behind the console with a dialog waiting is indistinguishable from a
+  launch that hung.
+- requirement: **(`<CMD>` construction is CLOSED, never templated from a payload)** `<CMD>` is
+  composed
+  ONLY from (a) the repo-scoped absolute path of the entry script ([CXC-ICL-ENTRY], resolved through
+  the existing `resolve_scene` repo guard) and (b) the VALIDATED id ([CXC-ICL-INTENT]). Each component
+  is `shlex.quote`d before interpolation and the result is escaped for AppleScript (`\` and `"`). No
+  payload string reaches `<CMD>` unvalidated.
+- requirement: **(the window MUST NOT close on failure)** the entry script MUST NOT end in a form
+  that
+  closes the window on a non-zero exit. On failure it prints the failing command and its exit code and
+  drops to an interactive shell (`exec "$SHELL" -i` after the error message). A Terminal that opens and
+  closes is a launch failure with no evidence — the silent-failure class again.
+- requirement: **(non-darwin)** `_terminal_argv` returns `None` on any non-darwin platform today. It
+  MUST
+  continue to, and `open("intelligence")` MUST then return an explicit
+  `no terminal-open on this platform (<plat>) — run intelligence/launcher/launch-instance.sh manually`.
+  A silent no-op is forbidden. The console is an explicitly macOS/desktop-tier surface
+  ([CXC-LB-TIER-CONSOLE]); this is that scope, stated.
+- requirement: **(the table row)** `TARGET_TABLE` gains exactly one row —
+  `"intelligence": Target("intelligence", TERMINAL, command="intelligence/launcher/launch-instance.sh", note="...")`.
+  `registered_targets()` grows by one and the register-guard selftest's roster set is updated in the
+  same commit ([CXC-LB-INTENT-TABLE]).
+- scenario:
+  - when: `open("intelligence", {"id": "architect"})` is routed on a darwin host
+  - then: the built argv is an `osascript` `do script` + `activate` pair whose command names the
+    repo-resolved `launch-instance.sh` and the id `architect`
+- scenario:
+  - when: the same intent is routed on a non-darwin host
+  - then: nothing spawns and the return names the manual command to run
+- verify-machine: a selftest check asserts the built argv is an `osascript` invocation containing the
+  repo-resolved script path and the validated id; and a negative check that an id of `a; rm -rf /` is
+  REFUSED by the id regex and never reaches `<CMD>`.
+- uses: [CXC-LB-LAUNCHER]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-CWD] The launch cwd is the INSTANCE HOME — a bus intent has no "current directory"
+
+- constraint: `transport.sh` deliberately does NOT `cd`; it runs from whatever cwd invoked it. A launch
+  from the Console has no invoking cwd to inherit — a bus intent arrives in a daemon whose cwd is the
+  repo root, which is emphatically NOT where an instance should live. The cwd must therefore be picked
+  EXPLICITLY. (This was open design question B; it stands, and this is its answer.)
+- requirement: the launch cwd is `INSTANCE_HOME`, default `~/compose-instances/<id>/`, created if
+  absent. This is [DEC-INSTANCE-KEYED-HOMES] / [CXC-IH-HOMES] applied: one instance, one home; the key
+  is the INSTANCE's role/identity, not the project — because an instance works across many Compose*
+  projects and keying by project re-fragments it the moment it moves between them. `transport.sh`
+  already implements exactly this (`INSTANCE_HOME` -> `mkdir -p` + `cd`), so the console-initiated path
+  SETS THE VARIABLE and reuses that code rather than inventing a cd of its own.
+- consequence: **(the cold-start choice makes this clean)** because every console-initiated launch
+  is a
+  COLD start ([CXC-ICL-COLD]), the `--resume` re-pinning caveat that complicates instance homes
+  ("`--resume` re-pins to the project dir the session was CREATED in, so this re-keys only a session
+  cold-started in the instance home") does not apply at all. Every session this path creates is created
+  IN the instance home, which is exactly the condition that decision wanted and could not previously
+  guarantee. The console launch is what finally makes instance-keyed homes the default.
+- requirement: **(reach the repos from the home)** the Compose* projects are reached from the
+  instance home
+  as `additionalDirectories` in `$INSTANCE_HOME/.claude/settings*`, per [CXC-IH-HOMES]. The entry
+  script MUST NOT `cd` into a repo to "help"; that would collapse the instance back onto a project key.
+- default: `INSTANCE_HOME` may be overridden per launch by the environment
+  `COMPOSEIO_INSTANCE_HOME_<ID>`; unset means the stated default. Nothing is inferred from the
+  console's own cwd.
+- uses: [CXC-IH-HOMES]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-COLD] Always COLD START, always WITH the re-register bootstrap — and correct the launcher prose that calls it experimental
+
+- decision: (settled here; this was open design question A, and the correction below dissolves it)
+  a console-initiated launch is ALWAYS a cold start, run WITH the launcher's re-register bootstrap. It
+  does NOT search for, offer, or resume a prior session.
+- correction: (David, 2026-08-10) "The re-register bootstrap is not experimental any longer, it works
+  quite well — it should be the default for new instances." The premise that made a naive Launch button
+  produce an UNORIENTED instance is therefore false. A cold start with the bootstrap is a legitimate,
+  oriented instance, and the entire reason to prefer resume evaporates.
+- requirement: (AMENDED 2026-08-11 — the delivery MECHANISM changed; the rule did not) the entry
+  script sets `BOOTSTRAP=1` for every console-initiated launch. The bootstrap prompt is built
+  from the meta-object manifest by `build_bootstrap_prompt`, which points at the
+  `role_descriptor` / `soul` / `dusk_gifts` artifacts BY PATH and never inlines their contents —
+  that referencing discipline is preserved unchanged. What changed is HOW the prompt reaches the
+  child: it is passed as the child's POSITIONAL PROMPT ARGUMENT at exec time
+  ([CXC-TERM-BOOTSTRAP-ARGV]), not typed into the PTY after a delay. There is NO
+  `BOOTSTRAP_DELAY` — the knob, the timer and the whole startup-injection path are DELETED, not
+  defaulted ([CXC-TERM-BOOTSTRAP-SETTLE-RETIRED]). This node's INTENT is untouched: a
+  console-initiated launch is still always cold and still always bootstrapped.
+- requirement: (manifest resolution is a CHAIN, added 2026-08-11) the manifest is resolved
+  `META_MANIFEST` -> `intelligence/meta/<id>.meta.json` -> `intelligence/meta/<role>.meta.json`
+  -> REFUSE LOUDLY ([CXC-TERM-MANIFEST-CHAIN]). The single-path resolution this node was written
+  against cannot serve N instances of one role, and a launch that cannot orient must refuse
+  visibly rather than log and continue. `BOOTSTRAP=0` remains the explicit opt-out and is the
+  only way to get an unoriented instance on purpose.
+- requirement: (IN SCOPE for this build — fix the stale prose, do not leave the contradiction)
+  `intelligence/launcher/launcher.py` currently defaults `BOOTSTRAP` OFF and describes it as
+  "optional, experimental ... best-effort ... may collide with the human still answering dialogs" in
+  BOTH its module docstring and its config table, and `intelligence/launcher/README.md` repeats it
+  ("Cold start & the optional bootstrap (default OFF)" and the cold-start column of its mode table).
+  That prose is now OUT OF DATE. This build MUST (a) flip the default to ON, (b) correct all three
+  prose sites, and (c) keep `BOOTSTRAP=0` as the explicit opt-OUT. Shipping a spec that says "default
+  on" against code and docs that say "experimental, default off" leaves the next reader to discover
+  the contradiction and guess which is true — which is the drift class this corpus exists to kill.
+- rationale: (why cold and not resume, now that cold is oriented) one button, one predictable
+  behaviour. The resume path would have required deriving Claude Code's project-dir key by MIRRORING a
+  third-party tool's path encoding, then guessing which `.jsonl` the human meant ("the newest one whose
+  mtime is old enough that the session is probably not still running") — a heuristic stacked on an
+  remains the explicit human act for re-hosting a SPECIFIC session, and it is unchanged. The machine
+  does the thing it can do correctly every time; the human keeps the thing that needs judgement.
+- constraint: because the launch is always cold, the entry script takes ONE optional argument (the id)
+- scenario:
+  - when: the console launches an instance and the human answers the startup dialogs
+  - then: the bootstrap prompt was already on the child's argv at exec time, NOTHING is typed
+    into the PTY at any point, and the instance comes up ORIENTED off its referenced gifts —
+    with no prior session resumed
+- scenario:
+  - when: an operator sets `BOOTSTRAP=0` before running the entry script by hand
+  - then: no prompt argument is passed and nothing is injected, exactly as the pre-change default
+    behaved
+- scenario:
+  - when: neither `<id>.meta.json` nor `<role>.meta.json` exists and `BOOTSTRAP` is not `0`
+  - then: the launch REFUSES, naming every path it tried — it does not start an unoriented
+    instance and log about it ([CXC-TERM-MANIFEST-CHAIN])
+- verify-machine: a test asserts the entry script exports `BOOTSTRAP=1` and passes NO `RESUME_SESSION`;
+  and a grep guard that no "experimental" characterization of the bootstrap survives in
+  `launcher.py` / `README.md` after the prose fix.
+- build-status: (2026-08-11 — the code half is DONE; the entry script is NOT) (a), (b) and (c) all landed —
+  the default is ON (`ptycore.bootstrap_enabled`, unset/blank means ON), all three prose sites are
+  corrected, and `BOOTSTRAP=0` is the explicit opt-OUT. The grep guard exists and ALLOWS the line that
+  QUOTES David's correction ("is not experimental any longer"); quoting the correction is the opposite
+  of repeating the claim. TWO silent no-ops were found while doing it and are also fixed: `main()`
+  gated the bootstrap on `META_MANIFEST` being SET (it is unset by default, so even `BOOTSTRAP=1`
+  injected NOTHING — the manifest now defaults to `intelligence/meta/<id>.meta.json`), and the
+  injection was `inject(prompt + "\n")`, a bulk write ending in a LINE FEED — the TUI's newline, not
+  its submit — so it would have typed the whole prompt and then waited forever for a human Return. It
+  now goes through the three-phase `inject_prompt` (clear -> bracketed body -> `\r` submit).
+  STILL OPEN: `intelligence/launcher/launch-instance.sh` ([CXC-ICL-ENTRY]) does not exist, so the
+  entry-script leg of this verify-machine cannot pass yet.
+- consequence: (the widget host, added 2026-08-11, CORRECTED the same day) the terminal widget
+  ([SPEC:CXC-TERM]) implements this node too — a cold spawn in the widget carries the same
+  bootstrap, off the same builder, with the same `BOOTSTRAP=0` opt-out. The settle delay both
+  hosts shared is GONE from both: on its first live firing it landed in a blocking `Enter y/n:`
+  dialog read and echoed `^[[200~` as literal text, which is what retired the mechanism
+  ([CXC-TERM-BOOTSTRAP-SETTLE-RETIRED]). [CXC-TERM-SUPERSEDES-55] recorded this node as SURVIVING
+  UNCHANGED into that host, and it still does — the RULE survived; only its delivery changed.
+- known-gap: (2026-08-11, this node's verify-machine now names a knob that will not exist) the
+  `BOOTSTRAP_DELAY` grep guard and the "leaves BOOTSTRAP_DELAY at 3.0" assertion are replaced by
+  their inverse — a guard that `BOOTSTRAP_DELAY` appears NOWHERE. The entry script
+  ([CXC-ICL-ENTRY]) still does not exist, so this leg of the verify remains unrunnable either
+  way; it is named here rather than quietly re-scoped.
+- verify-human: David confirms on the glass that a console-launched instance comes up ORIENTED — it
+  re-registers off its gifts without being told to ([CXC-ICL-ACCEPT] ICL-C11).
+- change: "2026-08-11 (third pass): bootstrap DELIVERY moves from a timed PTY injection to the child's positional prompt argument, and manifest resolution becomes a chain that refuses loudly. The RULE this node states — always cold, always bootstrapped, `BOOTSTRAP=0` as the opt-out — is unchanged."
+- context_for_change:
+    prior_state: "This node required the entry script to set `BOOTSTRAP=1` and leave `BOOTSTRAP_DELAY` at its 3.0 s default, and its scenario read 'the launcher types the re-register bootstrap after BOOTSTRAP_DELAY'. Manifest resolution was a single path, `intelligence/meta/<id>.meta.json`."
+    reasoning: "The first live spawn of a real `claude` fired the bootstrap into a blocking dialog read. The delay is a fixed timer standing in for a state check against a startup with an unbounded number of human-gated reads, so no value of it is correct; and `claude [options] [command] [prompt]` means the typing was never necessary. The manifest chain follows from the same spawn: a hosted child now carries a DISTINCT id ([CXC-TERM-CHILD-ID]), so a single `<id>.meta.json` leg misses for every child that is not hand-curated."
+    rejected_alternative: "Amend only [SPEC:CXC-TERM] and leave this node's requirement and scenario naming `BOOTSTRAP_DELAY` — rejected outright: two ratified specs disagreeing about the same mechanism is exactly the contradiction this node itself had to correct once already, when the code called the bootstrap 'experimental, default off' against a spec that said 'default on'. The next reader would have to guess which is true."
+    invalidating_assumption: "That the positional prompt reaches the session in interactive mode regardless of startup gates. Unmeasured; the as-deployed census profile ([CXC-TERM-CENSUS-CONFIG-FIDELITY]) is what measures it, and TERM-C13 is the glass gate. A refutation does NOT restore the settle delay — typing at startup stays banned ([CXC-ICL-CONSTRAINT-PTY])."
+- relates-to: [DD-ICL-COLD-VS-RESUME], [CXC-TERM-BOOTSTRAP-ARGV], [CXC-TERM-MANIFEST-CHAIN]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-ENTRY] ONE entry script — `launch-instance.sh` composes with `transport.sh`, it does not fork it
+
+- definition: a new script `intelligence/launcher/launch-instance.sh`, the single entry point the
+  Terminal runs. Signature: `launch-instance.sh [<id>]`, id defaulting to `architect`. There is no
+  session argument ([CXC-ICL-COLD]).
+- requirement: **(compose, never fork)** the script sets `INSTANCE_HOME` ([CXC-ICL-CWD]),
+  `INTELLIGENCE_ID`, `COMPOSEIO_REPO_ROOT`, and `BOOTSTRAP=1`, guarantees the three-server `.mcp.json`
+  in the instance home, and `exec`s `launcher.py` with `RESUME_SESSION` UNSET. The `.mcp.json` writer
+  MUST be SHARED with `transport.sh` (a sourced helper, or a `transport.sh --ensure-mcp-only` mode),
+  NOT copy-pasted. A second copy of that manifest is the exact fork-divergence this corpus fails builds
+  over ([DX-NARROW-WAIST]) — and it is the file that decides whether the instance has a channel at all,
+  so a drifted copy means an instance that comes up mute and a console that shows a launch button
+  forever.
+- requirement: **(it is the ONLY thing the table row names)** `TARGET_TABLE`'s `command` is this
+  script and
+  nothing else. The repo-scoped `resolve_scene` guard runs on it as on every other target path.
+- requirement: **(usable by hand, identically)** a human running
+  `intelligence/launcher/launch-instance.sh architect` in a terminal MUST get the identical result to a
+  button press. The console path is a CALLER of the script, not a privileged path around it —
+  otherwise the button and the manual ritual drift, and the ritual is what gets debugged at 2am.
+- requirement: **(loud preamble)** before exec'ing, the script echoes the resolved plan — id,
+  instance
+  home, cold+bootstrap, claude binary, broker — so the Terminal window itself is the audit record of
+  what was launched. The launcher already logs every keystroke it injects; the launch decision deserves
+  the same treatment.
+- verify-machine: a shell-level test asserts `launch-instance.sh --dry-run architect` prints the plan
+  and exec's nothing, that it exports `BOOTSTRAP=1` and no `RESUME_SESSION`, and a grep guard that the
+  three-server `.mcp.json` JSON literal appears exactly ONCE in the tree.
+- uses: [DX-NARROW-WAIST]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+---
+
+## 6. Errors and boundaries — every one the design implies, written down
+
+### [CXC-ICL-BOUNDARIES] The failure matrix — what happens, and what is VISIBLE, in each
+
+- definition: the enumeration. A row's "surfaced as" column is normative: every failure is visible
+  somewhere a human or a test can see it. There is no row whose behaviour is "nothing happens".
+
+| # | Condition | Behaviour | Surfaced as |
+|---|-----------|-----------|-------------|
+| 1 | Intent with no payload | id defaults to `architect` | normal launch |
+| 2 | Intent with an id failing `^[a-z0-9][a-z0-9_-]{0,31}$` | REFUSED, no spawn | log `refused (bad id)` |
+| 3 | Intent with a falsy payload (`""`, `off`, `false`, `0`, `close`) | no-op, as every `_app/*` intent | nothing (correct — a close verb has no meaning here) |
+| 4 | Target id already HARNESSED ([CXC-ICL-PEER-GUARD]) | REFUSED, nothing reaped | log `already harnessed (refused)` |
+| 4b | Target id REACHABLE but UNHARNESSED | launch PROCEEDS — this is the case the feature exists for | the `unharnessed` warning pane preceded it |
+| 4c | `self/daemons` stale/absent at intent time | launch PROCEEDS ([CXC-ICL-PEER-GUARD] default) | debug log naming the stale harness read |
+| 4d | The flock is held when the launcher starts | NO child spawned; loud message + non-zero exit; window stays open ([CXC-ICL-SINGLETON-YIELD]) | the Terminal window itself, naming the holder pid |
+| 5 | A launch for this id already in flight ([CXC-ICL-SPAWN-ONCE]) | SKIPPED by the tracker | log `already open (skip)`; the button stays on screen and pressable |
+| 6 | `launch-instance.sh` missing or outside the repo | REFUSED by `resolve_scene` | log `refused (command missing/out-of-repo)` |
+| 7 | Non-darwin platform | REFUSED with the manual command named | log |
+| 8 | `osascript` non-zero / Terminal not installed | the `LaunchHandle` reads NOT-alive immediately, so the slot clears and a retry is possible at once | log with the captured stderr |
+| 9 | Human never answers the dialogs | the `LaunchHandle` expires at `LAUNCH_SETTLE_S` and the slot clears, so pressing again launches fresh | the button was never hidden; a re-press just works |
+| 10 | `claude` fails inside the Terminal | window STAYS OPEN with the error and an interactive shell | the Terminal window itself |
+| 11 | Bus down at press time | button DISABLED with "BUS OFFLINE" ([CXC-ICL-VISIBILITY]) | the panel body |
+| 12 | `console/link/state` never published (a scene with no `link_health`) | pane stays on the gauge — today's behaviour exactly | nothing; the additive-superset property ([CXC-ICL-PANE-SWAP]) |
+| 13 | The instance comes up but its `.mcp.json` lacks the channel server | no `channel/alive` ever arrives; harness reads `up`, so the pane shows `orphaned` with the button DISABLED and points at the Terminal | the `orphaned` body — which is exactly right: a launcher IS running |
+| 14 | `daemon_watch` itself is down | harness UNKNOWN; the pane shows the gauge plus `harness: unknown` — never a false alarm, never a silent guess ([CXC-ICL-PRESENCE]) | the marker |
+| 15 | Two instances briefly share an id after an `unharnessed` launch | CANNOT HAPPEN — a state-2 launch goes out under the DISTINCT recovery id `recovery-architect-2` ([DD-ICL-UNHARNESSED-ACTION]), so `intelligence/<id>/*` and `self/<id>/*` keep exactly one publisher each and [CXC-IH-5A]'s clobber never arises | CLOSED BY CONSTRUCTION, not a mitigated hazard — the panel body names the recovery id it will launch and instructs the human to exit NOTHING; the mechanical guard is a test asserting the state-2 intent carries `recovery-architect-2` and never the canonical id, added to the truth-table test in [CXC-ICL-PRESENCE] |
+| 16 | Channel REACHABLE but DEGRADED (`delivery != "ok"`, or `unacked` climbing across `DEGRADED_CLIMB_N` payloads) | the PRESENCE states are UNCHANGED — the gauge stays, the launch button stays hidden, nothing is launched; the condition is SURFACED, never acted on ([CXC-ICL-PRESENCE], [CXC-ICL-VISIBILITY]) | the header dot goes amber and `link_label` + `composer_send_label` read `DEGRADED`; the `intelligence_card` shows `channel: degraded — messages may not be arriving` |
+| 17 | The verdict is `degraded` but a `map:` bound to `console/link/state` has no `degraded` key | that surface silently renders its `default:` — the HEALTHY look — which is a green ENGAGED header over a channel that is not delivering | CANNOT SHIP: [CXC-ICL-ACCEPT] ICL-C19 leg (b) enumerates every such binding and fails the build if one lacks the key |
+- constraint: rows 8, 9 and 10 are the three places a launch can fail AFTER the intent was accepted.
+  All three MUST leave the system immediately re-launchable — 8 and 9 by the `LaunchHandle` clearing
+  its slot, 10 by the window staying open. A failure that leaves the button permanently inert is worse
+  than the original problem.
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+---
+
+## 7. Acceptance — machine signal AND, for every human-perceptible surface, a glass gate
+
+### [CXC-ICL-ACCEPT] The acceptance criteria
+
+- definition: two-tier by construction — a machine signal is necessary and, for any surface a human
+  perceives, never sufficient. ICL-C1..C6 are David's six stated criteria, one-to-one.
+
+| ID | Criterion | when / then | verify.machine | verify.human (glass) |
+|----|-----------|-------------|----------------|----------------------|
+| ICL-C1 | No frozen gauge with no instance | WHEN no instance is connected THEN the pane shows the Launch affordance, NOT a stale gauge | a scene test publishes `console/link/state = channel_offline` and asserts `intelligence_panel` is absent from `_flow_children()` and contributes ZERO height, and `instance_launch_panel` is present | David kills the instance and watches the gauge be REPLACED (not dimmed) within ~12 s |
+| ICL-C2 | The press spawns a real Terminal running the harness | WHEN the button is pressed THEN a Terminal window opens running `launch-instance.sh <id>` | selftest: the built argv is the `osascript`/`do script` form containing the repo-resolved script + validated id (spawn injected, no real window) | David presses it and a Terminal appears, RAISED, showing the plan preamble and then the real Claude Code UI |
+| ICL-C3 | The pane swaps back with NO console bounce | WHEN `channel/alive` resumes THEN the gauge returns in the SAME console process | a test publishes `engaged` after `channel_offline` and asserts the shown-map flips back and the card re-enters the flow | David answers the dialogs and the gauge returns live in the console he never restarted |
+| ICL-C4 | A second press does not spawn a second instance | WHEN the intent arrives twice while a launch is in flight THEN exactly ONE spawn occurs | [CXC-ICL-SPAWN-ONCE] legs (a)-(d) — including leg (d), which FAILS if the raw `osascript` handle is registered instead of the `LaunchHandle`. Satisfied by the DAEMON, not by a pane state, so the same test covers the bus path | David double-clicks; one Terminal |
+| ICL-C5 | Control-is-a-peer: an Intelligence publish == a human press | WHEN an Intelligence publishes the identical intent THEN the outcome is identical, INCLUDING the dedupe | a test publishes `_app/intelligence/open` twice directly with no widget in the process and asserts one spawn + a `skipped` — the same assertion as ICL-C4 | David asks the Intelligence to publish it and watches the same Terminal open |
+| ICL-C6 | Nothing regresses when an instance IS connected | WHEN an instance is connected THEN the pane behaves exactly as today | the console capture-diff (`python/tests/render/captures/`) is byte-identical for the connected/headless case ([CXC-ICL-PRESENCE] headless default + [CXC-ICL-PANE-SWAP] `initial:`) | David bounces the console beside a live instance and sees no visual change at all |
+| ICL-C7 | ONE reachability computation, ONE dedupe mechanism | WHEN the guard tests run THEN no second freshness timer and no second dedupe exist | `DAEMONS_FRESH_S` defined once and shared by the panel and the launcher (asserted equal); the panel derives NO reachability verdict of its own; `app_launcher` holds exactly one `SpawnedWindows` | — |
+| ICL-C8 | A live HARNESS is never superseded | WHEN the intent arrives for a HARNESSED id THEN nothing spawns and nothing is reaped | [CXC-ICL-PEER-GUARD]'s test | David publishes the intent while talking to a harnessed instance; the conversation is uninterrupted |
+| ICL-C14 | The unharnessed instance is SURFACED, not hidden | WHEN `channel/alive` is fresh and `intelligence_launcher` is `down` THEN the pane warns and offers the launch | the four-way truth-table test ([CXC-ICL-PRESENCE]); plus a REGRESSION test that a reachability-only design FAILS it | David, on the bare session that raised this, sees the warning instead of a healthy gauge |
+| ICL-C15 | A held lock fails LOUDLY, never silently | WHEN the flock is held and a launcher starts THEN no child spawns and the holder is named | [CXC-ICL-SINGLETON-YIELD]'s test, including the grep guard that `acquire_singleton_superseding` has no caller left in `launcher.py` | David reads the message in the Terminal and can act on it |
+| ICL-C16 | A crash still never blocks a restart | WHEN a launcher dies THEN the next launch proceeds | a test that releases the flock by process death and asserts a clean subsequent acquire — the one property supersede bought, retained under yield | — |
+| ICL-C9 | Injection-safe | WHEN a hostile id is published THEN it never reaches the shell | negative tests for `a; rm -rf /` and a path-traversal id | — |
+| ICL-C10 | The register-guard still passes | WHEN the app_launcher selftest runs THEN every roster intent (now 8) has a consumer | `python3 intelligence/tools/app_launcher.py --selftest` green with the roster set updated | — |
+| ICL-C11 | The whole loop, on the glass | WHEN the console is up with no instance THEN David reaches an ORIENTED, self-compacting Intelligence without typing a command | — (there is no machine signal for "the loop closed") | **David: press -> answer dialogs -> the instance comes up re-registered off its gifts ([CXC-ICL-COLD]) -> gauge live -> the instance emits a `/compact` directive and the launcher types it.** Mandatory, non-delegable |
+| ICL-C12 | The bootstrap prose no longer contradicts the code | WHEN the grep guard runs THEN no site still calls the bootstrap experimental/default-off | a grep guard over `launcher.py` + `intelligence/launcher/README.md` ([CXC-ICL-COLD]) | — |
+| ICL-C13 | Suites stay green | WHEN the slice lands THEN no test regresses | `pytest intelligence/` + the render suite green, no unexplained drop in collected count | — |
+| ICL-C17 | `degraded` is COMPUTED — once, in `link_health`, under BOTH triggers ([DD-ICL-DEGRADED]) | WHEN `delivery != "ok"`, OR `unacked` climbs across `DEGRADED_CLIMB_N` consecutive payloads, THEN `console/link/state` publishes `degraded` | a `link_health` unit test drives each trigger INDEPENDENTLY under an injected clock and asserts the published verdict; plus the PRECEDENCE leg — a stale heartbeat while `delivery != "ok"` publishes `channel_offline`, NEVER `degraded` ([CXC-ICL-PRESENCE] cascade) | — |
+| ICL-C18 | The hysteresis holds — one blip cannot flap the most-watched pixel | WHEN a single bad payload is followed by a clean one THEN the verdict does not oscillate | a test feeds bad->good->bad->good and asserts recovery requires `DEGRADED_RECOVER_N` clean payload(s) (`delivery == "ok"` AND non-increasing `unacked`); that any non-increasing `unacked` RESETS the climb run; that a missing `delivery` reads as `ok` and a missing `unacked` resets the run; and that a channel which STOPS publishing ages into `channel_offline` rather than recovering out of `degraded` by silence | — |
+| ICL-C19 | ONE computation — and EVERY consumer actually renders it | WHEN `degraded` is published THEN no surface re-derives it and no surface falls back to its healthy default | (a) the panel module contains no read of `delivery`/`unacked` — the [CXC-ICL-PRESENCE] grep test, extended, so the pane stays DOWNSTREAM of the single verdict — and the only occurrence of the literal `degraded` in that module is its mapping to `reachable = yes` ([CXC-ICL-PANEL]); (b) a scene test enumerates EVERY attribute `map:` bound to `console/link/state` in `console.compose.yaml` and asserts each carries a `degraded` key — the omission that would render a degraded channel as a green ENGAGED header ([CXC-ICL-BOUNDARIES] row 17); (c) the truth-table test asserts `degraded` selects the SAME state as `engaged` for every harness value, so `intelligence_panel` stays shown, `instance_launch_panel` stays hidden, and the launch button is never revealed | — |
+| ICL-C20 | The degraded condition is legible ON THE GLASS, on both surfaces — and the thresholds get settled | WHEN the channel degrades THEN David can tell, from the console alone, that messages may not be arriving | slice 5's capture re-baseline is reviewed on its OWN, containing the dot/label/marker change and NOTHING else — no rail reflow in the same diff ([CXC-ICL-SLICES] slice 5) | **David, on a genuinely degraded channel or with `degraded` injected, sees the header go amber and read `DEGRADED` and the gauge card carry its marker — and CONFIRMS the gauge did not vanish and the launch button did not appear. He settles the provisional thresholds here: too eager, too lax, or right ([CXC-ICL-PRESENCE] known-hazard).** Mandatory, non-delegable |
+
+- constraint: ICL-C11 CANNOT be waived by a green machine run. Every mechanism in this spec can pass in
+  isolation while the end-to-end loop fails for a reason only a human at the Terminal will see (a
+  dialog that did not appear, a window that opened behind the console, an `.mcp.json` that did not
+  register the channel, a bootstrap that landed before the dialogs were done). That is the whole reason
+  the proxy is transparent.
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+---
+
+## 8. Sequencing
+
+### [CXC-ICL-SLICES] Five slices, smallest blast radius first
+
+- definition: each slice is independently landable and revertable and ends with the criteria that apply
+  to it.
+
+| Slice | Content | Why here | Revert |
+|-------|---------|----------|--------|
+| 1 | `launch-instance.sh` + the shared `.mcp.json` helper + the `--dry-run` preamble + the `BOOTSTRAP` default flip and the three prose corrections ([CXC-ICL-COLD]). No console change. | It is the piece a HUMAN can validate by hand before any button exists ([CXC-ICL-ENTRY] "usable by hand, identically"). If the script is wrong, everything above it is untestable. The prose fix rides here because it is the same file family. | delete the script; revert one default |
+| 1b | The singleton flip to yield-if-held + loud ([CXC-ICL-SINGLETON-YIELD]) and the `transport.sh` re-framing ([CXC-ICL-CLI-UNSUPPORTED]). | Its own commit because it changes the behaviour of an EXISTING path used today, independently of anything else here, and it is strictly safer on that path (refuse-and-say beats reap-a-live-harness). Landing it early also means slices 2-3 are built against the final lock semantics. | one call site |
+| 2 | `app_launcher`: the `intelligence` TARGET_TABLE row, the `osascript` `_terminal_argv` fix, `open(target, payload)`, id validation, the `LaunchHandle` + [CXC-ICL-SPAWN-ONCE], the `self/daemons` + `channel/alive` subscriptions + [CXC-ICL-PEER-GUARD]. Driven by a bus publish, no UI. | Proves ICL-C2/C4/C5/C8/C9 with NO console risk at all — the console is not touched. Control-is-a-peer means the whole feature is reachable from the bus before any pixel moves. | one file |
+| 3 | The `instance_launch_panel` widget + the scene wiring (`visibility_namespace`, the `self/daemons` + `console/instance/pane` + `console/instance/harness` declarations, the rail child, the card's harness marker). | The only slice that can move a pixel in the console; it lands after the launch path is already proven, so a failure here is unambiguously a UI failure. Gated on the capture-diff (ICL-C6) with the marker re-baselined once. | revert the scene block + delete the widget |
+| 4 | Glass run: ICL-C11 end to end, including a real `/compact` self-direction from the launched instance. | The loop is not closed until the launched instance can compact itself — that is the entire point of the harness. | n/a |
+| 5 | `degraded` end to end ([DD-ICL-DEGRADED]): the THIRD verdict value + `DEGRADED_CLIMB_N` / `DEGRADED_RECOVER_N` + the precedence cascade in `link_health`; the `degraded` key added to EVERY `map:` bound to `console/link/state` (`link_label`, `composer_send_label`); and the `intelligence_card`'s `channel: degraded` marker. NO presence logic changes — the truth table is untouched ([CXC-ICL-VISIBILITY]). Ends with ICL-C17..C20. | Its correctness is NOT machine-verifiable in one pass: it changes the header dot's SEMANTICS *and* the pane, both human-perceptible, and it needs its own capture re-baseline. Folding it into slice 3 would make THAT slice's capture-diff unreadable — a rail reflow and a dot recolour in one diff is a diff nobody can read — which was the original deferral's stated reason and is still true. It lands AFTER slice 4 so the launch loop is already closed and the only thing moving in this diff is the delivery signal. | `link_health`'s cascade + the map entries + one bound label |
+- constraint: slice 3 does not land without a CLEAN capture-diff. The console's failure mode is that it
+  renders perfectly while the data is wrong; a pixel diff is the only instrument that sees a rail that
+  silently reflowed. The same applies to slice 5, whose re-baseline MUST contain the dot/label/marker
+  change and nothing else.
+- rationale: **(why slice 5 is SPLIT — recorded so the split does not read as CAUTION)** this
+  project's
+  build doctrine is one pass, not small steps, and a slice is split when its CORRECTNESS cannot be
+  established in one pass — never for size and never for nerves. Slice 5 qualifies on that test and on
+  that test only: its verdict is two human-perceptible surface changes whose acceptance is a glass gate
+  (ICL-C20) plus a capture re-baseline that has to stay READABLE. Slices 1-3 each have a machine gate
+  that CLOSES them; slice 4 is itself a glass run, split for exactly this same reason and by the same
+  rule; ICL-C20 has no machine gate that can close it either. That is the whole reason, written so
+  nobody later "simplifies" the plan by folding 5 into 3 and loses the readable diff with it.
+- dsd-source: **(slice 5 only)** docs/intelligence-console/DECISIONS-ic-launch-and-conops.md — slice
+  5
+  exists because David PROMOTED `degraded` from DEFERRED to shipping in DSD D2
+  ([DEC-ICL-DEGRADED-CHANNEL-VISIBLE], [DD-ICL-DEGRADED]). Its SHAPE — the split, the rendering, the
+  thresholds — is the composeux-architect's ratify layered on top of that call, not David's.
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [CXC-ICL-OUT] Explicitly out of scope — named so it is not smuggled in
+
+- out: auto-answering Claude Code's startup dialogs, by keystroke injection or any other means
+  ([CXC-ICL-CONSTRAINT-PTY]). Permanently out, not deferred. (Distinct from the re-register BOOTSTRAP,
+  which is now the default — see [CXC-ICL-COLD].)
+- out: any change to the `/compact` actuation relay, its three-phase injection, or the harness monitor
+  ([CXC-IC-LIFECYCLE], [CXC-IC-MONITOR]). This spec makes the harness EASIER TO START and touches
+  nothing about what it does once started.
+- out: RESUMING a specific prior session from the console, and any session picker. That stays the
+- out: STOPPING or restarting a running instance from the console. This spec only ever adds an
+  instance, never removes one ([CXC-ICL-PEER-GUARD]).
+- out: the fleet roster UI and multi-instance cards ([CXC-IH-CONSOLE]) — though the per-id payload
+  ([CXC-ICL-INTENT]) is deliberately shaped so the fleet case is an extension, not a rewrite.
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+---
+
+## 9. Design decisions
+
+### [DD-ICL-COLD-VS-RESUME] Always cold with the bootstrap, vs resume-if-available
+
+- decision: RESOLVED — always cold start, with the re-register bootstrap ON ([CXC-ICL-COLD]).
+- ratified: David, 2026-08-10 — "The re-register bootstrap is not experimental any longer, it works
+  quite well — it should be the default for new instances."
+- rationale: the case for resume rested entirely on the premise that a cold successor is UNORIENTED,
+  because its only orientation aid was documented experimental and collision-prone. That premise is
+  false. With the bootstrap working, cold start is oriented, and it is also the only option that
+  requires no heuristic: resume would have meant mirroring a third-party tool's project-dir path
+  encoding and then guessing which `.jsonl` the human meant. One button, one predictable behaviour;
+- alternatives: (ii) resume-if-available, cold otherwise, with the button label stating the plan —
+  strictly more context preserved when it works, at the cost of a two-layer heuristic and a variable
+  button; (iii) two affordances — most honest, but it puts a session picker into a 332px rail card to
+  serve a choice the human is better placed to make deliberately.
+- status: resolved
+- invalidating_assumption: "That the re-register bootstrap reliably produces an oriented instance, AND
+  that losing an exited session's intact context is acceptable because the gifts rebuild enough. If the
+  bootstrap regresses (a multi-line prompt submitting early on an embedded newline is its known
+  historical failure), or if David finds himself repeatedly re-hosting by hand right after pressing the
+  button, alternative (ii) reopens — and the candidate rule it needs is exactly the one deleted here."
+- documents: [CXC-ICL-COLD]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [DD-ICL-NO-LAUNCHING-STATE] The anti-double-spawn guard belongs in the daemon, not in a third pane state
+
+- decision: RESOLVED — the pane has exactly two configurations ([CXC-ICL-VISIBILITY]); spawn-once lives
+  in `app_launcher` via `spawned_windows` ([CXC-ICL-SPAWN-ONCE]).
+- ratified: David, 2026-08-10 (the button is visible only when no instance is connected), with the
+  refinement that the guard moves to the consumer.
+- the-objection-this-answers: **(recorded because it is real)** between the press and the first
+  `channel/alive` beat the instance is NOT connected, so the button is still on screen and still
+  pressable — for as long as the human takes to answer the dialogs. A second press would spawn a second
+  launcher, and the launcher's singleton SUPERSEDES, so it could reap the very instance whose dialogs
+  the human was mid-way through answering. The window is real; the question was only WHERE to close it.
+- rationale: closing it with a UI latch protects the human path and leaves the BUS path unguarded,
+  because an Intelligence never consults the widget — the exact asymmetry control-is-a-peer exists to
+  prevent. Closing it in the daemon gives a double-click and a double-publish the identical outcome,
+  keeps the widget a pure intent emitter, and reuses a seam that already exists and is already shared
+  ([DX-NARROW-WAIST]) instead of adding a state machine.
+- alternatives: (a) a `launching` pane state with its own timeout — more visible, but it is UI-only
+  protection plus a second timer that can disagree with the daemon; (b) both — belt and braces, but two
+  mechanisms for one guarantee is the fork class.
+- status: resolved
+- invalidating_assumption: "That `spawned_windows`' duck-typed `poll()` contract stays duck-typed. The
+  whole reuse rests on registering a `LaunchHandle` rather than the `osascript` `Popen`
+  ([CXC-ICL-SPAWN-ONCE]). If `SpawnedWindows` is ever narrowed to real `subprocess.Popen` objects, this
+  guard silently becomes a no-op — which is why leg (d) of its test asserts the failure mode directly."
+- documents: [CXC-ICL-VISIBILITY]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [DD-ICL-UNHARNESSED-ACTION] What the `unharnessed` pane should OFFER — warn-only vs launch-anyway vs launch under a DISTINCT recovery id
+
+- decision: RESOLVED — alternative (c): the state-2 button is ENABLED and launches under a DISTINCT,
+  RECOVERY-scoped id — `recovery-architect-2` for the default `architect` — and NEVER under the
+  canonical id. The running bare session is left untouched; nothing is asked to exit.
+- ratified: David, 2026-08-10 — "This scenario is a recovery/fallback mode when there are operational
+  problems that preclude the normal use of the IC and a harnessed agent. Suggest using
+  'recovery-architect-2' for clarity."
+- dsd-source: docs/intelligence-console/DECISIONS-ic-launch-and-conops.md
+- rationale: state 2 needs an ACTION, not a notice board — a dead-end warning sends the human to the
+  CLI ritual this spec is retiring ([CXC-ICL-CLI-UNSUPPORTED]). The only action physically available is
+  a SECOND instance, and the sole objection to that was the shared-id clobber. Renaming the second
+  instance removes the objection entirely rather than trading it for a manual precondition: the human
+  gets a working harnessed Intelligence immediately, the bare session keeps running untouched, and no
+  namespace has two publishers at any point. It is the alternative with the action AND without the
+  hazard, and it only looked expensive while the second instance was mis-framed as a rival architect.
+- reframing: **(what David's call actually changed, and why it DISSOLVES (c)'s recorded cost)** this
+  node
+  had costed (c) as "no collision, but it fragments the identity and instance-keyed home
+  ([CXC-IH-HOMES]) for what is meant to be a repair." That cost assumed the second instance was a PEER
+  architect competing for the same identity. It is not. State 2 is a RECOVERY/FALLBACK mode — the
+  normal use of the IC plus a harnessed agent is already precluded — and a `recovery-` prefixed
+  instance never CLAIMS to BE the architect, so the which-one-is-canonical question does not arise and
+  there is no identity to fragment. The rename PRESERVES the identity rather than splitting it; that is
+  why the FRAMING, not the id string, is the load-bearing half of this ratify.
+- requirement: **(the id rule, stated so it is not invented)** the recovery id is `recovery-<id>-2`,
+  which
+  for the default `architect` yields `recovery-architect-2`. It MUST satisfy the same
+  `^[a-z0-9][a-z0-9_-]{0,31}$` validation as any other id ([CXC-ICL-INTENT]), and it is what the panel
+  puts in the intent payload in state 2 — the canonical id is NEVER published from state 2. It takes
+  its own instance home `~/compose-instances/recovery-architect-2/` by the ordinary rule
+  ([CXC-ICL-CWD]) with no special case, and it is cold-started with the bootstrap like any other
+  ([CXC-ICL-COLD]).
+- consequence: **(the clobber hazard is CLOSED BY CONSTRUCTION, not mitigated)** two instances can
+  no
+  longer share an id, so the `self/<id>/*` + `intelligence/<id>/*` clobber ([CXC-IH-5A]) cannot occur
+  at all — row 15 of [CXC-ICL-BOUNDARIES] is rewritten from KNOWN HAZARD to CLOSED. The peer guard
+  ([CXC-ICL-PEER-GUARD]) evaluates the RECOVERY id, which is unharnessed by definition, so the launch
+  proceeds without the guard needing a state-2 exception.
+- the-tension-this-replaces: **(kept for the record)** the console CANNOT re-host the running bare
+  session —
+  `claude --resume` requires it to have exited, and nothing on the bus can make a live instance quit
+  (the channel pushes CONTENT a mind reads, not control keys; that asymmetry is [CXC-IC-LIFECYCLE]'s
+  whole premise). Under the previous PROPOSED form the only action was a SECOND instance under the SAME
+  id, which clobbered until the human exited the first. The rename removes the clobber without needing
+  the human to exit anything, so the manual precondition disappears along with the hazard.
+- alternatives: (a) WARN-ONLY — no button in state 2; strictly safe, no clobber possible, but it makes
+  the pane a notice board and pushes the human off the supported path onto the CLI ritual this spec is
+  retiring ([CXC-ICL-CLI-UNSUPPORTED]); (b) offer the launch and ALSO publish an advisory onto
+  `intelligence/<id>/in` asking the running instance to exit — respects the content/control split, but
+  it depends on a mind cooperating and is unbounded in time; (b2) the PROPOSED form this supersedes —
+  launch under the CANONICAL id with the body instructing the human to "exit it first" — rejected: it
+  traded a transient clobber AND a manual precondition for nothing the rename does not give for free.
+- recorded-not-taken: **(raised by the architect; it COMPOSES with this decision rather than
+  replacing it)** PREVENT the state rather than remediate it — have `channel_bridge` REFUSE the
+  canonical id
+  unless a harness is present for that id, auto-falling back to a distinct `architect-bare`. That would
+  make "reachable but unharnessed under the canonical id" UNREACHABLE and retire state 2 entirely, so
+  the pane would never need a recovery affordance at all. It is not taken here because it changes a
+  SHARED transport component's behaviour, which is outside this spec's boundary, and because a fallback
+  still needs somewhere to launch from. If it is ever built, THIS decision remains correct: the
+  recovery launch becomes the path for the residual cases prevention does not cover, and state 2
+  becomes rare rather than wrong.
+- status: resolved
+- invalidating_assumption: "That a recovery instance under a distinct id is USEFUL — that the gifts +
+  bootstrap ([CXC-ICL-COLD]) orient `recovery-architect-2` well enough to perform the repair, and that
+  no console surface (the gauge, the transcript pin, the composer's send target, a future fleet roster)
+  hard-codes the canonical id and therefore renders the recovery instance INVISIBLE. If a recovery
+  instance comes up unreachable from the console's own surfaces, this reopens as alternative (a) plus
+  the prevention note above — a button that launches an instance nobody can see is worse than no
+  button."
+- documents: [CXC-ICL-VISIBILITY]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [DD-ICL-SINGLETON-YIELD] Yield-if-held vs supersede vs console-owned lifecycle
+
+- decision: RESOLVED — yield-if-held + LOUD ([CXC-ICL-SINGLETON-YIELD]).
+- ratified: David, 2026-08-10 — CLI invocation of `transport.sh` ceases to be a supported path, so the
+  uncoordinated-entry-points world supersede was defending against no longer exists.
+- rationale: supersede's own justification is a comment about a SILENT restart failure in a world with
+  several entry points. With one entry point the console refuses before spawning
+  ([CXC-ICL-PEER-GUARD]), so a held lock is an anomaly, and the cure for a silent failure is
+  VISIBILITY, not bulldozing. Yield retains the one property supersede genuinely bought — a crash
+  releases the flock, so a crash never blocks a restart (ICL-C16).
+- alternatives: (a) keep SUPERSEDE — no change, but it means any stray launch can reap the console's
+  live child, which is the hazard [CXC-TERM-SINGLETON] independently flagged from the other direction;
+  (b) CONSOLE-OWNED LIFECYCLE — rejected on a structural fact, not a preference: the launcher is a
+  child of Terminal.app, never of `app_launcher` (which only ever holds a millisecond-lived `osascript`
+  handle), so the console cannot reap it; (c) a console-specific singleton variant — rejected by
+  [CXC-TERM-SINGLETON]'s own constraint that this must be a re-ratification of [CXC-IC-SINGLETON], not
+  a local exception.
+- status: resolved
+- invalidating_assumption: "That the IC remains the SOLE entry point. If any second path to spawning a
+  launcher is ever restored — a CLI ritual, a LaunchAgent, a remote trigger — the uncoordinated world
+  returns, a held lock stops being an anomaly, and supersede's original argument becomes live again.
+  The yield decision is downstream of the one-door decision and must be revisited with it."
+- documents: [CXC-ICL-SINGLETON-YIELD]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [DD-ICL-INTENT-KEY] `_app/intelligence/open` (new key) vs re-purposing `_app/harness/open`
+
+- decision: RESOLVED — the PROPOSED form stands: a NEW target key `intelligence`, so the console's
+  launch button publishes `_app/intelligence/open`. `_app/harness/open` keeps its ratified FOCUS/HOST
+  semantics entirely untouched.
+- ratified: composeux-architect, 2026-08-10 — ratified by the ARCHITECT, not David, and recorded that
+  way deliberately. David settled FOUR other calls in this spec through his Decision-Support-Doc
+  (`docs/intelligence-console/DECISIONS-ic-launch-and-conops.md`); this was NOT one of them, and a
+  reader must not misattribute it to him. It is the architect's ratify because the spec's own argument
+  is decisive and the only alternative breaks a semantic David had ALREADY ratified — a call whose
+  second option is self-refuting does not need his attention, but it does need an honest record of
+  whose call it was.
+- rationale: `_app/harness/open` was RATIFIED as a FOCUS, not a spawn (David 2026-07-29,
+  [DD-LB-LAUNCH-MECHANISM], recorded in `TARGET_TABLE`'s own comment: "the AI harness tile FOCUSES the
+  already-running harness, it does NOT spawn a new PTY session"), and it is what the Launch Bar's tile
+  2 publishes ([CXC-LB-ROSTER]). Re-purposing it would mean the SAME key means focus-an-existing-window
+  when pressed on the ribbon and spawn-a-new-instance when pressed in the console — two behaviours
+  behind one name, AT THE CONTRACT LAYER, which makes the Launch Bar's behaviour depend on WHICH
+  SURFACE pressed it. That is not a naming preference; it is
+  [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS] created deliberately. A new key costs ONE table row in
+  `app_launcher.py` ([CXC-ICL-TERMINAL]; no second daemon, [CXC-ICL-SCOPE-BOUNDARY]) and keeps FOCUS
+  and SPAWN separately evolvable. The `open` suffix is forced by the existing
+  `composeio/global/_app/+/open` subscription ([CXC-ICL-INTENT]).
+- consequence: with this closed, [SPEC:CXC-IC-LAUNCH] has ZERO open decision points — every `DD-ICL-`
+  decision node in section 9 carries `status: resolved`.
+- alternatives: (a) re-purpose `_app/harness/open` — fewer keys, but it inverts a ratified decision and
+  conflates FOCUS with INSTANTIATE on a tile that already ships; (b) `_app/harness/launch` — reads
+  better but is NOT RECEIVED by the existing wildcard and would force a second subscription or a second
+  daemon, i.e. the fork [DD-LB-LAUNCH-MECHANISM] rejected.
+- status: resolved
+- invalidating_assumption: "That FOCUS and SPAWN stay genuinely DISTINCT operations. If the launcher
+  ever gains focus-or-spawn-as-appropriate semantics — press once to spawn, press again to focus what
+  you spawned — the two keys COLLAPSE into one and `harness` should become a kind that dispatches on
+  liveness, which is exactly [CXC-ICL-PEER-GUARD]'s check, already built. That revisit MUST happen
+  TOGETHER WITH [DD-LB-LAUNCH-MECHANISM] and never independently: this decision is downstream of the
+  tile-2-is-a-FOCUS decision, and re-opening one without the other would leave the corpus asserting
+  both at once."
+- documents: [CXC-ICL-INTENT]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [DD-ICL-LAUNCH-HINT] A purely COSMETIC "launch requested" sub-line during the launch window
+
+- decision: RESOLVED — YES, as recommended: the panel's sub-line reads "launch requested — answer the
+  dialogs in the Terminal window" for `LAUNCH_HINT_S` (90 s) after it last published an intent
+  ([CXC-ICL-PANEL]). It SHIPS with the panel in slice 3; it is not a follow-up and it is not optional.
+- ratified: David, 2026-08-10 — take the recommended YES. An unresponsive-looking button is the thing
+  humans press again, and a label that changes no behaviour is the cheapest possible answer to that
+  acknowledgement gap.
+- dsd-source: docs/intelligence-console/DECISIONS-ic-launch-and-conops.md
+- rationale: with no `launching` state, the pane is visually IDENTICAL before and after a press, for as
+  long as the human takes at the dialogs. That is not a correctness problem — the daemon dedupes — but
+  it is an acknowledgement problem: an unresponsive-looking button is the thing humans press again, and
+  it is the same class as the silent-staleness this spec exists to fix, just pointed at the human
+  instead of the data. A label costs nothing and answers "did that register?".
+- constraint: **(what makes it safe — this is the CONDITION of the ratify and is preserved
+  VERBATIM)** it
+  changes NO behaviour. The button stays enabled, a press still publishes, the shown-map is untouched,
+  and nothing depends on the timer. If it is ever found to gate anything, it has become a state and
+  must be re-ratified as one.
+- alternatives: (a) nothing at all — David's earlier minimal form, and defensible: the Terminal window
+  appearing IS the acknowledgement, and it appears within a second. NOT taken; (b) a disabled button —
+  rejected, that is the third state under another name and it would also disable the legitimate retry
+  path row 9 of [CXC-ICL-BOUNDARIES] depends on.
+- status: resolved
+- invalidating_assumption: "That the Terminal window is not itself sufficient acknowledgement. If it
+  reliably appears and RAISES within ~1 s ([CXC-ICL-TERMINAL] `activate`), the hint is redundant and
+  should be DROPPED rather than maintained — dropping it is a no-behaviour-change removal, exactly as
+  adding it was. The second and sharper trigger: any code that consults `LAUNCH_HINT_S` for anything
+  other than choosing the sub-line's TEXT has turned the hint into a state under another name, and the
+  constraint above requires that it be re-ratified as one."
+- documents: [CXC-ICL-PANEL]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [DD-ICL-DEGRADED] Whether `delivery != "ok"` / rising `unacked` becomes a visible condition
+
+- decision: RESOLVED — alternative (a): `degraded` is added to BOTH the header dot AND the pane. The
+  DEFERRAL is reversed; it ships as part of this arc, not after it.
+- ratified: David, 2026-08-10 — surface it. His call FALSIFIES this node's own deferral premise: a
+  degraded channel is NOT rare enough to leave unsurfaced, and "messages look sent but the Intelligence
+  never sees them" behind a green dot is the same silent-staleness class this whole spec exists to
+  remove — one layer deeper than the frozen gauge, and correspondingly less visible.
+- dsd-source: docs/intelligence-console/DECISIONS-ic-launch-and-conops.md
+- rationale: the signal is FREE — the alive payload already carries `delivery` and `unacked`, and the
+  console already computes and publishes a verdict over that payload. What the deferral bought was a
+  clean capture-diff for the swap slice; what it cost was leaving the console's most-trusted pixel able
+  to read GREEN while content is not arriving. That is the same silent-staleness failure as the frozen
+  gauge, and this spec cannot claim to be an honesty fix while shipping a known instance of it. The
+  sequencing cost is real but payable (its own commit, its own re-baseline, its own glass gate); the
+  dishonesty is not.
+- constraint: **(BINDING — the pane stays DOWNSTREAM of the single verdict)** `degraded` is a THIRD
+  VALUE
+  of `link_health`'s existing verdict, NOT a second computation. `link_health` reads `delivery` and
+  `unacked` from the alive payload, folds them into the ONE verdict it already publishes to
+  `console/link/state`, and BOTH consumers — the header dot and the launch panel — read that one value
+  ([CXC-ICL-PRESENCE]'s ONE-computation rule, unchanged). The pane MUST NOT derive `degraded`
+  independently from the alive payload: two derivations of one fact is the fork [DX-NARROW-WAIST]
+  forbids, and here it has a specific, ugly failure — the dot and the pane disagree, and a human has no
+  way to tell which one is lying.
+- consequence: **(the deferral's stated cost is ACCEPTED, not dodged)** this DOES change the header
+  dot's
+  semantics and it DOES land on the visual-fidelity surface, which is exactly why it was deferred. It
+  therefore carries its own glass gate and its own capture re-baseline, and it MUST NOT be folded
+  silently into the swap slice's capture-diff ([CXC-ICL-SLICES] slice 3, [CXC-ICL-ACCEPT] ICL-C6) —
+  a re-baseline that mixes the rail reflow with a dot recolour is a diff nobody can read.
+- refinement: **(composeux-architect, 2026-08-10 — the ratify that makes David's call BUILDABLE)**
+  his DSD
+  D2 settled WHETHER; it stated no slice, no rendering and no threshold, and [CXC-ICL-SLICES] still
+  carried four slices with none of them holding this work, so a builder would have had to guess. Closed
+  here, on the architect's ratify: (i) `degraded` gets its OWN slice — [CXC-ICL-SLICES] slice 5 — on
+  the one-pass test (its correctness is not machine-verifiable in one pass), NOT on size or caution;
+  (ii) it resolves as `reachable = yes`, so it never withholds the gauge and NEVER reveals the launch
+  button, and it renders as a MARKER on the shown surface with no fifth row in [CXC-ICL-VISIBILITY]
+  ([CXC-ICL-PRESENCE]); (iii) the triggers, the hysteresis and the rendering values are stated
+  concretely and marked PROVISIONAL pending David's glass, with ICL-C20 as the gate that settles them;
+  (iv) a consequence neither this node nor the DSD had noticed — `console/link/state` has bound
+  consumers BEYOND the dot and the pane (`link_label`, `composer_send_label`), and an attribute `map:`
+  missing a `degraded` key falls back to its HEALTHY default, so a third verdict value shipped without
+  those entries renders a degraded channel as a green ENGAGED header: the very lie this decision exists
+  to remove, reintroduced by omission. ICL-C19 leg (b) is the guard.
+- alternatives: (b) a text line in the pane without a verdict change — rejected: it still requires
+  reading `delivery`, and it puts the fact on ONE surface while the dot keeps saying green, which is
+  precisely the disagreement the constraint above exists to prevent; (c) stay DEFERRED — rejected by
+  David.
+- status: resolved
+- invalidating_assumption: "That `delivery` and `unacked` are a TRUSTWORTHY degradation signal — that
+  `delivery != ok` or a climbing `unacked` means content is genuinely not arriving, rather than a
+  transient artifact of the channel's own ack accounting. If `degraded` is ever observed FLAPPING on a
+  channel that is in fact delivering, it becomes a false alarm on the most-watched pixel in the
+  console, and the correct retreat is alternative (b) — a text line — NOT a quietly widened threshold.
+  The thresholds themselves are now STATED rather than deferred ([CXC-ICL-PRESENCE] defaults:
+  `DEGRADED_CLIMB_N` 3, `DEGRADED_RECOVER_N` 1, plus the precedence cascade), but they are PROVISIONAL
+  — defensible, not measured — and they remain the FIRST thing to revisit, on the glass, under
+  [CXC-ICL-ACCEPT] ICL-C20."
+- documents: [CXC-ICL-PRESENCE]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+### [DD-ICL-PANE-OWNER] The launch panel owns the shown-map, vs a separate presence publisher
+
+- decision: RESOLVED — the PROPOSED form stands unchanged: the `instance_launch_panel` widget is the
+  SINGLE writer of `console/instance/pane` ([CXC-ICL-PANEL]).
+- ratified: composeux-architect, 2026-08-10 — ratified by the ARCHITECT, not David, and deliberately
+  so: this was never a genuine fork. Both alternatives are self-rejected in this node's OWN text — (a)
+  is a whole registered data source, a singleton and a `run()`-must-block obligation
+  ([CXC-SOB-RUN-BLOCKS]) for ONE boolean, and (b) overloads `link_health` with rail-layout knowledge, a
+  layering inversion. A choice with no defensible second option does not need David's attention; what
+  it needs is a record of WHY it did not, so it cannot later be re-opened as if it had been one.
+- dsd-source: docs/intelligence-console/DECISIONS-ic-launch-and-conops.md
+- rationale: it already needs the predicate to render itself, so the derivation exists in exactly one
+  place and cannot disagree with what is drawn; it needs no new data source, no new process, and no new
+  registration in `data_sources.py`; and it hides ITSELF, which keeps the reversibility of
+  [SPEC:CXC-ORDER] intact. It is [DX-LEAF-OWNS-BEHAVIOR] applied literally.
+- alternatives: (a) a new in-process data source that publishes the shown-map — a whole registered
+  source, a singleton, a `run()`-must-block obligation ([CXC-SOB-RUN-BLOCKS]) for one boolean; (b)
+  extending `link_health` to publish the shown-map too — overloads the header dot with rail-layout
+  knowledge, a layering inversion.
+- status: resolved
+- invalidating_assumption: "That exactly one surface swaps on instance presence. If a second surface
+  (the Account card, the composer's SEND button, a fleet rail) ever needs the same presence-derived
+  shown-set, the derivation should move OUT of this widget into one publisher and every consumer should
+  subscribe it — the same de-fork move [CXC-ICL-PRESENCE] already applies to the freshness computation."
+- documents: [CXC-ICL-PANEL]
+- part-of: [SPEC:CXC-IC-LAUNCH]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-IC-LAUNCH] DEPENDS_ON [SPEC:CXC-INTELLIGENCE-CONSOLE]
+- [SPEC:CXC-IC-LAUNCH] USES [SPEC:CXC-LAUNCHBAR]
+- [SPEC:CXC-IC-LAUNCH] USES [SPEC:CXC-ORDER]
+- [SPEC:CXC-IC-LAUNCH] REALIZES [CXC-CREDO]
+- [CXC-ICL-THESIS] DEPENDS_ON [CXC-IC-LIFECYCLE]
+- [CXC-ICL-CONSTRAINT-PTY] UPHOLDS [CXC-IC-LIFECYCLE]
+- [CXC-ICL-SCOPE-BOUNDARY] RELATED_TO [CXC-IH-HOST]
+- [CXC-ICL-SCOPE-BOUNDARY] RELATED_TO [CXC-IH-CONSOLE]
+- [CXC-ICL-SCOPE-BOUNDARY] UPHOLDS [DD-LB-LAUNCH-MECHANISM]
+- [CXC-ICL-PRESENCE] USES [DX-NARROW-WAIST]
+- [CXC-ICL-VISIBILITY] DEPENDS_ON [CXC-ICL-PRESENCE]
+- [CXC-ICL-VISIBILITY] DEPENDS_ON [CXC-ICL-SPAWN-ONCE]
+- [CXC-ICL-VISIBILITY] RELATED_TO [CXC-LB-RIBBON-BUS-BOUND]
+- [CXC-ICL-PANE-SWAP] USES [SPEC:CXC-ORDER]
+- [CXC-ICL-PANE-SWAP] RELATED_TO [CXC-RM-M4]
+- [CXC-ICL-PANEL] DEPENDS_ON [CXC-ICL-PANE-SWAP]
+- [CXC-ICL-PANEL] REALIZES [DX-LEAF-OWNS-BEHAVIOR]
+- [CXC-ICL-PANEL] USES [CXC-IC-SELF-IDENTITY]
+- [CXC-ICL-INTENT] USES [CXC-LB-INTENT-BINDING]
+- [CXC-ICL-INTENT] USES [CXC-LB-INTENT-TABLE]
+- [CXC-ICL-INTENT] REALIZES [CXC-LB-CREDO]
+- [CXC-ICL-SPAWN-ONCE] USES [DX-NARROW-WAIST]
+- [CXC-ICL-SPAWN-ONCE] RELATED_TO [CXC-ICL-PEER-GUARD]
+- [CXC-ICL-PEER-GUARD] UPHOLDS [CXC-IC-SINGLETON]
+- [CXC-ICL-PEER-GUARD] DEPENDS_ON [CXC-ICL-PRESENCE]
+- [CXC-ICL-SINGLETON-YIELD] SUPERSEDES [CXC-IC-SINGLETON]
+- [CXC-ICL-SINGLETON-YIELD] DEPENDS_ON [CXC-ICL-CLI-UNSUPPORTED]
+- [CXC-ICL-SINGLETON-YIELD] RELATED_TO [CXC-TERM-SINGLETON]
+- [CXC-ICL-SINGLETON-YIELD] RELATED_TO [SPEC:CXC-TERM]
+- [CXC-ICL-CLI-UNSUPPORTED] RELATED_TO [CXC-ICL-ENTRY]
+- [CXC-ICL-CLI-UNSUPPORTED] RELATED_TO [SPEC:CXC-TERM]
+- [CXC-ICL-VISIBILITY] RELATED_TO [CXC-IH-5A]
+- [CXC-ICL-TERMINAL] DEPENDS_ON [CXC-ICL-CONSTRAINT-PTY]
+- [CXC-ICL-TERMINAL] USES [CXC-LB-LAUNCHER]
+- [CXC-ICL-TERMINAL] RELATED_TO [CXC-LB-TIER-CONSOLE]
+- [CXC-ICL-CWD] USES [CXC-IH-HOMES]
+- [CXC-ICL-CWD] EXEMPLIFIES [DEC-INSTANCE-KEYED-HOMES]
+- [CXC-ICL-COLD] RELATED_TO [CXC-TERM-BOOTSTRAP-ARGV]
+- [CXC-ICL-COLD] RELATED_TO [CXC-TERM-MANIFEST-CHAIN]
+- [CXC-ICL-COLD] DEPENDS_ON [CXC-TERM-BOOTSTRAP-ARGV]
+- [CXC-ICL-COLD] DEPENDS_ON [CXC-ICL-CWD]
+- [CXC-ICL-COLD] RELATED_TO [CXC-ICL-CONSTRAINT-PTY]
+- [CXC-ICL-ENTRY] USES [DX-NARROW-WAIST]
+- [CXC-ICL-ENTRY] DEPENDS_ON [CXC-ICL-TERMINAL]
+- [CXC-ICL-ENTRY] DEPENDS_ON [CXC-ICL-COLD]
+- [CXC-ICL-BOUNDARIES] DEPENDS_ON [CXC-ICL-VISIBILITY]
+- [CXC-ICL-ACCEPT] DEPENDS_ON [CXC-ICL-BOUNDARIES]
+- [CXC-ICL-SLICES] USES [CXC-ICL-ACCEPT]
+- [CXC-ICL-SLICES] RELATED_TO [DD-ICL-DEGRADED]
+- [CXC-ICL-ACCEPT] RELATED_TO [DD-ICL-DEGRADED]
+- [DD-ICL-COLD-VS-RESUME] DOCUMENTS [CXC-ICL-COLD]
+- [DD-ICL-NO-LAUNCHING-STATE] DOCUMENTS [CXC-ICL-VISIBILITY]
+- [DD-ICL-UNHARNESSED-ACTION] DOCUMENTS [CXC-ICL-VISIBILITY]
+- [DD-ICL-SINGLETON-YIELD] DOCUMENTS [CXC-ICL-SINGLETON-YIELD]
+- [DD-ICL-INTENT-KEY] DOCUMENTS [CXC-ICL-INTENT]
+- [DD-ICL-LAUNCH-HINT] DOCUMENTS [CXC-ICL-PANEL]
+- [DD-ICL-DEGRADED] DOCUMENTS [CXC-ICL-PRESENCE]
+- [DD-ICL-PANE-OWNER] DOCUMENTS [CXC-ICL-PANEL]
+
+### Entity
+
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-THESIS]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-CONSTRAINT-PTY]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-SCOPE-BOUNDARY]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-PRESENCE]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-VISIBILITY]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-PANE-SWAP]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-PANEL]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-INTENT]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-SPAWN-ONCE]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-PEER-GUARD]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-SINGLETON-YIELD]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-CLI-UNSUPPORTED]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-TERMINAL]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-CWD]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-COLD]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-ENTRY]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-BOUNDARIES]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-ACCEPT]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-SLICES]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [CXC-ICL-OUT]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [DD-ICL-COLD-VS-RESUME]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [DD-ICL-NO-LAUNCHING-STATE]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [DD-ICL-UNHARNESSED-ACTION]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [DD-ICL-SINGLETON-YIELD]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [DD-ICL-INTENT-KEY]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [DD-ICL-LAUNCH-HINT]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [DD-ICL-DEGRADED]
+- [SPEC:CXC-IC-LAUNCH] CONTAINS [DD-ICL-PANE-OWNER]
+
+### Temporal
+
+- [CXC-ICL-ENTRY] BEFORE [CXC-ICL-TERMINAL]
+- [CXC-ICL-TERMINAL] BEFORE [CXC-ICL-PANEL]
+- [CXC-ICL-PANEL] BEFORE [CXC-ICL-ACCEPT]
+
+### Causal
+
+- [CXC-ICL-CONSTRAINT-PTY] CAUSES [CXC-ICL-TERMINAL]
+- [CXC-ICL-INTENT] ENABLES [CXC-ICL-TERMINAL]
+- [CXC-ICL-SPAWN-ONCE] ENABLES [CXC-ICL-VISIBILITY]
+- [CXC-ICL-COLD] ENABLES [CXC-ICL-CWD]
+- [CXC-ICL-PEER-GUARD] PRECONDITION_FOR [CXC-ICL-TERMINAL]
+- [CXC-ICL-CLI-UNSUPPORTED] ENABLES [CXC-ICL-SINGLETON-YIELD]
+
+---
+
+**Version**: 0.6
+**Created**: 2026-08-10
+**Updated**: 2026-08-11 (v0.6) — [CXC-ICL-COLD] amended to follow the terminal widget's FIRST LIVE SPAWN, with the node's RULE unchanged and only its delivery mechanism replaced: the bootstrap now rides the child's POSITIONAL PROMPT ARGUMENT and `BOOTSTRAP_DELAY` / the settle timer / the whole startup-injection path are DELETED ([CXC-TERM-BOOTSTRAP-ARGV], [CXC-TERM-BOOTSTRAP-SETTLE-RETIRED]); manifest resolution becomes a CHAIN — `META_MANIFEST` then `<id>.meta.json` then `<role>.meta.json` then a LOUD refusal ([CXC-TERM-MANIFEST-CHAIN]) — because a hosted child now carries an id distinct from its host's ([CXC-TERM-CHILD-ID]). The scenario that read "the launcher types the re-register bootstrap after `BOOTSTRAP_DELAY`" is corrected, and the now-inverted `BOOTSTRAP_DELAY` verify is named as a known-gap rather than quietly re-scoped.
+**Updated**: 2026-08-10 (v0.2) — folded in David's three corrections: the re-register bootstrap is DEFAULT (cold start is the settled choice, [CXC-ICL-COLD], [DD-ICL-COLD-VS-RESUME]); the terminal-spawn reuse is ratified ([CXC-ICL-TERMINAL]); the LAUNCHING pane state is REMOVED and spawn-once moved into the daemon via `spawned_windows` ([CXC-ICL-VISIBILITY], [CXC-ICL-SPAWN-ONCE], [DD-ICL-NO-LAUNCHING-STATE]).
+**Updated**: 2026-08-10 (v0.3) — TWO-SIGNAL presence, verified live: `channel/alive` proves REACHABLE, `self/daemons[intelligence_launcher]` proves HARNESSED, and only both mean CONNECTED ([CXC-ICL-PRESENCE]); four named states with `unharnessed` as the case the feature exists for ([CXC-ICL-VISIBILITY]); the peer guard re-keyed onto HARNESSED, not reachable ([CXC-ICL-PEER-GUARD]); the launcher singleton re-ratified from SUPERSEDE to YIELD-IF-HELD + LOUD ([CXC-ICL-SINGLETON-YIELD]) and CLI `transport.sh` retired as a supported entry point ([CXC-ICL-CLI-UNSUPPORTED]), cross-referenced to [CXC-TERM-SINGLETON] in [SPEC:CXC-TERM] so the resolution is recorded once.
+**Updated**: 2026-08-10 (v0.4) — FOUR decision points CLOSED against David's Decision-Support-Doc (`docs/intelligence-console/DECISIONS-ic-launch-and-conops.md`, recorded on every closed node as `dsd-source`): [DD-ICL-UNHARNESSED-ACTION] RESOLVED as alternative (c) — a state-2 launch goes out under the DISTINCT id `recovery-architect-2` and the state is reframed as a RECOVERY/fallback mode, which dissolves (c)'s identity-fragmentation cost and closes the shared-id clobber BY CONSTRUCTION ([CXC-ICL-VISIBILITY] state 2, [CXC-ICL-PANEL] body, [CXC-ICL-BOUNDARIES] row 15, plus a recorded-not-taken `channel_bridge` prevention note); [DD-ICL-DEGRADED] REVERSED from DEFERRED to RESOLVED alternative (a) — `degraded` becomes a THIRD value of `link_health`'s single verdict, read by BOTH the header dot and the pane, never derived twice ([CXC-ICL-PRESENCE]); [DD-ICL-LAUNCH-HINT] RESOLVED as the recommended YES — the 90 s `LAUNCH_HINT_S` sub-line ships, behaviour-free by construction ([CXC-ICL-PANEL]); and [DD-ICL-PANE-OWNER] RESOLVED as PROPOSED, ratified by the ARCHITECT rather than David because both alternatives were already self-rejected in its own text.
+**Updated**: 2026-08-10 (v0.5) — the LAST decision point closed, and the `degraded` residual retired: [DD-ICL-INTENT-KEY] RESOLVED as the PROPOSED form — a NEW target key `intelligence`, ratified by the composeux-ARCHITECT and not by David (he settled four other calls here via his DSD; this one is the architect's, and the provenance is recorded so it cannot be misread), leaving `_app/harness/open`'s FOCUS/HOST semantics untouched; and `degraded` — which David promoted from DEFERRED to shipping in DSD D2 ([DD-ICL-DEGRADED]) but which no slice and no acceptance criterion carried — now has its OWN slice 5 ([CXC-ICL-SLICES], split on the one-pass test, not on caution), a ratified rendering that resolves as `reachable = yes` and therefore never withholds the gauge and never reveals the launch button ([CXC-ICL-PRESENCE], [CXC-ICL-VISIBILITY] — no fifth row), concrete PROVISIONAL triggers with hysteresis (`DEGRADED_CLIMB_N` 3 / `DEGRADED_RECOVER_N` 1) and the offline-beats-degraded precedence cascade, the newly-named `map:`-fallback hazard on `console/link/state`'s other bound consumers, and acceptance criteria ICL-C17..C20 plus [CXC-ICL-BOUNDARIES] rows 16-17.
+**Status**: Draft — ZERO open decision points: every `DD-ICL-` decision node in section 9 carries `status: resolved`, and `degraded` now carries both a slice and acceptance criteria. Ready for dispatch.

@@ -1,0 +1,257 @@
+---
+scope: "The fingerprint HAL as an AGNOSTIC callable contract: the typed primitives, the ten operations with signatures, the six-field capabilities schema, the closed six-axis failure taxonomy, the twelve feedback states, the match result that carries a slot and a score and no verdict, the device-internal confidence threshold, the enrollment sequence, the eight containment invariants that keep the R503's protocol traps below the seam, and the mock that IS the reference. R503HAL is one realization of this contract; the mock is the other."
+audience: "The author of the fingerprint HAL and its MockFingerprintHAL; the author of the R503HAL backend; the author of the parity test; any consumer above the bus that reads capabilities() second-hand from the device announce (C73)."
+boundary: "IN: the operation set, the primitives, the capabilities schema, the failure taxonomy, the feedback states, the enrollment sequence, the containment invariants, and the mock/parity contract. OUT: the R503 electrical and protocol facts (C70), the identity and cast model (C71), and the bus messages (C73). The HAL is called on-device only; nothing above the bus calls it."
+not-this: "Not a description of the R503. The HAL names no vendor, no PersonId, no Character, no Role. A backend is extended to MEET this contract; the contract is never forked per backend."
+domain: plt.cux
+status: draft
+created: 2026-08-18
+artifact-readiness: design-review
+confidentiality: internal-only
+---
+
+# Fingerprint HAL — The Agnostic Device-Side Contract [SPEC:CXC-FPHAL]
+
+> The HAL is a closed operation set over a closed failure set, called only on the device that owns the
+> sensor. The mock is the reference: where the mock and a backend disagree, the mock is right. Every
+> operation, primitive, and invariant is one node with one id, so a test name cites exactly one of them.
+
+---
+
+## The seam and the primitives
+
+### [CXC-FPHAL-SEAM] The HAL is the agnostic seam — the mock is the reference, and a backend is extended to meet it
+
+- definition: The fingerprint HAL is the transactional device-side interface between the identity layer and a specific sensor. It is agnostic: it names no vendor and no game concept. R503HAL is one realization; MockFingerprintHAL is the other, and it is the canonical reference.
+- constraint: A backend MUST be extended to satisfy this contract. The contract MUST NOT be forked or specialized per backend, because a per-backend contract makes one parity suite impossible.
+- rationale: The template is the seam. The HAL moves opaque template bytes and never parses them, and nothing above the HAL may look inside a template.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+### [CXC-FPHAL-PRIMITIVE-TYPES] The primitives — four aliases and one result, and no identity type
+
+- definition: The HAL exchanges five primitives. Slot is a device-local 0-based index valid for 0 <= slot < capabilities().slot_count; it is the HAL's only identity output and means nothing without the roster. Score is a vendor-scaled match confidence whose ordering is meaningful within one implementation and whose value is not portable across implementations. Ordinal is which of a person's templates (1 or 2 today), a position carrying no anatomical fact. TemplateBytes is opaque. RosterStamp is opaque to the HAL, stored and returned whole.
+- constraint: The HAL MUST carry no PersonId, Character, Role, Capability, or Module type. It knows only hop 1, finger to slot.
+- payload: Slot = int; Score = int; Ordinal = int; TemplateBytes = bytes; RosterStamp = bytes.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+## Operations
+
+### [CXC-FPHAL-OPERATIONS] The ten operations, with signatures — no random-access slot management
+
+- definition: The HAL is exactly ten operations. The set is closed; a backend adds none and drops none. The template lifecycle is exactly two moves — empty ALL, then install each template SEQUENTIALLY — so there is NO random-access slot management: no per-slot delete, no update-single-slot, no write-to-slot-N-by-index. The earlier draft carried eleven with a random-access delete_slot; that op is removed and the count is ten. (verify_slot and a challenge-match surface were also dropped by ruling.)
+- signature: capabilities() -> Capabilities; match() -> MatchResult; begin_enroll(ordinal) -> EnrollmentSession; store_template(template) -> Slot; read_template(slot) -> TemplateBytes; empty() -> None; read_occupancy() -> frozenset[Slot]; write_roster_stamp(stamp) -> None; read_roster_stamp() -> RosterStamp | None; command_feedback(state, progress) -> None.
+- constraint: The HAL OWNS physical-slot allocation. empty() destroys every resident template and is the first move of every mismatch push. store_template then installs one template at a time in the order the device receives them; it takes no caller-chosen index, allocates the next free slot, writes the template, and RETURNS the allocated Slot. begin_enroll takes no slot; the ceremony allocates the slot it writes to and the session yields it. read_template MAY fail with UNSUPPORTED if capabilities().supports_readback is False and exists so an enrolling device can upload the captured template to the service and so parity can verify a round-trip. read_occupancy() is bulk introspection for parity and the device's own count, never addressable management. read_roster_stamp() returns None when the device was never stamped, which is distinct from empty bytes. command_feedback is the ONLY write to the feedback ring and is always commanded from outside the HAL.
+- rationale: match() is the whole runtime face; every other operation is the management face. Both faces speak this one protocol, and the runtime face pays none of the management face's ceremony. Because the lifecycle is wipe-then-sequential-install, the device never needs to reach into slot five of twenty, which is the operation an agnostic layer has no safe way to offer across sensors anyway.
+- who-holds-the-person-map: The HAL is AGNOSTIC and knows no person. As the device firmware one layer above the HAL installs each pushed template in order, it binds the slot store_template returns to that entry's logical identity, character, and RBAC — the device-private bridge of [CXC-FPID-DEVICE-BRIDGE]. This reconciles the slot-allocation correction with SENSOR-KNOWS-ONLY-HOP-1: allocation and the bridge both live on the device, on opposite sides of the HAL seam, so no person ever enters the HAL and no slot ever leaves the device.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+### [CXC-FPHAL-CAPABILITIES-SCHEMA] capabilities() — six required fields, no defaults, stable for the life of the object
+
+- definition: capabilities() returns a typed Capabilities record of SIX required fields: slot_count (int), supports_readback (bool), feedback_channels (frozenset of channel enums, the empty set meaning no feedback at all), captures_per_template (int), template_size_bytes (int), and feedback_profile (str — "canonical", or a named alternate profile; see [CXC-FPHAL-FEEDBACK-CONFORMANCE]). max_templates_per_person was REMOVED (2026-08-18): the sensor has no person concept — it holds slots and templates — so a per-person limit is service-side game policy, not a device capability, and no code consumed the field.
+- constraint: Every field is required. An implementation that does not know a value MUST NOT omit the key, because an omitted key is indistinguishable from a value nobody thought to write. There is no optional field and no default. The record MUST be identical for the life of the object, so a consumer can bind to it.
+- rationale: The service reads these fields second-hand from the device announce (C73) and sizes the cast, the resync cost, and the overflow check from them. A candidate schema cannot be implemented consistently twice; promoting it to required and typed is what makes one parity suite possible. feedback_profile joined the required set for the identical reason: a device's actual rendered-state mapping is exactly the kind of fact whose absence a consumer cannot distinguish from "nobody thought to declare it" — see [CXC-FPHAL-FEEDBACK-CONFORMANCE].
+- payload: Capabilities{slot_count, supports_readback, feedback_channels, captures_per_template, template_size_bytes, feedback_profile}.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+### [CXC-FPHAL-MATCH-RESULT] match() returns an outcome, a slot, and a score, and no verdict of any kind
+
+- definition: MatchResult carries an outcome of MATCHED, NO_MATCH, or NO_FINGER. MATCHED carries a slot and a score; NO_MATCH and NO_FINGER carry neither. NO_FINGER means nothing was presented, distinct from a finger the sensor did not recognize.
+- constraint: match() MUST return a slot and a score and nothing else on a match. It MUST NOT return a person, character, role, capability, or permission verdict. Slot and score are present together or not at all: a score without a slot hides a threshold decision the HAL is not entitled to make.
+- rationale: A polled interface must distinguish an empty doorway from an unrecognized finger, because the second is shown a silent rejection and the first is shown nothing. The device firmware above the HAL maps the returned slot through its own slot-to-person map and publishes the three-valued auth_event carrying the resolved outcome; the HAL never names a person and the slot never leaves the device.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+### [CXC-FPHAL-SCORE-DEVICE-INTERNAL] The score never crosses the bus
+
+- constraint: score is a field of MatchResult returned to the device's own logic, and the device MUST NOT publish it on ComposeBus. Nothing above the bus sees a score.
+- rationale: The value is meaningful only below the seam, calibrated against one implementation's scale, and useless above it. Withdrawing it from the wire makes the rule that no consumer may threshold on a score unbreakable by accident, because the value never arrives. The tell that this was violated is a score key in any published payload, or any comparison of a score against a constant above the HAL.
+- status: ruled
+- part-of: [SPEC:CXC-FPHAL]
+
+### [CXC-FPHAL-MATCH-THRESHOLD] A device-internal confidence floor gates the match, set in YAML, null meaning unset
+
+- constraint: The device applies a confidence floor to a match before it emits an identity event. The floor is device-internal, settable in the device YAML, with null meaning unset. A match whose score is under the floor produces no identity event. null is not zero and not a default; an absent key and an explicit null both mean unset and apply no floor.
+- rationale: This is the one legitimate consumer of the device-internal score. Nothing above the bus sets it, reads it, or sees the score it filters, so a device with a floor and a device without one are indistinguishable from the bus, which is the point. It is device configuration, not a capabilities field: capabilities announces what the sensor CAN do, this announces what this installation CHOSE.
+- open-question: The R503 carries its own security level, so this floor sits in series with the part's. Whether ours is additive to the part's or replaces reliance on it is not decided — [DD-FPHAL-THRESHOLD-IN-SERIES].
+- status: ruled
+- part-of: [SPEC:CXC-FPHAL]
+
+### [CXC-FPHAL-FEEDBACK-STATES] Twelve feedback states, commanded in and originated nowhere
+
+- definition: FeedbackState is a closed set of twelve: idle, ready, awaiting_finger, capture_accepted, capture_retry, enroll_progress, busy, fault, accept, reject_silent, reject_known, retry. enroll_progress is the one state carrying a payload (the capture ordinal and the announced capture count).
+- constraint: A feedback state is only ever shown when command_feedback is called; the HAL originates no feedback on its own. reject_silent MUST render identically to a genuine non-match, so a watcher cannot tell a deliberately silent rejection from an ordinary miss. A sensor whose feedback_channels is the empty set fails command_feedback with UNSUPPORTED, and the layer above then knows the state was not shown.
+- rationale: The device owns the feedback ring, always and as the only writer, even mid-enrollment. Feedback is commanded from outside the HAL and never inferred inside it.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+### [CXC-FPHAL-FEEDBACK-CONFORMANCE] Conformance is canonical by default; a declared alternate profile, or nothing
+
+- definition: A conforming HAL SHOULD render the canonical twelve FeedbackStates across the canonical colour set — the reference MockFingerprintHAL implements and the parity suite expects. A device that cannot meet the canonical model MAY still be used IF AND ONLY IF it declares, in capabilities(), a feedback_profile that FULLY specifies its actual mapping: the colours it renders, the states it collapses, and the substitute state a caller observes for every canonical state it cannot show.
+- constraint: An UNDECLARED deviation is a non-conformance, not a device variation. A device that silently shows fewer states than it claims fails command_feedback with UNSUPPORTED — the existing rule at [CXC-FPHAL-FEEDBACK-STATES] — and the layer above then knows the state was not shown, rather than assuming it was rendered.
+- rationale: This keeps the HAL callable across sensors that cannot all express the same twelve states on the same colour set, without letting a device's actual limits go unstated. A declared profile is the difference between a device that is different and a device that is silently wrong. This node names no colour and no vendor part; the concrete mapping for any specific device lives in that device's own realization document — for the R503, see [CXC-R503-AURALED].
+- see-also: [CXC-FPHAL-CAPABILITIES-SCHEMA], [CXC-R503-AURALED]
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+### [CXC-FPHAL-ENROLLMENT-SEQUENCE] Enrollment is an explicit driven sequence, not a convenience command
+
+- definition: begin_enroll(ordinal) opens an EnrollmentSession. The device drives the required number of captures, announced as captures_per_template, and reports progress through the enroll_progress feedback state. On success the ceremony ALLOCATES a slot and writes the captured template to it, and the session yields the allocated slot; on abandonment the ceremony ends without a write.
+- constraint: begin_enroll takes no caller-chosen slot: the device owns physical allocation, so the forbidden mode of a bus-supplied slot index is untypeable. The number of captures is the announced capture count, never a hard-coded constant. The enrollment MUST drive capture explicitly and MUST NOT use the R503 AutoEnroll convenience command, whose acknowledge stream breaks the one-command-one-response assumption.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+## Failure model
+
+### [CXC-FPHAL-FAILURE-AXES] Six closed disjoint failure axes, and a transport failure is never a sensor refusal
+
+- definition: Every failure carries exactly one of six axes: transport (the link failed — framing, checksum, a wire timeout, or silence), sensor_refusal (the part answered and the answer was a documented refusal), capacity (store full, slot out of range, or payload too large), protocol_desync (the stream is phase-shifted), unsupported (capabilities says this implementation cannot do this), and unknown_code (the part answered with a code no revision documents).
+- constraint: The set is closed; a backend adds no seventh axis, and a condition it cannot classify is unknown_code, which is a member. sensor_code MUST be None on transport (nothing was heard, so nothing can be quoted) and MUST be present on sensor_refusal and unknown_code. The detail string is for a human reading a log; no caller may parse it.
+- rationale: The taxonomy's whole value is that transport failure is numerically disjoint from sensor refusal. A free-text failure kind, or a status-code integer with its own meanings, destroys that disjointness at exactly the seam where the service decides on it. The disjointness is testable: a sensor_code on a transport failure, or a transport axis where a code was received, is a bug.
+- payload: FingerprintHALFailure{axis, sensor_code, detail}.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+### [CXC-FPHAL-UNKNOWN-CODE] An undocumented code fails the operation and never kills the session
+
+- constraint: A confirmation code absent from every documented table is reported as the unknown_code axis carrying the raw byte, and the object remains usable. The operation fails; the session does not.
+- rationale: The R503 firmware is known to use at least one code (0x28) that appears in no revision's table. A default branch that raises a fatal error on an unlisted code turns a recoverable surprise into a dead object. The testable predicate: after an unknown_code, a subsequent capabilities() and read_occupancy() both succeed on the same object.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+## Containment
+
+### [CXC-FPHAL-CONTAINMENT-INVARIANTS] Eight invariants the boundary guarantees, each tied to a documented R503 trap
+
+- definition: The HAL boundary guarantees eight invariants. These are proportionate operational robustness against the part's own documented quirks, not adversarial hardening of a game sensor.
+- invariant: inv-1 no unbounded wait — every operation carries a deadline and no read loop retries without a counter and a wall-clock bound (a silent module must not hang the host). inv-2 a wire length never sizes a buffer alone — a length taken off the wire is validated against both the protocol maximum and the caller's buffer before any payload read, because the part's own stated maximum is arithmetically inconsistent with its packet size and cannot be trusted. inv-3 unknown codes are surfaced and non-fatal. inv-4 desync is recoverable, never terminal — the implementation drains RX before every transmit AND parses with a sliding two-byte header window, both, to absorb the unsolicited 0x55. inv-5 every packet checksum is verified before its payload is acted on. inv-6 no partial success is reported as success — a truncated or capacity-limited operation fails and never advances a roster stamp. inv-7 contradictory documentation resolves to the safe reading and records which was taken. inv-8 no baud change is ever issued — bind 57600 and leave it.
+- constraint: An implementation MUST satisfy all eight. Each has a greppable tell: an unbounded while over a read, a read sized from a parsed length without a prior buffer comparison, a fatal default branch on an unlisted code, a 0x55 special-case only at init, a bytes-to-value path with no checksum verify, a loop that returns the results it happened to collect, a constant chosen from a contradictory pair with no comment, and any SetSysPara baud path.
+- rationale: These absorb the R503 protocol traps below the seam so the layers above never see them. They defend against the part's own inconsistent documentation and stream behaviour, which is operational, not against a malicious actor, which would be disproportionate for an experiential game sensor.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+## Binding
+
+### [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] The match/push path MUST bind to the SAME physical sensor the enroll ceremony drives — and HAL promotion is LIVE, never one-shot
+
+- constraint: The device's match() path and its roster-push/install path MUST resolve to the SAME physical sensor object the enroll ceremony itself drives. A device MUST NOT run match() against one HAL implementation (for example the mock) while enroll or a template install proceeds against a different, real implementation — the two paths are the same object or the invariant is violated.
+- constraint: HAL promotion — from MockFingerprintHAL to the real sensor backend — is a LIVE capability, not a one-shot decision fixed at boot. When the real sensor answers (becomes reachable) after the device has already booted onto the mock, the device MUST rebind live to the real backend AND MUST request a fresh roster push from fingerprint_service, because the bridge (slot to person, character, and RBAC — [CXC-FPID-DEVICE-BRIDGE]) built against the mock's synthetic slots is void the moment the backend changes: the real sensor's flash holds no templates the mock's bridge describes, so the bridge must be rebuilt against real flash slots, not merely re-pointed.
+- constraint: A device running on the mock backend while a real sensor is PHYSICALLY PRESENT MUST NOT publish any of the loaded/ready/armed signals — [CXC-FPBUS-MSG-TEMPLATE-SET-LOADED], [CXC-FPBUS-MSG-FINGERPRINT-READY], or the armed/awaiting ring state of [SPEC:CXC-R503-SENSOR-UX] — because each of those signals asserts the sensor is usable, and it is not: the mock will match nothing a real finger presents. It MUST instead announce [CXC-FPBUS-MSG-FINGERPRINT-INOPERABLE].
+- rationale: RATIFIED by David, 2026-08-24 — "both": the fail-loud invariant (never announce ready on a mock with real hardware present) AND the live rebind (promotion is live, not boot-fixed); see [DEC-R503-UX-HAL-LIVE-REBIND-FIX]. This closes the gap surfaced by DEFECT-ARMED-ROSTER-LOADED-R503-DEVICE-78C389 (2026-08-24): a device forked onto the mock at boot kept announcing loaded/ready/armed after the real sensor came up, so the fleet-visible state agreed with a request the device could never satisfy — the CXC-VISION-EPISTEMICS failure mode, restated for this fleet: a machine signal that AGREES WITH THE WRONG ANSWER rather than going absent. The GRANTED end-to-end run (2026-08-24, see [CXC-R503-AURALED] evidence) only succeeded once the device had rebound to the real sensor post-reboot; before that the fork silently masked the defect rather than surfacing it.
+- tell: A device announcing fingerprint_ready or template_set_loaded, or showing the armed/awaiting ring state, while its active HAL object is MockFingerprintHAL and a real R503 is enumerated or reachable on the same UART, is the violation. A promotion path that runs exactly once at boot and is never re-evaluated when the real sensor later answers is the companion violation — live rebind without the fail-loud half leaves the fleet-visible state silently wrong for however long the rebind takes to notice; the fail-loud half without live rebind leaves a forked device stuck announcing fingerprint_inoperable forever even after the real sensor is plugged in. Both are ratified together for exactly this reason.
+- status: ratified
+- part-of: [SPEC:CXC-FPHAL]
+- see-also: [CXC-FPID-MATCH-CHAIN], [CXC-FPBUS-MSG-DEVICE-ANNOUNCE], [CXC-FPBUS-MSG-FINGERPRINT-INOPERABLE], [CXC-FPHAL-MOCK-ROLE], [SPEC:CXC-R503-SENSOR-UX]
+
+## The mock and parity
+
+### [CXC-FPHAL-MOCK-ROLE] MockFingerprintHAL has three jobs, and you cannot automate a fingertip
+
+- claim: The mock is the reference. Where the mock and a backend disagree, the mock is right.
+- definition: MockFingerprintHAL is the canonical reference implementation of this contract. It has three jobs: it is the expected value in parity arbitration, it is the fault injector that proves the containment boundary holds, and it is the test double for every consumer above the bus (the widgets, the enrollment station, the service).
+- constraint: The mock MUST be able to produce a no-match, a capture-retry, and each of the six failure axes on demand. QA of the enrollment widgets needs those on demand, and a real finger on a real part cannot be made to produce them reliably, so the mock is required even after the R503 is fully landed.
+- rationale: Mocking the ESP32 board is pointless because one is plugged in and costs a USB cable. Mocking the sensor is essential because you cannot automate a fingertip.
+- use-envelope-x-host-test-oracle: RATIFIED (David, 2026-08-24). Legitimate: the mock IS the host/native parity suite's expected-value oracle ([CXC-FPHAL-PARITY-TEST]) — the only reachable way to exercise the six failure axes, a no-match, and a capture-retry on demand, because you cannot automate a fingertip. This use is unrestricted and requires no build flag.
+- use-envelope-y-bench-dev-gated: RATIFIED (David, 2026-08-24). Legitimate, gated: deliberate bench/dev exercise on real device hardware with NO sensor wired, permitted ONLY behind the explicit build flag FP_ALLOW_MOCK. FP_ALLOW_MOCK MUST NOT be defined by default in any build configuration, and a production build MUST NOT define it.
+- use-envelope-z-scripted-demo-gated: RATIFIED (David, 2026-08-24). Legitimate, gated: a scripted UX/flow demo run without a live fingertip present, permitted ONLY under the same explicit opt-in as Y (FP_ALLOW_MOCK) — never silent, never on by default.
+- use-envelope-never: RATIFIED (David, 2026-08-24). NEVER: a silent production-runtime fallback. A device built for real fingerprint operation whose sensor is absent, unreachable, or late is INOPERABLE, and MUST announce fingerprint_inoperable ([CXC-FPBUS-MSG-FINGERPRINT-INOPERABLE]) — it MUST NOT bind MockFingerprintHAL in the sensor's place, silently or otherwise. This closes the gap DEFECT-ARMED-ROSTER-LOADED-R503-DEVICE-78C389 exposed: a mock silently impersonating an armed device is exactly the failure this envelope exists to foreclose.
+- structural-guard: RATIFIED (David, 2026-08-24) — annotate AND structurally guard, not annotate-only (option a). In the production firmware build, MockFingerprintHAL MUST NOT be compiled into the device-binding path unless FP_ALLOW_MOCK is defined at build time. The default / no-real-sensor build path binds an INOPERABLE NULL HAL — a HAL object whose every operation fails onto fingerprint_inoperable — never the functional mock. "Silent mock in production" is therefore un-compilable under this guard, not merely discouraged by convention or code review. See [DEC-R503-MOCK-STRUCTURAL-GUARD] for the decision record and rationale.
+- provenance: DEFECT-ARMED-ROSTER-LOADED-R503-DEVICE-78C389 (unbracketed per this corpus's provenance convention).
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+- see-also: [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR], [DEC-R503-MOCK-STRUCTURAL-GUARD]
+
+### [CXC-FPHAL-PARITY-TEST] One suite, parameterized over both implementations, with the mock as the expected value
+
+- definition: A single parity suite runs unchanged against MockFingerprintHAL and R503HAL. Where the two disagree, the mock is the expected value and the backend is the actual.
+- constraint: The suite asserts, all on mock or captured data with no destructive real-hardware step: all six capabilities fields present and correctly typed and two successive calls equal; begin_enroll(1) driven to stored returns an allocated slot and read_occupancy() then contains exactly that slot; store_template called four times on an emptied device returns four distinct allocated slots and read_occupancy() equals exactly that returned set (the mock allocates a non-contiguous set deliberately, because a contiguous set decodes identically under several wrong orders); read_template of an allocated slot round-trips byte-identically or is skipped with a recorded reason when supports_readback is False, never silently; empty() leaves read_occupancy() empty; write then read of a roster stamp is byte-identical and read_roster_stamp() on a never-stamped device returns None; an empty store never returns MATCHED; a store_template past capacity fails on the capacity axis and leaves occupancy unchanged; after an injected unknown_code, capabilities() and read_occupancy() both still succeed; across a match and an enrollment with no feedback commanded the feedback recorder is empty; the suite source contains no vendor branch, no isinstance, and no substrate conditional; and no assertion anywhere compares a score value across implementations.
+- acceptance-machine: Run the suite against the mock and against R503HAL. All assertions pass on both. Then, as a negative control, inject each of the mock's faults in turn and assert the corresponding assertion turns red — a suite that passes against a mock that cannot fail proves nothing.
+- proportionality: Every fault above is MOCK-INJECTED. There is no test that pushes a corrupted template to a real slot, overdrives a pin, or fault-injects real silicon; those are survival tests for safety-grade parts, not for an experiential game sensor. The operational concern (a write that fails part way) is kept, tested the proportionate way, in the mock.
+- status: draft
+- part-of: [SPEC:CXC-FPHAL]
+
+## Open decisions
+
+### [DD-FPHAL-HOST-OR-VM-BINDING] The device owns the driver and the HAL — RULED
+
+- decision: RULED by David — the device owns both the driver and the HAL. The service, editor, and station are ordinary bus clients and cannot call the HAL.
+- rationale: This is the keystone that makes the whole design conform to the Compose model: the cheapest node that fully owns the sensor mechanism is the device, so the mechanism lives there and only semantic messages cross the bus. It is why capabilities() must be re-published in the device announce (C73): the service can no longer call it.
+- status: ruled
+- part-of: [SPEC:CXC-FPHAL]
+
+### [DD-FPHAL-CHALLENGE-MATCH-DROPPED] verify_slot and the challenge-match capability are dropped — RULED
+
+- decision: RULED by David — the supports_challenge_match capability field and the verify_slot operation are dropped, leaving six capability fields. (The operation count later dropped again to ten when the random-access delete_slot was removed under Refinement 2.)
+- rationale: The runtime face is a poll plus an event; a challenge-match surface added a field and a method the design did not need. Re-adding it later costs one field and one method and the R503 Match command forecloses nothing.
+- status: ruled
+- part-of: [SPEC:CXC-FPHAL]
+
+### [DD-FPHAL-FAILURE-RAISED-OR-RETURNED] Whether a failure is raised or returned — open, device-internal
+
+- decision: NOT MADE. Device-firmware-internal under the host-or-VM-binding ruling, so it blocks nothing above the bus.
+- lean: Lean toward raising a typed FingerprintHALError carrying the FingerprintHALFailure, so a caller cannot ignore a failure by forgetting to check a return. Either way the failure carries the six-axis taxonomy unchanged.
+- status: proposed
+- part-of: [SPEC:CXC-FPHAL]
+
+### [DD-FPHAL-THRESHOLD-IN-SERIES] The device floor in series with the part's own security level — open, device-internal
+
+- decision: NOT MADE. Device-internal.
+- lean: RULED additive by David in the original: leave the part's security level at whatever it ships with and apply our floor on top, and expect the floor to stay null in practice, armed only if the part is observed accepting fingers it should not. The falsifiable trigger that reopens it is false positives at high confidence.
+- open-question: The part's documented default security level drifted between revisions unannounced, so two modules may gate differently and nothing on the wire says so. Under additive that variance is inherited rather than pinned; acceptable only because the floor is unset and the sensor is experiential.
+- status: proposed
+- part-of: [SPEC:CXC-FPHAL]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-FPHAL-PRIMITIVE-TYPES] PART_OF [CXC-FPHAL-SEAM]
+- [CXC-FPHAL-OPERATIONS] DEPENDS_ON [CXC-FPHAL-PRIMITIVE-TYPES]
+- [CXC-FPHAL-CAPABILITIES-SCHEMA] PART_OF [CXC-FPHAL-OPERATIONS]
+- [CXC-FPHAL-MATCH-RESULT] PART_OF [CXC-FPHAL-OPERATIONS]
+- [CXC-FPHAL-SCORE-DEVICE-INTERNAL] DEPENDS_ON [CXC-FPHAL-MATCH-RESULT]
+- [CXC-FPHAL-MATCH-THRESHOLD] DEPENDS_ON [CXC-FPHAL-SCORE-DEVICE-INTERNAL]
+- [CXC-FPHAL-FEEDBACK-STATES] PART_OF [CXC-FPHAL-OPERATIONS]
+- [CXC-FPHAL-FEEDBACK-CONFORMANCE] PART_OF [CXC-FPHAL-OPERATIONS]
+- [CXC-FPHAL-FEEDBACK-CONFORMANCE] DEPENDS_ON [CXC-FPHAL-FEEDBACK-STATES]
+- [CXC-FPHAL-FEEDBACK-CONFORMANCE] DEPENDS_ON [CXC-FPHAL-CAPABILITIES-SCHEMA]
+- [CXC-FPHAL-FEEDBACK-CONFORMANCE] DEPENDS_ON [CXC-R503-AURALED]
+- [CXC-FPHAL-ENROLLMENT-SEQUENCE] DEPENDS_ON [CXC-FPHAL-OPERATIONS]
+- [CXC-FPHAL-UNKNOWN-CODE] PART_OF [CXC-FPHAL-FAILURE-AXES]
+- [CXC-FPHAL-PARITY-TEST] DEPENDS_ON [CXC-FPHAL-MOCK-ROLE]
+- [CXC-FPHAL-SEAM] DEPENDS_ON [CXC-FPID-SEAM]
+- [CXC-FPHAL-PRIMITIVE-TYPES] DEPENDS_ON [CXC-FPID-SENSOR-KNOWS-ONLY-HOP-1]
+- [CXC-FPHAL-MATCH-THRESHOLD] CAUSES [CXC-FPID-AUTH-OUTCOME]
+- [CXC-FPHAL-FEEDBACK-STATES] DEPENDS_ON [CXC-R503-AURALED]
+- [CXC-FPHAL-FEEDBACK-STATES] DEPENDS_ON [DD-FPID-RING-IS-DEVICE-OWNED]
+- [CXC-FPHAL-CAPABILITIES-SCHEMA] USED_BY [CXC-FPID-POPULATION-HEADROOM]
+- [CXC-FPHAL-OPERATIONS] USED_BY [CXC-FPID-OVERFLOW-FAILS-LOUD]
+- [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] DEPENDS_ON [CXC-FPHAL-MOCK-ROLE]
+- [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] DEPENDS_ON [CXC-FPID-DEVICE-BRIDGE]
+- [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] DEPENDS_ON [SPEC:CXC-R503-SENSOR-UX]
+- [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] IMPLEMENTS [DEC-R503-UX-HAL-LIVE-REBIND-FIX]
+
+### Causal
+
+- [CXC-FPHAL-CONTAINMENT-INVARIANTS] PREVENTS [CXC-R503-UNSOLICITED-0X55]
+- [CXC-FPHAL-CONTAINMENT-INVARIANTS] PREVENTS [CXC-R503-BAUD-SELF-CONTRADICTS]
+- [CXC-FPHAL-CONTAINMENT-INVARIANTS] PREVENTS [CXC-R503-AUTOIDENTIFY-STREAM-UNBOUNDED]
+- [CXC-FPHAL-ENROLLMENT-SEQUENCE] PREVENTS [CXC-R503-ACK-STREAM-BREAKS-REQ-RESP]
+- [CXC-FPHAL-CONTAINMENT-INVARIANTS] DEPENDS_ON [CXC-R503-CHECKSUM]
+- [DD-FPHAL-HOST-OR-VM-BINDING] ENABLES [CXC-FPHAL-SEAM]
+- [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] CAUSES [CXC-FPBUS-MSG-FINGERPRINT-INOPERABLE]
+
+### Temporal
+
+- [CXC-FPHAL-CAPABILITIES-SCHEMA] BEFORE [CXC-FPHAL-ENROLLMENT-SEQUENCE]
+- [CXC-FPHAL-OPERATIONS] BEFORE [CXC-FPHAL-PARITY-TEST]
+
+---
+
+**Version**: 1.2
+**Status**: Draft — three decisions ruled (host-or-VM binding, challenge-match dropped, score device-internal and the threshold that falls out of it), two open and device-internal (failure raised-or-returned, threshold-in-series). A fourth invariant is now RATIFIED (2026-08-24): [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR], the fail-loud-plus-live-rebind fix for the mock/real-sensor fork closed by [DEC-R503-UX-HAL-LIVE-REBIND-FIX]; the GRANTED end-to-end run that proved it live is recorded at [CXC-R503-AURALED]'s evidence slot in C70. [CXC-FPHAL-MOCK-ROLE] now carries the ratified use-envelope (X/Y/Z legitimate uses, gated by FP_ALLOW_MOCK where applicable, and the NEVER-silent-production-fallback rule) plus the structural build-time guard, per [DEC-R503-MOCK-STRUCTURAL-GUARD] — David chose annotate-AND-guard over annotate-only. No mock and no parity test exist yet as landed code in THIS spec corpus's own tracking; the live e2e ran on the built firmware described in C70/C73, not against an artifact this document names.

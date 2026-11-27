@@ -1,0 +1,553 @@
+---
+scope: "A deterministic python sweep that maintains the deliverable-ledger .lts — the mechanical half of the deliverable-tracking loop (David's concept, ux/build-brief docs/deliverable-sweep/GUIDELINES.md). Covers the ledger file format, the sweep semantics (new/modified/removed), the filter defaults, the CLI, and the two integration points (bootstrap, session-end)."
+audience: "The deliverable_sweep implementer (this build), the harness wiring bootstrap/session-end, and any Intelligence enriching NEEDS-ENRICHMENT entries."
+boundary: "IN: walking project roots, filtering, hashing, diffing against the ledger, writing mechanical fields, flagging removals, run-history, the report format. OUT: the semantic fields (kind/topics/summary/target-audience/confidentiality/review-outcome/lifecycle-position) — that's the Intelligence's residue, not this spec's; the FactLattice base deliverable-node schema itself (docs/factlattice/deliverable-node-kind-proposal.md, still converging upstream — this spec is a TOLERANT consumer of it, not its owner)."
+not-this: "Not a MAGMA/traversal integration (future — the node-kind proposal's `deliverable_history` widget consumes the graph this ledger seeds). Not a daemon by default (one-shot; a watch mode is a documented future option, mirroring intelligence/publisher/self_publisher.py's poll-loop shape, not built here)."
+depends-on: [docs/factlattice/deliverable-node-kind-proposal.md]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+# Deliverable Sweep + Ledger [SPEC:CXC-DS]
+
+> The deliverable-focused sibling of `python/composeio/session_sweep/` (undone WORK) and
+> `python/composeio/compact_summary.py` (deterministic mechanical extraction). Where session_sweep asks "what
+> got left on the floor this session," deliverable_sweep asks "what non-code artifact appeared, changed, or
+> vanished since the last sweep" — complementary loose-ends-vs-artifacts detectors, same deterministic-no-LLM
+> idiom, same `--selftest` discipline. The perceive/act split (Problem 1) is the spine: this app owns every
+> field a script can COMPUTE from the filesystem; it stamps `NEEDS-ENRICHMENT` on the seven fields it cannot
+> and never guesses them.
+
+---
+
+## 1. Intent
+
+### [CXC-DS-INTENT] The Cheapest Node Fully Owns the Mechanical Check
+
+- definition: a deterministic python app sweeps one or more project roots for non-code artifacts, maintains a
+  single ledger `.lts`, and reports the delta (NEW / MODIFIED / REMOVED) since the last run. It never invokes
+  a reasoning model; every field it writes is reproducible from the filesystem + the prior ledger state.
+- rationale: matches the compact_summary precedent — "extracting it is a grep, not a reasoning task; don't
+  spend an Opus turn transcribing what a 30-line script copies exactly." Here the mechanical residue is larger
+  (path/format/hash/diff/history) but the principle is identical: the reasoning layer's job shrinks to exactly
+  the fields it uniquely can supply.
+- status: planned
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-SIBLING-DISTINCTION] session_sweep = undone WORK; deliverable_sweep = non-code ARTIFACTS
+
+- definition: `session_sweep` parses a session `.jsonl` and detectors surface things a party STARTED and
+  DROPPED (uncommitted authored files, unanswered questions, unhandled errors) — a *process* signal, scoped to
+  one session. `deliverable_sweep` walks the FILESYSTEM (not a transcript) and detects artifacts that EXIST —
+  a *state* signal, scoped to however many sessions since the last sweep. Complementary, not overlapping: a
+  session can end with zero loose ends (session_sweep silent) yet still have produced three new deliverables
+  (deliverable_sweep loud), or vice versa.
+- part-of: [SPEC:CXC-DS]
+
+---
+
+## 2. The Perceive/Act Split (load-bearing — restated precisely for this build)
+
+### [CXC-DS-PORTABILITY] Extraction-Clean: a Generic FactLattice Tool, Not Composeio-Specific
+
+- definition: David's intent is for this tool to PUBLISH to the FactLattice repo (740Dave/factlattice) once
+  proven here — any domain keeping a deliverable-ledger uses it, not just ComposeIO. So the implementation
+  package (`python/composeio/deliverable_sweep/`) imports NOTHING from composeio internals — stdlib plus
+  PyYAML only — and invents no composeio-specific default: `project-roots`, every filter list, the ledger
+  path, and even the frontmatter's `domain`/`confidentiality`/`artifact-readiness` are 100% config/CLI-driven
+  (`--root`, `--ledger`, `--domain`, ...), never hardcoded. It develops and is proven HERE, against this
+  repo's real artifacts (the dry-run in the build summary), but nothing in the code assumes it's running in
+  ComposeIO specifically. session_sweep/compact_summary are studied for their IDIOMS (the walk/CLI/selftest
+  shape), never imported.
+- test: `grep -rn "^import composeio\|^from composeio" python/composeio/deliverable_sweep/` returns nothing;
+  `DEFAULT_FRONTMATTER` carries no domain-specific value, only the universal `machine-maintained: true`.
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-FIELD-OWNERSHIP] Mechanical vs. Semantic Field Sets
+
+- mechanical (app-owned, always written/updated):
+  `path`, `project-root`, `format`, `created` (first-seen; set ONCE, never touched again), `modified` (bumped
+  only when content-hash changes), `hash` (`sha256:<hex>` of file bytes), `missing` (bool — see §4), plus the
+  node id and the run-history/diff bookkeeping.
+- semantic (Intelligence-owned, NEVER computed by the app): exactly the seven fields named in
+  `docs/deliverable-sweep/GUIDELINES.md` — `kind`, `topics`, `summary`, `target-audience`, `confidentiality`,
+  `review-outcome`, `lifecycle-position`. On a NEW node the app stamps all seven to the literal string
+  `NEEDS-ENRICHMENT`. On MODIFIED the app leaves them exactly as they were (a content change doesn't
+  invalidate a prior human verdict automatically — that's also an Intelligence call, made visible via the
+  MODIFIED report entry, not auto-reset by the app).
+- conditionally-mechanical: `generated-in-session` — the proposal schema marks it required, but the sweep has
+  no transcript access (unlike session_sweep) and cannot know which session authored a pre-existing file. The
+  app writes it ONLY if the caller passes `--session <key>` (the bootstrap/session-end harness DOES know the
+  current session key and can supply it for artifacts it itself just caused to appear); absent that flag the
+  app stamps `NEEDS-ENRICHMENT` like the other semantic fields, rather than guessing.
+- `pending-enrichment` — an additional MECHANICAL bookkeeping property, not itself one of the seven semantic
+  fields: a flow-list of exactly which enrichable field names (the seven semantic fields +
+  `generated-in-session`) currently carry the literal `NEEDS-ENRICHMENT` sentinel, e.g.
+  `pending-enrichment: [topics, summary, lifecycle-position]`. Computing it is a pure string-equality scan —
+  no interpretation, so writing it never crosses the perceive/act line. The app (re)stamps it whenever it
+  already touches a node (on NEW creation, and again on every MODIFIED touch, recomputed from the node's
+  CURRENT field values) — so a node an Intelligence only PARTIALLY hand-enriched self-heals to an accurate
+  worklist the next time a real content change brings the sweep back to it. This turns "which nodes still
+  await enrichment, and on which exact fields" into one query over `## Deliverables`, per the coordinator's
+  base-spec-alignment ask — the ledger-level `needs-enrichment` id list in the `--json` report (§8) is the
+  same computation at the whole-run granularity.
+- test: a synthetic NEW file's `pending-enrichment` lists all eight enrichable field names; hand-setting `kind`
+  and `summary` to real values, then triggering a real MODIFIED (a content change), recomputes
+  `pending-enrichment` to the remaining six — `kind`/`summary` absent, everything still-`NEEDS-ENRICHMENT`
+  present.
+- test: a synthetic NEW file, swept with no `--session` flag, has all eight of
+  {kind, topics, summary, target-audience, confidentiality, review-outcome, lifecycle-position,
+  generated-in-session} == `NEEDS-ENRICHMENT`, and all of {path, project-root, format, created, hash} populated
+  and correct.
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-REMOVED-NOT-DELETED] A REMOVED Artifact Is Flagged, Never Deleted
+
+- definition: when a ledger node's `path` no longer resolves on disk, the app does NOT delete the node and
+  does NOT touch `lifecycle-position` (that field is semantic — off-limits even here). It sets the purely
+  computable fact `missing: true` and `missing-since: <date>` (mtime-free; date the sweep first observed the
+  absence — an injected "now", see [CXC-DS-DETERMINISM]). The REMOVED finding is reported every run until an
+  Intelligence resolves it (typically by setting `lifecycle-position: superseded` or `withdrawn` by hand, at
+  which point it's no longer a live concern — though the app keeps reporting `missing: true` regardless, since
+  that's still a true mechanical fact; only the *severity* of caring about it is an Intelligence/human call).
+  If a path with an existing `missing: true` node reappears, the app clears `missing` to `false`, updates
+  `hash`/`modified`, and reports it as MODIFIED (a restoration), not NEW — the node id (stable, path-derived)
+  never changes.
+- change: "Resolved the guidelines' apparent tension: GUIDELINES.md §2 says a removed artifact may be marked
+  `lifecycle-position: superseded` OR a `missing: true` flag; but the load-bearing principle says the app NEVER
+  writes `lifecycle-position` under any circumstance. This spec picks `missing: true` exclusively as the
+  app-owned removal marker and leaves `lifecycle-position` strictly to the Intelligence, with no exception for
+  removal."
+  context_for_change:
+    prior_state: "GUIDELINES.md offered both markers as options without resolving the ownership conflict."
+    reasoning: "The perceive/act split is explicitly called load-bearing and 'do not blur it' — carving out a
+      removal-only exception for lifecycle-position would blur exactly the line the brief insists on holding.
+      missing:true is 100% computable (a stat() that fails); lifecycle-position:superseded is a judgment
+      (superseded BY what? is it actually gone, or just relocated? does David still want it?) — that judgment
+      belongs to the Intelligence."
+    rejected_alternative: "Let the app write lifecycle-position:superseded directly on removal — rejected
+      because it's indistinguishable from the app GUESSING a semantic verdict, the exact anti-pattern the
+      brief warns against."
+    invalidating_assumption: "If a future revision of the base deliverable-node schema demotes
+      lifecycle-position to a computable/enumerable state machine (e.g. purely derived from missing + a small
+      number of mechanical rules), this decision should be reopened — today it's an open judgment call."
+    implication: "A REMOVED artifact stays visibly NEEDS-ENRICHMENT-adjacent (missing:true, lifecycle-position
+      whatever it last was) until an Intelligence actively resolves it; the sweep's job is only to keep
+      surfacing it, per David's explicit ask that removals be surfaced, not silently resolved."
+- test: delete a previously-swept file, re-run `--write`; the node persists in the ledger with `missing: true`,
+  `missing-since` set, `lifecycle-position` UNCHANGED from its pre-removal value, and it appears in the
+  REMOVED list of the report. Restore the file (same bytes or different) and re-run; `missing` clears to
+  `false`, the node appears in MODIFIED (not NEW), and the node id is unchanged.
+- part-of: [SPEC:CXC-DS]
+
+---
+
+## 3. The Ledger `.lts` Format ("one-stop-shopping")
+
+### [CXC-DS-LEDGER-LOCATION] `corpora/deliverables/deliverable-ledger.lts`
+
+- definition: a single file — its own queryable corpus directory under `corpora/` — holding, in one
+  document, the config block, every `[DELIV-*]` node (live and `missing`), the run-history event stream, and
+  a latest-run findings summary. One file to read for "what does the project have, and what changed." (It
+  formerly lived at the top-level `deliverables/deliverable-ledger.lts`; the corpus consolidation moved it
+  under `corpora/` so the lts-engine loads it whole with no `only_file` workaround.)
+- machine-owned: like the decision-graph, this file is written by an Intelligence composing prose for the
+  human-authored sections (none here) and by THIS APP for every structural section — but unlike a decision
+  graph, 100% of this file's structure is machine-generated/machine-maintained; there is no hand-authored prose
+  layer. `--write` performs a full read-modify-write: parse existing ledger -> compute delta -> merge -> render
+  -> save. Re-running `--write` with no filesystem change re-renders byte-identical output (determinism, §7).
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-LEDGER-LOCATION-SINGLE-SOURCE] The Ledger Location Is Resolved Through One Constant, Never a Literal
+
+- definition: EVERY consumer that opens, writes, watches, or projects the ledger — the batch `deliverable_sweep`,
+  the transcript `deliverable_monitor`, the filesystem `deliverable_watcher`, the `deliverable_publisher`
+  projection, and the in-process console data layer — resolves the ledger path from the ONE source of truth,
+  `composeio.bootstrap_paths.DELIVERABLE_LEDGER` (absolute) / `DELIVERABLE_LEDGER_REL` (repo-relative). No
+  consumer may carry a hard-coded ledger path literal.
+- invariant: a `--write` (batch or realtime) MUST NOT create or update a ledger at any path other than the one
+  the single source resolves to. A path literal that survives a relocation is a DEFECT of the exact class the
+  bootstrap-paths module exists to eliminate ([SPEC:CXC-IC-BOOTSTRAP-PATHS]).
+- rationale: `Ledger.load` of a NON-EXISTENT path returns an EMPTY ledger — by design, so a first run bootstraps
+  cleanly. The hazard: a consumer pointed at a STALE location therefore loads nothing, classes every tracked
+  artifact as NEW, and writes a fresh all-`NEEDS-ENRICHMENT` ledger THERE. That does two kinds of damage —
+  (1) a placeholder "ghost" ledger materializes at the retired path (freshly created, mode 0600 from the atomic
+  temp-file write), and (2) if that placeholder output is ever copied/committed onto the real corpus path, it
+  clobbers curated enrichment. The preservation logic in [CXC-DS-FIELD-OWNERSHIP] is NOT the failure here — it
+  works whenever the CORRECT ledger is loaded; the failure is loading the WRONG (empty) file, so there was never
+  any enrichment to preserve. Single-source resolution is the guard that makes both impossible.
+- test: no runtime `.py` under `python/composeio` or `intelligence` carries the retired
+  `deliverables/deliverable-ledger.lts` literal (the `corpora/`-rooted canonical form is the only permitted
+  spelling) — enforced red in `python/tests/render/test_bootstrap_paths_single_source.py`.
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-LEDGER-SECTIONS] The Four Sections, In Order
+
+1. **Frontmatter** — standard FactLattice document classification (`domain`, `confidentiality`,
+   `artifact-readiness`, `created` — all OPTIONAL, seeded only via `--domain`/`--confidentiality`/
+   `--artifact-readiness` on first creation, per [CXC-DS-PORTABILITY]; this tool invents no domain-specific
+   default) PLUS one universal marker every ledger carries regardless of domain: **`machine-maintained:
+   true`** — the base-spec convention (coordinator alignment, 2026-07-20) signaling a TOOL owns this file:
+   don't hand-edit its structure, don't lint it as an authored spec. Frontmatter is NOT the sweep config
+   (that's its own section, since it's operational data — roots/globs/lists — not document classification
+   metadata).
+2. **`## Config`** — a single fenced `yaml` block: `project-roots` (list), `include-globs` (list, POSIX-style,
+   relative to each root), `exclude-globs` (list, override include), `do-not-track-dirs` (list of directory
+   names, matched anywhere in the path), `do-not-track-suffixes` (list of filename suffixes). This is the ONLY
+   section a human/architect hand-tunes (edit the yaml block directly, or re-dispatch the app with different
+   `--root`/`--ledger` flags which seed a fresh block on first `--write`).
+3. **`## Deliverables`** — one `### [DELIV-<slug>-<hash8>] <path>` node per artifact ever seen (live or
+   `missing`), each followed by a flat `- key: value` property list. Property order is FIXED (mechanical first,
+   then semantic, alphabetical within each group) so unrelated re-renders diff cleanly.
+4. **`## Run History`** — a TEMPORAL EVENT-STREAM (the base-spec term of art, SPEC.md §11's JSONL event-stream
+   layer, not a bespoke log format): a fenced `jsonl` block, one `core.entry`-shaped line per sweep run
+   (append-only — the app appends a line on every `--write`, never rewrites prior lines), each carrying a
+   timestamp plus the `{new, modified, removed}` counts plus the affected node ids: `{"type":
+   "deliverable_sweep.run", "id": "RUN-<iso>", "date": iso, "new": N, "modified": N, "removed": N, "new_ids":
+   [...], "modified_ids": [...], "removed_ids": [...]}`. Matches SPEC.md §11.1's `core.entry` base class,
+   domain-extended as `deliverable_sweep.run`.
+5. **`## Findings — Latest Run`** — human-readable rollup, WHOLLY REGENERATED on every `--write` (it is a
+   projection of the last run-history entry + current node states, not itself source of truth — the app never
+   parses this section back in).
+- test: round-trip — load a hand-seeded ledger, run `--write` with zero filesystem changes, diff the file
+  before/after: byte-identical except (a) a new Run History line with all-zero counts and (b) the Findings
+  section timestamp. Property order in every `### [DELIV-*]` block is stable across repeated writes.
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-BASE-SPEC-ALIGNMENT] Naming Chosen to Match the Upstream Base-Spec Proposal
+
+- change: "Adopted `machine-maintained: true`, `pending-enrichment: [field, ...]`, and the explicit
+  'temporal event-stream' framing for Run History, as the exact vocabulary — not synonyms — this spec + its
+  implementation use."
+  context_for_change:
+    prior_state: "The first draft of this spec already had the equivalent BEHAVIOR (a machine-owned-file
+      convention in the frontmatter intro prose, a NEEDS-ENRICHMENT sentinel, a JSONL run-history) but under
+      ad hoc names, not names chosen to match anything upstream."
+    reasoning: "The coordinator is authoring the companion base-spec proposal for FactLattice itself
+      (740Dave/factlattice) and needs this build's concrete vocabulary to match it exactly, so the base spec
+      and this concrete ledger agree on wire format without a translation layer. Since this tool is also
+      slated to PUBLISH into that same repo (a generic, domain-agnostic FactLattice-ecosystem tool — see
+      [CXC-DS-PORTABILITY]), matching names now avoids a rename-everywhere later."
+    rejected_alternative: "Keep the original prose-only 'don't hand-edit this' marker instead of a formal
+      frontmatter key — rejected because a prose convention isn't machine-queryable; a linter or another tool
+      can't cheaply detect 'is this file machine-maintained' from prose the way it can from a boolean key."
+    invalidating_assumption: "If the upstream base-spec proposal lands with DIFFERENT key names than what's
+      used here, this is a one-line rename in ledger.py's FIELD_ORDER/DEFAULT_FRONTMATTER — not a redesign,
+      per the schema-tolerant discipline already load-bearing throughout this spec."
+    implication: "This spec and 740Dave/factlattice's eventual base-spec text should be read together; this
+      document is the reference implementation of the convention, not just a consumer of it."
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-NODE-ID] Deterministic Node Identity
+
+- definition: `id = "DELIV-" + slug(basename_without_ext) + "-" + sha256(project-root + "::" + relpath)[:8]`.
+  The slug makes the id human-scannable; the hash8 suffix guarantees no two distinct paths collide and makes
+  the id STABLE across runs for the same path (content changes do NOT change the id — only path identity does)
+  so MODIFIED is "same id, new hash," not a delete+recreate.
+- test: sweeping the same file twice (unchanged) yields the identical id both times; two different files with
+  the same basename in different directories get different ids; renaming a file is NOT detected as
+  modified-in-place (a rename is a REMOVED old-path + NEW new-path — the sweep has no rename-detection heuristic
+  by design, since "is this a rename or an unrelated new file" is exactly the kind of guess the perceive/act
+  split forbids the app from making; an Intelligence can later link them via a `supersedes` edge).
+- canonical-form: the emitted id is UPPERCASE (`(...).upper()`), because the FactLattice node-id grammar is
+  `^[A-Z][A-Z0-9_\-]*$` (`factlattice/parser.py::_UPPER_ID_RE`): a lowercased slug is SILENTLY skipped by the
+  parser, making the whole ledger invisible to lts-engine. The human-readable path is the node TITLE, so nothing
+  legible is lost. This is the ONE canonical spelling of a DELIV-id; a legacy lowercase-slug id is a case-VARIANT
+  of it, never a distinct node.
+- identity-reconcile — DEDUP ON IDENTITY, NOT THE ID STRING: the artifact's identity is (project-root, path),
+  NOT the derived id text. Before diffing, the sweep RE-KEYS every stored node to the id its own
+  (project-root, path) derives under the CURRENT derivation, and MERGES (enrichment-preserving) any two nodes
+  that collapse to one identity. So a change in the derivation's case/format — the historical lowercase->uppercase
+  migration, or any future slug/hash8 change — UPDATES the existing node in place and NEVER mints a case-variant
+  twin. This closes the recurrence where keying the diff on the id STRING alone appended ~66 bare-`NEEDS-
+  ENRICHMENT` duplicates beside their already-enriched originals and tombstoned the originals as `missing`
+  (~doubling a real ledger). Merge precedence: a LIVE node beats a `missing` one; else the NEWER `modified` wins
+  (a hash-drift pair keeps the CURRENT-hash version, drops the stale one); else the MORE-ENRICHED node wins (a
+  real semantic value is never dropped for a bare placeholder twin).
+- test (identity-reconcile): a ledger holding a node under an OLD-format id for a live path, re-swept, yields
+  exactly ONE node for that path — re-keyed to the canonical id, all semantic fields intact, reported MODIFIED/
+  unchanged, never NEW; and no two nodes in a saved ledger are ever case-variants of one another.
+- part-of: [SPEC:CXC-DS]
+
+---
+
+## 4. Filters — the only thing between a useful ledger and noise
+
+### [CXC-DS-FILTER-DEFAULTS] Tuned Defaults for THIS Repo (portable pattern, not hardcoded paths)
+
+- include-globs (POSIX fnmatch, relative to project-root):
+  `docs/**/*.md`, `docs/**/*.html`, `docs/**/*.svg`, `docs/**/*.pdf`, `decisions/**/*.lts`.
+- exclude-globs (checked AFTER include, so they win even inside an included directory):
+  `**/*.py`, `**/*.js`, `**/*.ts`, `**/*.tsx`, `**/*.jsx`, `**/*.mjs`, `**/*.cjs`, `**/*.cpp`, `**/*.c`,
+  `**/*.h`, `**/*.hpp`, `**/*.go`, `**/*.rs`, `**/*.java`, `**/*.sh`, `**/*.ino`, `**/*.yaml`, `**/*.yml`,
+  `**/*.json`.
+- do-not-track-dirs (matched as a path component anywhere under a project root — hard stop, never walked
+  into): `.git`, `node_modules`, `__pycache__`, `.pio`, `.pytest_cache`, `.mypy_cache`, `.venv`, `venv`, `env`,
+  `build`, `dist`, `.eggs`, `site`, `.ray`, `_generated`, `.claude`.
+- do-not-track-suffixes: `.pyc`, `.pyo`, `.egg-info`.
+- secrets (belt-and-suspenders — these overlap with a repo's own `.gitignore` secrets block by design, e.g.
+  this repo's `**/wifi_config.h`, `**/secrets.yaml`, `**/*.creds`, `**/*.key`, `**/*.pem`, `**/.env`): treated
+  as additional do-not-track-suffixes/names, never as include-globs regardless of extension (a `secrets.yaml`
+  would otherwise never match `*.yaml` anyway since that's excluded, but the explicit list guards a future
+  include-glob widening from ever re-admitting them).
+- change: "Scoped the `.lts`/`.smd` positive filter to `decisions/**/*.lts` specifically, NOT every `.lts`/
+  `.smd` file in the repo (which would also sweep in `ux_composer/specs/*.lts` and `spec/*.smd`)."
+  context_for_change:
+    prior_state: "GUIDELINES.md's acceptance bar names decisions/*.lts as a required find but is silent on
+      the ux_composer/specs and spec/ corpora."
+    reasoning: "Those corpora are the living, actively-iterated SYSTEM SPECIFICATION — versioned and edited
+      much like source code (by an Intelligence composing FactLattice, but iteratively, not as one-shot review
+      artifacts). The node-kind-proposal's own framing is 'an artifact GENERATED FOR REVIEW... distinct from
+      the decisions they serve and from source code' — a spec corpus reads as source-of-truth architecture,
+      not a one-off deliverable. decisions/*.lts is different in kind: it's a ledger/log itself, the same
+      shape as this ledger, explicitly named in the brief."
+    rejected_alternative: "Include `**/*.lts` and `**/*.smd` repo-wide — rejected: this repo alone has ~43
+      such files today (23 under spec/, 20 under ux_composer/specs/) that would dominate the ledger with
+      noise the brief never asked to see, undermining the 'the only thing between a useful ledger and noise'
+      framing."
+    invalidating_assumption: "If David starts treating individual ux_composer/specs entries as one-shot review
+      deliverables (rather than a living corpus) — e.g. wants a history of 'spec 37 as submitted for review' —
+      this scoping should be revisited; a project-root-level include-glob is a one-line config edit either
+      way, not a code change (schema-tolerant filters, not hardcoded rejection)."
+    implication: "Root-level project docs (BACKLOG.md, BOOTSTRAP.md, etc.), reviews/, competitive_analysis/,
+      and spec-impl-gap-reports/ are also excluded by the same 'docs/** + decisions/**' scoping — not because
+      they're uninteresting, but because the default is deliberately narrow and precise against the acceptance
+      bar; widening is a Config-block edit, never a rewrite."
+- test: given this repo, the tuned defaults hit every item in GUIDELINES.md's acceptance list (dusk-gift
+  primers, console previs `*.html`, docs/ reports, decisions/*.lts) and exclude every `.py` file including
+  `docs/intelligence-console/session_sensor.py` (a real confound: a code file living INSIDE an included
+  directory — proves exclude-globs win over include-globs, not just directory-level filtering).
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-FILTER-PRECEDENCE] Evaluation Order
+
+- definition: for each file under a project root: (1) if any path component matches a do-not-track-dir, or the
+  filename matches a do-not-track-suffix, SKIP (do not even stat/hash it — cheapest check first); (2) if the
+  relative path matches any exclude-glob, SKIP; (3) if the relative path matches any include-glob, KEEP;
+  (4) else SKIP (default-exclude — the whitelist is authoritative, not "everything not explicitly banned").
+- test: a file matching BOTH an include-glob and an exclude-glob is excluded (exclude wins); a file under a
+  do-not-track dir that would otherwise match an include-glob is skipped before the glob check ever runs.
+- part-of: [SPEC:CXC-DS]
+
+---
+
+## 5. Sweep Semantics
+
+### [CXC-DS-DIFF] New / Modified / Removed, Precisely
+
+- NEW: a file matches the filters, resolves to a node id not present in the ledger (or present with
+  `missing: true` and now reappeared under a DIFFERENT id — impossible by construction, ids are path-derived,
+  so a reappearance under the SAME path is always the "restoration" MODIFIED case, never NEW).
+- MODIFIED: a file's node id exists in the ledger, the file exists on disk, and its content hash differs from
+  the stored `hash` (OR the node was `missing: true` and the path now resolves again — a restoration, also
+  reported as MODIFIED). `modified` is set to the file's current mtime (ISO date). Semantic fields untouched.
+- REMOVED: a node id exists in the ledger with `missing` unset/false, and its `path` no longer resolves under
+  any configured project-root. See [CXC-DS-REMOVED-NOT-DELETED].
+- UNCHANGED: everything else — not reported, not touched (byte-identical node in the rewritten ledger).
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-DETERMINISM] No Scattered Wall-Clock
+
+- definition: `created` and `modified` are ALWAYS derived from the swept file's own mtime (`os.stat().st_mtime`
+  -> ISO date), never from `time.time()` at sweep-time — two sweeps of an unchanged tree at different real
+  wall-clock moments produce byte-identical `created`/`modified` values. The ONE wall-clock read per invocation
+  is the run-history entry's `date` (and `missing-since` for a newly-detected removal) — both sourced from a
+  single injected `now` value (an ISO-8601 string), defaulting to real UTC now but overridable
+  (`Sweep(..., now="2026-07-20T00:00:00Z")`) so `--selftest` and any other caller gets fully reproducible
+  output without monkeypatching `time`.
+- test: two sweeps of an identical synthetic tree with the same injected `now` and the same starting ledger
+  produce byte-identical rendered ledger text (see [CXC-DS-LEDGER-SECTIONS] round-trip test) and byte-identical
+  `--json` report output.
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-DRY-RUN] `--write` Is Opt-In; Default Is a Safe Read-Only Report
+
+- definition: without `--write`, the app loads the ledger (or treats it as empty if absent), computes the
+  delta against the CURRENT filesystem, and prints the report — it writes NOTHING, not even a run-history
+  line. This is the safe mode for bootstrap display (the harness runs the sweep, hands the Intelligence the
+  delta, and only a LATER explicit `--write` — or the session-end integration — persists it). `--write`
+  performs the diff AND persists: new nodes (mechanical + NEEDS-ENRICHMENT stamps), modified nodes' `hash`/
+  `modified`, removed nodes' `missing`/`missing-since`, plus one new run-history line and a regenerated
+  Findings section.
+- part-of: [SPEC:CXC-DS]
+
+---
+
+## 5a. Forward Compat: a Future Live Monitor Shares This Ledger
+
+### [CXC-DS-MULTI-WRITER-SAFE] Mergeable at Node Granularity, Not Built Here
+
+- definition: David is planning a companion LIVE monitor (tails the session transcript `.jsonl` for doc-writes,
+  appends to the ledger in real time, emits a `deliverable/new` bus alert) that will write the SAME
+  `deliverable-ledger.lts` this batch sweep writes. This spec does not build that monitor, but the ledger
+  format and this app's write path are designed so a future single-node live append and this app's full-tree
+  reconcile can coexist without a rewrite:
+  1. **Path-keyed identity already holds.** [CXC-DS-NODE-ID]'s id is a pure function of `project-root` +
+     relative `path` — never a random or session-scoped value. A live-writer computing an id for the same path
+     (using the identical `node_id_for` derivation — a small shared helper, not a protocol to reinvent)
+     converges on the SAME node the batch sweep would produce. This holds across a DERIVATION change too, not
+     just concurrent writers: the sweep's identity-reconcile ([CXC-DS-NODE-ID]) re-keys any node whose stored id
+     predates a `node_id_for` case/format change, so two writers — or two code versions — never duplicate a node
+     for one file. (Asserting this "by construction" WITHOUT the reconcile is exactly what let the lowercase->
+     uppercase migration mint case-variant twins: the dedup must key on IDENTITY, never on the id string.)
+  2. **Existing-node touches are already mechanical-only.** [CXC-DS-DIFF]/[CXC-DS-FIELD-OWNERSHIP] already
+     forbid the batch app from writing anything but `hash`/`modified`/`missing`/`missing-since` on a node that
+     already exists — this was required by the perceive/act split regardless of a second writer, so a
+     live-monitor's semantic enrichment (or an Intelligence's) is NEVER at risk of being clobbered by a later
+     full reconcile: the reconcile only ever re-touches the same four mechanical keys, in place, and leaves
+     every other key (semantic or otherwise) exactly as found — this is the schema-tolerant pass-through
+     ([CXC-DS-C7]) doing double duty as the merge-safety guarantee.
+  3. **Writes are atomic.** `save()` renders to a temp file in the ledger's directory and `os.replace()`s it
+     into place — a reader (or a live-monitor mid-append) never observes a torn/partial ledger file. This does
+     NOT by itself serialize two concurrent writers (a real lock/queue is a live-monitor-side concern, out of
+     scope here) but it guarantees each individual write is all-or-nothing.
+- reserved, not built: a bus namespace `composeio/deliverable/new` is RESERVED for the future live-monitor to
+  publish on when it appends a node in real time (mirroring the `self/loose_ends/*` convention session_sweep's
+  `--bus` mode uses). This batch app publishes nothing — it stays one-shot/no-bus per its brief — this is a
+  documented seam, not a dependency.
+- change: "Added atomic (temp+replace) writes and named the path-keyed-id + mechanical-only-touch properties
+  explicitly as the multi-writer contract, in response to the coordinator flagging a planned live companion."
+  context_for_change:
+    prior_state: "The spec already had path-keyed ids and mechanical-only touches as consequences of the
+      perceive/act split, but didn't name them as a MULTI-WRITER safety property, and writes were a plain
+      `write_text` (not torn-read-safe)."
+    reasoning: "Two independent processes writing one file needs the invariants stated explicitly (so a future
+      builder of the live-monitor doesn't have to re-derive them) and needs the one cheap hardening (atomic
+      replace) this app can add unilaterally without knowing anything about the monitor's own design."
+    invalidating_assumption: "If the live-monitor needs true concurrent-write serialization (both processes
+      writing within the same second), a lock file or single-writer-queue becomes necessary — atomic replace
+      alone only prevents torn reads, not last-write-wins data loss between two near-simultaneous writers. That
+      design is deferred to the live-monitor's own spec, not solved here."
+    implication: "No behavior change for this batch app's current one-shot use; purely additive hardening."
+- test: `save()` never leaves a `.tmp` file behind on success; a save interrupted mid-write (simulated by
+  killing before `os.replace`) leaves the PRIOR ledger content intact, never a truncated file.
+- part-of: [SPEC:CXC-DS]
+
+---
+
+### [CXC-DS-REALTIME-PERSISTS] Every Realtime Detector Persists to the Ledger — Not Just Emits
+
+- definition: The durable Artifacts surfaces (the rail card, the Artifacts-tab history view) render the
+  `self/deliverables` bus projection, which is a pure projection of the LEDGER (`deliverable_publisher`
+  reads the ledger file and nothing else). Therefore ANY realtime deliverable detector — the transcript
+  monitor (my Write/Edit) AND the filesystem watcher (David's EXTERNAL editor writes) — MUST persist the
+  change it detects to the ledger (via the shared `run_sweep(write=True)`, the node-keyed + mechanical-only
+  + atomic co-writer path this section makes safe) BEFORE (or as) it emits the transient `deliverable/new`
+  / `deliverable/modified` banner alert. A detector that only EMITS surfaces a fleeting banner and then the
+  deliverable is invisible on every durable surface until the next batch sweep — the reported failure mode
+  for `bootstrap/dusk-gifts/away-watch-2026-07-25-report.md`, which the filesystem watcher detected (banner
+  fired) but never wrote, so `self/deliverables` never carried it and neither the rail card nor the
+  Artifacts tab ever showed it.
+- invariant: emit-without-persist is a defect. The alert and the ledger write are ONE act, not two — the
+  banner is the ephemeral echo of a durable ledger row, never a substitute for one.
+- rationale: the watcher exists solely to catch David's external edits (the transcript monitor is blind to
+  them); if that path does not persist, David's own deliverables are exactly the ones that never reach the
+  durable Artifacts view. Reuse-by-reference: both detectors call the SAME `run_sweep` the batch app owns —
+  never a second ad-hoc ledger-append implementation ([DX-NARROW-WAIST]).
+- test: a filesystem watcher poll that detects a new/changed tracked file, given a real ledger, leaves that
+  file present as a ledger node (`missing: false`) — so a subsequent `deliverable_publisher` projection
+  carries it in `self/deliverables.all`.
+- part-of: [SPEC:CXC-DS]
+
+---
+
+## 6. CLI
+
+### [CXC-DS-CLI] `python -m composeio.deliverable_sweep`
+
+```
+python -m composeio.deliverable_sweep sweep --ledger PATH [--root DIR ...] [--write] [--json] [--session KEY]
+python -m composeio.deliverable_sweep --selftest
+```
+
+- `sweep` is the default/only subcommand (mirrors session_sweep's flat CLI); `--root` may repeat to sweep
+  multiple project roots in one invocation (each becomes a `project-root` entry, and is ADDED to the ledger's
+  configured `project-roots` list on `--write` if not already present — additive, never removes a root a human
+  configured).
+- `--root` with no ledger config yet seeds `project-roots` + the tuned filter defaults ([CXC-DS-FILTER-DEFAULTS])
+  into a fresh ledger on first `--write`.
+- `--json` emits the machine report (§8) instead of the ASCII readout; combinable with dry-run (no `--write`)
+  for bootstrap consumption.
+- `--session KEY` — see [CXC-DS-FIELD-OWNERSHIP]'s conditionally-mechanical `generated-in-session`.
+- exit code: 0 always for a successful sweep (findings are data, not failure) except a hard error (bad ledger
+  path's parent missing, unreadable file) which exits 2, matching session_sweep's convention.
+- part-of: [SPEC:CXC-DS]
+
+---
+
+## 7. The Two Integration Points
+
+### [CXC-DS-BOOTSTRAP] Bootstrap: Harness Sweeps, Hands the Intelligence the Delta
+
+- definition: at session start, the harness runs `sweep --ledger deliverables/deliverable-ledger.lts --json`
+  (dry-run, no `--write` — bootstrap should never silently mutate the ledger before the Intelligence has seen
+  the delta) and surfaces the `--json` report to the Intelligence, which reports NEW/MODIFIED/REMOVED counts
+  and highlights to David per the existing "which .jsonl context files were loaded"-style session-start
+  reporting convention. If David wants the ledger actually updated, the Intelligence (or the harness, on
+  David's standing instruction) re-invokes with `--write`.
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-SESSION-END] Session-End: Sweep Points at New/Changed Entries to Enrich
+
+- definition: at session end (dusk), the flow is `sweep --write --session <current-session-key> --json` — this
+  DOES persist (mechanical fields for anything new/changed/removed this session), and the `--json` output's
+  `needs-enrichment` list is exactly the node ids the Intelligence should now fill: for each, replace the
+  `NEEDS-ENRICHMENT` literal in `kind`/`topics`/`summary`/`target-audience`/`confidentiality`/`review-outcome`/
+  `lifecycle-position` (and `generated-in-session` if still stamped) with real values, by directly editing
+  those `- key: value` lines in the ledger's `## Deliverables` section (the app's own writer never overwrites
+  a value that isn't the literal `NEEDS-ENRICHMENT`, so a hand-enriched field surviving a later `--write` is
+  preserved by construction — re-running the sweep on a MODIFIED file only touches `hash`/`modified`, never a
+  semantic field, per [CXC-DS-FIELD-OWNERSHIP]).
+- part-of: [SPEC:CXC-DS]
+
+### [CXC-DS-REPORT-FORMAT] The `--json` Report Schema
+
+```json
+{
+  "ledger": "deliverables/deliverable-ledger.lts",
+  "run": {"date": "ISO-8601", "new": 2, "modified": 1, "removed": 1},
+  "new":      [{"id": "DELIV-...", "path": "...", "project-root": "...", "format": "md"}],
+  "modified": [{"id": "DELIV-...", "path": "...", "modified": "ISO-date"}],
+  "removed":  [{"id": "DELIV-...", "path": "...", "missing-since": "ISO-8601"}],
+  "needs-enrichment": ["DELIV-...", "..."]
+}
+```
+- `needs-enrichment` is every node (new OR modified, this run) that still carries at least one literal
+  `NEEDS-ENRICHMENT` value after the write — the Intelligence's exact worklist. A dry-run (no `--write`)
+  reports the same shape computed against the in-memory would-be state, without persisting it.
+- part-of: [SPEC:CXC-DS]
+
+---
+
+## 8. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-DS-C1 | NEW detected + mechanical fields + enrichment stamps | Synthetic new file gets path/project-root/format/created/hash correct and all 7 (or 8 with no `--session`) semantic fields == `NEEDS-ENRICHMENT` |
+| CXC-DS-C2 | MODIFIED bumps `modified` only | Editing a swept file's bytes changes `hash` and `modified`; `created` and all semantic fields are untouched |
+| CXC-DS-C3 | REMOVED flagged, not deleted | Deleting a swept file leaves its node in the ledger with `missing: true`, unchanged `lifecycle-position`, reported every run until resolved |
+| CXC-DS-C4 | Code / do-not-track excluded | A `.py` file inside an included directory, and a file under a do-not-track dir/suffix, never appear in the ledger |
+| CXC-DS-C5 | Determinism | Same tree + same ledger + same injected `now` -> byte-identical rendered ledger and `--json` report, across repeated runs |
+| CXC-DS-C6 | Never guesses semantics | No code path assigns a non-`NEEDS-ENRICHMENT` value to any of the 7 semantic fields |
+| CXC-DS-C7 | Schema-tolerant | An unrecognized property already present on a hand-enriched node round-trips through `--write` unchanged (not dropped, not rejected) |
+| CXC-DS-C8 | Dry-run safety | Without `--write`, the ledger file (and its mtime) is untouched, regardless of what the delta contains |
+| CXC-DS-C9 | Multi-writer safe | `save()` writes atomically (temp+replace); a full reconcile touches only mechanical fields on a pre-existing node, never its semantic fields — safe substrate for a future live-monitor co-writer |
+| CXC-DS-C10 | Extraction-clean | Zero `import composeio...` in the package; every root/filter/ledger-path/frontmatter value is config/CLI-driven, none hardcoded |
+| CXC-DS-C11 | Pending-enrichment accuracy | A fresh NEW node's `pending-enrichment` lists all 8 enrichable fields; after hand-enriching 2 of them and triggering a real MODIFIED, it recomputes to the remaining 6 |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-DS] IMPLEMENTS [DEC-DELIVERABLE-SWEEP]
+[SPEC:CXC-DS] DEPENDS_ON [DEC-DELIVERABLE-LEDGER]
+[CXC-DS-NODE-ID] RELATED_TO [docs/factlattice/deliverable-node-kind-proposal.md]
+[CXC-DS-SIBLING-DISTINCTION] RELATED_TO [python/composeio/session_sweep]
+[CXC-DS-DETERMINISM] RELATED_TO [python/composeio/compact_summary.py]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-07-20
+**Status**: Draft — spec-first pass (Deliverable A); implementation (Deliverable B) follows in this same dispatch, tracking this spec exactly.

@@ -1,0 +1,264 @@
+---
+scope: "The FOUR real KiCad PCBs in (a local path, not published), characterised in HAL terms as the physical ground truth for the declarative hardware-abstraction layer ([SPEC:CXC-HAL-DECLARE], spec 32). Per board: the brains, the power domains, the ports, the on-board I/O, the ComposeBus attach method, and the HAL interface-kind mapping. Then the synthesis that is the reason to read it — the FIVE ways the four boards stress the nine-kind HAL, each as its own addressable node. Companion to [SPEC:CXC-BOARD-HW], which inventories the DISPLAY fleet: that document says what a board a scene runs on is; this one says what a board a peripheral hangs off is, and what the peripheral model cannot yet say about it."
+audience: "ComposeUX/ComposeIO architects deciding what the nine kinds must grow to cover; the PCB and firmware authors (CH32V003 / ESP32-C3 ComposeIO ports); the fleet-baseline and mothercard/daughtercard workstreams (docs/PLAN-fleet-baseline-and-bus-native.md, J and I); any Intelligence orienting to the physical board landscape by QUERY rather than by knowing which directory to open."
+boundary: "IN: per-board purpose, MCU, power, connectors, on-board peripherals and driver stages, ComposeBus attach method and HAL mapping ([PCB-BTNMATRIX], [PCB-CANGW], [PCB-LEGODOTS], [PCB-GAUGE3]); the cross-board index ([PCB-INDEX]); the five HAL stresses as five separately-citable nodes ([PCB-STRESS-S1]..[PCB-STRESS-S5]) plus what the model gets RIGHT ([PCB-NON-STRESS]); the one open pin conflict ([PCB-GAUGE3-GPIO5-CONFLICT]); how these facts are known ([PCB-PROVENANCE]); and why this derivation exists rather than a registered `pcb/` corpus root ([PCB-CORPUS-PLACEMENT]). OUT: the HAL schema itself (that is [SPEC:CXC-HAL-DECLARE]); firmware; register maps and the decoder registry; the Gerber/fab layer; net-level routing; the KiCad artifacts and generators, which stay in (a local path, not published) and are named, not mirrored."
+not-this: "Not a datasheet and not a BOM. Not a mirror of (a local path, not published) — it is a DERIVATION with a stated authority split and a hash-checkable resync trigger ([PCB-CORPUS-PLACEMENT]); the hardware ground truth is the KiCad tree, not either prose file. Not a proposal to extend the HAL: it FLAGS five stresses and the extension is the architect ratify. Not schematic-derived, because these boards have no schematic at all ([PCB-PROVENANCE])."
+depends-on: [32-composeux-hal-declaration.lts, 60-board-hardware-inventory.lts, 62-composeplatform-vision.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+derived-from: (a local path, not published) (David, 2026-07-18) sha256 c2e2373f9ad924260bf683201c9f3ef4c915a1f4e557cb5fefdb7f828e6f9b8e
+created: 2026-08-13
+---
+
+# ComposeBus PCB Landscape — Four Real Boards In HAL Terms [SPEC:PCB-BOARDS-OVERVIEW]
+
+> Four real boards, all built to hang off the ComposeBus, and the thing worth reading is not the boards — it is
+> what they BREAK. Two are minimal-MCU native peers with an on-board brain (button matrix and CAN gateway, both
+> CH32V003); two are ESP32-C3 SuperMini carriers (lego_dots, rack_triple_gauge). Each maps, mostly, onto the nine
+> interface kinds of [SPEC:CXC-HAL-DECLARE]. Together they surface five gaps the closed set does not model, and two
+> of them break real coverage TODAY: **CAN is a transport/membrane, not a peripheral kind** ([PCB-STRESS-S1], the
+> single biggest break), and the **MCP23017 is a pin MULTIPLIER, not a sensor** ([PCB-STRESS-S2]) — on three of the
+> four boards, so half the fleet's I/O is unexpressible. Two more were derived INDEPENDENTLY from the opposite
+> direction weeks later and agree: S1 anticipated the mothercard/daughtercard CAN-trunk architecture by four weeks,
+> and S3's `gauge = {needle + backlight}` is the same conclusion as the widget side's named output channels. A prior
+> derivation arriving at the same answer from other evidence is corroboration, and it is why these five are a design
+> backlog rather than a wishlist. Source of truth for the hardware is each board's `generate_pcb.py` — there are no
+> schematics — cross-checked against KiCad footprint/net extraction and the engineering logs.
+
+- what-this-is: the boards-side companion to the Grove peripheral cross-section. Where the cross-section enumerates the peripheral CATALOG the nine kinds must cover, these four boards are the HOST/CARRIER hardware those peripherals — and the boards themselves — hang off. They are the physical ground truth spec 32 was validated against.
+- headline: the boards VALIDATE the nine kinds for leaf peripherals and prove the model is missing four axes: a **transport/membrane** axis (CAN, inter-MCU UART), a **pin-expander role** (MCP23017, on 3 of 4 boards), a **compound-peripheral grouping** (the illuminated matrix, the gauge cluster), and a **stepper/position actuator kind** (L293D + x27.168). [PCB-STRESS-S1] and [PCB-STRESS-S2] BREAK real coverage today; [PCB-STRESS-S3] and [PCB-STRESS-S4] are expressiveness gaps; [PCB-STRESS-S5] is cosmetic.
+- topology-finding: **none of the four is a dumb daughtercard.** Every board has a real on-board or socketed MCU able to run ComposeIO firmware — CH32V003 x2, ESP32-C3 x2 — so the native-peer `on:` model of [CXC-HALD-MCU] fits all four at the TOP level and every stress is one level DOWN (expanders, compounds, CAN, steppers). The Software-Defined-Hardware topology the mothercard workstream is designing is already the fleet's actual shape; workstream J is about making it deliberate and self-describing rather than per-board.
+- draft-status: DRAFT. Characterisation is David's, 2026-07-18. This derivation is 2026-08-13 and is UNRATIFIED on two points named in the footer: the `PCB-` prefix registration and the `GROUNDS`/`STRESSES` verb registrations. Deliberately NOT a `status` key: the value is prose, and a prose `status` reads to the linter as a lifecycle claim it cannot honour.
+- depends-on: [SPEC:CXC-HAL-DECLARE]
+- see-also: [SPEC:CXC-BOARD-HW], [SPEC:CXC-VISION], [PCB-INDEX], [PCB-HAL-STRESS], [PCB-CORPUS-PLACEMENT], [PCB-PROVENANCE], [PCB-GAUGE3-GPIO5-CONFLICT]
+
+---
+
+## 1. How these facts are known, and why they are here
+
+### [PCB-PROVENANCE] Three independent sources, and not one schematic among them
+
+- definition: how every identity in this document is known. It matters more than usual here, because the normal instrument does not exist: these boards have no schematic to read.
+- no-schematic: none of the four has a `.kicad_sch`. Each is emitted DIRECTLY to `.kicad_pcb` by a per-board `generate_pcb.py` — a net table plus placed footprints, then Freerouting. So every KiCad tool that defers to the schematic (`extract_i2c_devices`, `list_schematic_components`, `analyze_pcb_nets`) returns nothing usable on this tree, and an analyst who reaches for them concludes the boards are empty.
+- three-sources: identities are triangulated from (1) `list_pcb_footprints` plus net names grepped out of the `.kicad_pcb` S-expression text, (2) each board's `generate_pcb.py` docstring and net map, and (3) the per-board `logs/engineering/*.jsonl`. Three independent sources agreeing is exactly what the HIGH confidence below means — not one tool's opinion.
+- what-is-inferred: the ComposeBus ATTACH INTENT and the semantic-namespace names. Neither is in any file; both are read off David's framing. Every board node carries them under `inferred` so they never read as extracted fact.
+- confidence: 0.9
+- confidence-derivation: 0.9 encodes David's word HIGH for parts and topology. **The numeral is this derivation's, not David's** — he wrote an enum value and SPEC 7.1 requires a float, so the mapping is an authoring choice and is flagged for ratify. Attach-intent is materially lower and is deliberately NOT folded into this number, because one averaged figure would flatter the weakest claim in the document.
+- part-of: [SPEC:PCB-BOARDS-OVERVIEW]
+
+### [PCB-CORPUS-PLACEMENT] Why this is a derivation in the corpus and `pcb/` is NOT a registered corpus root
+
+- decision: the PCB landscape enters the queryable corpus as THIS derivation, now living under its own registered corpus directory `corpora/pcb-specs/` (moved 2026-09-02 from `corpora/platform-specs/` per David's ruling — a separate corpus, not a subdirectory of platform-specs). (a local path, not published) is still deliberately NOT registered as a corpus root; that question is orthogonal to which git-tracked directory this derivation itself lives in. The two options below were weighed and they are mutually exclusive, which is what forced that original choice.
+- placement-update-2026-09-02: moved from `corpora/platform-specs/64-pcb-board-landscape.lts` to `corpora/pcb-specs/64-pcb-board-landscape.lts` and registered as its own `pcb-specs` corpus in `FACTLATTICE_CORPUS_CONFIG`, plus added as an additional `specs` root on the multi-root corpora that already cited `PCB-*` ids out of platform-specs (intelligence-console, visual-composer, headless-monitor), so the existing citations in specs 32/62/69/71 and the decision graph keep resolving. This does NOT reopen `not-registered-unversioned`/`mutually-exclusive` below — those govern the ungitted (a local path, not published) raw source, which is still not registered and still not mirrored.
+- not-registered-unversioned: (a local path, not published) is **not a git repository** — measured 2026-08-13, `git rev-parse` fails at that path and at every parent. Registering it would make in-repo specs depend on a tree with no history, no diff and no review gate.
+- not-registered-machine-local: the corpus registry is `~/factlattice-internal-dev/private/corpus-config.json` — GITIGNORED and machine-local (renamed from `~/factlattice-deployment/` since this was first written; corrected 2026-09-02). A registration there is invisible in any diff, unreviewable by the architect, absent on any other machine and absent at open-source release. The citations it would satisfy live in `corpora/platform-specs/32-*.lts` and `62-*.lts`, which are in-repo and travel. A machine-local fix leaves those citations dangling everywhere except one laptop.
+- not-registered-lossy-source: the source document is **already silently lossy**, measured against the live parser 2026-08-13: 46 authored `- ` bullets, **27 parsed properties**. All five stresses mint NOTHING (each line opens `- **(S1) ...`, a markdown-emphasis key region), and `mcu / brains`, `connectors / ports`, `peripherals / I/O` mint nothing on EVERY board node (spaces and slashes in the key region), as do `non-stresses worth recording` and `headline for the architect`. `[PCB-HAL-STRESS]` parsed to exactly two properties: `definition` and `part-of`. Registering that file would register a document whose load-bearing content is invisible to query. The fold-in had to be a RE-AUTHORING wherever it landed.
+- mutually-exclusive: this derivation reuses the SAME `PCB-*` ids, which is what makes the existing citations in specs 32 and 62 resolve. If `pcb/` were also registered into the same corpus, every one of those ids would be defined TWICE — a collision in which the first definition wins and every traversal to the loser is silently wrong. So registration is not merely redundant now, it is excluded.
+- authority-split: hardware ground truth stays in (a local path, not published): the `.kicad_pcb` files, the per-board `generate_pcb.py`, and `logs/engineering/*.jsonl` are the actual sources and are NOT mirrored here. This document is authoritative only for the HAL characterisation and the stress synthesis — which is architecture, not hardware, and whose consumers (specs 32, 60, 62 and the fleet plan) are all in-repo.
+- sync-contract: `derived-from` in the frontmatter names the source path AND its sha256 at extraction. Drift is therefore DETECTABLE by one command rather than by hope: `shasum -a 256 (a local path, not published)` — if it differs from the recorded digest, the source moved and this derivation is stale. That is the property `60-board-hardware-inventory.lts.bak` did not have.
+- resync-trigger: re-derive when (a) the digest changes, (b) a board is revised in KiCad, or (c) a fifth board is added to (a local path, not published). The re-derivation is a re-read of the three sources at [PCB-PROVENANCE], not a diff of two prose files.
+- residual-risk-stated: the trigger is a CONVENTION, not an enforced check — nothing runs `shasum` on a schedule today. An edit to the source will not announce itself; it will only be catchable. That is a real weakening versus registration and it is recorded rather than glossed.
+- part-of: [SPEC:PCB-BOARDS-OVERVIEW]
+
+---
+
+## 2. The four boards
+
+### [PCB-INDEX] The four boards at a glance
+
+- definition: the cross-board index. Two CH32V003 minimal peers (button matrix, CAN gateway) and two ESP32-C3 SuperMini carriers (lego_dots, rack_triple_gauge), with each board's headline stress in the last column so the reason to open a board node is visible before opening it.
+- see-also: [PCB-BTNMATRIX], [PCB-CANGW], [PCB-LEGODOTS], [PCB-GAUGE3]
+- part-of: [SPEC:PCB-BOARDS-OVERVIEW]
+
+| node | board | brains (peer) | on-board drivers / I/O | ports | ComposeBus attach | HAL kinds used | headline stress |
+|------|-------|---------------|------------------------|-------|-------------------|----------------|-----------------|
+| [PCB-BTNMATRIX] | button_matrix_4x4 | CH32V003 (socketed dev board) + host ESP32 over UART | 2x MCP23017 I2C (0x20 buttons, 0x21 LEDs); 16 btn + 16 LED | Grove-UART 4-pin, 16x JST-XH 3-pin, GPIO breakouts | native peer via UART-bridged host | i2c, digital_in x16, pwm_out x16 | **compound peripheral** (illuminated matrix) + **I2C GPIO expander** + inter-MCU UART bridge |
+| [PCB-CANGW] | can_controller | CH32V003F4P6 (TSSOP-20, bare) | MCP2515 SPI CAN ctrl + SN65HVD230 transceiver, 120R term | JST-XH 4-pin CAN (w/ 12V), JST-XH 6-pin prog/UART, 1x12 GPIO | **the CAN gateway** — bridges bus <-> physical CAN | spi (mcp2515) + **CAN transport (unmodeled)** | **CAN is the tenth kind** — and it is a transport/membrane, not a peripheral |
+| [PCB-LEGODOTS] | lego_dots | ESP32-C3 SuperMini (socketed) | 12x BC337 NPN low-side switch channels (plain, not addressable) | 12V screw term, 12x JST-XH 3-pin outs | native peer (ESP32-C3 WiFi) | pwm_out x12 | clean fit; only stress = **array/bank actuator** (12 entries, no array sugar) |
+| [PCB-GAUGE3] | rack_triple_gauge | ESP32-C3 SuperMini (socketed) | MCP23017 I2C (0x20) -> 3x L293D H-bridge -> 3x x27.168 gauge steppers; 3x 2N2222 -> LED backlights | 12V screw term, 3x JST-XH 4-pin (steppers), 3x JST-XH 2-pin (LEDs) | native peer (ESP32-C3 WiFi) | i2c (expander), pwm_out x3 (+ **stepper, unmodeled**) | **stepper/H-bridge actuator** + **compound gauge cluster** + I2C expander |
+
+### [PCB-BTNMATRIX] button_matrix_4x4 — illuminated 4x4 button matrix daughterboard
+
+- definition: a 16-button + 16-LED illuminated input surface, physically a 4x4 grid but **electrically 1:1** — NOT scan-multiplexed. Each button and each LED gets its own expander pin. It is named a matrix for the panel layout, not the wiring. THT daughterboard, 70x90mm. Source: generator docstring "4x4 Button Matrix Daughterboard v2"; 50 footprints; nets BTN1-16 / LED1-16 / LDRV1-16.
+- mcu: a **CH32V003 dev board, SOCKETED** into 2x 1x11 pin-header rows — not a bare chip on this PCB. It is the native MCU peer and owns the I2C master plus the button-interrupt line. A **host ESP32 sits upstream over UART** (docstring: `Host ESP32 --UART--> CH32V003 --I2C--> MCP23017`). Two MCUs in a chain, which is the shape workstream J is now generalising.
+- power: VCC / +5V supplied from the host side; a 3V3 rail that was a LATE FIX — engineering log ir-002 records the 3V3 net missing entirely at first. I2C pull-ups 4.7k to +5V; 2x 10k reset pull-ups; 100nF decoupling. No on-board regulator: it is bus-powered.
+- ports: **Grove-compatible 4-pin UART** (2.0mm: VCC/GND/TX/RX) to the host — the ComposeBus-facing port; a backup `J_HOST` 4-pin 2.54mm carrying the same signals; `J_EXP` (7-pin) plus a hand-added `J_EXP2` (1x10) breaking out spare CH32V003 GPIOs (PC5/PC6/PC7/PD2-5 etc.); and **16x JST-XH 3-pin** (GND / LED-anode / button-signal), one cable per illuminated button module.
+- peripherals: **2x MCP23017 (DIP-28) I2C GPIO expanders** — U1 @0x20 = 16 button inputs, U2 @0x21 = 16 LED outputs driven through 16x 150R. U1 INTA -> CH32V003 PD0 (`BTN_INT`) gives interrupt-driven scan rather than polling. LEDs are plain, not addressable.
+- composebus-attach: the CH32V003 runs ComposeIO firmware and is the peer, but it is **not directly on the bus**: it hangs off a host ESP32 over UART (the Grove port). Attach is therefore a native-MCU peer RELAYED by a host over a UART link — or, if the CH32V003 ever gets its own transport, a UART-bridged sub-peer. Its internal bus is the two MCP23017s over I2C.
+- hal-mapping: kinds = `i2c` (the two expanders) plus conceptually `digital_in` x16 (buttons, pull-up, debounce, edge) and `pwm_out`/digital x16 (LEDs).
+- hal-stress: three at once, and this board is the canonical case for two of them: the expanders are PIN MULTIPLIERS with no physical-quantity namespace ([PCB-STRESS-S2]); the board IS one compound peripheral — an illuminated button matrix where button N lights LED N — that can only be declared as 32 scattered atomic entries ([PCB-STRESS-S3]); and the ESP32<->CH32V003 UART link is an inter-peer TRANSPORT, not a `uart` peripheral publishing a quantity ([PCB-STRESS-S5]).
+- inferred: the attach method and the semantic-namespace names. Parts and topology are source-confirmed.
+- confidence: 0.9
+- confidence-basis: generator docstring + net map + engineering log ir-002, three sources agreeing on parts and topology. Attach method and namespaces are INFERRED and carry no part of this number ([PCB-PROVENANCE]).
+- part-of: [SPEC:PCB-BOARDS-OVERVIEW]
+
+### [PCB-CANGW] can_controller — CH32V003 + MCP2515 CAN gateway, the ComposeBus-over-CAN bridge
+
+- definition: a minimal CAN node and gateway: a CH32V003 talks SPI to an MCP2515 CAN controller into an SN65HVD230 transceiver onto a physical CAN bus, with switchable 120R termination. This is **how other boards get onto the ComposeBus over CAN**. 25 footprints, compact SMD. Source: generator docstring line 7; nets CANH/CANL/SPI_*/CAN_INT/TERM_MID.
+- mcu: **CH32V003F4P6 (TSSOP-20)** — a bare chip on-board, not a socketed module. The native MCU peer; owns the SPI-to-MCP2515 driver.
+- power: **12V input arrives on the CAN connector, pin 4** -> **SS34 (D_SMA) series reverse-polarity diode** -> **AMS1117-3.3 (SOT-223) LDO** -> **+3V3**. One 3V3 logic rail; the 12V is pass-through only.
+- ports: `J_CAN` **JST-XH 4-pin** = CANH / CANL / GND / **+12V pass-through** — **bus power and data on one cable**, which is precisely what a mothercard-to-daughtercard trunk wants and is the reason this board is the internal-bus building block rather than only a gateway. `J_PROG` **JST-XH 6-pin** = 3V3 / GND / TX / RX / NRST / SWDIO(PD1), giving UART plus single-wire-debug programming. `J_GPIO` **1x12 header** = 12V / 3V3 / GND plus spare PD0 / PA1 / PA2 / PC0-... breakout.
+- peripherals: **MCP2515** SPI CAN controller (SOIC-18W) with an **8MHz HC49 crystal** and 22pF loads; **SN65HVD230** CAN transceiver (SOIC-8); **120R termination** across CANH/CANL via a solder-bridge jumper, OPEN by default; 10k MCP2515 RESET pull-up; decoupling.
+- composebus-attach: **this board IS an attach mechanism, not just an attachee.** The CH32V003 firmware bridges its side of the ComposeBus onto a physical CAN segment (SPI <-> MCP2515 <-> CAN). Any CAN-only board reaches the bus THROUGH this gateway. The gateway role is inferred from David's framing; the CAN hardware itself is confirmed.
+- hal-mapping: on-board there is exactly one clean kind — `spi` (MCP2515, `driver: mcp2515`, with `cs`). That part fits the model without argument.
+- hal-stress: the board's REASON TO EXIST is CAN, which the nine-kind set explicitly does not model, and the deeper finding is that CAN is a TRANSPORT rather than a kind at all — see [PCB-STRESS-S1], for which this board is the physical proof.
+- inferred: the gateway/attach role. Every named part is source-confirmed.
+- confidence: 0.9
+- confidence-basis: all parts named in the generator docstring and net map — CH32V003F4P6 / MCP2515 / SN65HVD230 / AMS1117-3.3 / SS34 — and independently confirmed by footprints TSSOP-20 + SOIC-18W + SOIC-8 + SOT-223 + D_SMA + crystal.
+- part-of: [SPEC:PCB-BOARDS-OVERVIEW]
+
+### [PCB-LEGODOTS] lego_dots — 12-channel BC337 LED/lamp driver for LEGO-embedded lighting
+
+- definition: a narrow 25x150mm single-column **12-channel low-side switch board**. Each channel is `GPIO -> 150R -> BC337 base; emitter -> GND; collector -> LED return`, with the LED or lamp fed from +12V. It drives lights embedded in LEGO DOTS tiles. The LEDs are **plain, NOT addressable** — per-channel on/off or PWM. Source: generator docstring "Lego Dots 12-channel BC337 LED driver"; nets BASE1-12 / COL1-12 / GPIO0-20.
+- mcu: **ESP32-C3 SuperMini**, socketed via 2x 1x8 headers — the native MCU peer, WiFi-capable, driving all 12 channels directly from GPIO with no expander in the path.
+- power: **12V screw terminal** -> **1N5401 (DO-41) series reverse-protection diode** -> +12V bus -> **LM7805 (TO-220)** -> **+5V** -> ESP32-C3. Three rails: +12V (LED supply), +5V (logic), +3V3 (from the ESP32 module).
+- ports: a 2-pin **screw terminal** for 12V in; 2x 1x8 **ESP32-C3 headers**; and **12x JST-XH 3-pin** channel outputs (pin1 GND / pin2 +12V / pin3 collector-return).
+- peripherals: **12x BC337 NPN transistors** (TO-92) as low-side switches, each with a 150R base resistor. No expander, no addressable LED, no sensor — a pure actuator board.
+- composebus-attach: **native peer**: the ESP32-C3 runs ComposeIO firmware and joins the ComposeBus over WiFi directly. The 12 channels are local actuators it owns. INFERRED.
+- hal-mapping: **the cleanest fit of the four** — 12x `pwm_out` (`{pin, mode: digital|pwm, freq_hz}`), namespace `led/{1..12}/state` or `.../brightness` (inferred). The BC337 stage is exactly what `pwm_out` abstracts away: pin plus mode, driver stage invisible. Recorded as a NON-stress at [PCB-NON-STRESS] because a model needs its clean cases on the record as much as its breaks.
+- hal-stress: one, and it is cosmetic: this is a 12-channel actuator BANK and the schema has no array or bank sugar, so it declares as 12 separate `peripheral:` entries ([PCB-STRESS-S5]).
+- inferred: the attach method and namespace names.
+- confidence: 0.9
+- confidence-basis: generator docstring and net map fully explicit; footprints 12x TO-92 + TO-220 + screw terminal + 12x JST-XH-3 confirm independently.
+- part-of: [SPEC:PCB-BOARDS-OVERVIEW]
+
+### [PCB-GAUGE3] rack_triple_gauge — three analog gauges, stepper needles plus backlights
+
+- definition: drives **three physical automotive-style analog gauges**, each one an **x27.168 gauge stepper** for the needle plus a **12V LED backlight**. 50x70mm THT. David's first PCB, per the engineering log. Source: generator docstring; config log cfg-002 "3x x27.168 gauge steppers"; nets MOT1-3_A-D / M1-3_IN1-4 / LED1-3_*.
+- mcu: **ESP32-C3 SuperMini**, socketed via 2x 1x8 headers — the native MCU peer on WiFi. **GPIO4 = SDA, GPIO5 = SCL** to the expander; **GPIO0 / 1 / 3** are the three LED PWM channels. Those pin choices are the subject of [PCB-GAUGE3-GPIO5-CONFLICT].
+- power: **12V screw terminal** -> **1N5401 series reverse diode** -> **LM7805 (TO-220, heatsinked)** -> **+5V**. Rails: +12V, +5V, +3V3.
+- ports: a 2-pin **screw terminal** (12V); 2x 1x8 **ESP32-C3 headers**; **3x JST-XH 4-pin** for the bipolar stepper coils, one per gauge; **3x JST-XH 2-pin** for the LED backlights; and expansion headers `J_EXP_ESP` (6 GPIO), `J_EXP_MCP` (4 GPB — GPB4-7) and `J_PWR_TAP` (12V/5V/3V3/GND).
+- peripherals: **MCP23017 (DIP-28) I2C GPIO expander @0x20** whose GPA pins feed **3x L293D dual-H-bridge (DIP-16)** motor drivers into **3x x27.168 steppers**; plus **3x 2N2222** transistors with 150R base resistors PWMing the **3x 12V LED backlight** strips.
+- composebus-attach: **native peer**: the ESP32-C3 on WiFi joins the ComposeBus directly and owns the three gauges and backlights as local actuators. A `gauge/{n}/value` intent arriving from the bus would map to a needle position it drives locally. INFERRED.
+- hal-mapping: kinds = `i2c` (MCP23017 expander, `driver: mcp23017`) plus `pwm_out` x3 (2N2222 -> backlight, `led/{n}/brightness`).
+- hal-stress: the most stressed board of the four, in three ways: the stepper/H-bridge actuator chain has NO kind and no position namespace ([PCB-STRESS-S4]); a gauge is a compound `{needle + backlight}` object that declares as scattered entries ([PCB-STRESS-S3]); and the MCP23017 expander pattern recurs here exactly as on the button board ([PCB-STRESS-S2]).
+- inferred: the attach method and namespace names.
+- confidence: 0.9
+- confidence-basis: parts named in the generator docstring and in config log cfg-002, and confirmed by footprints: MCP23017 DIP-28, 3x L293D DIP-16, 3x TO-92, LM7805 TO-220, 3x JST-XH-4 + 3x JST-XH-2.
+- see-also: [PCB-GAUGE3-GPIO5-CONFLICT], [CXC-VISION-EPISTEMICS]
+- part-of: [SPEC:PCB-BOARDS-OVERVIEW]
+- uart0-tx-is-gpio21-not-gpio20: ⛔ CORRECTED 2026-08-15, and the correction is the point. On the **ESP32-C3, U0TXD = GPIO21 and U0RXD = GPIO20** — `J_ESP_R` pin **1** and pin **2** respectively. `rack_triple_gauge.md` §1 and ladder **rung 2**, plus the descriptor's `uart0-is-free-and-is-an-instrument` quirk, all had these **reversed** and sent the operator to probe **GPIO20**, the RECEIVE pin, for the ROM bootloader's transmit banner. **Probing RX yields silence, and rung 2's own stated failure action is "that is a power, ground or module-seating fault" — so a CORRECT BOARD WOULD HAVE BEEN CONDEMNED BY ITS OWN BRING-UP DOCUMENT.** Rung 2 exists to be the ONE check that involves no code of ours (the ROM prints at 115200 on every reset regardless of the app console), and it was aimed at a pin that cannot answer. `esp32c3-supermini-st7796.md` had it right the whole time; this board's files drifted from it. This is [CXC-VISION-EPISTEMICS] with the DOCUMENT as the instrument — a bring-up step that returns a confident wrong answer is worse than one that is missing. ⚠ GPIO21 is NOT broken out on `J_EXP_ESP` (that header carries GPIO20/RX on pin 6, not 21), so the solder side of `J_ESP_R` pin 1 is the only access.
+- no-mcu-readable-rail: **No rail on this board is readable by its MCU, and the only free ADC pin is a boot strap.** `J_PWR_TAP` (+12V/+5V/+3V3/GND) is a HEADER FOR A METER — it reaches no GPIO. On the ESP32-C3 the ADC-capable pins are **ADC1 CH0-4 = GPIO0..4** and **ADC2 CH0 = GPIO5**; this board spends GPIO0/1/3 on backlights, GPIO4 on SDA and GPIO5 on SCL, so **the only free ADC pin on the whole part is GPIO2 — a boot strap**, brought out unlabelled on `J_EXP_ESP` pin 1. Hanging a divider there IS the exposed-strap hazard, realised by us. CONSEQUENCE: `[env:rack_triple_gauge_selftest]` rung 7 reports **NO MEASUREMENT** rather than inventing one. **The one rail signal that does exist** is `esp_reset_reason() == ESP_RST_BROWNOUT`, treated as a hard FAIL at rung 1 — it sees the **3V3 rail at the module only**, and only when it sags far enough to reset. ⚠ **A +5V rail sagging to 4.0 V is invisible to it AND would make the MCP23017 V_IH defect PASS FOR THE WRONG REASON**, by lowering 0.7 x VDD from 3.5 V to 2.8 V. Two faults cancelling is not a pass; it is a board that fails when one of them is fixed. Respin fix: an ADS1115 at 0x48 on the existing I2C bus reads all three rails and costs no pins.
+
+---
+
+## 3. How the four stress the nine-kind HAL
+
+### [PCB-HAL-STRESS] The synthesis — five gaps, in priority order, two of which break coverage today
+
+- definition: the nine kinds plus `adaptor` of [SPEC:CXC-HAL-DECLARE] cover the *peripherals* on these boards well — i2c, digital_in, pwm_out and spi all appear and all fit. But the boards as SYSTEMS surface five gaps the closed set does not model. This node holds the ordering and the verdict; each stress is its own node because each is cited SEPARATELY by a different workstream.
+- priority-ordering: **[PCB-STRESS-S1] (CAN) and [PCB-STRESS-S2] (the GPIO expander) BREAK REAL COVERAGE TODAY.** [PCB-STRESS-S3] (compound peripherals) and [PCB-STRESS-S4] (stepper/position actuator) are expressiveness gaps — the thing can be said, badly. [PCB-STRESS-S5] is cosmetic. The recommendation to the architect is to close S1 and S2 in spec 32 and treat S3/S4 as scheduled expressiveness work.
+- why-decomposed: the five were one prose node in the source and that node parsed to two properties, so all five were invisible to query. They are separated here because each is REFERENCEABLE ON ITS OWN: S1 is workstream J9, S2 is J10, S3 is the widget side's I1, S4 is I5. A stress a plan cites by number needs an id.
+- corroboration-is-the-signal: two of the five were derived INDEPENDENTLY from the opposite direction weeks later and arrived at the same answer — S1 at [PCB-STRESS-S1] and S3 at [PCB-STRESS-S3]. A prior derivation reaching the same conclusion from different evidence is EVIDENCE, not duplication, and it is why these five read as a design backlog rather than a wishlist.
+- headline: the boards validate the nine kinds for leaf peripherals and prove the model is missing a **transport/membrane axis** (CAN, inter-MCU UART), a **pin-expander role** (MCP23017, 3 of 4 boards), a **compound-peripheral grouping** (matrix, gauge cluster), and a **stepper/position actuator kind** (L293D + x27.168).
+- see-also: [PCB-STRESS-S1], [PCB-STRESS-S2], [PCB-STRESS-S3], [PCB-STRESS-S4], [PCB-STRESS-S5], [PCB-NON-STRESS]
+- part-of: [SPEC:PCB-BOARDS-OVERVIEW]
+
+### [PCB-STRESS-S1] S1 — CAN is a TRANSPORT/membrane, not a peripheral kind. The single biggest break
+
+- stress: **the single biggest break.** [PCB-CANGW] is the physical proof of a caveat [CXC-HALD-KINDS] already flags — *"a genuinely new bus (e.g. CAN) is a new KIND (one schema addition + a runtime handler)."* But the deeper finding is that treating CAN as a KIND is the wrong shape.
+- the-deeper-finding: CAN here carries **semantic messages BETWEEN peers**. It is a bus-of-buses, a membrane physical layer — structurally closer to the `adaptor` family and to [CXC-HALD-BRIDGE] than to any pin-or-bus SENSOR kind. It does not publish a physical quantity, which is what every one of the nine kinds does. A kind that publishes nothing is not a kind.
+- recommendation: model CAN as a **transport option on the internal <-> ComposeBus bridge** — a way peers CONNECT — not (only) as a peripheral `interface`. `bridge: { transport: can, export: [...], import: [...] }`.
+- anticipated-the-mothercard-architecture: this was written 2026-07-18. On **2026-08-13**, four weeks later, David proposed the mothercard/daughtercard architecture with CAN as the internal trunk — *"there's no reason why CAN can't be used for a mothercard to talk to a series of daughtercards, not for the entire composebus, but scoped to the internal bus managed by the ComposeBus resident mothercard"* — reached from the fleet bring-up side with no reference to this stress. **Two independent derivations, one conclusion.** The `scope` membrane at [CXC-VISION-SCOPE-MEMBRANE] is the mechanism that makes it work, and `[PCB-CANGW]`'s `J_CAN` — CANH/CANL/GND/+12V on one JST-XH 4-pin — is the connector that trunk wants.
+- hardware-already-exists: `can_controller` is not a proposal. It is built, and it is the internal-bus building block: CH32V003F4P6 + MCP2515 + SN65HVD230 + switchable 120R, carrying **power and data on one cable**.
+- blocked-on: resolving S1 in spec 32 is blocked on scope preservation over CAN (fleet plan workstream F): `scope` is silently lost on every CAN round trip today, so an internal segment cannot yet distinguish local chatter from bus traffic and a mothercard would leak everything upstream. That promotes F from cleanup to PREREQUISITE.
+- part-of: [PCB-HAL-STRESS]
+- see-also: [CXC-VISION-SCOPE-MEMBRANE], [CXC-HALD-BRIDGE], [PCB-CANGW]
+
+### [PCB-STRESS-S2] S2 — the MCP23017 is a PIN MULTIPLIER, not a sensor. Half the fleet's I/O is unexpressible
+
+- stress: the other break in real coverage. The MCP23017 appears on **3 of the 4 boards** — two on [PCB-BTNMATRIX], one on [PCB-GAUGE3].
+- what-the-hal-assumes: the HAL models `i2c -> driver -> namespace(physical quantity)`. Every `i2c` device it can describe reports something measurable.
+- what-an-expander-is: an MCP23017 has **no quantity at all**. It re-exposes N `digital_in` / `pwm_out` pins behind one address. It is a PORT PROVIDER, which is a driver ROLE the schema does not have — neither sensor nor actuator.
+- consequence: **without it, half the fleet's I/O is unexpressible.** 32 pins on the button board and the entire H-bridge fan-out on the gauge board have no declarable form. This is not an inconvenience; it is a coverage hole over boards that already exist.
+- what-is-needed: a notion of a **pin-expander / aggregator**: an `i2c{driver: mcp23017}` that DECLARES sub-pins which then carry ordinary point-to-point kinds. Spec 32 v3 has already begun absorbing this as hierarchical addressing at [CXC-HALD-TOPOLOGY] and [CXC-HALD-EXPANDER]; the gap recorded here is what forced it.
+- part-of: [PCB-HAL-STRESS]
+- see-also: [CXC-HALD-EXPANDER], [PCB-BTNMATRIX], [PCB-GAUGE3]
+
+### [PCB-STRESS-S3] S3 — compound peripherals: the illuminated matrix and the gauge cluster are each ONE object
+
+- stress: [PCB-BTNMATRIX] — 16 buttons and 16 co-located LEDs, one input surface with a press-to-light coupling — and [PCB-GAUGE3] — 3x {stepper + backlight}, one instrument cluster — are each ONE semantic object. The nine kinds can only declare them as dozens of scattered atomic entries.
+- what-is-missing: a **compound / grouped peripheral** type: a named bundle with an internal coupling rule. Note that the leaf-coupling machinery at [CXC-HALD-RULES] is exactly where *"button N lights LED N"* should live — the rule has a home. What has no home is the DECLARATION that says "these 32 entries are ONE matrix."
+- independently-matched-from-the-widget-side: the widget side reached the same conclusion from the opposite direction at [CXC-VISION-SEMANTIC-REALIZATION]: a widget announces **named output CHANNELS**, because `gauge = {needle + backlight}` has no single value. Per-gauge ILLUMINATION is an actuator belonging to a specific widget with no raster counterpart — on a screen, brightness is just pixel colour — so a single-value widget contract has nowhere to put it. **Peripheral-side compound and widget-side named channels are the same requirement seen from two ends.**
+- part-of: [PCB-HAL-STRESS]
+- see-also: [CXC-VISION-SEMANTIC-REALIZATION], [CXC-HALD-COMPOUND], [CXC-HALD-RULES]
+
+### [PCB-STRESS-S4] S4 — stepper / H-bridge actuator has no kind, and there is no position actuator
+
+- stress: [PCB-GAUGE3]'s x27.168 steppers driven through L293D H-bridges have no home in the nine kinds. A bipolar stepper is 4 coil lines through 2 H-bridge channels; it is not one pin, so it is not `pwm_out`, and the sequencing is owned by the leaf.
+- the-namespace-half-of-the-gap: the semantic vocabulary has `motor/{speed, direction}` but **no `motor/position`** and no `gauge/value` — no ABSOLUTE-POSITION actuator at all. A needle is the canonical position actuator and it cannot be addressed.
+- the-chain-the-schema-cannot-express: the L293D driver stage PLUS the MCP23017 fanning its inputs is one actuator chain, and the schema cannot express it as one peripheral. It compounds with [PCB-STRESS-S2]: the expander gap and the actuator gap sit on the same three signal paths.
+- what-is-needed: a `stepper` kind, or a `motor` kind with `driver: l293d` and a position namespace. Spec 32 v3 has begun absorbing this as `gauge/value` / `motor/position` at [CXC-HALD-NAMESPACE] and actuator pin-groups at [CXC-HALD-COMPOUND].
+- independently-matched: the fleet plan derived the same stepper-model gap from the widget/realization side as its item I5, without reference to this stress.
+- part-of: [PCB-HAL-STRESS]
+- see-also: [CXC-HALD-NAMESPACE], [PCB-GAUGE3]
+
+### [PCB-STRESS-S5] S5 — no array sugar, and an inter-MCU UART is a transport rather than a peripheral
+
+- stress-array: [PCB-LEGODOTS]'s 12 identical channels and [PCB-BTNMATRIX]'s 16 LEDs declare as N repeated entries. There is no array or bank sugar. This is mild and cosmetic — the thing is sayable, just verbosely.
+- stress-inter-mcu-uart: [PCB-BTNMATRIX]'s **ESP32 <-> CH32V003 UART link is an inter-peer TRANSPORT** — a bus segment between two MCUs — not a `uart` peripheral publishing a quantity. The `on:` and membrane model stretches to cover it, but it is [PCB-STRESS-S1] in miniature and it is the reason S1's transport axis is not a one-off for CAN.
+- severity: cosmetic for the array half; the UART half is a smaller instance of the S1 axis rather than an independent gap, and it is recorded so the transport axis is seen to recur rather than to be CAN-specific.
+- part-of: [PCB-HAL-STRESS]
+- see-also: [PCB-STRESS-S1]
+
+### [PCB-NON-STRESS] What the model gets RIGHT — recorded, because a model needs its clean cases on the record
+
+- definition: the places the nine-kind model WORKS on real hardware. Recorded deliberately: a document that lists only breaks reads as a case for redesign, and the correct reading is that the leaf model is sound and four axes above it are missing.
+- driver-stages-are-correctly-invisible: discrete transistor driver stages — BC337 on [PCB-LEGODOTS], 2N2222 on [PCB-GAUGE3] — map cleanly to `pwm_out {pin, mode}`. The driver stage is correctly abstracted away, which is the model working exactly as intended.
+- spi-fits: `spi` covers the MCP2515 on-board interface on [PCB-CANGW] without argument. The CAN problem is one level up from the chip.
+- none-is-a-dumb-daughtercard: **every board has a real on-board or socketed MCU able to run ComposeIO firmware — CH32V003 x2, ESP32-C3 x2.** So the native-peer `on:` model at [CXC-HALD-MCU] fits all four AT THE TOP LEVEL, and every stress in this document is one level DOWN: expanders, compounds, CAN, steppers. The Software-Defined-Hardware topology the mothercard workstream is designing is **already the fleet's actual shape**; that workstream's contribution is to make it deliberate and self-describing rather than incidental and per-board.
+- part-of: [PCB-HAL-STRESS]
+- see-also: [CXC-HALD-MCU], [PCB-LEGODOTS], [PCB-CANGW], [PCB-GAUGE3], [PCB-BTNMATRIX]
+
+---
+
+## 4. Open conflicts
+
+### [PCB-GAUGE3-GPIO5-CONFLICT] GPIO5 collides — rack_triple_gauge's I2C clock is the fleet's CAN transmit pin
+
+- conflict: `rack_triple_gauge` **as built** uses **GPIO4 = SDA and GPIO5 = SCL** to the MCP23017, and GPIO0 / 1 / 3 for the three backlight PWMs. The fleet's CAN convention is **GPIO5 = CTX, GPIO6 = CRX**. **GPIO5 collides.**
+- why-it-matters-now: it did not matter while the board was a WiFi-only native peer. It matters the moment [PCB-STRESS-S1] is acted on and this board is asked to sit on an internal CAN trunk, because the pin it would transmit CAN on is already clocking its own expander — and every peripheral on that board hangs off that expander.
+- resolution-options: exactly two. **(a)** a board revision moves I2C off GPIO4/5. **(b)** this node's CAN pins differ from the fleet default — in which case **the difference MUST be recorded in the board descriptor AND in NVS**; `can.tx` and `can.rx` already exist for precisely this case, so option (b) needs no new mechanism, only discipline.
+- failure-mode-if-unresolved: the silent one. A node whose CAN pins differ from the convention and whose descriptor does not say so comes up looking fine and never transmits, and the fleet's own instruments agree with the wrong answer — the failure class [CXC-VISION-EPISTEMICS] names. **Undocumented is worse than either option.**
+- lifecycle-position: raised
+- status-detail: OPEN — David's decision, tracked as J11 in docs/PLAN-fleet-baseline-and-bus-native.md. Blocking any `rack_triple_gauge` revision. NOT resolved by this document, which records it rather than choosing.
+- part-of: [SPEC:PCB-BOARDS-OVERVIEW]
+- see-also: [PCB-GAUGE3], [PCB-STRESS-S1], [CXC-VISION-EPISTEMICS], [SPEC:CXC-CONFIG-BUS]
+
+---
+
+## Relationships
+
+[SPEC:PCB-BOARDS-OVERVIEW] GROUNDS [SPEC:CXC-HAL-DECLARE]
+[PCB-PROVENANCE] DOCUMENTS [SPEC:PCB-BOARDS-OVERVIEW]
+[PCB-CORPUS-PLACEMENT] DOCUMENTS [SPEC:PCB-BOARDS-OVERVIEW]
+[PCB-CANGW] STRESSES [CXC-HALD-KINDS]
+[PCB-CANGW] RELATED_TO [CXC-HALD-BRIDGE]
+[PCB-BTNMATRIX] STRESSES [CXC-HALD-KINDS]
+[PCB-BTNMATRIX] EXEMPLIFIES [CXC-HALD-RULES]
+[PCB-GAUGE3] STRESSES [CXC-HALD-KINDS]
+[PCB-LEGODOTS] UPHOLDS [CXC-HALD-KINDS]
+[PCB-BTNMATRIX] UPHOLDS [CXC-HALD-MCU]
+[PCB-CANGW] UPHOLDS [CXC-HALD-MCU]
+[PCB-LEGODOTS] UPHOLDS [CXC-HALD-MCU]
+[PCB-GAUGE3] UPHOLDS [CXC-HALD-MCU]
+[PCB-HAL-STRESS] RELATED_TO [CXC-HALD-VALIDATE]
+[PCB-STRESS-S1] STRESSES [CXC-HALD-BRIDGE]
+[PCB-STRESS-S1] RELATED_TO [CXC-VISION-SCOPE-MEMBRANE]
+[PCB-STRESS-S2] STRESSES [CXC-HALD-EXPANDER]
+[PCB-STRESS-S3] STRESSES [CXC-HALD-COMPOUND]
+[PCB-STRESS-S3] RELATED_TO [CXC-VISION-SEMANTIC-REALIZATION]
+[PCB-STRESS-S4] STRESSES [CXC-HALD-NAMESPACE]
+[PCB-STRESS-S5] RELATED_TO [PCB-STRESS-S1]
+[PCB-NON-STRESS] UPHOLDS [CXC-HALD-MCU]
+[PCB-GAUGE3-GPIO5-CONFLICT] RELATED_TO [SPEC:CXC-BOARD-HW]
+[SPEC:PCB-BOARDS-OVERVIEW] RELATED_TO [SPEC:CXC-VISION]
+
+---
+
+**Version**: 1.0 — 2026-08-13. A DERIVATION of (a local path, not published) (David, 2026-07-18, sha256 `c2e2373f`), not a copy: re-authored so that content the source lost silently is actually addressable. Measured on the source against the live parser: 46 authored bullets, 27 parsed properties; all five stresses and every `mcu / brains` / `connectors / ports` / `peripherals / I/O` line minted nothing. The authority split and the resync trigger are at [PCB-CORPUS-PLACEMENT].
+
+**Status**: DRAFT. The board characterisations are David's and unchanged in substance. The decomposition of the five stresses into five nodes, the confidence numerals, and the placement decision are this derivation's.
+
+**Architect — ratifications flagged:** (1) the `PCB-` node-id prefix is registered in `platform-composeio-profile.lts` by this change — a new top-level family, previously unregistered and carrying findings on every PCB node. (2) `GROUNDS` and `STRESSES` are registered as domain relationship verbs by this change; both were already authored in the source and flagged `unregistered_verb`. (3) mapping David's `HIGH` onto `confidence: 0.9` is an authoring choice made to satisfy SPEC 7.1's float requirement — the numeral is not his. (4) (a local path, not published) is deliberately NOT registered as a corpus root, and the reasoning is recorded at [PCB-CORPUS-PLACEMENT] rather than left implicit. (5) [PCB-GAUGE3-GPIO5-CONFLICT] is OPEN and is David's call (J11).

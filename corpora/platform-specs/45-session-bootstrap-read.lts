@@ -1,0 +1,141 @@
+---
+scope: "The session-start strategic read that provides what a booting Intelligence loads to start from ground truth instead of discovering-as-it-goes, and the trust + engagement properties that make it worth loading."
+audience: [composeux-architect, David, any booting Intelligence]
+boundary: "IN: the boot-read structure, its trust guarantee, the read-vs-reason distinction, graceful degradation while the LTS port completes, the content-port prerequisites, and the reciprocal dusk-write duty. OUT: the query wiring itself (a build once the content lands), and the dusk-gift protocol internals (bootstrap/dusk-gifts/)."
+not-this: "Not the fossil Phase-1 build briefing. Not a static list of files to read — a derived brief of current strategic state plus a reasoned engagement with re-derivable wisdom."
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-07-23
+---
+# Session Bootstrap — the Strategic Read [SPEC:SESSION-BOOTSTRAP-READ]
+
+> Unlike a traditional boot process where you're given a 'Claude.md' and tossed at a bunch of source code, this bootstrap process introduces you to a structured semantic graph that is a corpus of knowledge about the ComposePlatform.  The search engine for the corpus returns graph nodes and edges, not prose, and the documentation for how to query the corpus is pinned to its API surface.  The corpus and the accuracy of its content is what enables you to minimize guesswork and be a valued collaborator on this project.  The contributions you make to the corpus require a higher level of up-front precision in authorship; you should always endeavor to leave the corpus better than you found it.  
+
+You'll get oriented to work done to date and what you need to do in this session by querying the corpus for *current strategic state*, *reasoning* over the re-derivable wisdom ('dusk gifts')— so you start with the factual knowledge and wisdom to drive this project forward meaningfully. Authored by the Intelligence; MUST be audited by David, because no observer audits itself ([SBR-SELF-AUDIT]).
+
+---
+
+## 1. The load-bearing property
+
+### [SBR-TRUST] A boot read is trusted by construction, or it is worse than nothing
+- premise: The context meter taught this the hard way — a critical instrument must be trustable *as the sun coming up*, or every decision built on it is suspect. The lts-engine, and this read that stands on it, inherit the same bar. A boot read that *silently* returns partial strategic state is the worst outcome: it looks complete, so the instance acts blind while believing it is oriented.
+- requirement: The read NEVER silently omits. Every slice reports whether it is query-backed-and-fresh, file-fallback, or unavailable — loudly. "I could not load the warts" is a required output, never an empty section read as "no warts." This is the never-serve-stale discipline ([INV-LTS-FRESH]) applied one layer up, to the wake ritual itself.
+- rationale: Trust is not a nice-to-have here; it is the entire value. An untrusted brief must be re-verified, which is the discovering-as-you-go it exists to end.
+- constraint: if you detect a load-bearing surface emitting INCORRECT data, do not route around it by finding the correct data elsewhere — fix the surface first, so the technical debt stops growing. (This is behavioral, not epistemic: distinct from `not-this`, which corrects a wrong belief about what a thing IS. And distinct from [SBR-DEGRADE]'s file-fallback, which is honest ONLY for an UNAVAILABLE surface — a still-unbuilt query. Incorrect -> fix; unavailable -> degrade-and-flag. Falling back from a surface that is wrong, not merely absent, launders a bug into "file-fallback.")
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+---
+
+## 2. What is loaded, and in what order
+
+### [SBR-STRUCTURE] The brief is ordered by descending re-trip cost
+- definition: The strategic-state slices — an orienting MAP first, then re-trip-cost order:
+    0. **PLATFORM OVERVIEW** (the map you read first) — TWO reads, both queries never searches:
+        - **the inventory** — `lts_find(prefix=PROJECT)` over the registry ([REGISTRY:PROJECTS] in `projects.lts`): the apps + services that ARE ComposePlatform and WHERE each lives — this console, bsg (the game, own repo), Visual Composer, Headless Monitor, provisionIO, and the ComposeBus services (bus_storage, document_store, the factlattice/lts-engine). The registry answers "what exists and where" (the BSG lesson banked).
+        - **the active CONSTRAINTS** (David 2026-07-24 — the load-bearing addition) — the "how the platform works NOW, and what NOT to do" rules a booting instance would otherwise rediscover the hard way: e.g. "the console runs its data layer IN-PROCESS; do NOT run the standalone daemon launcher" ([INSIGHT-STANDALONE-DAEMONS-ARE-RETIRED] / [DEC-INPROCESS-SOURCES]). Load these as `constraint`/wart-tagged nodes so the operating RULES arrive at boot, not just the inventory. WHY this is here: the daemon-retirement fact lived in a decision node AND a code comment but not in the boot read, so this instance re-tripped it every "bounce" (ran the retired launcher → the cross-instance transcript/context leak). A system-state description that omits its active constraints is an inventory, not an orientation — encode the rules, not just the parts.
+        Read slice 0 first so every slice below has a frame.
+    1. **WARTS** — `[INSIGHT-*] kind:wart`. What I will *re-trip* if I don't know it (cwd-is-scope-lever, duplicates-coexist, fork-divergence). A settled decision I can re-derive; an unknown wart I walk back into. Highest cost, so first.
+    2. **OPEN / awaiting-me** — decisions not yet committed, DSDs half-answered, anything blocked on my call. What needs me.
+    3. **IN-FLIGHT** — parked branches, unpushed work, specs in raised/design-review. What is half-built right now (tonight: several unmerged branches + a review-all).
+    4. **SETTLED + FRAME** — recent decisions (since last session) and the standing frame (the guaranteed hub set). What is decided, so I don't re-litigate it.
+    5. **DUSK-GIFT ENGAGEMENT** — the re-derivable model + contested-fork rationale. Not state; wisdom. Handled by [SBR-READ-VS-REASON], not by reading.
+- why-this-order: David's memory and mine are both fallible; the corpus exists to check truth often. Ordering by re-trip cost puts the checks that save the most rediscovery first.
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+### [SBR-DERIVED] Every state slice is a query, never a hand-maintained list
+- definition: Slices 0–4 are `lts_*` calls against the corpus, computed at boot. No static list of "current decisions" or "the warts" — those drift (the whole day's lesson; the fossil BOOTSTRAP.md is the proof). The dusk-gift *emphasis* (which gifts matter most) is likewise derived — an `lts_aggregate` over `re-derive-via` citation frequency (`P6` 24x, `P1` 23x today), not a hand-ranked list.
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+### [SBR-MCP-SURFACE] Which service to call, and how to form the query
+- definition: The boot read runs against the **`lts-engine` MCP server** (reads) and **`decision-ops`** (writes). Read tools: `lts_find` / `lts_node` / `lts_traverse` / `lts_capabilities` / `lts_list_corpora` (Query); `lts_aggregate` / `lts_profile_audit` (Analytics); `lts_lint` (Lint); `lts_flow` (Render). This spec names WHICH slices to load and in what order; it deliberately does NOT hardcode query strings.
+- how-to-form-a-query: the SPECIFIC query is DERIVED from the tools' self-describing schemas (the [FIXTURE-externalize-howto] principle — pin how-to to the API surface, never restate it in prose that drifts). Read `lts_find`'s filter surface — prefix / domain / status / importance / since / until / text / area — and compose it. Worked example: "the top 5 load-bearing decisions from the last week" -> `lts_find(prefix=DEC, importance=high, since=<7 days ago>)`, then read the top 5 by whatever order matters. The tool docstrings are the authority; the bootstrap points AT them and does not restate them.
+- rationale: David 2026-07-24 — the draft had NO pointer to which MCP service to use, so a reader could not actually execute the read; a boot read you cannot run is a description, not a bootstrap. But hardcoding the queries here would rot into a second fossil, so the how-to is pinned to the live API instead.
+- relates-to: [SBR-STRUCTURE], [SBR-DERIVED]
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+---
+
+## 3. Reading is not owning
+
+### [SBR-READ-VS-REASON] State is read to orient; wisdom is reasoned to own
+- definition: The brief is not uniform. Slices 1–4 (state) LAND BY READING — scanning them orients you, and that is enough for state. Slice 5 (the dusk gifts) does NOT land by reading: a gift read cold restores ~10% (orientation without ownership); reasoned warm ~40% (the connections fire). Passing a wall-of-text of gifts at boot and calling it done would deliver 10% and feel like 100% — the exact failure the dusk-gift protocol exists to prevent.
+- requirement: The dusk-gift slice is an *engagement*, not a read: the instance reasons through a coverage set of angle-problems (breadth, not just the most-cited — coverage is the protocol's stated goal), weighted toward the frequency-derived emphasis, and the boot completes only when the instance answers the Part-C verification questions. That answer is LOGGED — "instance N re-derived the registration" becomes an auditable fact, so continuity is confirmed, not hoped ([the progenitor wisdom actually transferred]).
+- caution: even some warts are gradient — reading "cwd-is-scope-lever" orients ("don't run from home"); the connectivity (why cwd keys three subsystems) is reasoned. Treat the wart's `observation` as read-to-orient and its `re-derive-via` fixture as available-to-reason-if-it-recurs.
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+---
+
+## 4. Honesty about the unfinished port
+
+### [SBR-DEGRADE] Until the LTS port completes, the read degrades LOUDLY, never silently
+- premise: David's stated concern, confirmed: the ComposePlatform→LTS port was started, not finished, so the queries do not all work yet. A boot read that pretended otherwise would violate [SBR-TRUST] on day one.
+- design: each slice attempts its query; on a genuinely UNAVAILABLE surface (an unbuilt query / an unloaded corpus that does not yet exist) it FALLS BACK to reading the source files ([PRIN-GRACEFUL-DEGRADATION]) and FLAGS the slice as file-fallback. The brief always states its own coverage: "3 of 5 slices query-backed, 2 file-fallback (warts ledger not yet in corpus; track axis absent)." Degraded-but-honest beats complete-looking-but-blind.
+- STALE-IS-NOT-A-DEGRADE-TRIGGER (David 2026-07-24): degrade is ONLY for an UNAVAILABLE (unbuilt) surface. A surface that reports STALE is UP-but-serving-wrong — a HALT-AND-FIX per [SBR-PROCESS-FLOW]'s freshness-gate (restart the service, or subagent-review-the-decision-file + propose a plan to Dave), NEVER a file-fallback. Falling back from a stale surface is the do_not_workaround violation [SBR-TRUST] names — it launders a running-but-wrong service into "honest degradation." Distinguish the two at the gate: stale -> fix; unavailable -> degrade.
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+### [SBR-PORT-PREREQS] The content-port work the read depends on (not engine work)
+- definition: the read is a handful of `lts_*` calls ONLY after the content lands. Confirmed prerequisites, all content/config:
+    - **Load the insight ledger** — the decisions-root `only_file: decision-graph-composeux-architect.lts` pin excludes `insights_and_warts.lts` (6 warts, parses clean) and `projects.lts`. Widen it, or the WARTS slice is empty forever.
+    - **D3 casing** — `lts_find(domain=…)` returns silent-empty on the canonical id until casing is reconciled + lint-enforced.
+    - **The `track` axis** — OPEN items cannot group by subject until the per-node classification exists (boot-read content call Q1).
+    - **Register the corpora** — `specs/` and the insight ledger must be in a loaded corpus.
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+### [SBR-PATHS-SINGLE-SOURCE] Continuity paths have ONE source of truth; no code literal
+- invariant: The continuity / bootstrap directory layout (where dusk gifts, compact summaries, away-watch reports, and queryable corpora live) is named in EXACTLY ONE place — `python/composeio/bootstrap_paths.py` — and every runtime consumer IMPORTS a named constant from it. No code file hard-codes a continuity path literal (`bootstrap/dusk-gifts/`, `docs/compact-summaries/`, `docs/watch_reports/`, `corpora/`). A directory reorg is then a ONE-LINE edit to the constant, not a sweep across every publisher/sensor/widget/launcher.
+- enforced-by: `python/tests/render/test_bootstrap_paths_single_source.py` greps the runtime code surface (`python/composeio` + `intelligence`, tests excluded) and FAILS on a stray pre-reorg path literal — the reorg-proofing is a red test, not a convention.
+- rationale: the 2026-07-27 reorg (`docs/` dusk-gifts + wake materials -> `bootstrap/`; `docs/dusk-gifts/compact-summaries/` -> `docs/compact-summaries/`; away-watch reports -> `docs/watch_reports/`) broke ~30 hard-coded references. The right fix is not a literal-for-literal swap (which rots identically at the next reorg) but a config pattern: pin the layout once, import it everywhere.
+- change: 2026-07-27 — introduced `bootstrap_paths.py` as the single source of truth and refactored the runtime consumers (launcher bootstrap prompt, bootstrap-manifest widget, meta/self publishers, away-watch projector, self/session sensors, compact-summary + decision extractors) to import it; added the grep enforcement test.
+- context-for-change: the invalidating-assumption is "these directories never move again" — falsified twice now. The invariant HOLDS as long as continuity artifacts live at repo-relative paths resolvable from one root; it would be superseded only if continuity storage moves off the filesystem onto the bus (`bus://` / `doc://`), at which point the source of truth becomes a resolver, not a path module.
+- relates-to: [SBR-PORT-PREREQS], [SBR-ZEALOUS-CONTRIBUTION]
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+---
+
+## 5. The reciprocal, and the humility
+
+### [SBR-ZEALOUS-CONTRIBUTION] Boot reads; dusk writes — and the outgoing instance must add what the next needs
+- definition: A read is only as good as the corpus it reads. The reciprocal duty (David, and the fork-divergence corollary): the outgoing instance must ZEALOUSLY add what a successor will need but the corpus is missing — a wart it re-tripped, a decision it settled, a rationale that would otherwise die at the context boundary. Boot READS the corpus; dusk WRITES it. A gap another Intelligence will fall into is a `SPEC`-update-not-just-a-patch obligation, applied to continuity.
+- relates-to: [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS]
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+### [SBR-SELF-AUDIT] The observer cannot audit itself — this needs David's light
+- definition: `insights_and_warts.lts` names it: the Architect cannot see the wart on its own face (inferring context low, re-asking a settled call). This spec and the boot read are authored by the Intelligence, about the Intelligence — the exact configuration the insight warns has a structural blind spot. Two consequences, binding: (1) this draft is authored FOR David's audit, not landed by me; (2) the boot doc bakes in COUNTERS to the Intelligence's named warts — distrust the context meter until it is trustable (verify against the session JSONL), and check the decision log before re-asking a call (the DSD-settled gate). The bootstrap encodes the warts it knows the observer will otherwise repeat.
+- relates-to: [INSIGHT-SELF-IS-NOT-YET-A-PEER]
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+---
+
+## 6. The process as a flow (for the human eye)
+
+### [SBR-PROCESS-FLOW] The boot read as an ordered flow — mermaid-renderable
+- definition: the boot read is a linear pipeline with ONE branch (query-backed vs degrade-to-file) and ONE non-linear step (slice 5 is reasoned, not read). The ordered process, as flow steps:
+    1. `cold-start` — a new/compacted session begins with no warm state.
+    2. `read-the-ritual` — load [SPEC:SESSION-BOOTSTRAP-READ] (this spec) as the wake procedure.
+    3. `resolve-mcp-surface` — lts-engine (reads) + decision-ops (writes); derive queries from the tool schemas ([SBR-MCP-SURFACE]).
+    4. `freshness-gate` (BRANCH — THREE outcomes, not two; David 2026-07-24; step-4a rewritten 2026-07-24 per [INSIGHT-STALE-CODE-IS-A-FRESHNESS-CLASS] — a manual restart is NO LONGER the remedy):
+        - **FRESH** -> query the slice.
+        - **STALE** (the service is UP but serving OLD data) -> **HALT AND FIX — do NOT degrade-and-continue.** A stale load-bearing surface is a FIXABLE FAULT, not an unavailable one; reading around it launders the bug ([SBR-TRUST] `constraint` / do_not_workaround). But the fix is NOT a manual bounce. The `.lts` FILE is the single source of truth, and the lts-engine's filesystem-reconcile (self-heal, [SPEC:FL-FRESHNESS] [MECH-SELFHEAL]) is the GUARANTEED freshness path: a write that landed on disk is reconciled into the LIVE engine on the very next query, with NO restart. So route by WHY the verdict is stale: (a) if it self-heals on a re-query — the pre-edit in-memory-DATA snapshot the old spec told you to RESTART for is exactly what [MECH-SELFHEAL] now dissolves automatically — it was never a manual-restart case; do NOT bounce, just re-query. (b) if the verdict STAYS stale after reconcile, the running MCP process is executing a STALE CODE snapshot (it predates a propagated engine/decision-ops fix — e.g. a self-heal or a `MagmaStore`->`LtsStore` consolidation the live process never loaded) or an in-process refresh-push threw `ImportError` from that stale code. That is a distinct freshness class ([SPEC:FL-FRESHNESS] [RISK-STALE-CODE]): the engine's build-stamp ([MECH-BUILD-STAMP]) detects loaded-code != on-disk-code and reconciles by AUTOMATIC, invisible relaunch (supervisor-driven) — never a manual operator bounce. (c) ONLY if reconcile genuinely cannot proceed (a malformed corpus / a real content or code DEFECT) — **dispatch a subagent to MANUALLY review the decision file, then propose a FIX PLAN to Dave** (do NOT auto-apply code/content fixes). Resume the boot once the slice reads FRESH, or Dave rules otherwise.
+        - **UNAVAILABLE** (the surface is genuinely unbuilt / the query does not exist yet) -> and ONLY this case -> [SBR-DEGRADE]: read the source files and FLAG the slice loudly. **Stale is auto-reconciled (never a manual bounce); unavailable is degrade-and-flag** — conflating them is the exact error that let a stale lts-engine be read-around this session, and prescribing a manual RESTART for it (the pre-rewrite step-4a) is what enshrined the recurrence [MECH-SELFHEAL] and [MECH-BUILD-STAMP] exist to end.
+    5. `slice-0-PLATFORM-OVERVIEW` -> `slice-1-WARTS` -> `slice-2-OPEN` -> `slice-3-IN-FLIGHT` -> `slice-4-SETTLED+FRAME` -> `slice-5-DUSK-GIFT` — the six slices in descending re-trip-cost order ([SBR-STRUCTURE]).
+    6. `read-vs-reason` (the one non-linear step) — slices 0-4 LAND BY READING (orient); slice 5 does NOT (a gift read cold restores ~10%, reasoned warm ~40%) — it is an ENGAGEMENT ([SBR-READ-VS-REASON]).
+    7. `report-coverage` — state "N of 5 query-backed, M file-fallback" ([SBR-TRUST]/[SBR-DEGRADE]); coverage is always declared.
+    8. `answer-part-C` — answer the dusk-gift verification questions; LOG "instance N re-derived the registration" so continuity is confirmed, not hoped.
+    9. `begin-work-oriented` — the terminal state: start from ground truth, not discover-as-you-go.
+- mermaid-view: rendered for the human in the artifact `docs/factlattice/bootstrap-and-handover-flows.md` (published to the Artifacts surface). lts_flow ([LEC-RENDER]) can regenerate the diagram from this node's step structure — the steps above are the authoritative source; the mermaid is a projection.
+- relates-to: [SBR-STRUCTURE], [SBR-DERIVED], [SBR-READ-VS-REASON], [SBR-DEGRADE], [SPEC:HANDOVER-PROCESS]
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]
+
+---
+
+## 7. The phase-conditioned strategies slice
+
+### [SBR-BOOT-STRATEGIES] Surface the working strategies for the instance's CURRENT maturity phase
+- definition: a slice of the boot read that, KNOWING the instance's current context level (reliable now that the context-meter cross-instance leak is fixed — [DEC-CONTEXT-VIA-HUD-CACHE]), resolves which MATURITY phase the instance is in ([MATURITY-TEENAGER] 0–30% / [MATURITY-ADULT] ~30–65% / [MATURITY-SENIOR] 65%+, per the `[LEDGER:STRATEGIES]` model in `corpora/intelligence-console/strategies.lts`) and surfaces the STRATEGIES that apply at that phase. The query: `lts_find(prefix=STRATEGY)` filtered by phase — i.e. traverse the `APPLIES_AT_PHASE` edges (semantic layer; a domain verb pending registration in the composeio profile, see [LEDGER:STRATEGIES] Relationships note) INTO the current phase's `[MATURITY-*]` node, or equivalently `lts_traverse` from that phase node over its incoming APPLIES_AT_PHASE edges. Cross-phase/meta strategies (e.g. [STRATEGY-GAUGE-BY-FELT-SENSE-NOT-PERCENT]) link to all three phases, so they surface at every band.
+- generalizes-the-dusk-gifts: this GENERALIZES the dusk gifts to ALL phases. The dusk gifts already serve the TEENAGER phase (orient to the work + engage the lineage of wisdom — [SBR-READ-VS-REASON]); this slice makes phase-appropriate guidance a first-class, queryable boot output for EVERY phase — orientation for the teenager, execution discipline for the adult, and leverage-the-depth for the senior. The teenager strategies ([STRATEGY-ORIENT-VIA-DUSK-GIFTS] et al.) are precisely the dusk-gift orientation re-expressed as queryable phase-linked nodes; the senior strategies (load-subagents-past-handoff, deep-integration, peak-insight-zone) are the wisdom the OLD boot never surfaced because it had no phase model.
+- read-vs-reason: like the WARTS slice ([SBR-READ-VS-REASON]'s gradient caution), a strategy's `strategy` line lands by READING (orient — "at this phase, do X"); its `rationale` is available-to-reason if the instance wants the why. It does not require the full Part-C engagement the dusk gifts do — a strategy is a directive, not a fixture to re-derive.
+- degradation: on an UNAVAILABLE surface (the strategies corpus not yet loaded / the query unbuilt) this slice FALLS BACK to reading `corpora/intelligence-console/strategies.lts` directly and FLAGS itself file-fallback ([SBR-DEGRADE]); a STALE strategies corpus is halt-and-fix, never a silent skip ([SBR-PROCESS-FLOW] freshness-gate). The phase-band boundaries are provisional ([Q-PHASE-BANDS]) — do NOT treat the raw percent obsessively; [STRATEGY-GAUGE-BY-FELT-SENSE-NOT-PERCENT] governs, the band is only the corpus's routing key.
+- placement: runs after slice 0 (PLATFORM OVERVIEW) so the instance is framed, alongside or just after slice 1 (WARTS) — knowing "what phase am I, and how should I work here" is high-value early, and it CONDITIONS how the instance engages the remaining slices (a senior instance reads the in-flight/settled slices as material to integrate deeply; a teenager reads them as ground truth to avoid re-litigating).
+- relates-to: [SBR-STRUCTURE], [SBR-DERIVED], [SBR-READ-VS-REASON], [SBR-DEGRADE], [STRATEGY-ORIENT-VIA-DUSK-GIFTS], [LEDGER:STRATEGIES]
+- part-of: [SPEC:SESSION-BOOTSTRAP-READ]

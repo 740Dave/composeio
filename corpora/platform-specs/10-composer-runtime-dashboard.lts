@@ -1,0 +1,507 @@
+---
+scope: "Runtime dashboard application that loads .compose.yaml designs and renders them as live, bus-connected interfaces with full-fidelity widget visuals"
+audience: "Intelligence implementing this spec, ComposeUX developers, makers building dashboards"
+boundary: "Runtime rendering only; design-time editing in specs 01-09; bus protocol in ../spec/01-composeio-bus-protocol.smd; app framework in ../spec/08-composeio-app-framework.smd; config schema in ../spec/02-composeio-config-schema.smd"
+not-this: "Not the design tool (ComposeUX); not the MCP server (../spec/09); not firmware rendering (LVGL); not the bus protocol itself"
+depends-on: [SPEC:CIO-APP, SPEC:CIO-CONFIG-SCHEMA, SPEC:CIO-BUS-PROTOCOL, AMEND:CS-APP, SPEC:CIO-RENDERERS, AMEND:BP-CAPTURE-REPLAY]
+confidentiality: internal-only
+artifact-readiness: code-generation
+domain: plt.cux
+---
+
+# ComposeIO Runtime Dashboard [SPEC:CIO-DASHBOARD]
+
+> A standalone CTk application — itself a ComposeApp — that loads a `.compose.yaml` design file and renders it as a live, interactive dashboard connected to the ComposeIO bus. Gauges animate from namespace state, buttons publish on click, relays indicate binary state, tabs route child content. This is the "run" side of the design/run split: ComposeUX designs layouts, the Runtime Dashboard runs them.
+
+---
+
+## 1. Problem Statement [DASH-PROBLEM]
+
+### 1.1 The Missing Runtime [DASH-PROBLEM-GAP]
+
+ComposeUX produces `.compose.yaml` files — visual layouts with widget placement, namespace bindings, and state engine configuration. But there is no tool that takes a saved YAML and renders it as a live, operational dashboard. The preview module in ComposeUX shows static placeholders. The design bus carries live data, but no consumer renders full-fidelity widgets from it.
+
+The gap: a maker designs a simulator panel in ComposeUX (buttons, gauges, relays), saves it, and then has no way to run it as an actual dashboard with spinning gauges and clickable buttons.
+
+### 1.2 Design/Run Split [DASH-PROBLEM-SPLIT]
+
+```
+ComposeUX (design time)          Runtime Dashboard (run time)
++-----------------------+        +-----------------------+
+| Design canvas         |  .yaml | Live gauge panel      |
+| Property editor       | -----> | Interactive buttons   |
+| Namespace inspector   |  save  | Relay indicators      |
+| Binding editor        |        | Real-time bus data    |
++-----------------------+        +-----------------------+
+                                   |
+                                   +-- MQTT transport
+                                   +-- CAN bridge (via RPi5)
+                                   +-- Namespace bindings live
+```
+
+The Runtime Dashboard completes the pipeline: design in ComposeUX, save YAML, run as dashboard, see live data from hardware on the bus.
+
+---
+
+## 2. Architecture [DASH-ARCH]
+
+### 2.1 ComposeApp Identity [DASH-ARCH-APP]
+
+The Runtime Dashboard IS a ComposeApp ([SPEC:CIO-APP]). It follows the dual-bus architecture, `_app/` boundary, and transport management defined in [SPEC:CIO-APP].
+
+| Aspect | Value |
+|--------|-------|
+| App ID | `dashboard-{yaml_stem}` (e.g., `dashboard-ftl_simulator`) |
+| Internal bus | `_app/` namespaces for UI coordination, layout events, connection state |
+| External bus | MQTT (or UART/CAN) — live namespace traffic from the loaded design |
+| Import | All namespaces declared in the loaded `.compose.yaml` that have `export: true` or are bound to widgets |
+| Export | Interactive widget outputs only — button presses, coordinate entries |
+
+- rationale: Using ComposeApp means transport management, reconnection, discovery, and crossover are inherited, not reimplemented. The dashboard is a bus citizen like any other ComposeApp.
+
+### 2.2 Internal Bus Namespaces [DASH-ARCH-INTERNAL]
+
+| Namespace | Engine | Direction | Purpose |
+|-----------|--------|-----------|---------|
+| `_app/dashboard/state` | enum: `loading`, `browsing`, `connected`, `disconnected`, `error` | publish | Application lifecycle state |
+| `_app/dashboard/yaml_path` | json | publish | Path to loaded YAML file |
+| `_app/dashboard/connection` | json | publish | Transport connection status: `{broker, port, connected, latency_ms}` |
+| `_app/dashboard/widget_count` | continuous_0_255 | publish | Number of rendered widgets |
+| `_app/dashboard/error` | json | publish | Last error message and timestamp |
+
+These are private (`_app/` boundary). No routing to external bus unless a debug config explicitly adds `route_external`.
+
+### 2.3 External Bus Namespace Strategy [DASH-ARCH-EXTERNAL]
+
+The dashboard dynamically imports namespaces based on the loaded YAML:
+
+1. Parse all `namespaces:` entries from the YAML
+2. For each namespace bound to a widget (via the widget's `namespace` property), register it on the internal bus with its declared state engine
+3. Import it from the external bus — state changes from MQTT/CAN/UART flow into the internal bus and update the widget
+4. For interactive widgets (ButtonWidget, CoordinateEntryWidget), also export the namespace — user clicks publish state changes to the external bus
+
+This is not a static import list. It is determined at YAML load time.
+
+### 2.4 Dual-Bus Topology [DASH-ARCH-TOPOLOGY]
+
+```
++----------------------------------------------------------+
+|  Runtime Dashboard (ComposeApp)                          |
+|                                                          |
+|  +--------------------------------------------+         |
+|  |  Internal Bus                               |         |
+|  |                                             |         |
+|  |  GaugeRenderer <--sub-- engine_rpm          |         |
+|  |  ButtonRenderer --pub--> ftl_arm --------+--+--export |
+|  |  RelayRenderer <--sub-- shields          |  |         |
+|  |  _app/dashboard/state (private)          |  |         |
+|  +--------------------------------------------+  |         |
+|                                               |  |         |
+|  +--------------------------------------------+  |         |
+|  |  External Bus                              |<-+         |
+|  |                                            |            |
+|  |  engine_rpm <-- [MQTT] <-- hardware        |            |
+|  |  ftl_arm --> [MQTT] --> hardware            |            |
+|  |  shields <-- [MQTT] <-- hardware            |            |
+|  +--------------------------------------------+            |
++-------------------------------------------------------------+
+```
+
+---
+
+## 3. Launch Modes [DASH-LAUNCH]
+
+### 3.1 Direct Mode (YAML Argument) [DASH-LAUNCH-DIRECT]
+
+```bash
+python -m composeio.dashboard my_simulator.compose.yaml
+```
+
+Sequence:
+1. Parse `.compose.yaml` — validate against [SPEC:CIO-CONFIG-SCHEMA]
+2. Create ComposeApp with ID `dashboard-{yaml_stem}`
+3. Register all namespaces from YAML on internal bus with declared state engines
+4. Wire import/export crossover for widget-bound namespaces
+5. Connect transport(s) declared in YAML `app.transports[]` (or default MQTT — see [DASH-TRANSPORT])
+6. Build window layout from YAML module/widget grid positions
+7. Instantiate widget renderers
+8. Enter main loop — namespace state changes update widget visuals immediately
+
+### 3.2 Browser Mode (No Argument) [DASH-LAUNCH-BROWSER]
+
+```bash
+python -m composeio.dashboard
+```
+
+Presents a selection UI with two sources:
+
+**Local filesystem**: Standard file dialog filtered for `*.compose.yaml` and `*.yaml`.
+
+**Bus storage** (when reachable): Queries `bus_storage` service at `http://NODERED_HOST:8420/api/designs` for saved designs. Displays a selectable list:
+
+| Column | Source |
+|--------|--------|
+| Name | YAML `app.id` or filename |
+| Target | `design.target` (desktop, tablet, panel) |
+| Modules | Count of `modules[]` |
+| Widgets | Count of all widgets across modules |
+| Modified | Last-modified timestamp |
+
+User selects a design -> download YAML -> transition to Direct Mode sequence (step 1 onward).
+
+**Bus storage query**: HTTP GET to `bus_storage` returns a JSON array. Each entry has `id`, `name`, `yaml_content`, `metadata`. The dashboard fetches YAML content on selection. If `bus_storage` is unreachable, the list panel shows "Bus storage unavailable" with a retry button. Local filesystem is always available.
+
+### 3.3 CLI Interface [DASH-LAUNCH-CLI]
+
+```
+usage: python -m composeio.dashboard [OPTIONS] [YAML_FILE]
+
+positional arguments:
+  YAML_FILE              Path to .compose.yaml design file
+
+options:
+  --broker HOST          MQTT broker (overrides YAML config). Default: NODERED_HOST
+  --port PORT            MQTT port (overrides YAML config). Default: 1883
+  --fullscreen           Start in fullscreen mode
+  --geometry WxH         Window geometry (e.g., 1400x900). Overrides YAML target
+  --theme THEME          Color theme: dark (default), light
+  --replay FILE          Replay a .bustrace file instead of live transport
+  --synthetic FILE       Use a .gen.yaml synthetic pattern config instead of live transport
+  --no-connect           Load and render without connecting transport (offline preview)
+  --help                 Show this help
+```
+
+CLI arguments override YAML-declared values. `--broker` and `--port` take precedence over `app.transports[].broker` and `app.transports[].port` in the YAML.
+
+---
+
+## 4. YAML Parsing and Validation [DASH-YAML]
+
+### 4.1 Required YAML Structure [DASH-YAML-REQUIRED]
+
+The dashboard loads any valid `.compose.yaml` per [SPEC:CIO-CONFIG-SCHEMA] with top-level type `app`. Minimum required structure:
+
+```yaml
+app:
+  id: my-dashboard
+
+namespaces:
+  - name: some_namespace
+    state_engine: binary
+
+modules:
+  - name: main_panel
+    grid_row: 0
+    grid_column: 0
+    widgets:
+      - type: ButtonWidget
+        namespace: some_namespace
+        row: 0
+        column: 0
+```
+
+### 4.2 Validation Rules [DASH-YAML-VALIDATE]
+
+- **[DASH-V1]**: YAML MUST parse without error. On parse failure, display error dialog with line number and exit.
+- **[DASH-V2]**: Top-level key MUST be `app`. Other config types (`module`, `workload`, etc.) are not dashboard-renderable. Error: `"Runtime Dashboard requires an 'app' config. Got: {type}"`
+- **[DASH-V3]**: Every widget MUST reference a `type` that has a registered renderer (built-in or plugin). Unknown types render as a labeled placeholder rather than failing the load.
+- **[DASH-V4]**: Every widget namespace reference MUST correspond to a namespace in the `namespaces:` array. Warning (not error) if missing — the widget renders but shows "unbound".
+- **[DASH-V5]**: State engine declarations MUST be valid per [CS-STATE-ENGINES]. Invalid engines are fatal — the dashboard cannot render a widget whose value domain is undefined.
+
+### 4.3 Design Metadata [DASH-YAML-META]
+
+The YAML MAY include a `design:` section (ComposeUX generates this):
+
+```yaml
+design:
+  target: desktop          # desktop (1400x900), tablet (1024x768), panel (800x480)
+  title: "FTL Simulator"   # Window title. Default: app.id
+  theme: dark              # dark, light. Default: dark
+```
+
+If `design.target` is present, the dashboard uses the corresponding default window size. CLI `--geometry` overrides this.
+
+---
+
+## 5. Widget Rendering [DASH-RENDER]
+
+Widget rendering is defined in [SPEC:CIO-RENDERERS]. The rendering layer is a shared `composeio_renderers` package consumed by both the dashboard and ComposeUX preview through a host-agnostic `RendererContext` abstraction.
+
+### 5.1 Dashboard as Renderer Host [DASH-RENDER-HOST]
+
+The dashboard hosts renderers from the shared rendering layer. For each widget in the parsed YAML, the dashboard:
+
+1. Constructs a `RendererContext` with the internal bus, namespace binding, state engine, and widget properties
+2. Calls `RendererFactory.create(widget_type, parent_frame, context)` to instantiate the renderer
+3. Places the renderer in the grid layout at the widget's `row`/`column` position
+
+The `schedule_update` callback in the context is `root.after(0, fn)` — routing bus callbacks to the CTk main thread. The `publish` callback publishes to the internal bus; the crossover handles forwarding to the external bus for interactive widgets.
+
+### 5.2 Transport-Sourced Data [DASH-RENDER-DATA]
+
+Widget renderers receive data from three possible transport sources, all transparent to the renderer:
+
+| Source | Transport Type | Use Case |
+|--------|---------------|----------|
+| Live hardware | MQTT, CAN, UART | Real sensors, buttons, relays on the bus |
+| Captured replay | `ReplayTransport` ([AMEND:BP-CAPTURE-REPLAY]) | Recorded bus traffic played back |
+| Synthetic patterns | `SyntheticTransport` ([AMEND:BP-CAPTURE-REPLAY]) | Generated test traffic from pattern configs |
+
+The renderer does not know or care which transport provides the data. All three arrive through the same bus dispatch path (`_wire_transport_incoming` -> namespace subscriber -> `on_state_change`).
+
+---
+
+## 6. Layout Engine [DASH-LAYOUT]
+
+### 6.1 Grid Layout Model [DASH-LAYOUT-GRID]
+
+The YAML defines a two-level grid:
+
+**Module level**: Each `module` in `modules[]` has `grid_row` and `grid_column` specifying its position in the window grid. Modules become `CTkFrame` containers with a labeled border.
+
+**Widget level**: Each `widget` within a module has `row` and `column` specifying its position within the module's internal grid.
+
+```
+Window
++--Module (0,0)--+--Module (0,1)--+
+| Widget (0,0)   | Widget (0,0)   |
+| Widget (1,0)   | Widget (0,1)   |
++----------------+----------------+
+| Module (1,0) colspan=2          |
+| Widget (0,0) Widget (0,1)      |
++---------------------------------+
+```
+
+### 6.2 Sizing [DASH-LAYOUT-SIZING]
+
+| Property | Source | Behavior |
+|----------|--------|----------|
+| `weight_x` | module/widget config | Column weight for proportional sizing (CTk `grid_columnconfigure weight`) |
+| `weight_y` | module/widget config | Row weight for proportional sizing (CTk `grid_rowconfigure weight`) |
+| `padding` | module/widget config | Pixel padding around element (`padx`, `pady`) |
+| `colspan` | module config | Number of grid columns to span |
+| `rowspan` | module config | Number of grid rows to span |
+
+Default weights are 1 (equal distribution). Default padding is 5px.
+
+### 6.3 Window Sizing [DASH-LAYOUT-WINDOW]
+
+Resolution order for initial window size:
+
+1. CLI `--geometry WxH` (highest priority)
+2. YAML `design.target` mapping:
+   - `desktop` -> 1400x900
+   - `tablet` -> 1024x768
+   - `panel` -> 800x480
+3. Auto-size: calculate from module/widget count. Base 400x300, add 300px width per module column, 250px height per module row.
+
+The window is user-resizable. CTk grid weights handle responsive reflow. `--fullscreen` maximizes the window on startup.
+
+### 6.4 Window Title [DASH-LAYOUT-TITLE]
+
+`"{design.title} — ComposeIO Dashboard"` if `design.title` exists in YAML. Otherwise `"{app.id} — ComposeIO Dashboard"`.
+
+---
+
+## 7. Transport Connection [DASH-TRANSPORT]
+
+### 7.1 Transport Resolution [DASH-TRANSPORT-RESOLVE]
+
+The dashboard resolves its transport configuration in priority order:
+
+1. **CLI override**: `--broker` and `--port` arguments
+2. **YAML config**: `app.transports[]` array per [CS-APP-TRANSPORTS]
+3. **Default**: MQTT to `NODERED_HOST:1883`
+
+Multiple transports are supported (per [APP-ARCH-TRANSPORT] — transports are additive). If the YAML declares both MQTT and UART, both connect.
+
+### 7.2 Connection Lifecycle [DASH-TRANSPORT-LIFECYCLE]
+
+```
+YAML loaded
+  |
+  +-- Transport config resolved (CLI > YAML > default)
+  |
+  +-- For each transport:
+  |     +-- ComposeApp.connect_transport(type, **params)
+  |     +-- On success: _app/dashboard/state -> "connected"
+  |     +-- On failure: _app/dashboard/state -> "error", show reconnecting indicator
+  |
+  +-- MQTT auto-reconnect via paho-mqtt (infinite retry, exponential backoff)
+  +-- On reconnect: retained messages replayed, widget state restored
+```
+
+### 7.3 Connection Status Indicator [DASH-TRANSPORT-STATUS]
+
+A small status bar at the bottom of the dashboard window:
+
+| State | Indicator | Text |
+|-------|-----------|------|
+| Connected | Green circle | `"Connected to {broker}:{port}"` |
+| Reconnecting | Yellow circle, blink | `"Reconnecting to {broker}:{port}..."` |
+| Disconnected | Red circle | `"Disconnected"` |
+| Offline | Gray circle | `"Offline mode (--no-connect)"` |
+
+### 7.4 Offline Mode [DASH-TRANSPORT-OFFLINE]
+
+`--no-connect` renders the layout with all widgets at their default state engine values. No transport is connected. Useful for previewing layout without bus infrastructure.
+
+---
+
+## 8. Application Lifecycle [DASH-LIFECYCLE]
+
+### 8.1 Startup Sequence [DASH-LIFECYCLE-START]
+
+```
+1. Parse CLI arguments
+2. If YAML_FILE provided:
+     a. Load and validate YAML ([DASH-YAML])
+     b. Create ComposeApp (app_id = dashboard-{stem})
+     c. Register _app/ namespaces ([DASH-ARCH-INTERNAL])
+     d. Register all YAML-declared namespaces on internal bus
+     e. Wire import crossover for all widget-bound namespaces
+     f. Wire export crossover for interactive widget namespaces
+     g. Connect transport(s) ([DASH-TRANSPORT])
+     h. Build CTk window and grid layout ([DASH-LAYOUT])
+     i. Instantiate widget renderers ([DASH-RENDER])
+     j. ComposeApp.start()
+     k. _app/dashboard/state -> "connected"
+     l. CTk mainloop()
+3. If no YAML_FILE:
+     a. Create browser window ([DASH-LAUNCH-BROWSER])
+     b. User selects design
+     c. Transition to step 2a with selected YAML
+```
+
+### 8.2 Runtime Event Loop [DASH-LIFECYCLE-RUNTIME]
+
+- **Namespace state change** (from MQTT/CAN/UART via import crossover): Bus callback fires -> renderer `on_state_change()` -> CTk widget update. Updates are scheduled on CTk's main thread via `after()` to avoid threading issues.
+- **User interaction** (button click, coordinate entry): Renderer publishes to internal bus namespace -> export crossover forwards to external bus -> MQTT/CAN/UART transmission.
+- **Transport disconnect**: paho-mqtt `on_disconnect` callback -> `_app/dashboard/state` -> `"disconnected"` -> status bar updates -> auto-reconnect begins.
+- **Transport reconnect**: paho-mqtt `on_connect` callback -> re-subscribe all imported namespaces -> retained messages replay -> widgets update to current state -> `_app/dashboard/state` -> `"connected"`.
+
+### 8.3 Shutdown [DASH-LIFECYCLE-STOP]
+
+CTk window close (WM_DELETE_WINDOW) triggers:
+
+1. `_app/dashboard/state` -> `"disconnected"`
+2. All renderers: `destroy()` (unsubscribe from bus)
+3. `ComposeApp.stop()` (tears down crossover, stops transports, stops buses)
+4. `CTk.destroy()`
+5. Process exit
+
+### 8.4 Thread Safety [DASH-LIFECYCLE-THREADS]
+
+MQTT callbacks arrive on paho-mqtt's network thread. CTk widgets MUST only be modified on the main thread. All renderer state update methods MUST use `widget.after(0, callback)` to schedule updates on the CTk event loop.
+
+```python
+def on_state_change(self, value):
+    """Called from MQTT thread. Schedule CTk update."""
+    self.after(0, lambda: self._update_visual(value))
+```
+
+---
+
+## 9. Relationship to ComposeUX [DASH-COMPOSEUX]
+
+### 9.1 Peers on the Bus [DASH-COMPOSEUX-PEERS]
+
+The Runtime Dashboard and ComposeUX are **peers on the bus**, not parent-child. Both connect to MQTT independently. Both subscribe to overlapping namespaces. The bus handles this correctly — multiple subscribers are standard.
+
+### 9.2 No Live Reload [DASH-COMPOSEUX-NORELOAD]
+
+The dashboard loads a snapshot of the YAML at startup. If ComposeUX modifies and re-saves the YAML while the dashboard is running, the dashboard does NOT update. The user must close and relaunch the dashboard to pick up changes.
+
+- future: A "live design" mode where ComposeUX pushes design changes via a dedicated `composer/design/push` namespace is a separate feature, not part of v1.
+
+### 9.3 Multiple Dashboards [DASH-COMPOSEUX-MULTI]
+
+Multiple dashboard instances can run simultaneously with different YAMLs. Each gets a unique ComposeApp ID (`dashboard-{yaml_stem}`). All connect to the same MQTT broker. This is standard ComposeApp behavior — client IDs are unique per [APP-C1].
+
+---
+
+## 10. Package and Module Structure [DASH-PACKAGE]
+
+### 10.1 Location [DASH-PACKAGE-LOC]
+
+```
+ux_composer/
+  src/
+    dashboard/
+      __init__.py
+      __main__.py          # Entry point: python -m composeio.dashboard
+      app.py               # DashboardApp(ComposeApp) — lifecycle, YAML loading
+      browser.py           # Browser mode UI (file picker + bus_storage list)
+      layout.py            # Grid layout builder from YAML module/widget structure
+      status_bar.py        # Connection status indicator
+    composeio_renderers/   # Shared rendering layer (spec 11) — used by dashboard AND ComposeUX
+      __init__.py
+      context.py           # RendererContext dataclass
+      factory.py           # RendererFactory registry
+      base.py              # WidgetRenderer base class
+      gauge.py             # GaugeRenderer
+      button.py            # ButtonRenderer
+      relay.py             # RelayRenderer
+      coordinate.py        # CoordinateEntryRenderer
+      bus_monitor.py       # BusMonitorRenderer
+      tab.py               # TabRenderer
+      placeholder.py       # PlaceholderRenderer
+```
+
+### 10.2 Entry Point [DASH-PACKAGE-ENTRY]
+
+`__main__.py` parses CLI arguments, determines launch mode, and delegates to `DashboardApp`. The `DashboardApp` class is the ComposeApp subclass that orchestrates the lifecycle.
+
+### 10.3 Dependencies [DASH-PACKAGE-DEPS]
+
+| Dependency | Purpose | Version |
+|------------|---------|---------|
+| `customtkinter` | UI framework | >=5.0 |
+| `composeio` | Bus library (ComposeApp, ComposeIOBus, transports) | local |
+| `pyyaml` | YAML parsing | >=6.0 |
+| `paho-mqtt` | MQTT transport (via composeio) | >=1.6 |
+| `requests` | bus_storage HTTP queries (browser mode) | >=2.28 |
+
+---
+
+## 11. Compliance Requirements [DASH-COMPLIANCE]
+
+A compliant Runtime Dashboard implementation MUST:
+
+1. **[DASH-C1]** Load any valid `.compose.yaml` with top-level type `app` and render all built-in widget types (ButtonWidget, GaugeWidget, RelayWidget, CoordinateEntryWidget, BusMonitorWidget, TabWidget)
+2. **[DASH-C2]** Connect to MQTT and display live namespace values within 500ms of state change on the bus
+3. **[DASH-C3]** Interactive widgets (ButtonWidget, CoordinateEntryWidget) MUST publish state changes to the external bus when the user interacts
+4. **[DASH-C4]** Support browser mode when launched without a YAML argument — file picker and (when reachable) bus_storage listing
+5. **[DASH-C5]** Clean shutdown via `ComposeApp.stop()` — no orphaned MQTT connections, no leaked threads
+6. **[DASH-C6]** Render unknown widget types as a visible placeholder showing type name and raw namespace value, not silently skip them
+7. **[DASH-C7]** Respect the `_app/` default-deny boundary per [APP-C8] — no internal namespaces leak to external bus without explicit routing
+8. **[DASH-C8]** Support `--no-connect` offline mode that renders layout without transport connection
+9. **[DASH-C9]** Thread-safe rendering — MQTT callbacks MUST NOT directly modify CTk widgets; use `after()` scheduling
+10. **[DASH-C10]** CLI `--broker` and `--port` MUST override YAML-declared transport configuration
+
+A compliant implementation SHOULD:
+
+11. **[DASH-S1]** Animate gauge needle transitions (smooth interpolation, not snap)
+12. **[DASH-S2]** Display connection status indicator with reconnection state
+13. **[DASH-S3]** Support multiple simultaneous transports (MQTT + UART)
+14. **[DASH-S4]** Auto-reconnect on transport disconnect with exponential backoff
+15. **[DASH-S5]** Support `design.target` window sizing from YAML metadata
+
+---
+
+## Relationships
+
+- depends-on: [SPEC:CIO-APP] (application framework — dual-bus, crossover, transport)
+- depends-on: [SPEC:CIO-CONFIG-SCHEMA] (YAML validation, namespace declarations, state engines)
+- depends-on: [SPEC:CIO-BUS-PROTOCOL] (message format, state engines, transport bindings)
+- depends-on: [AMEND:CS-APP] (app config type, transport config, export/import)
+- depends-on: [SPEC:CIO-RENDERERS] (shared widget rendering layer — renderer implementations)
+- depends-on: [AMEND:BP-CAPTURE-REPLAY] (replay and synthetic transport types)
+- see-also: [SPEC:CXC-ARCH] (ComposeUX architecture — the design-time peer)
+- see-also: [CXC-TAB] (TabWidget bus intermediary pattern — routing modes, conditional activation)
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-28
+**Status**: Draft — ready for design review

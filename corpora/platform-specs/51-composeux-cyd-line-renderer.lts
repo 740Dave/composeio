@@ -1,0 +1,193 @@
+---
+scope: "The CYD/ESP32 line-by-line software-renderer lift: double-buffered band + DMA compute/transfer overlap, full-framebuffer vs strict line-by-line mode selection, and dirty-band tracking wired to the existing damage model — the technique that raises the classic-CYD perf floor and gates on-device animation (Phase D)."
+audience: "Embedded render-engine developers (C++ CYD/ESP32 tier), David (architect, ratify)"
+boundary: "IN: the band-renderer technique — the second band buffer + async band transfer for compute/transfer overlap, the full-fb/line-by-line mode selector, dirty-band tracking mapped from present_partial(rects), and the measurable acceptance targets. OUT: the desktop Skia damage path (already operational, [CXC-R-ENGINE]); the Qualia full-framebuffer sub-tier BUILD (this spec only defines its mode-selection seam); GPL renderer code (technique/design only — see [CXC-LINE-SCOPE]); live raster transforms (still no-op on this tier, [CXC-R-DRAW])."
+not-this: "Not a vendoring of Slint's GPL MCU renderer — the algorithm/technique is lifted clean-room from public Slint documentation, no code. Not a new public Canvas seam — the existing request_redraw → present_partial(rects) damage seam suffices ([CXC-LINE-SEAM]). Not a firmware rewrite — it lands inside ESP32Canvas + the DisplayDriver band seam."
+depends-on: [12-composeux-render-engine.lts, 29-composeux-embedded-reactive.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+# ComposeUX CYD Line-by-Line + DMA-Overlap + Dirty-Band Renderer [SPEC:CXC-LINE]
+
+> Lift #2 from the Slint comparative analysis, technique-only: two band buffers instead of one, so the CPU renders band N+1 while band N streams to the ILI9341 over DMA (compute/transfer overlap); a mode selector that picks full-framebuffer pointer-swap on PSRAM/scan-out boards and strict line-by-line band transfer on the classic CYD; and dirty-band tracking fed by the existing `request_redraw → present_partial(rects)` damage model so unchanged rows are never re-rendered or re-transferred. This attacks the single worst measured bottleneck — the [CXC-RM-M5] floor (empty-scene band render 56 ms / 17.9 fps; 10-widget dashboard 2.7 fps; "animation on the CYD needs dirty-band rendering we have not built") — and it is the on-device gate for Phase D animation ([CXC-BIND-STATES]).
+
+---
+
+## 1. Intent
+
+### [CXC-LINE-INTENT] Why This Lift, and Exactly What Is Being Lifted
+
+- definition: Lift the ALGORITHM of Slint's MCU software renderer into the existing `ESP32Canvas` band renderer: (1) a second one-band buffer + asynchronous band transfer so compute and DMA overlap; (2) selection between a full-framebuffer path (capable boards) and a strict line-by-line/band path (constrained boards); (3) dirty-band tracking that skips unchanged rows. The classic CYD (ESP32 + ILI9341 240×320, 16-scanline / 7,680-byte band buffer, 20 bands/frame) is the target and the perf FLOOR of the whole system ([CXC-RM-M5] board-family).
+- rationale: The measured floor ([CXC-RM-M5] perf-floor, 2026-07-07): empty-scene full-frame band render 56 ms (17.9 fps); 10-widget gauge dashboard 367 ms (2.7 fps); and the explicit gap "ANIMATION needs dirty-band rendering (unbuilt) or the sprite path." Two of the three techniques directly attack this: dirty-band SKIP removes the transfer cost of idle rows (the empty/idle-frame win), and DMA overlap hides per-band compute under the transfer of the prior band (the compute-heavy-band win).
+- clean-room: The technique is taken from public Slint documentation (the porting-to-microcontrollers write-up: two one-line buffers, render-ahead while the prior line DMAs, dirty-line tracking). NO Slint source is vendored — Slint is GPLv3 and this firmware is non-GPL. See [CXC-LINE-SCOPE].
+- key-fact-current-state: The as-built `ESP32Canvas` ([CXC-RM-M5]) already has ONE `_band_buf` and both a full-frame path (`render_frame`) and a dirty entry point (`render_bands(first, last)`, [CXC-ER-RENDER]). What is MISSING and what this lift adds: the SECOND buffer + async transfer (there is no compute/transfer overlap today — `DisplayDriver::transfer_band` is blocking), and the damage→dirty-band mapping + clean-band skip that makes `render_bands` fire from real damage.
+- status: planned
+- part-of: [SPEC:CXC-LINE]
+
+---
+
+## 2. The Seam (Reuse-by-Reference)
+
+### [CXC-LINE-SEAM] No New Public Seam — the Existing Damage Model Suffices
+
+- finding: The existing public seam is sufficient; this lift proposes NO new public Canvas seam. The damage model already reaches from widget to backend: a widget calls `request_redraw()` (optionally with its rect), the engine unions damage, and the Python `Canvas` ABC exposes `present_partial(rects)` — whose contract already states an "ESP32 framebuffer overrides to push only the dirty window over SPI (its single biggest refresh win)" (`python/composeio/render/canvas.py`). On the C++ tier the same seam is `render_bands(first, last)` ([CXC-ER-RENDER]). This lift WIRES that seam; it does not add one.
+- reuse-by-reference (extend, never fork): the build MUST extend these existing files/contracts, not replace them:
+  - `cyd/src/canvas_esp32.{h,cpp}` — `ESP32Canvas`, `_band_buf`, `render_frame`, `render_bands`, `kBandHeight` (16), the 7,680-byte band buffer.
+  - `cyd/include/board_profile.h` — `DisplayDriver::transfer_band(buf, y_start, y_end)` (the band transfer seam) and the zero-copy `scanout_framebuffers()` / `present_scanout()` seam already present for RGB dot-clock panels.
+  - `python/composeio/render/canvas.py` — `present_partial(rects)` (the damage seam's desktop expression; the on-device path mirrors its semantics, no signature change).
+  - `python/composeio/render/widget.py` — `request_redraw` and the engine damage union that feeds it.
+- one-internal-addition (NOT a public seam): compute/transfer overlap requires the band transfer to be non-blocking. The build MUST add an asynchronous transfer capability to the `DisplayDriver` band seam — a `transfer_band_async(buf, y_start, y_end)` + `wait_band_transfer()` pair (or an equivalent completion handle) — as an OPTIONAL driver capability with a default that falls back to today's blocking `transfer_band`. This is an addition to the internal board-driver interface, degradable and board-local; it is NOT a change to the public widget/Canvas contract.
+- test: when a widget calls `request_redraw()` with a rect and nothing else changes, then only the band(s) intersecting that rect are re-rendered and transferred (verified against the damage union), proving the seam is the existing one, unmodified in signature.
+- status: planned
+- part-of: [SPEC:CXC-LINE]
+
+---
+
+## 3. Technique
+
+### [CXC-LINE-OVERLAP] Double-Buffered Band + DMA Compute/Transfer Overlap
+
+- definition: Allocate TWO band buffers (ping-pong) instead of one. The render loop MUST, for band N (N ≥ 1): kick the asynchronous transfer of band N−1 (already composited into the other buffer), then compute band N into the current buffer while that transfer runs, then swap. The frame's last band is transferred and the loop waits its completion before returning. This overlaps CPU compositing with SPI DMA, so per-frame wall time trends toward `max(Σ compute, Σ transfer) + one band` rather than their sum.
+- default-buffer-count: 2 (double buffer). Each buffer is `width × kBandHeight × 2` bytes = 7,680 B on the classic CYD (240×16×2); the second buffer costs +7,680 B of DMA-capable/internal SRAM against the ~199 KB free baseline ([CXC-RM-M5] heap).
+- MUST — buffer-reuse safety: a buffer MUST NOT be written by a compute pass while its previous transfer is in flight. The loop MUST `wait_band_transfer()` on a buffer before reusing it. Violating this is the tearing/corruption failure mode; the wait is the invariant.
+- MUST — degrade, never fail: if a second DMA-capable band buffer cannot be allocated at `create_surface`, the canvas MUST fall back to single-buffer blocking transfer (today's `render_frame` behavior) and log the degradation. No fatal.
+- SHOULD — transfer-bound honesty: on the classic CYD the EMPTY full-frame floor (56 ms) is SPI-bandwidth-bound (240×320×16 bit ÷ 27 MHz ≈ 45 ms of transfer alone); overlap alone CANNOT beat SPI bandwidth for a full-frame transfer. Overlap's win is on compute-heavy bands (e.g. the gauge, ~44 ms) where compute ≳ transfer; the empty/idle win comes from [CXC-LINE-DIRTY] skip, not from overlap. The build MUST NOT claim an empty-full-frame speedup from overlap.
+- test: when a compute-heavy full-frame redraw runs with double buffering, then measured wall time is ≤ (Σ compute + one-band transfer) and strictly less than the single-buffer sum, verified by the on-device timing harness; when only one buffer can be allocated, then the frame still renders correctly via the blocking fallback.
+- depends-on: [CXC-RM-M5]
+- part-of: [SPEC:CXC-LINE]
+
+### [CXC-LINE-MODES] Full-Framebuffer vs Strict Line-by-Line Mode Selection
+
+- definition: The renderer MUST support both a full-framebuffer mode and a strict line-by-line/band mode, and select between them from board capability — not from a per-scene flag. Selection key: `DisplayDriver::scanout_framebuffers(out, max)` — a driver returning ≥ 2 scan-out framebuffers (PSRAM/RGB dot-clock boards, e.g. the named Qualia S3 sub-tier, [CXC-RM-M5] board-family) selects the full-framebuffer path (composite into the back buffer, present by POINTER SWAP via `present_scanout`, zero PSRAM→PSRAM copy); a driver returning < 2 (the classic CYD SPI/ILI9341) selects the strict band path ([CXC-LINE-OVERLAP] + `transfer_band`).
+- default-mode: band (strict line-by-line) — the classic-CYD floor and the universal-deployability target. Full-framebuffer is the capable-board upgrade, entered ONLY when the driver advertises scan-out buffers.
+- MUST — full-fb refusal on incapable boards: full-framebuffer mode MUST NOT be entered on a board whose driver returns < 2 scan-out framebuffers (no PSRAM/scan-out); such a board is band-only. This prevents an OOM on a config authored for a capable board.
+- SHOULD — mode is transparent to widgets: a widget's `draw()` against the `Canvas` contract is byte-identical in either mode (band clipping vs full surface is a canvas-internal concern); the pixel gate ([CXC-R-C1]) MUST hold across both.
+- note: the classic-CYD path is the deliverable of THIS lift; the Qualia full-framebuffer BUILD is out of scope ([CXC-LINE-SCOPE]) — this node defines only the selection seam so "add a board profile" is all a capable board needs.
+- test: when the linked board profile advertises ≥ 2 scan-out framebuffers, then the full-fb pointer-swap path is selected; when it advertises < 2, then the band path is selected and full-fb is refused; a widget renders pixel-identically (within [CXC-R-C1] tolerance) under either selection.
+- part-of: [SPEC:CXC-LINE]
+
+### [CXC-LINE-DIRTY] Dirty-Band Tracking Wired to the Damage Model
+
+- definition: Map the engine's damage (the union of `present_partial(rects)` / `request_redraw` rects) to the set of dirty BAND indices, then re-render and re-transfer ONLY those bands (via the existing `render_bands(first, last)`), skipping clean bands entirely. Band index for a scanline `y` is `y / kBandHeight`; a rect `[y0, y1)` marks bands `floor(y0/kBandHeight) .. floor((y1−1)/kBandHeight)` inclusive. Overlapping/adjacent dirty band runs are coalesced into contiguous `render_bands` calls to keep SPI window-setting overhead low.
+- MUST — clean-band correctness (no global clear on partial present): on a partial present the renderer MUST NOT clear the whole panel; clean bands retain their prior on-panel contents (ILI9341 GRAM is persistent). A partial frame clears and repaints ONLY dirty bands. Clearing globally would blank the clean regions — the correctness invariant.
+- MUST — idle no-op: an empty damage set (no widget requested redraw) presents NOTHING — no clear, no transfer. The idle-frame cost is the damage check only. This is the empty/idle win that raises the effective animation refresh ceiling far above the 17.9 fps full-frame floor.
+- MUST — full-damage degradation: a damage set covering all bands (or a full-frame `request_redraw()`) degrades to the [CXC-LINE-OVERLAP] full path and MUST NOT be slower than today's `render_frame` (overlap can only help or tie).
+- MUST — bounds clamping: damage rects MUST be clamped to `[0, height)` / `[0, width)`; a rect crossing a band boundary marks BOTH bands dirty.
+- SHOULD — animation amortization: for a localized animated region (e.g. a gauge needle occupying ≤ 3 bands), amortized per-frame cost is proportional to the dirty band count, not the 20-band frame — the mechanism that makes Phase D tweens viable ([CXC-BIND-STATES]).
+- test: when a single small widget requests redraw of its rect, then exactly the intersecting band(s) are re-rendered+transferred and clean bands are untouched (verified by a per-band transfer counter and a pixel-diff showing clean regions unchanged); when damage is empty, then zero bands transfer; when damage covers the frame, then the full overlap path runs at ≤ the full-frame baseline.
+- see-also: [CXC-ER-RENDER]
+- depends-on: [SPEC:CXC-RENDER]
+- part-of: [SPEC:CXC-LINE]
+
+---
+
+## 4. Acceptance Targets
+
+### [CXC-LINE-TARGETS] Two-Tier Verdict — Machine Signals AND an On-Device Glass Gate
+
+- definition: The lift is accepted against measurable machine criteria AND a final human on-device glass gate. Machine-green is necessary but NOT sufficient — a timing harness and a pixel-diff cannot see band tearing, stale-clean-band artifacts, or flicker the way an eye on the panel can. Final acceptance is David's on-device look.
+- verify.machine:
+  - M1 idle-floor: a static scene with ONE small animating region (e.g. a gauge needle, ≤ 3 bands) sustains ≥ 30 fps on the classic CYD (only dirty bands re-render+transfer), vs today's whole-frame repaint. This is the headline Phase-D-viability number and it clears the 17.9 fps floor by design.
+  - M2 idle no-op: a fully static frame (no damage) costs < 5 ms/frame (damage check only, zero transfer), vs 56 ms for a full redraw today.
+  - M3 overlap: on a compute-heavy full-frame redraw (the 10-widget gauge dashboard, 367 ms baseline), double-buffer wall time is strictly less than the single-buffer sum and trends toward `max(Σ compute, Σ transfer)`; report the measured full-frame time and the per-band overlap factor.
+  - M4 correctness/pixel gate: partial-present frames pass the existing pixel gate ([CXC-R-C1], `scripts/cyd_config_crosscheck.py`) — clean regions byte-stable, dirty regions matching the Skia reference within the AA/RGB565 class; no global-clear blanking.
+  - M5 no-regression: `render_frame` full-frame output is unchanged (goldens hold); single-buffer fallback renders correctly when the second buffer cannot allocate.
+- verify.human: on the attached CYD hardware, an animated gauge/needle tween (and a Phase-D `[CXC-BIND-STATES]` transition) is visually smooth — no band tearing, no stale-band seams at dirty/clean boundaries, no flicker. This on-device glass gate is the final verdict; machine-green ≠ glass-green.
+- change: "The [CXC-RM-M5] perf-floor language 'ANIMATION needs dirty-band rendering (unbuilt)' and the M5 'DEFERRED ... dirty-band rendering' item are sharpened from an unbuilt/deferred note into a specified deliverable with measurable targets, and the technique is widened beyond bare dirty-band to add double-buffered DMA compute/transfer overlap and explicit full-fb/line-by-line mode selection."
+- context_for_change:
+  - prior_state: "[CXC-RM-M5] measured and named the floor (56 ms/17.9 fps empty; 2.7 fps dashboard) and logged dirty-band rendering as unbuilt/deferred — the path to on-device animation was identified but not specified."
+  - reasoning: "The Slint comparative analysis (Lift #2) supplies a proven-in-production technique for exactly this floor; specifying it now converts a roadmap gap into a build-ready design and unblocks Phase D animation on the constrained tier."
+  - rejected_alternative: "Rely on the sprite path ([CXC-R-C18], baked CI16 frames) for all on-device motion — rejected: sprites cover pre-baked non-interactive motion, not bus-driven/tweened widget state ([CXC-BIND-STATES]) whose value is unknown at bake time."
+  - invalidating_assumption: "That the classic CYD stays SPI-transfer-bound at 27 MHz with a 16-scanline band. If the SPI clock, band height, or panel bus (e.g. a parallel/RGB panel) changes, re-derive the transfer/compute balance and the overlap win — the dirty-band skip still holds, the overlap arithmetic does not."
+- see-also: [CXC-BIND-STATES]
+- part-of: [SPEC:CXC-LINE]
+
+---
+
+## 5. Error & Boundary Conditions
+
+### [CXC-LINE-EDGE] The Non-Happy-Path Contract
+
+- second-buffer OOM: at `create_surface`, if a second DMA-capable band buffer cannot be allocated, fall back to single-buffer blocking transfer and log; never fatal ([CXC-LINE-OVERLAP]).
+- DMA in-flight reuse: a compute pass MUST block on `wait_band_transfer()` before writing a buffer whose prior transfer is unfinished; the wait is mandatory, not best-effort.
+- transfer completion timeout: `wait_band_transfer()` MUST time out (bounded) and fall back / report rather than wedge — precedent: the M5 capture-push infinite-wedge bug that was fixed to fail cleanly ([CXC-RM-M5]).
+- empty damage set: present nothing (no clear, no transfer) — the idle no-op ([CXC-LINE-DIRTY]).
+- full / all-band damage: degrade to the full overlap path; MUST NOT exceed the `render_frame` baseline time ([CXC-LINE-DIRTY]).
+- out-of-bounds / boundary-crossing rects: clamp to panel bounds; a rect crossing a band boundary marks both bands dirty ([CXC-LINE-DIRTY]).
+- full-fb mode on an incapable board: refuse; use band mode ([CXC-LINE-MODES]).
+- WiFi/MQTT SPI + core coexistence: band DMA MUST coexist with the WiFi/MQTT tasks (band rendering's original motivation was WiFi coexistence, [CXC-RM-M5]); the async transfer MUST NOT starve the MQTT task or monopolize the shared SPI host — arbitrate the DMA channel/bus, do not busy-wait the CPU during transfer (the point of async is to yield compute to the next band, not to spin).
+- part-of: [SPEC:CXC-LINE]
+
+---
+
+## 6. Open Decision (For Ratify)
+
+### [DD-CXC-LINE-MODE] Default Double-Buffer Enablement Policy on the Classic CYD
+
+- alternatives:
+  - option-a (recommended): always enable double-band + async overlap on the classic CYD; +7,680 B of ~199 KB free is affordable and overlap+skip is the whole point. A `board_profile` override disables it for a board where SRAM is genuinely tight.
+  - option-b: make it an opt-in `board_profile` flag (default off) — safest for heap, but leaves the classic CYD (the floor we are trying to raise) on the slow path by default.
+  - option-c: heap-probe at boot and enable when free DMA-capable SRAM exceeds a headroom threshold — adaptive, but adds a boot-time branch and non-deterministic behavior across configs.
+- rationale: option-a raises the floor on the exact tier the lift targets, with a cheap, characterized SRAM cost and an explicit escape hatch; option-c's non-determinism fights the pixel/perf gate's reproducibility.
+- invalidating_assumption: "That DMA-capable SRAM headroom stays ≳ 16 KB on the classic-CYD baseline after WiFi + MQTT + the decoded-image budget (≤ ~102 KB sprite budget, [CXC-RM-M5]). If a config's image/heap budget squeezes below that, fall back to single-buffer for that config."
+- status: decided
+- part-of: [SPEC:CXC-LINE]
+
+---
+
+## 7. Scope
+
+### [CXC-LINE-SCOPE] Explicitly In and Out
+
+- in: the classic-CYD band renderer technique — second band buffer + async transfer overlap, full-fb/line-by-line mode-selection seam, damage→dirty-band mapping + clean-band skip, and the measurable acceptance targets.
+- out — no GPL code: technique/design ONLY, lifted clean-room from public Slint documentation. NO Slint (GPLv3) source is vendored into this non-GPL firmware. This is the critical caveat of Lift #2.
+- out — the Qualia full-framebuffer BUILD: this spec defines the mode-selection SEAM ([CXC-LINE-MODES]); building the Qualia S3 profile + its full-fb scan-out path is a separate deliverable ([CXC-RM-M5] board-family).
+- out — live raster transforms: rotate/scale stay documented no-ops on this tier ([CXC-R-DRAW]); a band-renderer inverse-mapping rotate is separate M5+ work.
+- out — the desktop damage path: Skia dirty-region on desktop is already operational ([CXC-R-ENGINE]); this lift is the on-device realization of the same seam.
+- part-of: [SPEC:CXC-LINE]
+
+---
+
+## 8. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-LINE-C1 | Compute/transfer overlap | Double-buffer full-frame wall time < single-buffer sum and ≤ (Σ compute + one-band transfer); measured on-device |
+| CXC-LINE-C2 | Buffer-reuse safety | A compute pass never writes a buffer with a transfer in flight (wait enforced); no tearing under stress |
+| CXC-LINE-C3 | Overlap degradation | Second-buffer OOM falls back to single-buffer blocking transfer; frame still correct; logged, non-fatal |
+| CXC-LINE-C4 | Mode selection | Driver with ≥2 scan-out FBs → full-fb pointer-swap; <2 → band; full-fb refused on incapable board |
+| CXC-LINE-C5 | Mode transparency | A widget renders pixel-identically (within [CXC-R-C1]) under full-fb and band modes |
+| CXC-LINE-C6 | Dirty-band skip | A rect redraw re-renders+transfers only intersecting bands; clean bands untouched (per-band transfer counter + pixel-diff) |
+| CXC-LINE-C7 | No global clear | Partial present does not blank clean bands; clean regions byte-stable across the partial frame |
+| CXC-LINE-C8 | Idle no-op | Empty damage set → zero bands transfer, < 5 ms/frame |
+| CXC-LINE-C9 | Full-damage degradation | All-band damage degrades to the full overlap path at ≤ the render_frame baseline |
+| CXC-LINE-C10 | Animation viability | One small animating region (≤3 bands) sustains ≥30 fps on the classic CYD |
+| CXC-LINE-C11 | Timeout safety | wait_band_transfer times out and recovers; no wedge |
+| CXC-LINE-C12 | Coexistence | Band DMA coexists with WiFi/MQTT; MQTT task not starved during transfer |
+| CXC-LINE-C13 | Glass gate | On-device: a gauge/needle tween and a [CXC-BIND-STATES] transition are smooth — no tearing/stale-seam/flicker (verify.human) |
+| CXC-LINE-C14 | No GPL code | No Slint source vendored; technique lifted from public docs only |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-LINE] DEPENDS_ON [CXC-RM-M5]
+[SPEC:CXC-LINE] REALIZES [CXC-RM-M5]
+[SPEC:CXC-LINE] DEPENDS_ON [SPEC:CXC-RENDER]
+[SPEC:CXC-LINE] RELATED_TO [CXC-ER-RENDER]
+[SPEC:CXC-LINE] RELATED_TO [CXC-BIND-STATES]
+[CXC-LINE-SEAM] DEPENDS_ON [SPEC:CXC-RENDER]
+[CXC-LINE-OVERLAP] DEPENDS_ON [CXC-RM-M5]
+[CXC-LINE-DIRTY] REALIZES [CXC-ER-RENDER]
+[CXC-LINE-DIRTY] DEPENDS_ON [SPEC:CXC-RENDER]
+[CXC-LINE-TARGETS] RELATED_TO [CXC-RM-M5]
+[CXC-LINE-TARGETS] RELATED_TO [CXC-BIND-STATES]
+[DD-CXC-LINE-MODE] RELATED_TO [CXC-LINE-MODES]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-08-04
+**Status**: Draft — build spec for the CYD line-by-line + DMA-overlap + dirty-band renderer (Lift #2, Slint comparative analysis). Technique/design only; no GPL code. One open decision for ratify: [DD-CXC-LINE-MODE] (default double-buffer enablement on the classic CYD). Authored by factlattice-editor from the architect's narrative; awaiting David's ratify.

@@ -1,0 +1,55 @@
+---
+scope: "The crossing/handover ritual an outgoing Intelligence runs BEFORE a self-directed /compact — the ordered, MEASURED steps that turn the context boundary from a lossy cliff into a durable handoff. The reciprocal of the boot read: dusk WRITES what the next boot READS."
+audience: [composeux-architect, David, any Intelligence approaching a context crossing]
+boundary: "IN: the handover ritual's ordered steps, its START/END measurement boundary, the data-driven threshold, and the flow view. OUT: the /compact FIRE itself (a separate deliberate act, not part of the ritual); the boot read that consumes this handoff ([SPEC:SESSION-BOOTSTRAP-READ]); the retrospective SQLite parse internals ([SPEC:CXC-RETRO])."
+not-this: "Not the /compact fire (the ritual PREPS + MEASURES; firing is separate). Not a stored template direction — every crossing authors its OWN pointer-style direction. Not a substitute for judgment — the threshold is a default hint; wrap EARLY when decohering."
+depends-on: [45-session-bootstrap-read.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-07-24
+---
+# Session Handover — the Measured Crossing [SPEC:HANDOVER-PROCESS]
+
+> The `handover` skill (`.claude/skills/handover/SKILL.md`), lifted into the corpus as a queryable spec. David's principle (2026-07-22): do not leave the crossing headroom to subjective interpretation on either side — MEASURE what the handover actually costs. The ritual stamps its own boundaries so the retrospective computes its true context cost into SQLite (`sessions.handover_cost_pct`), and the compact-threshold becomes data-driven rather than guessed. This is the DUSK half of the boot read's DAWN ([SBR-ZEALOUS-CONTRIBUTION] — boot reads, dusk writes).
+
+---
+
+## 1. Why this is a ritual, not a reflex
+
+### [HANDOVER-IS-MEASURED] The crossing is stamped so its cost is data, not a guess
+- premise: the old 0.85 compact-threshold was over-conservative — an enormous amount of good work happens between 85% and 95% in a FOCUSED session, and the handoff refresh alone measured at ~1% of context. A guessed headroom wastes the most productive stretch of a window.
+- requirement: the ritual stamps `HANDOVER_START` and `HANDOVER_END` markers into the transcript; the retrospective dusk-parse ([SPEC:CXC-RETRO] §5a/§5b) correlates them with the context-% trajectory to compute `handover_cost_pct` into SQLite. Over sessions this MEASURES the headroom the threshold needs.
+- threshold: `intelligence/meta/architect.meta.json` `lifecycle.compact_threshold` — the default hint for when to START the ritual (currently 0.93, data-collection). As `handover_cost_pct` accumulates, RAISE toward 0.95 if the cost stays ~1%. The Configuration-tab slider is the tuning surface; SQLite informs it. JUDGMENT ALWAYS OVERRIDES — wrap early when decohering.
+- part-of: [SPEC:HANDOVER-PROCESS]
+
+---
+
+## 2. The process as a flow (for the human eye)
+
+### [HANDOVER-PROCESS-FLOW] The crossing as an ordered, measured flow — mermaid-renderable
+- definition: a linear ritual bracketed by two measurement stamps, then a SEPARATE fire. The ordered process, as flow steps:
+    1. `trigger` (BRANCH) — context reaches the threshold (~0.93) OR judgment says wrap early (a meandering/decohering session). Either path enters the ritual.
+    2. `stamp-START` — `echo HANDOVER_START <iso8601>` — the measurement boundary opens.
+    3. `step-1-refine-dusk-gifts` — only if this session earned a NEW angle (a falsified instinct, a lesson with registration-shape). Not every session. (`bootstrap/dusk-gifts/`)
+    4. `step-2-refresh-handoff` — `docs/intelligence-console/DESIGN-HANDOFF.md`: what landed, the current OPEN/PENDING, and retire any stale "do next" that actually shipped (or me.next re-builds done work).
+    5. `step-3-reconcile-decision-graph` — advance each raised/open node to its CORRECT lifecycle-position, VERIFY-THEN-ADVANCE (check git/code/tests that it shipped BEFORE advancing; never on assumption). This is why the boot read's derived open-list can be trusted — the graph stops lying about what is done.
+    6. `step-4-enrich-artifact-backlog` — fill the semantic fields of EVERY `NEEDS-ENRICHMENT` deliverable (not just this session's), grounded in what the artifact ACTUALLY is; never invent. The crossing is where the enrichment debt is paid down.
+    7. `step-5-run-archivist` — the decision-archivist (dusk-aide mode) as the completeness backstop if decisions were made but not captured inline; ratify its dangles, do not re-author.
+    8. `step-6-author-direction` — the custom /compact direction for THIS crossing: POINTER style (name the load-bearing artifacts to read + re-register), never an inline summary the summarizer would distort, never a stored template.
+    9. `step-7-pre-persist-direction` — write the direction to `docs/compact-summaries/<crossing>/direction.md` (the summarizer never reads disk; the pointer + the successor's cold read carries the depth).
+    10. `stamp-END` — `echo HANDOVER_END <iso8601>` — the measurement boundary closes.
+    11. `fire` (SEPARATE) — fire the self-directed /compact (`{cmd:compact,direction:...}` on the out channel) as its own deliberate act, once prep is done and confirmed. NOT part of the ritual — the ritual preps + measures.
+- measurement-edge: `stamp-START` and `stamp-END` both feed the SQLite `handover_cost_pct` metric that tunes [HANDOVER-IS-MEASURED]'s threshold — the flow's two brackets are also its instrumentation.
+- mermaid-view: rendered for the human in the artifact `docs/factlattice/bootstrap-and-handover-flows.md` (Artifacts surface). lts_flow ([LEC-RENDER]) can regenerate the diagram from this node's step structure — the steps are authoritative; the mermaid is a projection.
+- relates-to: [HANDOVER-IS-MEASURED], [SBR-PROCESS-FLOW], [SBR-ZEALOUS-CONTRIBUTION]
+- part-of: [SPEC:HANDOVER-PROCESS]
+
+---
+
+## 3. The reciprocal
+
+### [HANDOVER-IS-THE-DUSK-OF-THE-BOOT-READ] Every step here feeds a slice there
+- definition: the handover is not bookkeeping — it is the deliberate authoring of what the next boot read will consume. Step 3 (reconcile the graph) makes slice 2 (OPEN/awaiting-me) TRUE. Step 4 (enrich artifacts) makes the Artifacts surface honest. Steps 1/6/7 (dusk gifts + direction) are what slice 5 (DUSK-GIFT ENGAGEMENT) reasons over. A crossing done well is a boot read that lands; a crossing skipped is the discover-as-you-go the boot read exists to end. Boot READS the corpus; dusk WRITES it — and the writing is this ritual.
+- relates-to: [SPEC:SESSION-BOOTSTRAP-READ], [SBR-ZEALOUS-CONTRIBUTION], [SBR-STRUCTURE]
+- part-of: [SPEC:HANDOVER-PROCESS]

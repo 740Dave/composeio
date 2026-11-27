@@ -1,0 +1,314 @@
+---
+scope: "The ComposeServer plugin LOADER — the piece entirely absent from the landed Phase-0 code: nothing today discovers plugin CLASSES from a manifest/config; `standup()`/`ComposeServer.add_tenant()` only accept hand-instantiated plugin objects. This is a BUILD spec: it specifies a config-manifest-driven discovery mechanism, config validation against each plugin's pydantic `Config` model BEFORE instantiation, integration with the existing `requires:`-floor park/unpark binder, the subprocess-pending seam, strict per-tenant instancing, and the `_server/*` status surface — as MUST/SHOULD predicates with verify.machine/verify.human acceptance tiers, so composeio-expert can implement it without guessing."
+audience: "David (architect) — for ratify of every non-`ratified`/non-`decided` claim below, and specifically the three `[DD-CSL-*]` open forks; composeio-expert, who implements this loader directly against [CXC-CSL-LOADER-INTERFACE]; the audit that diffs this document against the landed loader code once built."
+boundary: "IN: config-manifest-driven plugin discovery (resolve a class from an import-path or a registered name, validate its declared `config:` against that plugin's pydantic `Config` BEFORE instantiation), the park/unpark integration with the EXISTING `requires:`-floor binder ([CXC-CS-REQUIRES-FLOOR]) and subprocess-pending seam ([CXC-CBK-SUBPROCESS-DAUGHTERCARD]), strict per-tenant instancing ([CXC-CS-MULTI-TENANCY]), and surfacing load/park state on the already-built `_server/plugins/<name>/*` announce surface. OUT: the plugin contract itself ([SPEC:CXC-COMPOSESERVER]'s subject, only cited and reused); the `standup()`/`ComposeServer` binder internals ([CXC-CS-STANDUP-OWNERSHIP], already built, reused verbatim — this spec does not respec them); `entry_points`/package auto-discovery (named as a future extension at [DD-CSL-DISCOVERY], not v1); the subprocess IPC daughtercard host itself (Phase 1, only the Phase-0 `subprocess_pending` seam is this spec's concern); the `ready:` DSL grammar ([SPEC:CXC-DSL], out of scope, carried as an opaque expression exactly as the plugin contract already does)."
+not-this: "Not a design capture — unlike its design-source ([SPEC:CXC-COMPOSESERVER], `artifact-readiness: concept-capture`, no acceptance criteria), every requirement below carries a MUST/SHOULD predicate, a testable acceptance criterion, and a `verify.machine`/`verify.human` tier per [CXC-CSL-ACCEPTANCE]. Not an assertion that every claim is David's stated word — each node carries an explicit `provenance:` property per [DX-INTERPRETATION-IS-AN-INFERENCE]. Not a claim that this has been built or run — every POST-integration evidence property at [CXC-CSL-EVIDENCE] is the `EMPTY` sentinel per [DX-SPEC-CARRIES-ITS-EVIDENCE] until a real build fills it in."
+depends-on: [84-composebus-kernel.lts, 85-composeserver-plugin-contract.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: draft
+created: 2026-08-24
+updated: 2026-08-24
+---
+# ComposeServer Plugin Loader — config-manifest discovery, validated-before-instantiation; PLACEMENT UNRATIFIED [SPEC:CXC-CS-LOADER]
+
+> The loader turns the hand-wired plugin library ([SPEC:CXC-COMPOSESERVER]'s `standup()`/`ComposeServer`, which take HAND-INSTANTIATED plugin objects) into an actual host: a per-tenant manifest declares which plugins to load; the loader resolves each plugin's CLASS, validates its declared `config:` against that plugin's own pydantic `Config` model BEFORE instantiating it, and hands the resulting instances to the EXISTING `standup()`/`ComposeServer.add_tenant()` unchanged. An invalid config or an unmet `requires:` floor PARKS the plugin loudly, naming the specific offending item; nothing crashes the loader or a sibling plugin. This is a build spec — every MUST below carries a machine-checkable acceptance criterion and, where the failure class needs eyes, a `verify.human` gate.
+
+---
+
+## 1. Placement
+
+### [CXC-CSL-PLACEMENT] Placement is UNRATIFIED, and filename 87 was verified unused
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because its nearest relatives (`84-composebus-kernel.lts`, `85-composeserver-plugin-contract.lts`, `86-composebus-request-response.lts`) already sit there — convention, not a ruling. See [CXC-VISION-PLACEMENT] for the standing note on this directory's unratified filename numbering.
+- filename-number-check: `87` was verified unused across `corpora/platform-specs/` before this file was written — the directory listing's highest prior numeric prefix was `86` (`86-composebus-request-response.lts`); `99` remains the reserved conventions-document number (`99-composeio-conventions.smd`).
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-VISION-PLACEMENT], [CXC-CS-PLACEMENT], [CXC-CBK-PLACEMENT]
+
+---
+
+## 2. Discovery — config-manifest-driven
+
+### [DD-CSL-DISCOVERY] OPEN — discovery is config-manifest-driven, not package/entry_points auto-discovery
+
+- question: how does the loader learn WHICH plugin classes to instantiate for a tenant?
+- decision: (architect-proposed, flagged for David's ratify) a per-tenant MANIFEST declares which plugins to load, each entry `{plugin: <import-path-or-registered-name>, config: <typed dict>}`. The loader imports/resolves the class, validates `config` against that class's pydantic `Config` model BEFORE instantiation, instantiates on success, and hands the instances to the existing `standup()`/`ComposeServer.add_tenant()` binder unchanged.
+- rationale: this fits the ratified pydantic-declaration + config-over-bus model already governing every other plugin surface ([CXC-CS-PLUGIN-CONTRACT]'s one-typed-declaration-derives-three-artifacts shape) — the manifest is the SAME kind of typed, validated declaration applied one level up, at "which plugins does this tenant run" rather than "what does one plugin's config look like". It requires no new discovery machinery beyond an importer and a dict-to-pydantic validation call, both already idioms this codebase uses (`transport_registry.py`'s `type:` factory is the direct precedent — [CXC-CBK-CONNECTOR-CONTRACT] already lifted that same idiom to the connector layer; this node lifts it again to the plugin layer).
+- rejected_alternative: (not chosen for v1, recorded so it is not silently lost) `entry_points`/setuptools package auto-discovery — scanning installed packages for a registered plugin group. Rejected for v1 because it couples plugin availability to what happens to be PIP-INSTALLED in the current environment rather than to what the TENANT'S OWN MANIFEST declares, which is a weaker per-tenant boundary than [CXC-CS-MULTI-TENANCY] wants: two tenants sharing one Python environment would see the SAME auto-discovered set unless a second, separate filter were added on top — the manifest already gives that filter for free as its primary purpose, not a bolt-on.
+- alternatives: entry_points/setuptools package auto-discovery (REJECTED for v1, see `rejected_alternative` above).
+- invalidating_assumption: if a deployment later needs a plugin's mere PRESENCE on the Python path to be sufficient for it to load — no manifest edit required, e.g. a plugin-as-a-pip-package ecosystem with many third-party authors — entry_points auto-discovery becomes worth the coupling cost and should be added as a SECOND discovery mode alongside the manifest, not a replacement for it. (Restated as a top-level property so the DD-family schema can find it directly, mirroring [DD-CBK-PRIMARY-RENDER-SURFACE]'s precedent; the fuller record lives in `context_for_change` below.)
+- change: "discovery is config-manifest-driven; entry_points/package auto-discovery is NOT v1."
+- context_for_change:
+  prior_state: "no discovery mechanism exists at all — every current call site (tests, any bring-up script) hand-constructs plugin instances and passes them directly to `standup(plugins=[...])`."
+  reasoning: "a manifest is the smallest addition that turns hand-wired instances into a declared, per-tenant, validated set, and it reuses the plugin contract's own typed-declaration idiom rather than inventing a second one."
+  rejected_alternative: "entry_points/package auto-discovery (see rejected_alternative above)."
+  invalidating_assumption: "if a deployment later needs a plugin's mere PRESENCE on the Python path to be sufficient for it to load — no manifest edit required, e.g. a plugin-as-a-pip-package ecosystem with many third-party authors — entry_points auto-discovery becomes worth the coupling cost and should be added as a SECOND discovery mode alongside the manifest, not a replacement for it (a manifest entry would still be required to CONFIGURE a discovered class, since config validation has no other input)."
+  implication: "the loader interface ([CXC-CSL-LOADER-INTERFACE]) takes a manifest dict as its primary input; no scanning of `sys.path` or `importlib.metadata.entry_points()` is implemented in this pass."
+- status: proposed
+- status-detail: proposed — awaiting ratify
+- provenance: architect-proposed
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CSL-MANIFEST-SHAPE], [CXC-CS-PLUGIN-CONTRACT], [CXC-CBK-CONNECTOR-CONTRACT]
+- settled-by: DECIDED 2026-11-26 by [CXC-PC-DISCOVERY] in 95-plugin-contract.lts ([SPEC:CXC-PLUGIN-CONTRACT]): the host's install records are the registry. Entry-point scanning and package-import discovery are NOT adopted (entry points require install before consent and carry no metadata). The tenant manifest names an installed plug-in by `domain`; dotted import paths remain for built-in default plug-ins only. (Architect, on the shared plug-in contract.)
+
+### [CXC-CSL-MANIFEST-SHAPE] The manifest entry schema — `{plugin, config}`, resolved by registered name or dotted import path
+
+- claim: a tenant manifest is `{"plugins": [<entry>, ...]}`. Each `<entry>` is `{"plugin": <ref>, "config": <dict>}`, where `config` is OPTIONAL (defaults to `{}`, which validates against a `Config` whose every field has a default — the same rule `ComposePlugin._coerce_config(None)` already applies for a hand-instantiated plugin with `config=None`).
+- ref-resolution: `<ref>` resolves to a `ComposePlugin` subclass in ONE of two ways, tried in this order: (1) a REGISTERED NAME — `<ref>` is a key in the caller-supplied `registry: dict[str, type[ComposePlugin]]` (e.g. `"time"` -> `TimePlugin`); (2) a DOTTED IMPORT PATH — `<ref>` contains a `:` splitting `"module.path:ClassName"`, imported via `importlib.import_module` then `getattr`. A `<ref>` with no `:` that is ALSO absent from `registry` is a resolution failure (see [CXC-CSL-ERROR-TAXONOMY]), never silently treated as a bare module import.
+- resolved-class-must-subclass: a resolved object that is not a `ComposePlugin` subclass is a resolution failure, never instantiated — a manifest cannot be used to construct an arbitrary class.
+- open-question-registry-source: NOT resolved by this spec — whether ComposeServer ships one canonical registered-name -> class registry (e.g. covering the default-loaded plugins `time`/`liveness`/`log`/`state_manager`/`discovery`, [CXC-CS-DEFAULT-PLUGINS]/[CXC-CS-EXTRACTION-INVENTORY]) that every caller reuses, or whether every caller always supplies its own `registry` dict. [CXC-CSL-LOADER-INTERFACE] makes `registry` an explicit parameter (default `None` = dotted-path-only resolution) so the loader is buildable either way; the canonical-registry question is left for the architect's own follow-up, not blocking this spec.
+- realizes-note: this node REALIZES [DD-CSL-DISCOVERY] — the edge is authored explicitly in `## Relationships` rather than duplicated here as a second, non-minting inline property.
+- status: proposed
+- status-detail: proposed — awaiting ratify (carries [DD-CSL-DISCOVERY]'s open status)
+- provenance: architect-proposed
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [DD-CSL-DISCOVERY], [CXC-CSL-LOADER-INTERFACE]
+
+---
+
+## 3. Config validation — before instantiation, park loudly on failure
+
+### [CXC-CSL-CONFIG-VALIDATION] MUST validate `config` against the plugin's pydantic `Config` BEFORE instantiation; invalid config PARKS the plugin loudly
+
+- requirement: (MUST, testable) for each manifest entry whose class resolves successfully, the loader MUST validate `entry.get("config", {})` against the resolved class's `Config` model by constructing `cls.Config(**config)` DIRECTLY — never by constructing `cls(config=...)` first and inspecting whether it raised. This makes "before instantiation" a property of the CALL SEQUENCE a builder can verify by reading the code, not an incidental consequence of where inside `ComposePlugin.__init__` pydantic happens to raise.
+- requirement: (MUST, testable) a `pydantic.ValidationError` raised by that `cls.Config(**config)` call MUST be caught and MUST NOT propagate out of the loader, MUST NOT construct the plugin instance, and MUST NOT prevent any OTHER manifest entry in the same tenant from being resolved/validated/instantiated. One malformed plugin entry never takes down the loader run or a sibling plugin.
+- requirement: (MUST, testable) on a config validation failure the loader MUST record a park entry keyed by the plugin's declared `name` (if the class resolved and exposes a `name` ClassVar) or, if resolution itself failed, keyed by the raw manifest `<ref>` string — with a reason string per invalid field, per [CXC-CSL-ERROR-TAXONOMY]'s `config:` taxonomy. The reason MUST name the specific field and the pydantic message, never a generic "config invalid" string — mirroring [CXC-CS-REQUIRES-FLOOR]'s admin-UX-names-the-unmet-item rule, applied to config instead of capabilities.
+- negative-control: a manifest entry whose `config` fails validation is NEVER instantiated (no `ComposePlugin.__init__` call reaches its body for that entry) and NEVER appears in the list handed to `ComposeServer.add_tenant(plugins=...)` — a test asserts the constructed-instances list excludes it while every valid sibling entry in the same manifest IS instantiated.
+- on-success: the ALREADY-VALIDATED `Config` instance is passed to `cls(config=validated)` — `ComposePlugin._coerce_config` accepts a `cls.Config` instance verbatim (`isinstance(config, cls.Config)` short-circuits its own re-validation), so the plugin is never double-validated.
+- verify-machine: a test manifest with (a) one entry whose config is valid, (b) one entry whose config fails one field's type validation, (c) one entry whose config fails two fields — asserts (a) is instantiated and started, (b) and (c) are parked (never instantiated) with EXACTLY the failing field count worth of `config:` reasons each, and (a)'s instantiation is unaffected by (b)/(c)'s failure (ordering-independent: parking (b)/(c) first or last in the manifest list produces the same result for (a)).
+- verify-human: none required — this node's failure surface (a raised exception vs. a caught, named park) is fully machine-observable; there is no glass-only signal here.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CSL-ERROR-TAXONOMY], [CXC-CSL-LOADER-INTERFACE], [CXC-CS-PLUGIN-CONTRACT]
+
+---
+
+## 4. The `requires:` execution floor — reused, not respecified
+
+### [CXC-CSL-REQUIRES-FLOOR] MUST evaluate each plugin's `requires:` floor and PARK unmet plugins loudly, naming the specific unmet item
+
+- requirement: (MUST, testable) for every successfully instantiated plugin, the loader MUST evaluate its `requires:` floor via the EXISTING `ComposePlugin.unmet_requirements(available_capabilities, ready_evaluator)` — this spec does not reimplement that evaluation; it is realized by handing the instantiated plugin list to the EXISTING `ComposeServer.add_tenant(..., plugins=<instances>, capabilities=<tenant caps>)`, which already calls `standup()`, which already calls `unmet_requirements()` per plugin ([CXC-CS-STANDUP-OWNERSHIP], landed).
+- requirement: (MUST, testable) a plugin whose floor is unmet MUST be recorded PARKED with the exact `unmet` list `unmet_requirements()` returns — each item already prefixed `capability:<name>` or `ready:<expr>` (no evaluator) / `ready:<expr>` (evaluator returned false) by the LANDED code (`python/composeio/plugin.py::unmet_requirements`) — the loader passes this through verbatim; it does not paraphrase or collapse it to a generic message.
+- negative-control: a plugin declaring `requires.capabilities = ["foo"]` with `available_capabilities` NOT containing `"foo"` is parked with `unmet == ["capability:foo"]` and is NOT started (`plugin.start(bus)` is never called for it) and does NOT appear in `LoaderResult.standup.loaded`.
+- verify-machine: a manifest with one plugin `requires.capabilities=["missing-cap"]` loaded against a tenant with an empty capability set asserts the plugin is parked with `unmet == ["capability:missing-cap"]`, is absent from `loaded`, and its `start()` was never invoked (a spy/mock on `start`).
+- verify-human: none required for this node specifically (the mechanism is entirely reused, already-landed code); see [CXC-CSL-CONTINUOUS-REBIND] for the verify.human covering the full park-then-unpark arc across a real capability arrival.
+- status: proposed
+- provenance: david-ruling — the `requires:`-floor semantics (park-loud on an unmet floor, naming the specific unmet item, never silently degraded) are David's ruling, recorded at [CXC-CS-REQUIRES-FLOOR] (`park-loud-not-silent`, `admin-UX-names-the-unmet-item`, line 23288). This node's contribution is realizing that already-david-ruled floor for the LOADER's own call path — the mechanics of wiring it through are architect-synthesis, the semantics enforced are David's.
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CS-REQUIRES-FLOOR], [CXC-CSL-CONTINUOUS-REBIND]
+
+### [CXC-CSL-CONTINUOUS-REBIND] MUST re-evaluate continuously via the existing binder — a parked plugin unparks with NO restart
+
+- requirement: (MUST, testable) the loader MUST NOT implement its own re-evaluation loop or polling mechanism. Continuous re-evaluation is realized ENTIRELY by handing the tenant off to the EXISTING `ComposeServer` binder (`provide_capability()`/`_reevaluate()`, landed in `python/composeio/composeserver.py`) — once `load_tenant_manifest()` has called `server.add_tenant(...)`, any subsequent `server.provide_capability(tenant_id, cap)` call against that SAME `ComposeServer` instance re-evaluates every parked plugin's floor and starts any now-eligible one, with no restart of the tenant's bus or of any already-running plugin.
+- requirement: (MUST, testable) a plugin that was PARKED for a config-validation failure (never instantiated, [CXC-CSL-CONFIG-VALIDATION]) does NOT unpark via `provide_capability()` — a config-invalid plugin has no `requires:` floor to re-evaluate because it was never instantiated; it can only be recovered by a NEW manifest load with a corrected `config:`. This is a stated boundary, not a silent gap: `provide_capability()`'s re-evaluation loop iterates `tenant.plugin_specs`, which only ever contains successfully-instantiated plugins.
+- negative-control: a plugin parked for `capability:X` stays parked (absent from `loaded`, present in `parked`) across an UNRELATED `provide_capability(tenant_id, "Y")` call (`Y != X`), and only unparks on `provide_capability(tenant_id, "X")` — proving the re-evaluation is capability-specific, not a blanket "try everything again".
+- verify-machine: a test loads a manifest with one plugin `requires.capabilities=["cap-x"]` against an empty capability set (asserts parked), then calls `server.provide_capability(tenant_id, "cap-x")` (asserts the SAME plugin instance — identity-checked, not merely name-checked — now appears in `tenant.plugins`/`loaded`, its `start()` was called exactly once, and the tenant's bus object is unchanged — no restart).
+- verify-human: David (or composeio-first-bringup) drives a real capability arrival end-to-end against a real tenant bus — a plugin declared with `requires.capabilities=["some-real-capability"]` stays visibly parked on `_server/plugins/<name>/status` (glass: the admin surface reads `status: parked`, `unmet: ["capability:some-real-capability"]`) until the capability is actually announced on the bus, at which point the SAME running process transitions it to `status: running` with NO process restart observed (no new PID, no bus reconnect in the log). Machine-green here is compatible with a loader that only unparks in a narrow unit-test harness and never wires the real announce-driven capability signal — [CXC-VISION-EPISTEMICS] applies.
+- status: proposed
+- provenance: david-ruling — realizes [CXC-CS-REQUIRES-FLOOR]'s `dynamic-rebinding` property (David's ruling that the floor is re-evaluated continuously, not once at load time, line 23288), applied to the loader's own call path. The `plugin_specs`-only-contains-instantiated-plugins boundary (config-invalid plugins cannot unpark) is architect-synthesis, following directly from [CXC-CSL-CONFIG-VALIDATION].
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CS-REQUIRES-FLOOR], [CXC-CSL-CONFIG-VALIDATION]
+
+---
+
+## 5. The subprocess-pending seam — reused, not respecified
+
+### [CXC-CSL-SUBPROCESS-PENDING] MUST record a subprocess-floor plugin as `subprocess_pending` and NOT start it in-process
+
+- requirement: (MUST, testable) a plugin whose `resolved_isolation(server_isolation_minimum) >= Isolation.SUBPROCESS` MUST be recorded in `LoaderResult.standup.subprocess_pending` and MUST NOT have `start(bus)` called on it in-process. This is realized entirely by the EXISTING `standup()` logic (`python/composeio/composeserver.py::standup`, the `if actual >= Isolation.SUBPROCESS: result.subprocess_pending.append(...); continue` branch) — the loader does not reimplement this check; it is inherited automatically because the loader hands its instantiated plugins to `standup()`/`add_tenant()` unchanged.
+- requirement: (MUST, testable) the isolation check MUST run only on SUCCESSFULLY instantiated plugins (config-valid AND requires-floor-met is NOT a precondition — isolation resolution and requires-floor evaluation are independent checks both run by `standup()` per plugin, in the ORDER the landed code already fixes: `unmet_requirements()` first — an unmet floor parks before isolation is even checked — then, only for a floor-met plugin, the isolation check). The loader MUST NOT reorder this.
+- negative-control: a plugin with `isolation_floor = Isolation.SUBPROCESS` and a FULLY MET `requires:` floor is still never started in-process — its name appears in `subprocess_pending`, `start()` is never called on it, and it is absent from `loaded`.
+- verify-machine: a test plugin subclass declaring `isolation_floor = Isolation.SUBPROCESS` with an empty `requires:` floor (trivially met) is loaded via a manifest and asserted: present in `subprocess_pending`, absent from `loaded`, its `start()` mock never invoked.
+- verify-human: a maker/architect reviewing a real Phase-0 bring-up log confirms a subprocess-pinned plugin is visibly reported `subprocess_pending` on `_server/status` and is NOT observed publishing on the bus (no announce beyond the loader's own derived one) — the IPC daughtercard host is Phase 1, so "correctly held pending, never silently started anyway" is the entire glass check.
+- status: proposed
+- provenance: david-ruling — the subprocess-pending seam is David's subprocess-model ruling ([CXC-CBK-SUBPROCESS-DAUGHTERCARD], "a plugin whose resolved isolation is >= subprocess ... is recorded `subprocess_pending` and NOT started in-process; the IPC daughtercard host is Phase 1 — the seam is explicit"), and the no-force-inprocess/HARD-subprocess-pin halves of [CXC-CS-ISOLATION-FLOOR] are also David's (line 23247; Q1 ruling 2026-08-23). This node records that the loader inherits this seam by construction (reusing `standup()` unchanged) rather than re-deriving it — that inheritance framing is architect-synthesis.
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CBK-SUBPROCESS-DAUGHTERCARD], [CXC-CS-ISOLATION-ENCODING], [CXC-CS-ISOLATION-FLOOR]
+
+---
+
+## 6. Multi-tenancy — strictly per-tenant, no shared instances
+
+### [CXC-CSL-PER-TENANT] MUST be strictly per-tenant — each tenant's manifest loads its own plugin instances, never shared
+
+- requirement: (MUST, testable) `load_tenant_manifest()` MUST instantiate a FRESH plugin object for every manifest entry it processes, for the tenant it is called with. It MUST NOT cache or reuse a plugin instance across two different `tenant_id` values, even when two tenants' manifests declare the IDENTICAL `{plugin, config}` entry.
+- requirement: (MUST, testable) loading the SAME manifest for two different tenants MUST produce two DISTINCT `ComposePlugin` instances (`is not`, not merely `==`) — this is [CXC-CS-MULTI-TENANCY]'s LOCKED-PERMANENTLY invariant, applied at the loader's own instantiation step, which is the exact point a caching optimization would otherwise be tempted to violate it.
+- negative-control: calling `load_tenant_manifest(server, "tenant-a", manifest)` then `load_tenant_manifest(server, "tenant-b", manifest)` with the SAME manifest dict object produces `server.tenant_bus("tenant-a")` and `server.tenant_bus("tenant-b")` as distinct `ComposeIOBus` objects (already guaranteed by `ComposeServer.add_tenant`, landed) AND each tenant's plugin instance for the same manifest entry is a distinct object with independent `._bus` state — a test asserts `id(plugin_a) != id(plugin_b)` for the matching entry across the two tenants.
+- status: decided
+- status-detail: decided — the invariant is LOCKED; this node records the loader's specific obligation not to break it
+- provenance: david-ruling — [CXC-CS-MULTI-TENANCY] is LOCKED PERMANENTLY: "plugins are ALWAYS per-tenant; NO shared plugin instances, ever" (David's ruling on [DEC-COMPOSESERVER-BUS-STANDUP-2026-08-23]). This node is the loader-specific corollary; the corollary framing is architect-synthesis.
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CS-MULTI-TENANCY]
+
+---
+
+## 7. Status surface — extending the already-built announce path to loader-only park reasons
+
+### [CXC-CSL-STATUS-SURFACE] SHOULD surface load/park state — including config/resolve parks the existing binder never sees — on `_server/plugins/<name>/status` and the `_server/status` aggregate
+
+- requirement: (SHOULD, testable) every plugin `standup()` already tracks (loaded / requires-floor-parked / subprocess_pending) is ALREADY published by the LANDED `publish_server_state()`/`publish_plugin_state()` ([CXC-CS-LOADER-PUBLISHES-ANNOUNCE], built) once the loader hands its instances to `ComposeServer.add_tenant()` — no new work is needed for those three states.
+- the-gap-this-node-closes: a plugin that PARKED FOR CONFIG VALIDATION OR RESOLUTION FAILURE ([CXC-CSL-CONFIG-VALIDATION]) never reaches `standup()` at all — it was never instantiated, so it cannot appear in `publish_plugin_state()`'s per-plugin loop (which calls `plugin.announce()`, an INSTANCE method requiring a constructed plugin). Left alone, a config-invalid entry would be invisible on the admin surface — a silent drop, exactly what [CXC-CS-REQUIRES-FLOOR]'s park-loud discipline exists to prevent, now at one remove.
+- requirement: (SHOULD, testable) the loader SHOULD publish a `_server/plugins/<key>/status` entry directly (via `bus.publish_state`, the SAME namespace/payload shape `publish_plugin_state()` already uses for a status: `{"status": "parked", "unmet": [...]}`) for every config/resolve-parked entry — `<key>` is the resolved class's `name` if resolution succeeded (validation failed only), or the raw manifest `<ref>` string if resolution itself failed. This entry carries NO `_server/plugins/<key>/announce` (there is no valid instance to derive one from) — a status-only entry is the honest representation of "we know this was declared and it failed before we could learn anything else about it."
+- requirement: (SHOULD, testable) the loader SHOULD merge config/resolve parks into the tenant's `_server/status` aggregate `parked` dict alongside the requires-floor parks the binder already tracks, so a single query against `_server/status` sees every reason a tenant's manifest is not fully running — config-invalid, resolution-failed, and requires-floor-unmet are three rows of the SAME `parked` mapping, not three surfaces an operator must separately check.
+- verify-machine: a test loads a manifest with one config-invalid entry and asserts `_server/plugins/<ref-or-name>/status` was published with `status: "parked"` and a `config:`-prefixed `unmet` list, AND that the tenant's `_server/status.parked` dict contains that same key.
+- verify-human: an operator viewing a real `_server/status` payload for a tenant with a deliberately-malformed manifest entry confirms the malformed entry is NAMED and its failure reason is READABLE (not a stack trace, not silence) — the admin surface must read as "this specific plugin, this specific reason" the same way [CXC-CS-REQUIRES-FLOOR]'s park messaging already does for capability parks.
+- status: proposed
+- provenance: architect-synthesis — extends [CXC-CS-LOADER-PUBLISHES-ANNOUNCE] (decided, architect-synthesis, already built) to cover a park class that mechanism did not anticipate because it predates this spec's config-validation park.
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CS-LOADER-PUBLISHES-ANNOUNCE], [CXC-CSL-CONFIG-VALIDATION]
+
+---
+
+## 8. Error taxonomy — extending the existing `unmet` prefix convention
+
+### [CXC-CSL-ERROR-TAXONOMY] Park-reason strings extend the LANDED `capability:`/`ready:` prefix convention with `config:` and `resolve:`
+
+- claim: `ComposePlugin.unmet_requirements()` (landed) already prefixes every unmet-floor reason by class: `capability:<name>` (a missing capability) and `ready:<expr>` (an unmet or unevaluated readiness predicate). This spec extends the SAME convention with two loader-native prefixes rather than inventing an unrelated format:
+  - `resolve:<message>` — the manifest `<ref>` could not be resolved to a `ComposePlugin` subclass (unknown registry key with no `:` in the ref; `ImportError`/`AttributeError` on a dotted path; a resolved object that is not a `ComposePlugin` subclass). ONE `resolve:` item per failed entry — resolution either succeeds or it does not, there is no partial resolution to enumerate.
+  - `config:<field>: <message>` — ONE item per pydantic `ValidationError` error dict entry (`err["loc"]`/`err["msg"]`), so a config with three invalid fields produces three `config:` items, mirroring `capabilities` producing one `capability:` item per missing capability.
+- why-extend-not-invent: a consumer of `_server/plugins/<name>/status` (a human reading the admin UX, or a future automated dashboard) already has to parse `capability:`/`ready:` prefixes; adding `resolve:`/`config:` to the SAME small closed set costs that consumer nothing new to learn, versus a second unrelated error-shape the consumer would need a second parser for.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CSL-CONFIG-VALIDATION], [CXC-CS-REQUIRES-FLOOR]
+
+---
+
+## 9. The loader interface — what composeio-expert builds
+
+### [CXC-CSL-LOADER-INTERFACE] The concrete function signatures — `resolve_plugin_class`, `load_tenant_manifest`, `LoaderResult`
+
+- module: a NEW module, `composeio/composeserver_loader.py` — separate from `composeio/composeserver.py` (which this spec deliberately does not modify) and `composeio/plugin.py` (the frozen contract, also unmodified). The loader is a CONSUMER of both, not an addition to either.
+- resolve-plugin-class: `resolve_plugin_class(ref, registry=None) -> type[ComposePlugin]`, where `ref` is `str` and `registry` is `dict[str, type[ComposePlugin]] | None`. Resolves `ref` per [CXC-CSL-MANIFEST-SHAPE]'s two-form rule (registered name in `registry`, else a `"module.path:ClassName"` dotted import). Raises `PluginResolutionError(ref, reason)` — a NAMED exception, never a bare `ImportError`/`KeyError` propagating past the loader — on any failure, so the caller in `load_tenant_manifest` can catch exactly this type and convert it into a `resolve:` park per [CXC-CSL-ERROR-TAXONOMY].
+- load-tenant-manifest: `load_tenant_manifest(server, tenant_id, manifest, *, registry=None, connectors=None, capabilities=None, start=False) -> LoaderResult`, where `server` is `ComposeServer`, `tenant_id` is `str`, `manifest` is `dict`, `registry` is `dict[str, type[ComposePlugin]] | None`, `connectors` is `list[dict] | None`, `capabilities` is `set[str] | None`, and `start` is `bool`. The entry point. For each entry in `manifest.get("plugins", [])`: (1) `resolve_plugin_class` — on failure, record a `resolve:` park keyed by the raw `ref` and continue to the next entry; (2) `cls.Config(**entry.get("config", {}))` — on `pydantic.ValidationError`, record `config:` parks keyed by `cls.name` and continue; (3) on success, `cls(config=validated)`, appended to this tenant's `plugins` list. After all entries are processed, call the EXISTING `server.add_tenant(tenant_id, connectors=connectors, plugins=plugins, capabilities=capabilities, start=start)` UNCHANGED, and merge its `StandupResult.parked` with the loader's own `config_parked` dict for the `_server/status` publish per [CXC-CSL-STATUS-SURFACE].
+- `LoaderResult` (a new dataclass, mirroring `StandupResult`'s inspectability): `tenant_id: str`; `standup: StandupResult` (the object `add_tenant()` returns — requires-floor `parked`, `loaded`, `subprocess_pending`, all UNCHANGED semantics); `config_parked: dict[str, list[str]]` (manifest-ref-or-name -> `resolve:`/`config:` reasons, [CXC-CSL-ERROR-TAXONOMY]); `is_clean() -> bool` returning `self.standup.is_clean() and not self.config_parked`.
+- reuse-by-reference: (what this module does NOT reimplement) `standup()`'s three-step sequence, the `requires:`-floor evaluation, the isolation/subprocess-pending check, the multi-tenancy binder (`provide_capability`/`_reevaluate`), and the `_server/plugins/<name>/announce`+`status` publish for every INSTANTIATED plugin — all consumed verbatim from `composeio/composeserver.py` and `composeio/plugin.py` as they exist on `origin/main` today. This spec's entire net-new surface is: manifest parsing, class resolution, pre-instantiation config validation, and the config/resolve-park status publish gap they open up.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CSL-CONFIG-VALIDATION], [CXC-CSL-MANIFEST-SHAPE], [CXC-CSL-ERROR-TAXONOMY], [CXC-CS-STANDUP-OWNERSHIP]
+
+---
+
+## 10. Acceptance — machine signal + glass gate
+
+### [CXC-CSL-ACCEPTANCE] The loader's two-tier verdict — a machine signal AND, for every failure class that can silently swallow a plugin, an explicit human/glass gate
+
+- definition: per [DX-SPEC-CARRIES-ITS-EVIDENCE] and the render-engine precedent ([CXC-DVL-*] `verify.machine`/`verify.human`), machine-green alone never accepts this loader — the failure classes that matter most here (a silently-dropped malformed plugin, a plugin stuck parked forever, a subprocess-floor plugin quietly started in-process anyway) are exactly the ones a narrow unit test can pass while the real thing is broken. [CXC-VISION-EPISTEMICS] applies throughout this table.
+
+| ID | Requirement | verify.machine | verify.human (glass) |
+|----|-------------|-----------------|------------------------|
+| CSL-V1 | Invalid config PARKS, never crashes ([CXC-CSL-CONFIG-VALIDATION]) | a manifest mixing valid/invalid entries: valid entries instantiate+start, invalid entries park with per-field `config:` reasons, no exception escapes the loader call | none required — fully machine-observable |
+| CSL-V2 | Unresolvable `ref` PARKS, never crashes ([CXC-CSL-MANIFEST-SHAPE], [CXC-CSL-ERROR-TAXONOMY]) | a manifest entry with an unknown registered name AND one with a broken dotted import path both park with a `resolve:` reason naming the ref; sibling valid entries are unaffected | none required |
+| CSL-V3 | Unmet `requires:` floor PARKS, naming the unmet item ([CXC-CSL-REQUIRES-FLOOR]) | a plugin requiring an absent capability parks with `unmet == ["capability:<name>"]`, absent from `loaded` | an operator reads the SAME reason on `_server/plugins/<name>/status`, not a generic failure |
+| CSL-V4 | Continuous rebind — parked-for-X stays parked until X arrives, then runs, no restart ([CXC-CSL-CONTINUOUS-REBIND]) | negative control: an unrelated `provide_capability(Y)` leaves an X-parked plugin parked; `provide_capability(X)` starts the SAME instance, no bus restart | David/first-bringup drives a real capability arrival end-to-end and confirms the transition on `_server/status` with no process restart observed |
+| CSL-V5 | Subprocess-floor plugin never starts in-process ([CXC-CSL-SUBPROCESS-PENDING]) | a `SUBPROCESS`-floor plugin with a MET `requires:` floor still lands in `subprocess_pending`, never `loaded`, `start()` never called | a real Phase-0 bring-up log/`_server/status` shows the plugin held `subprocess_pending`, never silently running in-process |
+| CSL-V6 | Strictly per-tenant, no shared instances ([CXC-CSL-PER-TENANT]) | loading the identical manifest for two tenant ids yields two distinct plugin object identities and two distinct buses | n/a — structural, fully machine-observable |
+| CSL-V7 | Config/resolve parks surface on the admin surface, not silently dropped ([CXC-CSL-STATUS-SURFACE]) | `_server/plugins/<key>/status` and `_server/status.parked` both carry the config/resolve-parked entry | an operator confirms the malformed entry is NAMED and its reason is human-readable on the real admin surface, not merely present in a log line only a developer would think to grep |
+| CSL-V8 | Placement recorded, not silent ([CXC-CSL-PLACEMENT]) | the spec carries the `[PLACEMENT UNRATIFIED]` node + the filename-check property | n/a — structural |
+
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-VISION-EPISTEMICS]
+
+---
+
+## 11. Evidence — pre-integration questions answered, post-integration slots EMPTY until a real build
+
+### [CXC-CSL-EVIDENCE] Pre-integration questions (answered by this design pass) and post-integration evidence (EMPTY — never run)
+
+- pre-integration questions answered by this spec: (1) discovery mechanism -> config-manifest, [DD-CSL-DISCOVERY] (open for ratify); (2) validation ordering -> `Config(**dict)` BEFORE `cls(...)`, [CXC-CSL-CONFIG-VALIDATION]; (3) how a config/resolve park becomes visible when no instance exists to `.announce()` -> a status-only publish bypassing the instance-derived path, [CXC-CSL-STATUS-SURFACE]; (4) how park-reason strings compose with the ALREADY-LANDED `capability:`/`ready:` taxonomy -> extend it with `config:`/`resolve:`, never invent a parallel shape, [CXC-CSL-ERROR-TAXONOMY].
+- pre-integration questions LEFT open, flagged for David/architect ratify before or during build (not silently resolved): manifest FILE format + per-tenant location ([DD-CSL-MANIFEST-FORMAT]); whether manifest hot-reload is in v1 ([DD-CSL-HOT-RELOAD]); whether a canonical registered-name registry ships with ComposeServer or is always caller-supplied (`open-question-registry-source`, [CXC-CSL-MANIFEST-SHAPE]).
+- evidence-loader-module: EMPTY — `composeio/composeserver_loader.py` does not exist on `origin/main` as of this spec's authoring (2026-08-24); this is a build spec, not a report of landed code.
+- evidence-config-validation-park: EMPTY — no test has run [CXC-CSL-CONFIG-VALIDATION]'s CSL-V1 acceptance row against real code.
+- evidence-resolve-park: EMPTY — no test has run CSL-V2.
+- evidence-requires-floor-integration: EMPTY — no test has confirmed the loader correctly threads `unmet_requirements()` through a manifest-driven path (the underlying `unmet_requirements()` mechanism itself IS landed and tested independently; this slot is specifically about the LOADER's own call path, CSL-V3).
+- evidence-continuous-rebind-real-capability: EMPTY — no `verify.human` run against a real tenant bus and a real capability arrival has occurred (CSL-V4's human gate).
+- evidence-subprocess-pending-real-bringup: EMPTY — no real Phase-0/Phase-1 bring-up has exercised a manifest-declared subprocess-floor plugin through this loader (CSL-V5's human gate).
+- evidence-per-tenant-isolation: EMPTY — CSL-V6 unrun.
+- evidence-status-surface-real-admin-view: EMPTY — CSL-V7's human gate unrun; no operator has viewed a real `_server/status` payload carrying a config-invalid entry produced by this loader.
+- why-empty-matters: per [DX-SPEC-CARRIES-ITS-EVIDENCE], "never run on hardware" (here: never run at all) must be a QUERYABLE PROPERTY, not something a reader has to already know — every slot above is `EMPTY` explicitly rather than simply absent, so a future query against this node can distinguish "not yet built" from "nobody thought to record it."
+- status: draft
+- status-detail: draft — every evidence slot EMPTY by construction; this spec has not been implemented
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-CSL-ACCEPTANCE]
+
+---
+
+## 12. Open forks — flagged for the architect's / David's ratify
+
+### [DD-CSL-MANIFEST-FORMAT] OPEN — the manifest FILE format and per-tenant location are unspecified
+
+- question: [DD-CSL-DISCOVERY]/[CXC-CSL-MANIFEST-SHAPE] specify the manifest's ABSTRACT shape (`{"plugins": [{"plugin", "config"}, ...]}`) but not its concrete FILE serialization (YAML? JSON? a `.lts` fragment, consistent with config-over-bus?) or WHERE per tenant it lives (a fixed path convention like `<tenant-root>/plugins.yaml`? a bus-published config value, per [SPEC:CXC-CONFIG-BUS]'s config-over-bus model, so a manifest change is itself a bus-native operation rather than a file edit?).
+- why-left-open: `load_tenant_manifest()` ([CXC-CSL-LOADER-INTERFACE]) takes an already-PARSED `manifest: dict` as its parameter — the function signature does not require this question to be answered to be implementable and testable; only the (unspecified) code path that PRODUCES that dict from a file/bus-value needs it. Leaving it open does not block building or acceptance-testing the loader's own logic against a hand-constructed dict.
+- candidates: (not a recommendation, offered so the fork is concrete rather than abstract) (a) YAML file at a fixed per-tenant path; (b) a bus-published config value under `_server/config/plugins` per the config-over-bus precedent ([SPEC:CXC-CONFIG-BUS]), giving manifest changes the SAME reactive/observable shape every other config value already has on this platform; (c) an `.lts` fragment, consistent with this corpus's own self-hosting property ([PROFILE-SELFHOST]) but an unusual choice for a RUNTIME artifact rather than a design document.
+- decision: OPEN — not yet decided. Three candidates are offered above (YAML file / bus-published config value / `.lts` fragment); none is chosen. `load_tenant_manifest()` ([CXC-CSL-LOADER-INTERFACE]) is buildable and testable against a hand-constructed `dict` regardless of which candidate is later ratified.
+- rationale: see `why-left-open` above — the loader's own function signature does not require this question answered to be implementable; deferring costs nothing to this spec's own acceptance criteria.
+- alternatives: (a) YAML file at a fixed per-tenant path; (b) bus-published config value under `_server/config/plugins`; (c) an `.lts` fragment — see `candidates` above for the tradeoffs of each.
+- invalidating_assumption: once a real deployment needs to WRITE a manifest (not just read one at standup), the choice stops being deferrable — a bus-published value implies a write API this spec does not specify, and a file implies a deployment/ops convention this spec does not specify either.
+- status: open
+- status-detail: open — flagged for architect/David ratify
+- provenance: architect-proposed (the question is named in the dispatch that produced this spec; the candidate list is this spec-writer's own addition, offered to make the fork concrete, not a recommendation)
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [DD-CSL-DISCOVERY], [CXC-CSL-LOADER-INTERFACE]
+- partially-settled-by: PARTIALLY DECIDED 2026-11-26 by [CXC-PC-MANIFEST-FILE] in 95-plugin-contract.lts (its r22 decision node CXC-PC-MANIFEST-FORMAT-DECISION moved in spec 95 r23 to (a private draft, in the private companion), section "CXC-PC-MANIFEST-FORMAT-DECISION"): the PACKAGE manifest is `manifest.json` at the plug-in package root (HA's file name and format). STILL OPEN here: the serialization and per-tenant location of this spec's TENANT manifest (`{plugin, config}` entries).
+
+### [DD-CSL-HOT-RELOAD] OPEN — manifest hot-reload; architect's lean is OUT of v1
+
+- question: if a tenant's manifest changes at runtime (a plugin entry added or removed), does the loader detect and apply that change without a process restart?
+- lean: (architect-proposed, not decided) OUT of v1. A PLUGIN re-announces its own surface changes ([CXC-CS-DYNAMIC-SURFACE], already built and reused unchanged by this spec) — but ADDING or REMOVING a plugin FROM THE MANIFEST at runtime is a different, larger operation (constructing/tearing down a whole plugin instance, not merely re-announcing an existing one's surface) and is deferred rather than folded into this pass.
+- why-deferrable: [CXC-CSL-LOADER-INTERFACE]'s `load_tenant_manifest()` is a ONE-SHOT call per tenant at standup time; nothing in this spec's MUST requirements depends on it being re-callable against a running tenant with a changed manifest. Deferring costs nothing to THIS spec's acceptance criteria.
+- decision: OPEN — architect leans OUT of v1 (see `lean` above); not yet ratified by David.
+- rationale: see `why-deferrable` above — nothing in this spec's MUST requirements needs manifest hot-reload, so deferring it costs this spec nothing.
+- alternatives: IN v1 — the loader gains a re-callable `reload_tenant_manifest()` (or similar) that diffs a new manifest against `tenant.plugin_specs`, constructing/tearing down instances for added/removed entries. Not designed here; would be its own follow-up spec if ratified.
+- invalidating_assumption: if a real deployment needs to add/remove a plugin without a process restart before v1 ships, this lean reverses and hot-reload becomes in-scope.
+- status: open
+- status-detail: open — flagged for architect/David ratify (leaning OUT of v1, not decided)
+- provenance: architect-proposed — the dispatch names this exact lean ("my lean: OUT of v1 — a plugin re-announces its own surface, but adding/removing a plugin from the manifest at runtime is deferred").
+- part-of: [SPEC:CXC-CS-LOADER]
+- see-also: [CXC-CS-DYNAMIC-SURFACE], [CXC-CSL-LOADER-INTERFACE]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-CSL-PLACEMENT] PART_OF [SPEC:CXC-CS-LOADER]
+- [DD-CSL-DISCOVERY] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-MANIFEST-SHAPE] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-CONFIG-VALIDATION] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-REQUIRES-FLOOR] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-CONTINUOUS-REBIND] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-SUBPROCESS-PENDING] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-PER-TENANT] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-STATUS-SURFACE] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-ERROR-TAXONOMY] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-LOADER-INTERFACE] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-ACCEPTANCE] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-EVIDENCE] PART_OF [SPEC:CXC-CS-LOADER]
+- [DD-CSL-MANIFEST-FORMAT] PART_OF [SPEC:CXC-CS-LOADER]
+- [DD-CSL-HOT-RELOAD] PART_OF [SPEC:CXC-CS-LOADER]
+- [CXC-CSL-MANIFEST-SHAPE] REALIZES [DD-CSL-DISCOVERY]
+- [CXC-CSL-REQUIRES-FLOOR] REALIZES [CXC-CS-REQUIRES-FLOOR]
+- [CXC-CSL-CONTINUOUS-REBIND] REALIZES [CXC-CS-REQUIRES-FLOOR]
+- [CXC-CSL-SUBPROCESS-PENDING] REALIZES [CXC-CBK-SUBPROCESS-DAUGHTERCARD]
+- [CXC-CSL-PER-TENANT] REALIZES [CXC-CS-MULTI-TENANCY]
+- [CXC-CSL-STATUS-SURFACE] EXTENDS [CXC-CS-LOADER-PUBLISHES-ANNOUNCE]
+- [CXC-CSL-LOADER-INTERFACE] DEPENDS_ON [CXC-CS-STANDUP-OWNERSHIP]
+- [CXC-CSL-LOADER-INTERFACE] DEPENDS_ON [CXC-CS-PLUGIN-CONTRACT]
+- [CXC-CSL-CONFIG-VALIDATION] RELATED_TO [CXC-CSL-ERROR-TAXONOMY]
+- [CXC-CSL-STATUS-SURFACE] RELATED_TO [CXC-CSL-CONFIG-VALIDATION]
+- [DD-CSL-MANIFEST-FORMAT] RELATED_TO [CXC-CSL-MANIFEST-SHAPE]
+- [DD-CSL-HOT-RELOAD] RELATED_TO [CXC-CS-DYNAMIC-SURFACE]
+- [SPEC:CXC-CS-LOADER] UPHOLDS [DX-SPEC-CARRIES-ITS-EVIDENCE]
+- [SPEC:CXC-CS-LOADER] DEPENDS_ON [SPEC:CXC-COMPOSESERVER]
+- [SPEC:CXC-CS-LOADER] DEPENDS_ON [SPEC:CXC-COMPOSEBUS-KERNEL]
+
+---
+
+**Version**: 0.1 — 2026-08-24, initial build spec, authored from the composeio-hardware-architect's dispatch specifying the plugin loader's design intent (config-manifest discovery, config validation before instantiation, requires-floor/subprocess-pending reuse, per-tenant strictness, status-surface extension) as MUST/SHOULD predicates with verify.machine/verify.human acceptance tiers, per [DX-SPEC-CARRIES-ITS-EVIDENCE].
+**Status**: Draft — awaiting architect/David ratify. Three open forks: [DD-CSL-DISCOVERY] (config-manifest vs. entry_points auto-discovery), [DD-CSL-MANIFEST-FORMAT] (file format + per-tenant location), [DD-CSL-HOT-RELOAD] (manifest hot-reload in v1, architect leans OUT). The `david-ruling`-tagged nodes ([CXC-CSL-REQUIRES-FLOOR], [CXC-CSL-CONTINUOUS-REBIND], [CXC-CSL-SUBPROCESS-PENDING], [CXC-CSL-PER-TENANT]) carry David's word by inheritance from their cited source nodes, not as new rulings of their own.

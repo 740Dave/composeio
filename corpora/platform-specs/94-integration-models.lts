@@ -1,0 +1,206 @@
+---
+scope: "The models for integrating a service or application with ComposeIO/ComposeBus, and the rubric for choosing among them. Capability/service side settled with David 2026-09-12; David ratified the shape: \"the revised shape holds.\" The APPLICATION side was reshaped the same day per David's follow-on clarification correcting the earlier \"standalone is the default for every application\" over-generalization (caught by the end-design-session audit's Q1): application guidance is now a use-case x complexity spectrum the end-user judges for their own specifics, deliberately without numeric thresholds."
+audience: "David (architect) — for ratify of placement; the architect, at every future integration-siting question, as the canonical decision surface; a user-facing markdown doc that POINTS at this spec rather than restating it."
+boundary: "IN: the seven integration-model catalog (six capability/service shapes plus the application-only declarative state_manager-config shape added 2026-09-12); the top-level application-vs-capability fork (Q0); the decision-order rubric for siting a CAPABILITY among the six capability models (unchanged); the authorship-axis rubric for where an APPLICATION sits on the use-case x complexity spectrum (declarative config <-> standalone app <-> plugin); worked exemplars; the descriptive-not-prescriptive stance governing all application guidance. OUT: the plugin contract's own internals ([SPEC:CXC-COMPOSESERVER] / [CXC-CS-PLUGIN-CONTRACT]'s subject, only cited); the ComposeBus kernel's own standup/connector model ([SPEC:CXC-COMPOSEBUS-KERNEL]'s subject, only cited); the expression-DSL grammar itself; the state_manager config/rules grammar itself; any specific build authorization for any exemplar named here."
+not-this: "Not a ratified placement — [PLACEMENT UNRATIFIED], per [CXC-VISION-PLACEMENT]: written into corpora/platform-specs because that is where its neighbours already sit, most of them themselves unratified, not because the placement was ruled (see [CXC-IM-PLACEMENT]). Not an assertion that every claim below is David's verbatim word — each node carries an explicit provenance property (david-ratified-shape / architect-synthesis) per [DX-INTERPRETATION-IS-AN-INFERENCE]; only the overall rubric SHAPE and the Q0 fork itself are David-ratified, the decision-order wording and the exemplar classifications are the architect's inference from the underlying principles. Not a build spec — no acceptance criteria, no verify.machine/verify.human tiers; this is a decision rubric, not a capability under construction."
+depends-on: [62-composeplatform-vision.lts, 85-composeserver-plugin-contract.lts, 81-bus-scribe.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: concept-capture
+status: draft
+lifecycle-position: proposed — capability/service shape and Q0 fork David-ratified 2026-09-12 ("the revised shape holds"); decision-order wording and exemplar classifications are architect-synthesis; the application-side use-case x complexity spectrum and its no-hard-thresholds stance are david-stated 2026-09-12 (same-day follow-on clarification), the spectrum's prose and the agentic-frontier analysis are architect-synthesis; placement UNRATIFIED
+created: 2026-09-12
+updated: 2026-09-12
+---
+
+# Service- and application-integration-model selection rubric — PLACEMENT UNRATIFIED [SPEC:CXC-INTEGRATION-MODELS]
+
+> Seven shapes exist for integrating a service or application with ComposeIO/ComposeBus. A platform
+> CAPABILITY is sited by a fixed decision order that defaults to the ComposeServer plugin and escapes
+> to a bus-native peer, a bridge, a standalone process, or (almost never) the kernel only when a
+> specific, named condition holds — unchanged since 2026-09-12. An end-user APPLICATION is NOT sited
+> by that rubric: its home sits on a USE-CASE x COMPLEXITY spectrum — declarative state_manager config
+> <-> standalone app <-> plugin — and the end-user CHOOSES along it for their own skill, their use of
+> agentic AI, and the project's complexity, deliberately without a numeric threshold deciding for them
+> (David, 2026-09-12). This document is the lts-fetchable source of truth for that rubric; a
+> user-facing markdown doc points at it rather than restating it.
+
+---
+
+## 0. Placement
+
+### [CXC-IM-PLACEMENT] Placement is UNRATIFIED — filed beside its nearest relatives, not by a ruling
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because its nearest relatives ([SPEC:CXC-COMPOSESERVER] at 85, [SPEC:CXC-BUS-SCRIBE] at 81, [SPEC:CXC-VISION] at 62) already sit there, several themselves flagged `[PLACEMENT UNRATIFIED]` — convention, not a ruling. The rubric's SHAPE is David-ratified 2026-09-12; the spec FILE's home is the architect's call pending David's word, per [CXC-VISION-PLACEMENT]'s placement convention.
+- filename-number-check: 94 was verified unused by listing `corpora/platform-specs/` before this file was written (highest prior numeric `.lts` prefix was 93; 99 is the reserved conventions-document number, a `.smd` file, not `.lts`).
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-INTEGRATION-MODELS]
+- see-also: [CXC-VISION-PLACEMENT]
+
+---
+
+## 1. The seven integration models
+
+### [CXC-IM-CATALOG] Seven shapes for integrating with ComposeIO/ComposeBus
+
+- claim: every service or application that joins the platform takes one of exactly seven shapes; each child node below states the shape's defining property and the node where that property was settled. Six are the capability/service shapes, unchanged since 2026-09-12; the seventh — declarative state_manager config — is an APPLICATION-only addition (2026-09-12), never consulted by the capability decision order in [CXC-IM-SERVICE-RUBRIC].
+- status: proposed
+- provenance: architect-synthesis — the catalog's enumeration and grouping; each child's underlying claim is grounded individually.
+- part-of: [SPEC:CXC-INTEGRATION-MODELS]
+- see-also: [CXC-IM-MODEL-CS-PLUGIN], [CXC-IM-MODEL-STANDALONE], [CXC-IM-MODEL-INPROCESS], [CXC-IM-MODEL-BUS-PEER], [CXC-IM-MODEL-BRIDGE], [CXC-IM-MODEL-KERNEL], [CXC-IM-MODEL-STATE-MANAGER-CONFIG]
+
+### [CXC-IM-MODEL-CS-PLUGIN] ComposeServer plugin — per-tenant, hosted in one ComposeServer
+
+- defining-property: per-tenant, hosted inside one ComposeServer; a single typed pydantic contract DERIVES the plugin's config form, announce payload, and registry entry — the author hand-writes none of the three.
+- status: proposed
+- provenance: architect-synthesis — naming this as a catalog entry; the underlying contract and its per-tenant invariant are david-ruling, per the grounded nodes.
+- part-of: [CXC-IM-CATALOG]
+- see-also: [CXC-CS-PLUGIN-CONTRACT], [CXC-CS-MULTI-TENANCY]
+
+### [CXC-IM-MODEL-STANDALONE] Standalone process — bare-Python daemon / separate bus peer
+
+- defining-property: a bare-Python daemon running as its own OS process, a separate bus peer rather than a plugin hosted inside a ComposeServer.
+- superseded-for-fleet-services: this is the shape the ComposeServer plugin model SUPERSEDES for fleet services — bus_scribe was specified as a standalone fleet process and was later superseded into a default per-tenant plugin; see the grounded node for the worked case.
+- status: proposed
+- provenance: architect-synthesis — naming this as a catalog entry; the supersession itself is david-ruling, per the grounded node.
+- part-of: [CXC-IM-CATALOG]
+- see-also: [CXC-BUS-SCRIBE-DEPLOYMENT]
+
+### [CXC-IM-MODEL-INPROCESS] In-process source/thread inside an app
+
+- defining-property: a data source or thread that lives inside an app's own process, pinned to that app's own session, rather than a separate OS process or bus peer.
+- status: proposed
+- provenance: architect-synthesis — naming this as a catalog entry; the underlying edge-question and the worked decision are grounded in the cited nodes.
+- part-of: [CXC-IM-CATALOG]
+- see-also: [DX-SESSION-OWNED-VS-DISTRIBUTED], [DEC-INPROCESS-SOURCES]
+
+### [CXC-IM-MODEL-BUS-PEER] Bus-native peer / leaf / device
+
+- defining-property: rides ComposeBus as a co-equal peer, often running on constrained silicon; owns its own behavior and publishes semantic intent upward rather than exposing its mechanism.
+- status: proposed
+- provenance: architect-synthesis — naming this as a catalog entry; the leaf-owns-behavior principle is grounded in the cited node.
+- part-of: [CXC-IM-CATALOG]
+- see-also: [DX-LEAF-OWNS-BEHAVIOR]
+
+### [CXC-IM-MODEL-BRIDGE] Bridge — translates two live transports
+
+- defining-property: translates between two live transports at the wire; complementary to the other five shapes, never an alternative to them — a bridge does not compete for where a capability's LOGIC lives, only for how two already-chosen endpoints are connected.
+- status: proposed
+- provenance: architect-synthesis — naming this as a catalog entry; the collapse-the-transport-not-the-seam principle is grounded in the cited node.
+- part-of: [CXC-IM-CATALOG]
+- see-also: [DX-COLLAPSE-TRANSPORT]
+
+### [CXC-IM-MODEL-KERNEL] Kernel built-in — only the irreducible residue
+
+- defining-property: lives inside the ComposeServer micro-kernel itself (supervise, load, config-persist, bus-provision) rather than as a plugin; default is NO — almost nothing qualifies, because any capability that CAN be a plugin MUST be one, and the kernel is only what remains after that test.
+- status: proposed
+- provenance: architect-synthesis — naming this as a catalog entry; the microkernel residue test and the default-plugin pattern are grounded in the cited nodes.
+- part-of: [CXC-IM-CATALOG]
+- see-also: [CXC-CS-MICROKERNEL], [CXC-CS-DEFAULT-PLUGINS]
+
+### [CXC-IM-MODEL-STATE-MANAGER-CONFIG] Declarative state_manager config — no dedicated process, no code
+
+- defining-property: realize an application DECLARATIVELY as state_manager config/rules (a `state_profile`) — no dedicated process, no code. The application's behavior lives entirely in config consumed by the existing state_manager; there is nothing to author in a new language runtime and nothing to host as a separate peer.
+- application-only: this shape is an APPLICATION path, not a capability shape — it is never a rung in [CXC-IM-SERVICE-RUBRIC]'s capability decision order; it is sited instead by [CXC-IM-Q0-APP-VS-CAPABILITY]'s application-path and [CXC-IM-APP-AUTHORSHIP-AXIS]'s spectrum.
+- first-class-not-fallback: this is a FIRST-CLASS application path, not a fallback from the standalone or plugin shapes. Modeling a house in state_manager was one of the DIRECT use-case inspirations for state_manager in the first place (David, 2026-09-12) — the intended home for domains that fit a declarative model: home automation (a Home-Assistant replacement), simple games, and dashboards.
+- grounded-in: [DX-DERIVE-ONCE-REALIZE-PER-LEAF] — the application IS a declarative state model, a fact derived once by the tier-floor evaluator and realized independently per leaf — and [DX-STATE-ON-BUS] — semantic state published once on the bus, each leaf/widget owning its own presentation. These are the same primitives state_manager already instantiates platform-wide; here they carry the WHOLE application rather than one capability's derivation.
+- status: proposed
+- provenance: david-stated — the founding use-case (modeling a house in state_manager) and this shape's first-class status are David's own words, 2026-09-12: "I can imagine a simple ComposeIO based game or replacement-for-Home-Assistant use case where the existing tool set is more than sufficient. Modeling a house in state-manager was, in fact, one of the direct use-case inspirations for state-manager in the first place." The grounding in [DX-DERIVE-ONCE-REALIZE-PER-LEAF] / [DX-STATE-ON-BUS] is architect-synthesis.
+- part-of: [CXC-IM-CATALOG]
+- see-also: [DX-DERIVE-ONCE-REALIZE-PER-LEAF], [DX-STATE-ON-BUS], [CXC-IM-APP-AUTHORSHIP-AXIS], [CXC-IM-EXEMPLARS]
+
+---
+
+## 2. The top fork — application or capability
+
+### [CXC-IM-Q0-APP-VS-CAPABILITY] Q0 — is this an end-user APPLICATION, or a platform CAPABILITY/SERVICE?
+
+- question: is this an end-user APPLICATION/PROJECT (a game, a domain world-model, a creative artifact under active iteration) or a platform CAPABILITY/SERVICE?
+- application-path: an APPLICATION is placed by AUTHORSHIP-AND-ITERATION ergonomics, not by the service rubric below — but there is no single default shape. An APPLICATION's home sits on a USE-CASE x COMPLEXITY spectrum — declarative state-manager config <-> standalone app <-> plugin — and the end-user CHOOSES along it by the specifics of their own skill, their use of agentic AI, and the project's complexity. Deliberately NO hard thresholds or rule-sets decide this for them: the guidance is descriptive axes, not a prescriptive cutoff — see [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE]. See [CXC-IM-APP-AUTHORSHIP-AXIS] for the spectrum in detail.
+- capability-path: a CAPABILITY/SERVICE is placed by the fixed decision order in [CXC-IM-SERVICE-RUBRIC].
+- origin-of-fork: Prompted by David 2026-09-12: he raised the BSG world as an end-user project that "might be best implemented as a standalone process" and asked for a two-scenario steelman, leaving plugin / state-manager-config / standalone ALL explicitly open ("Maybe? Maybe? Maybe."). The determination that the BSG world IS an application (not a service) — and therefore that a Q0 application-vs-capability fork must precede the service rubric — is ARCHITECT-SYNTHESIS reached after reading the world code, NOT David's own assertion; he posed it as an open question and the architect resolved it. David then ratified the resulting SHAPE ("I think the revised shape holds"), which is what provenance:david-ratified-shape attests on this node — it does NOT attest that David himself classified BSG as application-not-service. (Corrected 2026-09-12 per the end-design-session audit finding C1, which caught the prior wording promoting the architect's determination to "David's correction".)
+- application-path-reshape-2026-09-12: the `application-path` property above replaces an earlier "Default: a standalone bus-peer app" wording that over-generalized from the BSG steelman to every application. David's same-day follow-on clarification corrected this: "I think the guidance needs to be based on both use-case and complexity - and without exact rule sets so that the end-user can choose the right model based on the specifics of their skill, use of agentic AI, and project complexity." That correction is DAVID-STATED, carried here near-verbatim; the specific prose of `application-path` remains architect-synthesis.
+- status: decided
+- part-of: [SPEC:CXC-INTEGRATION-MODELS]
+- see-also: [CXC-IM-SERVICE-RUBRIC], [CXC-IM-APP-AUTHORSHIP-AXIS], [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE]
+
+### [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE] The application guidance is deliberately DESCRIPTIVE axes, not a prescriptive rule-set
+
+- stance: the guidance for siting an APPLICATION ([CXC-IM-Q0-APP-VS-CAPABILITY]'s application-path, [CXC-IM-APP-AUTHORSHIP-AXIS]'s spectrum) is DELIBERATELY DESCRIPTIVE — four axes the end-user weighs for their own specifics (use-case, complexity, author skill, agentic-AI use) — and NOT prescriptive: no numeric thresholds, no rule-set that would decide for them.
+- why-no-thresholds: a numeric cutoff (lines of config, node count, tenant count) would substitute the rubric's judgment for the end-user's own — precisely the over-generalization David's clarification corrects. The axes orient the choice; they do not make it.
+- status: decided
+- provenance: david-stated — this IS David's own directed framing, 2026-09-12, quoted near-verbatim above.
+- part-of: [SPEC:CXC-INTEGRATION-MODELS]
+- see-also: [CXC-IM-Q0-APP-VS-CAPABILITY], [CXC-IM-APP-AUTHORSHIP-AXIS], [CXC-IM-MODEL-STATE-MANAGER-CONFIG]
+
+---
+
+## 3. The service rubric — decision order for a CAPABILITY
+
+### [CXC-IM-SERVICE-RUBRIC] The decision order for siting a CAPABILITY among the six models
+
+- decision-order: a fixed, ordered test run top to bottom; the first matching rung decides, and nothing below it is consulted.
+- order-1-bus-peer: constrained silicon, a physical device, or a cross-tier leaf — it cannot be a Python plugin at all, so it is a bus-native peer.
+- order-2-bridge: the capability purely translates between two already-live transports — it is a bridge, not a competing home for the logic.
+- order-3-kernel: the capability is an irreducible kernel primitive — default is NO; almost nothing qualifies, because anything that CAN be a plugin MUST be one.
+- order-4-inprocess: the only consumer is ONE app, the capability is tied to that app's session, and it need not outlive it — it is an in-process source.
+- order-5-plugin: none of the above — the DEFAULT is a ComposeServer plugin.
+- fallback-to-standalone: fall back to a standalone process ONLY when a plugin cannot satisfy one of three conditions the plugin model structurally cannot meet — it must span MULTIPLE tenants/servers (a plugin is always per-tenant, never shared), it must run on a DIFFERENT host than any ComposeServer, or it must OUTLIVE the server. The standalone shape is an escape hatch FROM rung 5, not a sixth rung in the ordered test.
+- then-tune-the-plugin: once rung 5 applies, the plugin is tuned by declaring an isolation FLOOR appropriate to its fault domain and a `requires:` execution floor naming what it needs to run.
+- status: proposed
+- provenance: architect-synthesis — the specific decision-order wording, numbering, and the fallback-to-standalone framing are the architect's inference from the underlying principles; the overall rubric SHAPE this order instantiates is david-ratified-shape, per [CXC-IM-Q0-APP-VS-CAPABILITY].
+- part-of: [SPEC:CXC-INTEGRATION-MODELS]
+- see-also: [CXC-IM-MODEL-BUS-PEER], [CXC-IM-MODEL-BRIDGE], [CXC-IM-MODEL-KERNEL], [CXC-IM-MODEL-INPROCESS], [CXC-IM-MODEL-CS-PLUGIN], [CXC-IM-MODEL-STANDALONE], [CXC-CS-ISOLATION-FLOOR], [CXC-CS-REQUIRES-FLOOR]
+
+---
+
+## 4. The application authorship axis
+
+### [CXC-IM-APP-AUTHORSHIP-AXIS] Where an APPLICATION sits on the use-case x complexity spectrum
+
+- axis: for an APPLICATION (the Q0 application-path), its home sits on a USE-CASE x COMPLEXITY spectrum — declarative state-manager config <-> standalone app <-> plugin — rather than one default shape. The HAND-AUTHORED-vs-AGENTIC axis then shifts where a given application sits on that spectrum.
+- declarative-config-end: state_manager config fits domains EXPRESSIBLE declaratively — home automation (a Home-Assistant replacement), simple games, dashboards ([CXC-IM-MODEL-STATE-MANAGER-CONFIG]). This is state_manager's FOUNDING use-case (David, 2026-09-12: modeling a house in state_manager was one of the direct use-case inspirations for state_manager itself) and a FIRST-CLASS end of the spectrum, not a fallback.
+- standalone-code-end: standalone app is the home when the logic EXCEEDS natural declarative expression — a complex structural simulation, the BSG world being the worked case ([CXC-IM-EXEMPLARS]).
+- plugin-end: see `promote-to-plugin-when` below — the plugin end is reached when the application is DONE being iterated and ships as a managed tenant, not an iteration-time default.
+- hand-authored-rule: when a human hand-authors the logic, keep complex rules in CODE (pulling toward the standalone end) — a declarative DSL expressive enough to carry a structural simulation is a programming language in disguise, and usually a worse one than the host language.
+- ai-assisted-rule: when authorship is AI-assisted, more of the AUTHORABLE rules (scenarios, tunables, escalations) can profitably move to a declarative, queryable, verifiable surface, because structure is the agent's leverage and its own verification surface.
+- agentic-frontier-shifts-both-ways: AI assistance moves the frontier in BOTH directions at once — an AI can maintain a larger/more-complex declarative model than a human would find tedious, WIDENING where config stays viable toward more complex domains, AND it can write and iterate a standalone app fluently, LOWERING the code path's own cost. With agentic help the author's own coding skill matters less either way, and the choice turns more on which SHAPE — declarative or procedural — naturally fits the domain, per [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE]'s no-hard-thresholds stance.
+- algorithmic-core-stays-code: the ALGORITHMIC CORE stays code regardless of authorship mode or which end of the spectrum an application otherwise sits on — the axis governs the AUTHORABLE rule surface, not the engine underneath it.
+- promote-to-plugin-when: promote an application to a ComposeServer plugin only when "ship it as a managed, multi-tenant tenant" outweighs iteration freedom — i.e. when the application is DONE being iterated, not while it is still being built.
+- no-hard-thresholds: as with [CXC-IM-Q0-APP-VS-CAPABILITY]'s application-path, deliberately NO numeric thresholds or rule-set here either — see [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE]. These are descriptive axes the end-user weighs for their own specifics, not a prescriptive cutover point.
+- status: proposed
+- provenance: david-stated for the use-case x complexity basis, the no-hard-thresholds stance, and the state_manager founding use-case (David, 2026-09-12, per [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE]); architect-synthesis for the spectrum's prose, the declarative/standalone/plugin-end framing, and the agentic-frontier-shifts-both-ways analysis.
+- part-of: [SPEC:CXC-INTEGRATION-MODELS]
+- see-also: [DX-DERIVE-ONCE-REALIZE-PER-LEAF], [DX-STATE-ON-BUS], [DX-NARROW-WAIST], [DX-COLLAPSE-TRANSPORT], [CXC-IM-MODEL-STATE-MANAGER-CONFIG], [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE]
+
+---
+
+## 5. Worked exemplars
+
+### [CXC-IM-EXEMPLARS] Worked classifications of real ComposePlatform cases
+
+- bsg-world: `compose_projects/bsg/world` = APPLICATION (Q0) -> the COMPLEX/standalone end of [CXC-IM-APP-AUTHORSHIP-AXIS]'s spectrum — a structural simulation exceeding natural declarative expression. Its crisis-escalation rules are structured Python today, with a planned expression-DSL swap for the more AUTHORABLE rules — the live code<->config boundary the axis describes.
+- house-home-assistant-replacement: a house modeled as a Home-Assistant replacement = APPLICATION (Q0) -> the DECLARATIVE/state-manager-config end of [CXC-IM-APP-AUTHORSHIP-AXIS]'s spectrum ([CXC-IM-MODEL-STATE-MANAGER-CONFIG]) — state_manager's FOUNDING use-case (David, 2026-09-12): the whole application realized as config/rules, no dedicated process, no code.
+- simple-game: a simple ComposeIO-based game = APPLICATION (Q0) -> also the DECLARATIVE/state-manager-config end — David's own example (2026-09-12) of a use-case where "the existing tool set is more than sufficient" without a standalone process.
+- no-bright-line: bsg-world and the house/simple-game exemplars are ALL applications; the spectrum in [CXC-IM-APP-AUTHORSHIP-AXIS] plus the author's own use-case, complexity, skill, and agentic-AI context place a given application along it — there is no bright line separating "a config" from "an app", per [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE].
+- fingerprint-pipeline: fingerprint_template_store and the fingerprint-enrollment pipeline = CAPABILITY (Q0) -> rung 5 of [CXC-IM-SERVICE-RUBRIC] -> ComposeServer plugin.
+- coordination-relay: coordination_relay = CAPABILITY that spans multiple tenants -> fails the plugin's per-tenant invariant -> fallback-to-standalone in [CXC-IM-SERVICE-RUBRIC].
+- time-and-freshness: time_service / storage_monitor = CAPABILITY (Q0) -> rung 5 of [CXC-IM-SERVICE-RUBRIC] -> ComposeServer plugin (time ships as a default plugin per the grounded node).
+- status: proposed
+- provenance: architect-synthesis for the capability classifications (fingerprint-pipeline, coordination-relay, time-and-freshness) and for bsg-world's placement at the spectrum's complex end; only bsg-world's underlying Q0 classification traces directly to David's pushback recorded in [CXC-IM-Q0-APP-VS-CAPABILITY]. david-stated for house-home-assistant-replacement and simple-game — both are David's own examples, 2026-09-12, of the declarative end.
+- part-of: [SPEC:CXC-INTEGRATION-MODELS]
+- see-also: [CXC-IM-SERVICE-RUBRIC], [CXC-IM-APP-AUTHORSHIP-AXIS], [CXC-IM-MODEL-STATE-MANAGER-CONFIG], [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE], [CXC-CS-DEFAULT-PLUGINS]
+
+---
+
+**Version**: 0.2 — 2026-09-12. Initial capture (0.1) of the rubric settled with David in the 2026-09-12
+session ("the revised shape holds"). This revision (0.2) reshapes the APPLICATION side per David's
+same-day follow-on clarification: the earlier "standalone is the default for every application"
+wording is replaced by a use-case x complexity spectrum (declarative state-manager config <-> standalone
+app <-> plugin, [CXC-IM-APP-AUTHORSHIP-AXIS]), a new catalog model [CXC-IM-MODEL-STATE-MANAGER-CONFIG],
+new house/simple-game exemplars at the declarative end, and a dedicated descriptive-not-prescriptive
+stance node [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE]. The capability/service side (Q1-Q5,
+[CXC-IM-SERVICE-RUBRIC] and its six capability models) is UNCHANGED. `status: decided` applies to
+[CXC-IM-Q0-APP-VS-CAPABILITY]'s fork and to [CXC-IM-APP-GUIDANCE-IS-DESCRIPTIVE]'s stance; every other
+node is `proposed` pending the architect's own re-read and David's placement ruling. Filename 94 and
+placement are UNRATIFIED per [CXC-IM-PLACEMENT].

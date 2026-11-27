@@ -1,0 +1,200 @@
+---
+scope: "Delivering a device's scene config OVER ComposeBus itself, so a node with no IP can be configured. Specifies the no-wireless foundation (chunked CONFIG_REQUEST/CONFIG_PUSH sized for classic CAN), the depth-independent leaf contract that makes failure loud, and the selectable config-source strategy that lets a WiFi-capable board bootstrap over HTTP and then kill its radio. Written 2026-08-12 after the firmware transport seam landed and proved UART end-to-end."
+audience: "ComposeIO/ComposeUX architects, firmware developers on relay and leaf nodes, and whoever implements the config server on the head node"
+boundary: "IN: how config reaches a node that cannot reach bus_storage, the chunk protocol and its sizing constraint, relay behaviour, loop safety, the leaf's failure contract, and config-source selection. OUT: the transport seam itself ([CXC-BOARD-HW-UART-SLAVE], already built), the wire-code table ([BP-TYPE-CODES]), bus_storage's own API, and scene semantics."
+not-this: "Not a routing protocol — there are no routing tables, no topology configuration and no hop-count setting. Not a general file-transfer facility; it moves ONE artifact class (a device's scene config) under tight frame budgets. Not a replacement for HTTP config fetch where a board has IP — that path stays and becomes one selectable strategy among several."
+depends-on: [60-board-hardware-inventory.lts, 31-composeux-board-bringup.lts, 29-composeux-embedded-reactive.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: concept-capture
+---
+# Config Over ComposeBus [SPEC:CXC-CONFIG-BUS]
+
+> A display board slaved over UART, or hanging off a CH32V203 that reaches the bus over CAN, has no IP and cannot GET its scene from bus_storage. Today `config_fetch` is HTTP-only, so "UART-slaved" boards still bring up WiFi and still consume an address — the transport seam made the BUS substrate-independent while leaving CONFIG welded to WiFi. This closes that, and it does so under the tightest frame budget in the fleet: classic CAN, eight bytes.
+
+---
+
+## 1. Intent
+
+### [CXC-CONFIG-BUS-INTENT] A Node With No IP Must Still Be Configurable
+
+- problem: `config_fetch.cpp` pulls the scene over HTTP and `capture_http` serves verification over HTTP, so `wifi_init()` is unconditional regardless of the selected bus transport. A board can now speak ComposeBus over UART ([CXC-BOARD-HW-UART-SLAVE], proven end-to-end 2026-08-12) and STILL holds a DHCP lease. The seam is necessary and not sufficient for the address saving that motivated it.
+- forcing-case: David (2026-08-12) — "there has to be a mode where NO MCU in the chain has access to ComposeBus via any wireless/high-speed connection." A CH32V203 on a CAN interface with a Hosyond downstream over UART is a legitimate deployment. Neither MCU has HTTP. So config MUST be able to travel over the bus itself; a design that assumes the upstream can fetch by URL is a special case that happens to hold when the upstream is a Mac.
+- dp-cio-18-exception: that principle says keep messages under 256 bytes and reference large payloads BY URL. A URL presumes a peer that can dereference it. A slaved board cannot, so this artifact class needs an explicit exception rather than a quiet workaround — the upstream dereferences on the leaf's behalf and streams the CONTENT.
+- payoff: `wifi_init()` becomes conditional, a slaved board stops taking an address, and on a no-PSRAM board the reclaimed internal RAM may buy a whole render tier ([CXC-BOARD-HW-UART-SLAVE] unpriced-benefit).
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+---
+
+## 2. The Binding Constraint
+
+### [CXC-CONFIG-BUS-BUDGET] Classic CAN Sizes Everything — Design For Eight Bytes Or Do Not Bother
+
+- hardware-fact: every CAN controller and transceiver in the fleet is classic CAN 2.0B — MCP2515, TJA1050, SN65HVD230, the Waveshare 2-channel HAT, the ESP32 TWAI peripheral and the CH32V203 bxCAN. **None supports CAN-FD**, and the limit is the CONTROLLER, not the transceiver, so re-buying transceivers changes nothing. Verified 2026-08-12.
+- budget-per-substrate: UART frames carry `[0xC1][len][ns_hash(2)][type_scope][value...][crc8]` with a ONE-BYTE length, so value <= 252 B. **Classic CAN carries 8 data bytes**, with the namespace hash and type code living in the 29-bit arbitration ID instead of the payload ([CXC-CAN-BRIDGE-MIGRATE]).
+- why-this-is-the-design: **the single fact that shapes everything** — a chunk header carrying destination + transfer id + sequence + total + TTL is ~7 bytes. On UART that is 3% overhead; on CAN it leaves ONE usable byte per frame and the scheme is dead. Any chunk format designed against UART's 252 bytes will be quietly unusable on the substrate that actually needs it. **Size the header for CAN first.**
+- arithmetic: a 6,012 B scene at 6 usable bytes per CAN frame is ~1,000 frames. At 500 kbit/s that is roughly 260 ms of bus time; at 1 Mbit/s about 130 ms. Sub-second even at the far end of a relay chain — config transfer is not a performance problem, it is a framing problem.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-ADDRESSING] The Namespace IS The Address — Do Not Invent A Second One
+
+- decision: config for a device travels on `_device/<device_id>/config`. The namespace hash already present in every frame (UART payload, CAN arbitration ID) therefore identifies the DESTINATION and the TRANSFER simultaneously. No destination field, no transfer id, no routing table.
+- why: it reclaims the header bytes CAN cannot spare, and it keeps addressing consistent with everything else on this bus — a peer is addressed by the namespace it subscribes, always. Inventing a parallel device-addressing scheme for one artifact class would be the leak this whole exercise exists to prevent.
+- consequence: a data chunk carries only a **sequence number**, so the per-frame overhead is 2 bytes and CAN keeps 6 of 8 for content. The `_device/<id>/transport` control namespace already established by the transport seam is the precedent this follows.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+---
+
+## 3. The Protocol
+
+### [CXC-CONFIG-BUS-CHUNKS] A Header Frame, Then Sequenced Data, Then One Ack
+
+- transfer-shape: `CONFIG_PUSH` (wire code 2) on `_device/<id>/config` carries a transfer as (1) a HEADER frame — total byte length, chunk count, a content hash, and the TTL seed; then (2) N DATA frames, each `[seq(2)][content...]`; then (3) the leaf answers with `ACK` (code 8, already allocated by [BP-TYPE-ACK]) naming the content hash it reassembled.
+- content-hash-rationale: the whole-payload hash is the acceptance test, not a checksum habit — CRC-8 per frame catches corruption of A frame; only a whole-payload hash catches a MISSING frame, a duplicated one, or two interleaved transfers. A leaf that reassembles to the wrong hash MUST discard and re-request rather than build a scene from a plausible-looking ruin.
+- config-request: `CONFIG_REQUEST` (code 3) is the leaf asking. It carries nothing but its own namespace — the request IS the address.
+- interleaving: a leaf handles ONE transfer at a time. A header frame arriving mid-transfer abandons the old one. This is cheaper than transfer ids and sufficient because a leaf has exactly one scene.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-RELAY] Relays Forward Transitively And Never Reassemble
+
+- rule: an intermediate node forwards config frames downstream chunk by chunk, as they arrive. It MUST NOT buffer a whole transfer.
+- why-not-optional: a CH32V203 has ~20 KB of RAM. Buffering a 6 KB payload to re-emit it is hostile with one downstream device and impossible with several. Streaming also removes reassembly latency at every hop.
+- corollary: sequence and addressing live in the message, and **only the ENDPOINT reassembles**. A relay is a dumb repeater for this artifact class, which is what makes arbitrary depth cheap.
+- no-depth-limit: relaying is transitive and unbounded. There is no hop-count setting, and no deployer ever configures topology — David (2026-08-12): a configured depth "exposes transport specifics that we're trying to abstract away in the first place," and a silent limit is a future undiagnosable failure.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-TTL] TTL Is A Loop Backstop, Not A Topology Declaration — And Its Expiry Is LOUD
+
+- necessity: CAN is MULTI-DROP, not point-to-point. Two relays bridging the same pair of segments will circulate a frame indefinitely, and at 8 bytes a frame a loop is destructive rather than merely wasteful. Some backstop is unavoidable.
+- design: a TTL seeded in the header frame and decremented by each relay. It is a fixed protocol constant, NEVER a deployment setting — exactly as IP's TTL is not configured per host. Nothing about it reaches a scene, a descriptor, or an operator.
+- expiry-must-be-loud: **a relay that decrements TTL to zero MUST announce it.** A relay that decrements TTL to zero publishes a diagnostic naming the namespace and its own device id. This is the difference between the backstop and the silent depth limit it replaces: a loop or an over-deep chain becomes an EVENT, not a panel that quietly never updates. Discarding on TTL without saying so would reintroduce the exact failure this design was corrected to avoid.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-LEAF] The Leaf's Contract Is Depth-Independent, Which Is What Makes Failure Loud
+
+- contract: request, start a timer, then either reassemble-and-verify or **announce that no config arrived**. The leaf never knows, and must never need to know, how many nodes lie between it and the store.
+- why-depth-independence: bounding depth would have made a too-deep chain fail quietly. Making an unanswered request an EVENT removes the whole class — depth becomes irrelevant to correctness rather than merely permitted.
+- must-announce: a board with no scene must SAY SO, on the bus if it can and on its own glass if it cannot. A dark or stale panel is indistinguishable from a working one ([CXC-BOARD-HW-SELF-CONFIRMING]), so silence is the one unacceptable response.
+- staleness: a leaf that boots from a cached scene while re-requesting is resilient, but it can also render a months-old scene and look perfectly healthy. Cache MUST be paired with a visible staleness indication.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-PUSH] Live Update By Broadcast With Filter-At-Endpoint, No Routing
+
+- decision: the head may push an unsolicited transfer when bus_storage changes; boot-time pull is then the degenerate case, not a separate mechanism. David and the architect both leaned live (2026-08-12).
+- delivery: CAN is natively broadcast; a UART relay forwards downstream unconditionally; the leaf discards anything not on its own `_device/<id>/config`. **No routing tables, no topology knowledge, depth-agnostic by construction.**
+- accepted-cost: every leaf sees every config push. Transfers are rare and bounded, and the alternative is routing state on nodes that must stay dumb.
+- wifi-cannot-do-this: the capability the WiFi-bootstrap strategy can NEVER offer — a board that killed its radio can only be told something over the bus. It is the strongest argument for `config: bus` being the foundation rather than the fallback.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+---
+
+## 4. Selection
+
+### [CXC-CONFIG-BUS-STRATEGY] Config Source Is A Selectable Strategy, Mirroring The Transport Registry
+
+- shape: `config: bus` (request over the selected transport — works everywhere, MANDATORY for the no-wireless chain), `config: http` (WiFi up, GET, **radio off**, switch to the bus transport — requires WiFi and an AP), `config: cached` (flash-provisioned, no fetch).
+- mirrors-registry: follows `transport_registry.py` deliberately, including its two failure rules: an UNKNOWN strategy is FATAL and loud, never a silent degrade; a KNOWN strategy whose backend is unreachable degrades LOUDLY and keeps running. Same shape, same reasoning, one fewer thing to learn.
+- same-firmware: a Hosyond with WiFi may use `http`; the same board behind a CH32V203 must use `bus`. Strategy is a DEPLOYMENT property, not a hardware one.
+- bootstrap-trap: the strategy cannot live only in the scene YAML, because that YAML arrives BY the strategy. NVS is the local source of truth, settable over the current link — the `_device/<id>/transport` precedent.
+- http-is-boot-only: `config: http` cannot receive live updates; that is a real capability difference, not an implementation gap.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+---
+
+## 5. What Is Not Yet Settled
+
+### [CXC-CONFIG-BUS-OPEN] Open Points, Named So They Are Not Silently Decided
+
+- ttl-seed: **SETTLED 2026-08-12 — a header BYTE, seed 8.** David's call, against the 2 spare `type_scope` bits: those cap depth at 3, which reintroduces exactly the silent limit this design was corrected to remove. The byte costs nothing outside the header frame, and eight hops is a loop backstop rather than a declared depth.
+- can-arbitration-priority: **SETTLED 2026-08-13 by [BP-CAN-ID] v2 — it is no longer open, and the correction is recorded here rather than left to be re-derived.** ⛔ The v1 layout this point was written against is RETIRED. v2 is `prio(3) | type(4) | ns_id(16) | src(4) | scope(2)`, so the concern's own premise — "[BP-CAN-ID]'s 29 bits (`ns_hash(16) | type(4) | source_hash(9)`) have no spare room, so priority must fall out of the type code's POSITION" — no longer holds: **`prio` is now a real 3-bit field at the TOP of the identifier (bits 28..26)**, and it decides arbitration directly. What this point asked for is exactly what [BP-WIRE-PRIORITY] delivers: `config_push` (and `log_entry`) take **tier 7, bulk**, assigned by TYPE, and the tier rule states that nothing functional may live there. A 1,000-frame config transfer therefore physically cannot delay a throttle update ([BP-WIRE-PRIORITY] puts live control at tier 1), and it cannot starve an `ack` or a `heartbeat` either — the default tier for an unclassified namespace sits at 5, below every control-plane tier. The feared cost did not materialise: the layout DID move under a live wire, but all three implementations moved together in one change and are pinned across all 29 bits by `env:native_can_id` and `python/tests/test_can_wire_format_v2.py`.
+- what-this-supersedes: the sentence "the firmware CAN transport therefore carries config chunks on the NORMAL scheme" is RETIRED. Config chunks carry `prio = 7`, from the shared rule (`composeio.transport.priority_for` / `bus_priority_for()`), never from a per-call argument.
+- retry-and-backoff: **SETTLED 2026-08-12 — exponential with jitter and a cap**, as PROTOCOL CONSTANTS, not deployment settings: base 1 s, x2, ceiling 30 s, +/-25% jitter on every wait, and it never stops. The cap keeps a long outage cheap; the jitter is what stops a rack of boards that lost their head together from returning in LOCKSTEP and re-creating the outage the moment it clears. Verified on the bench: with the head killed, (a device id, not published) walked 1/2/4/8/16/30/30 s and recovered without a power cycle the moment the head came back.
+- capture-loss: **CONFIRMED, and it is a design consequence rather than a gap.** With WiFi down, `GET /capture.bmp` does not answer at all. On a slaved board the human tier is the ONLY rendering verification, so the sequencing consequence stands and was followed: bring a board up on WiFi, ACCEPT IT ON THE GLASS, then convert it.
+- head-implementation: **BUILT 2026-08-12.** `services/uart_mqtt_bridge/config_server.py`, mounted INSIDE the bridge rather than beside it — the leaf's CONFIG_REQUEST arrives as a UART frame on a link that process already owns, and a second process cannot open the same serial port. `ConfigServer` itself takes a `send` callable and a `chunk_payload`, so it is substrate-agnostic and would mount on a CAN transport unchanged.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+---
+
+## 6. As Built
+
+### [CXC-CONFIG-BUS-ASBUILT] The Frame Layout That Landed, And Where The Spec Named Information Rather Than Fields
+
+- frame: every config frame's value is `[seq_hi][seq_lo][content...]` — TWO bytes of overhead and nothing else, because the namespace is the address. `seq == 0` is the HEADER, whose content is EXACTLY six bytes: `[ttl][chunk_payload][total_len_hi][total_len_lo][hash_hi][hash_lo]`. `seq >= 1` is DATA, belonging at payload offset `(seq-1) * chunk_payload`. Header plus sequence is eight bytes: **one classic-CAN frame with nothing to spare**, which is the sizing claim [CXC-CONFIG-BUS-BUDGET] demands and `env:native_config_chunk` asserts directly.
+- chunk-payload-not-chunk-count: [CXC-CONFIG-BUS-CHUNKS] names four INFORMATIONS the header must carry — total length, chunk count, a content hash, a TTL seed. Six bytes admits `total_len(2) + hash(2) + ttl(1)` and exactly ONE more byte, so only one of chunk-count and chunk-payload can be carried. **chunk_payload is strictly the more informative**: `chunk_count = ceil(total/payload)` is exact, while the converse is false (25 chunks of a 6,012 B payload implies 241, not the real 250). Carrying chunk_payload therefore delivers the chunk count too. Deriving it instead — "learn the chunk size from the first data frame" — fails when the first frame to ARRIVE is the short final one, which is the reordering case the format must survive. This is implementing the spec under its own binding constraint, not deviating from it.
+- hash-is-crc16: CRC-16/CCITT-FALSE, the SAME polynomial as `namespace_hash` / `bus_ns_hash` — no new primitive on a 2 KB-class part. Two bytes rather than four because the six-byte ceiling is the reason there is room for two. It is not carrying the whole load: per-frame CRC-8 catches a corrupt frame, and the reassembler's received-bitmap catches a MISSING or DUPLICATED frame EXACTLY rather than probabilistically. What only a whole-payload hash can catch is corruption that slipped a CRC-8 and two INTERLEAVED transfers.
+- ack: the leaf answers on the SAME namespace with type `ACK` and a **7-byte BINARY value** — the layout, the statuses and the reasoning are [CXC-CONFIG-BUS-ACK]. The request is the address and so is the answer. ⚠ **The string form specified here until 2026-08-13 (`ok <hash4> <bytes>` / `mismatch <got4> want <want4>`) is RETIRED**; it was physically unsendable on classic CAN, which is recorded in full on that node rather than summarised here.
+- one-format-two-substrates: the chunk size is asked of the transport (`BusTransport::max_raw_value()`), never baked into the format — 250 on UART, 8 on classic CAN. `env:native_config_chunk` runs the whole corpus at BOTH sizes plus 1 and 250, against frames baked from `composeio.config_chunk` as oracle (568 checks).
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-ACK] The ACK Is SEVEN BINARY BYTES — The String Form Was Physically Unsendable On The Substrate This Design Exists For
+
+- layout: `[0] 0xA0|status` · `[1..2] hash uint16 BE` · `[3..4] total_len uint16 BE` · `[5..6] ackseq uint16 BE` = **7 bytes**, one spare in a classic CAN frame. Statuses: `0` ok, `1` hash-mismatch, `2` incomplete, `3` no-memory. Every field is machine-comparable, which is what makes head-side verification possible at all.
+- what-was-retired: the formatted string `ok <hash4> <bytes>` / `mismatch <got4> want <want4>`, which this spec carried from 2026-08-12 until **2026-08-13**. It is RETIRED, not deprecated: no leaf may emit it, and a head that receives one counts it `unreadable` ([CXC-CONFIG-BUS-CENSUS]) rather than parsing it.
+- why-it-was-retired: `"ok beef 5856"` is **13 bytes** and `"mismatch beef want cc50"` is **24**; `bus_can.cpp` refuses anything over **8**. Both forms were therefore PHYSICALLY UNSENDABLE on classic CAN. The leaf applied its scene, the head learned nothing, and `ConfigServer.acks_ok` / `acks_bad` were **structurally incapable of incrementing** over that substrate — an instrument that cannot report is not an instrument. This is the same defect class as a counter pinned at zero by where it was placed, and it is why [CXC-CONFIG-BUS-BUDGET]'s "size for CAN first" rule has to reach the ACK too, not only the chunk header.
+- why-the-tag-nibble-is-not-decoration: the obvious layout is a bare `[status u8][hash][len][ackseq]`. It fits and it is wrong. `decode_value` reads a leading byte of N in an (N+1)-byte value as a LENGTH-PREFIXED STRING, so a 7-byte value whose first byte were `6` would come back as a `str` and the head would be comparing TEXT again — the exact defect this change removes. Pinning the high nibble to `0xA` makes byte 0 always `>= 0xA0 > 6`, so **no status this format can ever allocate is decodable as a string**, the value is never confusable with the `[0xFE]`/`[0xFF]` tagged numerics ([BP-VALUE-CODEC] reads those only at length 5), and a receiver can POSITIVELY IDENTIFY a config ACK rather than parsing whatever seven bytes arrived on the namespace. The tag costs zero bytes: status needs 4 bits and 4 are allocated.
+- why-hash-always-names-the-transfer: on a mismatch the leaf knows TWO hashes — the one it was told to expect and the one it computed. The field carries the **EXPECTED** one, for every status without exception, because the head's question is "which of my transfers is this about?" and a uniform answer is what lets ONE comparison cover every status. The computed hash is a leaf-side diagnosis, stays in the leaf's log, and spending a wire field on a number the head cannot act on is how 8 bytes becomes 9.
+- ackseq: on a COMPLETE transfer it is the last correctly received sequence (== the chunk count); otherwise it is the **FIRST MISSING** sequence. `ackseq == 0` on a failure therefore means "**nothing was missing**", which separates CORRUPTION (every frame arrived, the bytes are wrong) from LOSS (a frame never came). A repair that cannot tell those apart retransmits the wrong thing. Nothing reads it for repair yet; it is the field a future go-back-N resumes from.
+- requirement: the head MUST verify the returned `hash` AND `total_len` against what it sent before counting a success. An `ok` status naming a hash this head never served is not this transfer's success and MUST NOT clear its deadline.
+- requirement: `encode_ack` MUST REFUSE an out-of-range field rather than masking it. A status of 17 masked to 1 would claim a hash mismatch that never happened — a wrong diagnosis is worse than a refusal.
+- verify-machine: `python/tests/test_config_ack.py` (28 test functions, counted not run — no suite was executed for this spec update), including `test_the_string_ack_this_replaced_could_not_be_sent`, `test_the_string_ack_is_actually_DROPPED_by_the_can_transport`, `test_no_status_is_mistakable_for_a_string_by_the_value_codec` and `test_a_whole_can_transfer_including_its_ack_fits_in_classic_frames`. Firmware side: `config_encode_ack` / `config_decode_ack` in `cyd/src/config_chunk.h`, exercised by `config_chunk_selftest.cpp`.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-ACK-DEADLINE] The Head Must Be Able To Hear SILENCE — And The Deadline SCALES With The Transfer
+
+- formula: `timeout = ACK_TIMEOUT_BASE_S + ACK_TIMEOUT_WIRE_MARGIN * wire_s`, where `wire_s = max(frames * pace_s, measured_send_s)`. Defaults: base **2.0 s**, margin **x2**. ⛔ **The derivation is the durable part; the two constants are tuning.** A reimplementation that copies the numbers and not the reasoning will re-break this the first time the substrate changes.
+- why-not-a-constant: the same 5,856 B scene is **25 frames on UART and 977 on CAN**; at 2 ms pacing that is 50 ms of wire time against **1.954 s**. A fixed 1 s deadline — the obvious choice — expires BEFORE a healthy CAN transfer has finished leaving the head, so it fires on every happy path. An alarm that cries on the happy path is worse than no alarm: it teaches the operator to ignore the one time it was right. This is asserted as a test, not as prose.
+- why-both-terms-of-the-max: the MEASURED send duration is the truth on a BLOCKING transport and captures wire behaviour this module has no business modelling — bitrate, arbitration, a relay hop. But a transport that QUEUES the write and returns makes the measurement a LIE: it reports ~0 s for a transfer that has not left. `frames * pace_s` is the floor that survives that case, because the pacing sleeps are real time this process actually spent. **Neither alone is safe; the larger of the two is.**
+- why-the-margin-is-x2: it buys exactly one thing — the leaf may take as long again to DRAIN as the head took to send. Its rx ring is 1 KB, its rx task decodes and copies every frame, and it competes with an LVGL render task whose full-screen flush is ~65 ms. Doubling states the rule: **"the slowest healthy leaf runs at half the head's send rate"**; a leaf slower than that is dropping frames, which is a different problem with a different repair.
+- why-the-base-is-2s: it covers everything that does NOT scale with frame count — leaf task-scheduling latency, the whole-payload CRC-16 (~47k iterations for a 5,856 B scene, under 2 ms at 240 MHz and genuinely noise), the ACK's own trip back, and a couple of relay hops. That is >25x the worst plausible leaf-side turnaround. Nothing retries off this deadline, so being late costs nothing and being early costs the instrument its credibility.
+- worked-numbers: UART 25 frames -> `2.0 + 2.0 * 0.050` = **2.10 s**. CAN 977 frames -> `2.0 + 2.0 * 1.954` = **5.91 s**. The protocol ceiling (65,535 B over CAN, 10,923 frames) lands at **45.7 s** and is **deliberately UNCAPPED** — a cap would be a fixed deadline again for exactly the largest transfers, which is where silence is most likely.
+- armed-from-the-last-frame: the deadline budgets the LEAF's turnaround, and the wire time the margin pays for is already spent by the time the last frame is out. Re-arming is SKIPPED when a fast leaf has already answered: that transfer's verdict is in, and re-arming would resurrect it.
+- known-hazard: ⛔ **the head MUST register a transfer in flight from the FIRST frame, not the last.** Registering after the send loop is the natural way to write it and it is wrong: on a synchronous substrate (a loopback, an in-process relay, a leaf faster than the pacing) the final frame's ACK arrives INSIDE the send call, and a transfer that is not yet pending gets **its own ACK counted as `unmatched`** — the head reporting a phantom SECOND HEAD on the segment because it had not finished writing itself a note. Any reimplementation will fall into this; it is pinned by `test_a_leaf_that_acks_INSIDE_the_send_loop_is_not_called_unmatched`.
+- a-timeout-is-a-diagnosis-not-a-retry-trigger: nothing here re-pushes. Recovery stays with the leaf's own exponential backoff ([CXC-CONFIG-BUS-OPEN] retry-and-backoff), so the head's deadline reports a fact and never becomes a second, competing retry loop.
+- check-cadence: `ACK_CHECK_SEC = 1.0 s`, deliberately independent of the 15 s scene poll. Noticing an unanswered transfer and polling for a CHANGED scene are different jobs on different timescales; hanging the second off the first would put 15 s granularity on a 2 s deadline.
+- verify-machine: `python/tests/test_config_ack_timeout.py` (37 test functions, counted not run — no suite was executed for this spec update), including `test_a_fixed_one_second_deadline_would_fire_on_a_HEALTHY_can_transfer`, `test_the_measured_send_time_is_used_when_pacing_understates_it`, `test_the_deadline_is_not_capped_at_the_protocol_ceiling`, `test_a_healthy_977_frame_can_transfer_does_not_trip_the_timeout` and `test_the_head_reports_SILENCE_over_a_real_can_loopback`.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-CENSUS] Two Counter Groups — And The SPLIT Between Them Is The Point
+
+- transfer-verdicts: every transfer this head sends reaches EXACTLY ONE of these or is still pending, and `transfers == resolved + pending` is asserted rather than assumed. `confirmed` — the leaf ACKed THIS transfer's hash and length with status ok. `refused` — the leaf ACKed THIS transfer with a failure status. `timeout` — the deadline passed with nothing naming it; the leaf or the link died, or the ACK could not leave the leaf. `superseded` — a newer transfer to the same device replaced it before it was answered ([DD-CONFIG-BUS-SUPERSEDED]).
+- refused-stays-broken-out-by-status: a hash mismatch is CORRUPTION, an `incomplete` is an ABANDONED REASSEMBLY, and `no-memory` is the HEAP rather than the wire. Three causes, three different repairs, so they MUST NOT collapse into one bucket — a single `acks_bad` number tells an operator that something is wrong and nothing about what to do.
+- ack-message-counters: these are about VALUES THAT ARRIVED, not about transfers, and they deliberately **do NOT resolve a pending transfer** — the deadline still stands after each of them. `unreadable` — a value on the config namespace that is not a decodable ACK (a corrupt frame, or an un-reflashed leaf still emitting the retired text form). It cannot be ATTRIBUTED to a transfer, so it cannot clear one. `unmatched` — a decodable ACK naming a transfer this head never served: a second head on the segment, or a restarted process. `stale` — an ACK naming a transfer whose verdict is already in: a duplicate, or one that arrived AFTER its deadline.
+- stale-is-never-promoted: a late ACK is COUNTED, never promoted to `confirmed`. An instrument that reports both success and silence for one transfer is lying about one of them, and which one is not recoverable afterwards.
+- why-per-device: the census is kept per device, not only for the fleet, because the operator's question is "is the SEGMENT sick, or is that ONE board dead?" — and a single global counter cannot distinguish those, which is the whole reason the fleet-wide `acks_bad` was not enough.
+- verify-machine: `test_every_transfer_reaches_exactly_one_verdict`, `test_silent_and_wrong_hash_and_abandoned_are_THREE_counters`, `test_a_timeout_is_not_counted_as_a_BAD_ack`, `test_an_unreadable_ack_does_NOT_clear_the_deadline`, `test_an_ack_that_arrives_AFTER_its_deadline_is_stale_not_a_success` and `test_the_timeout_is_counted_BY_DEVICE_not_only_for_the_fleet`.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-MEASURED] The Numbers, From The Bench
+
+- transfer: the real `(a device id, not published)` engine-thrust scene is **5,856 bytes**. At UART's 250 B/chunk that is **24 data frames plus 1 header = 25 frames, 5,912 wire bytes** (a 56-byte / 0.96% framing overhead). Head-side chunk-and-write: **62-64 ms**, consistently, including 2 ms inter-frame pacing. Leaf-side request-to-hash-verified: **530 ms** (CONFIG_PUSH header at boot+1,449 ms, COMPLETE at boot+1,969 ms) — dominated by the bridge's own scheduling and the pacing, not by 115,200 baud, which would move 5,912 bytes in ~513 ms.
+- boot: **boot to first config-driven frame, 1,630-1,732 ms** over the bus, against **607 ms** from the NVS cache and ~2,600 ms when the first transfer had to be discarded and re-requested. Config transfer is not a performance problem; the spec's own arithmetic held.
+- pacing: 2 ms between frames, and it is a WIRE property rather than politeness — the leaf's rx ring is 1 KB and its rx task also decodes and copies each frame. ~50 ms on a once-per-boot transfer buys out a whole class of overrun.
+- log-storms-are-a-real-failure-mode: the per-frame "unregistered ns hash" WARN had to be rate-limited. A config transfer is 25 back-to-back frames, so an unsubscribed one produced 25 `ESP_LOGW` lines in ~60 ms — and console writes at 115,200 happen ON THE RX TASK, so the diagnostic delays the very draining that empties the ring. A diagnostic that causes the failure it reports.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+
+### [CXC-CONFIG-BUS-VERIFIED] What Has Actually Run, And What Has Not
+
+- proven-on-hardware: on `(a device id, not published)` over a real FTDI UART link, 2026-08-12 — radio DOWN and confirmed down (`ping` 100% loss, `GET /capture.bmp` no answer); scene requested, reassembled, hash-verified, ACKed, rendered; a DELIBERATELY corrupted transfer (one content byte of data frame 3 flipped, so all 25 frames' CRC-8s still passed) DISCARDED on the hash and re-requested, second transfer clean; the head KILLED, the leaf announced on the bus and on its glass and backed off 1..30 s without stopping, then recovered with no power cycle when the head returned; an UNSOLICITED push on a bus_storage change swapped the live scene on a board with no radio.
+- proven-on-host-only: the CAN transport and the streaming relay. `env:native_can_id` (644 checks) pins the arbitration id to `services/can_mqtt_bridge` as oracle; `env:native_relay` (40 checks) proves the relay never buffers more than one frame while a 6 KB transfer crosses, forwards data frames byte-for-byte, decrements TTL once per hop, expires on the eighth and ANNOUNCES it. **Neither has carried a live message.** No CAN hardware was wired when this was written; nothing here says bit timing, transceiver wiring, termination or acknowledgement works.
+- the-binary-ack-and-the-deadline-are-host-only: ⛔ **HOST-ONLY — the hardware run recorded above ACKed with the RETIRED STRING FORM over UART.** [CXC-CONFIG-BUS-ACK] and [CXC-CONFIG-BUS-ACK-DEADLINE] landed 2026-08-13 on `feat/config-ack-binary` and `feat/config-ack-timeout` and are covered by 65 host test functions plus an in-process CAN loopback, as READ FROM THE BRANCHES rather than re-run here. **No board has been reflashed with them, and nothing here has run on hardware.** Read every row above that says "proven-on-hardware" as proving the TRANSFER, not the acknowledgement it now uses. The first reflash is the acceptance gate for both nodes, and until then the ACK's own claim — that it is now sendable on CAN — is a claim about frame sizes, verified by arithmetic and a loopback rather than by a transceiver.
+- glass-confirmed: **SATISFIED 2026-08-12 (David): "The Hosyond is rendering properly!"** — the engine-thrust panel renders correctly under `config: bus` with the radio DOWN. This is the completion of the whole result: a board with no IP, no DHCP lease and NO capture endpoint requested its scene over UART, reassembled 5,856 bytes across 25 frames, verified the content hash, and painted the right pixels. Note WHAT confirmed it: with WiFi off there is no `/capture.bmp` at all, so eyes were not a supplement to machine verification here — they were the ONLY channel. Every other row in this document is a machine signal; this one could not have been obtained any other way.
+- not-verifiable-by-machine: that the panel is CORRECT. Under `config: bus` with WiFi off there is no capture endpoint, so a config transfer that reassembles to a verified hash still proves only that the BYTES arrived — colour order, inversion and a frozen panel are all invisible to every signal above. Eyes, on a full palette.
+- untested: the UNKNOWN-strategy refusal path. It is unreachable in practice by design — a bad name is rejected at WRITE time — so reaching it requires writing NVS by some other means, which was not done.
+- part-of: [SPEC:CXC-CONFIG-BUS]
+- proven-restart-refetch-round-trip: ⭐ SATISFIED 2026-08-16 on `(a device id, not published)` (hosyond_s3), radio UP over WiFi/MQTT — the FULL round trip ran end to end: a scene PUT to bus_storage (201, readback byte-identical to the working tree) → `composeio device restart` → the device published its own `_device/<id>/status` = `"restarting"` ack → the device re-fetched the scene, with bus_storage logging HTTP 200 every 15 s from 20:53:31 UTC onward, all after the 20:50:39 PUT → **David glass-confirmed the changed render on the device panel**. ⛔ NO REFLASH: delivery was bus_storage, exactly as [SPEC:CXC-CONFIG-BUS] designs it. This is the first recorded end-to-end proof that restart-over-bus drives a config re-fetch on a WiFi device; the 2026-08-12 entry above proved config transfer over a UART link with the radio DOWN, which is a different path. ⚠ THE MACHINE-ONLY EVIDENCE IS INSUFFICIENT ON ITS OWN and the distinction cost real effort: a device rendering its CACHED scene is VISUALLY IDENTICAL to one that re-fetched, so the fetch log is what separates them, and the glass is what proves the fetched bytes were the NEW ones. Neither alone settles it. See [CXC-ER-RESTART-BUS] `ack` for why an uptime-reset check is the wrong instrument here.
+
+---
+
+## 7. Decisions
+
+### [DD-CONFIG-BUS-SUPERSEDED] SUPERSEDED Is Not A TIMEOUT — But An Already-Expired Deadline Wins
+
+- decision: RESOLVED 2026-08-13. A pending transfer replaced by a newer push to the same device is counted `superseded`, NOT `timeout`. **But** a pending transfer whose deadline had ALREADY passed when the next push arrives is a `timeout`. `serve_payload` calls `check_timeouts()` BEFORE it supersedes, and **that ORDER is the ruling** — it is not an implementation detail of the function.
+- rationale: a second header reaching the leaf mid-transfer makes its reassembler ABANDON the first (`Reassembler.RESTARTED`; the firmware then ACKs the old hash as `incomplete`), so the first transfer can no longer be confirmed **BY CONSTRUCTION**. Charging that to `timeout` would make an ordinary poll-driven scene change look like a dead link, and an alarm that fires during normal operation is the exact failure mode [CXC-CONFIG-BUS-ACK-DEADLINE] exists to avoid.
+- rationale: the converse guard matters just as much — **"letting a periodic re-push erase every silence in the log is the same defect wearing a hat."** A transfer that was silent for its entire window WAS silent, and the later push had nothing to do with that. Without the ordering, a 15 s scene poll would quietly launder every timeout into a `superseded` and the head would be back to being unable to hear silence.
+- alternatives: (a) count both as `timeout` — rejected: it poisons the silence counter with the head's OWN behaviour, and the counter's only value is that it means the WIRE. (b) count both as `superseded` — rejected: it is the laundering above, and it is worse than (a) because it fails silently rather than noisily. (c) resolve the first transfer on the leaf's `incomplete` ACK instead — rejected as the primary mechanism because it only works when that ACK arrives, which on a dead link is precisely never; it is kept as a corroborating signal, not as the verdict.
+- invalidating_assumption: that THIS head is the only publisher on `_device/<id>/config`. If a second head ever pushes to the same device, a `superseded` there would be another head's doing rather than this one's, the verdict would be attributing another process's behaviour to this one, and the ruling would need re-deriving from scratch. [CXC-CONFIG-BUS-CENSUS]'s `unmatched` counter is the signal that this assumption has broken.
+- status: resolved
+- verify-machine: `test_a_transfer_superseded_IN_FLIGHT_is_not_a_timeout`, `test_a_transfer_superseded_AFTER_its_deadline_is_a_TIMEOUT`, and `test_the_superseded_transfers_own_incomplete_ack_is_not_unmatched` in `python/tests/test_config_ack_timeout.py`.
+- documents: [CXC-CONFIG-BUS-CENSUS]
+- part-of: [SPEC:CXC-CONFIG-BUS]

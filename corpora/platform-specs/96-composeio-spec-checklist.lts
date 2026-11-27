@@ -1,0 +1,343 @@
+---
+scope: "ComposeIO's spec checklist: the standing rules a ComposeIO spec change must satisfy, starting with spec 95's rule that a host-side change cites the contract version it implements, then the candidate rules the 2026-11-26 audit of spec 95 derived from the extension points that spec creates."
+audience: "composeux-architect (creates and owns this checklist, ratifies each proposed rule); composeio-expert and gnomon-architect (apply it to host-side changes); the spec-auditor (PROC-SPEC-AUDIT product-checklists, where this checklist is registered by the approver of development procedures)."
+boundary: "IN: one rule per node, each a single checkable sentence with its verify-machine. OUT: the contents of any rule's subject (spec 95 owns them); Gnomon's own checklist GM-SPEC-CHECKLIST, which is not edited here; registering this checklist in PROC-SPEC-AUDIT, which is not done by this file."
+not-this: "Not ratified: only rule 1 is decided; every other rule is proposed (architect-synthesis) until composeux-architect ratifies it. Not a claim that any rule has been applied or run: every verify-machine is a check to write, not a result."
+depends-on: [95-plugin-contract.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: draft
+created: 2026-11-26
+updated: 2026-11-26
+---
+# ComposeIO Spec Checklist — standing rules for ComposeIO spec changes [SPEC:CXC-SPEC-CHECKLIST]
+
+> A small checklist, one node per rule. Rule 1 is decided (Plumb's addendum, accepted by the architect). The other rules are the candidate rules the spec audit of the shared plug-in contract (spec 95) suggested, quoted as the audit wrote them, plus one from Plumb's review, each proposed until the architect ratifies it.
+
+---
+
+## 1. Placement
+
+### [CXC-SCL-PLACEMENT] Placement is UNRATIFIED, and filename 96 was verified unused
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` beside spec 95, whose `CXC-PC-STANDING-HOST-CITES-VERSION` says this checklist is created before the build; see [CXC-VISION-PLACEMENT] for the directory's numbering convention.
+- filename-number-check: `96` was verified unused across `corpora/platform-specs/` before this file was written (listing 2026-11-26: 95 taken by `95-plugin-contract.lts`, 97 and 98 free, 99 the reserved conventions-document number).
+- dropped-rules: the audit's rules E15 (HA key lists) and E16 (install-time warnings) were dropped at the architect's ruling of 2026-11-26, because they describe the accept-and-ignore key list and install-record warnings that spec 95 r4 removed.
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-VISION-PLACEMENT], [CXC-PC-PLACEMENT]
+
+---
+
+## 2. The decided rule
+
+### [CXC-SCL-HOST-CITES-VERSION] Rule 1: a host-side change cites the contract version it implements
+
+- rule: "a host-side change cites the contract version it implements."
+- applies-to: every ComposeIO host-side change and, by the same standing order, Gnomon's GM-SPEC-CHECKLIST (which gains the same rule; that file is not edited here).
+- verify-machine: each host-side change record (spec revision, commit message or decision node) names one `plugin-contract-vX.Y` tag, and a check over the change set finds no host-side change without it.
+- status: decided
+- status-detail: decided — Plumb's addendum, accepted by the architect
+- provenance: Plumb's addendum to the brief, accepted by the architect (2026-11-26); see [CXC-PC-STANDING-HOST-CITES-VERSION].
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-STANDING-HOST-CITES-VERSION], [CXC-PC-VERSION-RULE], [CXC-PC-RELEASE-TAGS]
+
+---
+
+## 3. Candidate rules from the audit of spec 95
+
+### [CXC-SCL-MANIFEST-FIELD-RELEASE] Rule: A spec that adds or changes a manifest field names the contract release that carries it and bumps `contract`
+
+- rule: "A spec that adds or changes a manifest field names the contract release that carries it and bumps `contract`."
+- source: the audit's suggested one-line rule for extension point E1, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 55, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: a spec diff that adds or changes a field of the manifest JSON Schema without naming a `plugin-contract-vX.Y` release and a changed `contract` value fails the check.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-MANIFEST-FIELDS], [CXC-PC-RELEASE-TAGS]
+
+
+### [CXC-SCL-RESERVED-NAME-ADOPTION] Rule: A spec that adopts a reserved name adopts it with the recorded meaning, or records a MAJOR bump
+
+- rule: "A spec that adopts a reserved name adopts it with the recorded meaning, or records a MAJOR bump."
+- source: the audit's suggested one-line rule for extension point E2, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 56, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: a diff that removes a name from the reserved list passes only if the new field's meaning equals the meaning recorded at CXC-PC-RESERVED-NAMES or the diff bumps MAJOR.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-RESERVED-NAMES]
+
+
+### [CXC-SCL-HOST-SECTION] Rule: A new host adds its own key, validates only its own section, ignores the others, and supplies a consent renderer for it
+
+- rule: "A new host adds its own key, validates only its own section, ignores the others, and supplies a consent renderer for it."
+- source: the audit's suggested one-line rule for extension point E3, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 57, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: a stub host with its own `hosts.<name>` key installs hello-world, ignores a foreign section carrying arbitrary content, and renders its section on the consent screen.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-HOST-SECTIONS]
+
+
+### [CXC-SCL-HOST-PROTOCOL-MEMBER] Rule: A host spec lists every `Host` member it implements
+
+- rule: "A host spec lists every `Host` member it implements; a new member is a contract release."
+- source: the audit's suggested one-line rule for extension point E4, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 58, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: every member of the library's `Host` protocol appears in each host spec's list, and a protocol diff adding a member names a contract release.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-LIBRARY-CONTENTS], [CXC-PC-UI-HOST-HOOKS]
+
+
+### [CXC-SCL-GRANTED-VOCABULARY] Rule: A spec that adds a permission kind adds its `granted` string form and its line on the consent screen
+
+- rule: "A spec that adds a permission kind adds its `granted` string form and its line on the consent screen."
+- source: the audit's suggested one-line rule for extension point E5, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 59, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: for each permission kind a spec adds, the consent renderer emits a `granted` string of the recorded form and one consent-screen line.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-CONSENT-RECORD]
+
+
+### [CXC-SCL-CONSENT-BEFORE-IMPORT] Rule: No code path may import a plug-in module before a granted consent record exists
+
+- rule: "No code path may import a plug-in module before a granted consent record exists; a spec that adds a path says how it keeps this."
+- source: the audit's suggested one-line rule for extension point E6, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 60, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: an import spy over install and consent rendering records zero imports of the plug-in module before a granted consent record exists.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-DERIVE-ONCE]
+
+
+### [CXC-SCL-FIXTURE-COVERAGE] Rule: A spec that adds a contract field adds the hello-world step or negative control that exercises it
+
+- rule: "A spec that adds a contract field adds the hello-world step or negative control that exercises it."
+- source: the audit's suggested one-line rule for extension point E7, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 61, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: the schema-coverage check fails when a schema field is exercised by no hello-world manifest, step or negative control.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-CONFORMANCE-SCRIPT], [CXC-PC-RULE-SIZE]
+
+
+### [CXC-SCL-BUS-NAMESPACE] Rule: A plug-in's bus declarations sit under its own domain root
+
+- rule: "A plug-in's bus declarations sit under its own domain root; an exception names the contract version that allows it."
+- source: the audit's suggested one-line rule for extension point E8, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 62, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: the validator refuses a namespace outside `plugins/<domain>/` unless the manifest's `contract` value names a version that allows the exception.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-BUS-BLOCK]
+
+
+### [CXC-SCL-CTL-FRAMES] Rule: A new control frame is a contract release
+
+- rule: "A new control frame is a contract release; a runner refuses unlisted values."
+- source: the audit's suggested one-line rule for extension point E9, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 63, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: the runner refuses a control frame whose `_ctl` value is not in the released list, and the list changes only with a contract release.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-SUBPROCESS-RUNNER]
+
+
+### [CXC-SCL-LIFECYCLE-TABLE] Rule: A spec that adds an operation or a state updates the transition table and its table-driven test
+
+- rule: "A spec that adds an operation or a state updates the transition table and its table-driven test."
+- source: the audit's suggested one-line rule for extension point E10, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 64, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: the table-driven lifecycle test enumerates every operation from every state and fails if the transition table and the test differ.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-LIFECYCLE-STATES]
+
+
+### [CXC-SCL-RELEASE-PINS] Rule: Each host records its pinned `plugin-contract-vX.Y` tag
+
+- rule: "Each host records its pinned `plugin-contract-vX.Y` tag; a host never tracks a branch."
+- source: the audit's suggested one-line rule for extension point E11, quoted as written, in AUDIT.md (CONFORMANCE table, extension points), line 65, composeio/spec-records/spec95/audits/AUDIT.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: each host spec names one `plugin-contract-vX.Y` tag and a lookup of the host's dependency pin returns that tag, not a branch name.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-RELEASE-TAGS]
+
+
+### [CXC-SCL-STANDARD-QUESTIONS-POINTER] Rule: A spec that defines the standard-questions corpus (Gnomon X145) names this field as its entry point and adds no second pointer
+
+- rule: "A spec that defines the standard-questions corpus (Gnomon X145) names this field as its entry point and adds no second pointer."
+- source: the audit's suggested one-line rule for extension point E13, quoted as written, in AUDIT_DELTA_r3.md (CONFORMANCE, the four extension points r3 created), line 78, composeio/spec-records/spec95/audits/AUDIT_DELTA_r3.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: the schema holds exactly one field that points at a standard-questions corpus, `standard_questions`.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-STANDARD-QUESTIONS]
+
+
+### [CXC-SCL-EXTRA-PANELS] Rule: A host that adds a manager panel adds it through `extra_panels`, under the shared prefix and auth hook, never as a separate route
+
+- rule: "A host that adds a manager panel adds it through `extra_panels`, under the shared prefix and auth hook, never as a separate route."
+- source: the audit's suggested one-line rule for extension point E14, quoted as written, in AUDIT_DELTA_r3.md (CONFORMANCE, the four extension points r3 created), line 79, composeio/spec-records/spec95/audits/AUDIT_DELTA_r3.md (original, Miyazaki, unverified: (a local path, not published)).
+- verify-machine: a crawl of the mounted app finds every host panel at a `SCRIPT_NAME`-prefixed URL behind the auth hook, and the host registers no route outside `Host.extra_panels`.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — a rule suggested by the Fable spec audit, not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-UI-HOST-HOOKS], [CXC-PC-LIBRARY-CONTENTS]
+
+
+### [CXC-SCL-HOST-PROVIDED-PACKAGES] Rule: a host's install path keeps refusing manifests that require host-provided packages
+
+- rule: "A change to a host's plug-in install path keeps refusing manifests whose requirements name composebus, compose-plugins or composeio, and the host keeps providing those packages itself."
+- source: Plumb's R3/R6 review condition on spec 95, accepted by the architect (2026-11-26); not one of the audit's extension-point rules.
+- verify-machine: after any change to a host's install path, the negative control [CXC-PC-NC-HOST-PROVIDED-REQUIREMENT] still refuses a manifest whose `requirements` names `composebus`, `compose-plugins` or `composeio`, naming the package, and the host process imports `composebus` and `compose_plugins` from its own environment with no index call.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: Plumb R3/R6 review condition, accepted by the architect
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-MANIFEST-FIELDS], [CXC-PC-NC-HOST-PROVIDED-REQUIREMENT]
+
+### Rule: A new provenance class updates every query that classifies provenance [CXC-SCL-PROVENANCE-CLASSES]
+
+- rule: "A `provenance` value begins with one of david-ruling, david-approval, david-selection or architect-synthesis; a david-selection copies the label exactly, names the DSD and decision, and names the label's author; a spec that adds a class updates [CXC-PC-ARCHITECT-PROPOSALS] `how-to-list`."
+- source: the audit's suggested rule for convention X1 (a new provenance class, `david-selection`), quoted as written, in AUDIT_DELTA_r13.md (CONFORMANCE, the standing order), composeio/spec-records/spec95/audits/AUDIT_DELTA_r13.md (original, Miyazaki, unverified: (a local path, not published)).
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — audit AUDIT_DELTA_r13 X1, accepted by the architect (2026-11-26) as a candidate rule; not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-ARCHITECT-PROPOSALS]
+
+### Rule: A consolidation revision ships a map, a revision line and a before-image [CXC-SCL-CONSOLIDATION]
+
+- rule: "A consolidating revision ships a map with one row per removed key and the hash of the file it describes; its claim of no normative change is audited against the before-image before it is cited; the map is regenerated if the file changes after it."
+- source: the audit's suggested rule for convention X2 (the consolidation convention: a `revision` frontmatter line, trailing "Provenance:" clauses, a map file, deletion by script), quoted as written, in AUDIT_DELTA_r13.md (CONFORMANCE, the standing order), composeio/spec-records/spec95/audits/AUDIT_DELTA_r13.md (original, Miyazaki, unverified: (a local path, not published)). The audit's E8 is this rule missed once.
+- status: proposed
+- status-detail: proposed — awaiting ratify by composeux-architect
+- provenance: architect-synthesis — audit AUDIT_DELTA_r13 X2, accepted by the architect (2026-11-26) as a candidate rule; not yet ratified.
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-PC-PRE-INTEGRATION]
+
+## Rule: A scrubbed default has its live value in the host overlay, and a test fails when an overlay-required name is unset [CXC-SCL-SCRUB-OVERLAY-PARITY]
+
+- rule: Each live value the public tree swaps for a neutral default is read from a single env name, which is listed as overlay-required and set in the private host overlay (composeio-deploy overlay-config). A test fails when an overlay-required name is unset on a live host. A scrub that hard-codes a different value with no override is refused.
+- tell: A health check or selftest stays green while a live function quietly uses a neutral default (for example the broker becoming mqtt-broker.local).
+- source: Folder-swap dry run, 2026-11-26 (g10/swap-dryrun/P3-REPORT.md sha256 261120035a138233c15f307e2ed52cdf1b1e2ba55d15a7320bc3d053abf690fc): the scrubbed package moved the default broker to a name that does not resolve, the overlay carried other names, and MCP servers never sourced it; every selftest stayed green. Rule requested by Plumb under the standing order (a seam later work must honour gets a checklist rule).
+- status: proposed
+- status-detail: proposed: rule text re-composed by corpus-editor under ruling-one-text-author-per-spec-2026-11-26; titles still carry the architect's wording (no typed writer edits a heading) and are to be re-composed by a writer before ratification; awaits ratification; the delivery seam (per-host overlay read at import, filling only unset names) awaits the parity table g10/swap-dryrun/P2-SCRUB-PARITY.md before ratification
+- provenance: architect-synthesis: rule text re-composed by corpus-editor (Sonnet) under ruling-one-text-author-per-spec-2026-11-26; meaning from composeux-architect
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [DX-LOCATION-IS-A-SEAM-NOT-A-LITERAL]
+- also-requires: Three more extension points of the overlay seam. (1) Every shell script that defaults a live endpoint reads the host overlay through scripts/lib/overlay-env.sh before its own defaults; the loader fills only unset names, the first occurrence of a name wins, and nothing is expanded. (2) The repository has a root conftest.py that turns the overlay off (COMPOSEIO_OVERLAY_ENV=none), and a test fails if that file, or any conftest above a composeio import, lacks that line. (3) A scene names no broker host: its transport falls back to COMPOSEIO_MQTT_BROKER, then to a non-routable neutral default.
+
+## Rule: The vendored design-session audit tools keep the canonical speaker rule, and a change to it lands in both copies [CXC-SCL-VENDORED-AUDIT-TOOLS]
+
+- rule: compose_projects/intelligence/tools/extract_design_inputs.py and verify_dsd_citations.py are vendored copies of the canonical design-session tools. A change to the speaker rule (only human-typed turns count as the stakeholder's words, via the shared excluded_kind() classification), to the overlay lookup order (DESIGN_SESSION_OVERLAY, then private/design-session.local.md) or to the exit codes is made in the canonical copy and the vendored copy in the same change; the vendored copies keep their attribution tests (fail-before shown) and the help-text exit-code test.
+- tell: A public copy drifts behind the canonical tool, and a spec audit run from the public tree credits an agent's words to the human (found 2026-11-26: the old public copies credited 22 of 33 hostile non-human records to the stakeholder).
+- source: Candidate review of slice 7b, finding P2-2 (no checklist for the new extension points), g10/build/proof/candidate-review-audit-tools.md sha256 5894a714582a4460b46e59d6c00db1013442dc50a7a12c0cb139887ad2082742; Plumb asked for the rule on his GO, 2026-11-26.
+- status: proposed
+- status-detail: proposed: rule text re-composed by corpus-editor under ruling-one-text-author-per-spec-2026-11-26; titles still carry the architect's wording (no typed writer edits a heading) and are to be re-composed by a writer before ratification; awaits ratification; resync is still manual (no automated parity check yet)
+- provenance: architect-synthesis: rule text re-composed by corpus-editor (Sonnet) under ruling-one-text-author-per-spec-2026-11-26; meaning from composeux-architect
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [STRATEGY-AUDIT-THE-SPEC-AGAINST-THE-HUMANS-OWN-WORDS]
+
+## Rule: Public text carries no device identity; examples use the RFC 7042 documentation range, and a tree-wide test enforces it [CXC-SCL-NO-DEVICE-IDENTITIES-IN-PUBLIC]
+
+- rule: No real device's MAC address, chip serial or USB serial appears in the public tree (code, docs, research, fixtures). Examples use RFC 7042 documentation MACs (00:00:5E:00:53:xx); real identities live only in the host overlay (for example FLASH_DENY_SERIALS and the per-board *_EXPECT_SERIAL names). A tree-wide test fails on any MAC outside 00:00:5E:00:53:00/24, with a reviewed allowlist for intentional non-MAC hex.
+- tell: A scrub or gate passes while a real device identity sits in a public doc, because the private-term vocabulary has no MAC rule and gitleaks does not treat MACs as secrets (found 2026-11-26: device MACs on public main since the S1 catch-up).
+- source: Slice-7d candidate review F3 (g10/build/proof/candidate-review-flash-safety.md sha256 cf8a9dc363253b8acea6a2b33ce4ea350908605afada9a9706e48e670d2b5a7c); fix-forward PR scrub-device-macs as Plumb steered; same class as the composebus 0.1.2 device-id scrub.
+- status: proposed
+- status-detail: proposed: rule text re-composed by corpus-editor under ruling-one-text-author-per-spec-2026-11-26; titles still carry the architect's wording (no typed writer edits a heading) and are to be re-composed by a writer before ratification; awaits ratification; the enforcing test ships with the scrub-device-macs PR
+- provenance: architect-synthesis: rule text re-composed by corpus-editor (Sonnet) under ruling-one-text-author-per-spec-2026-11-26; meaning from composeux-architect
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-SCL-SCRUB-OVERLAY-PARITY]
+
+## Rule: Every device write goes through the one shared flash guard, which fails closed [CXC-SCL-FLASH-GUARD-CHOKEPOINT]
+
+- rule: Every path in ComposeIO that writes to a device (PlatformIO upload or test targets, build scripts, Python bring-up tools) goes through the one shared flash guard (python/composeio/flash_guard.py; for PlatformIO, the hook python/scripts/pio_flash_guard.py, loaded first in every device env). The guard reads protected identities only from host-overlay names (FLASH_DENY_SERIALS; the per-board *_EXPECT_SERIAL names; OFFICE_RELAY_SERIAL_PORT) and fails closed when one is unset, empty or mismatched. Only upload protocols on the guard's allowlist (today esptool) pass. All serial comparisons go through the one shared normaliser. A new device env or upload path adds the hook, and a structural test covers it. A path the guard cannot check is marked "UNGUARDED: manual; check identity first". There is no override; to re-flash the live controller, remove it from the deny list for that run.
+- tell: A guard compares against a value that cannot match (a pseudonym), or a non-serial upload protocol passes unguarded.
+- source: The flash-safety candidate review, findings F1, F2, F4 and D1, g10/build/proof/candidate-review-flash-safety.md sha256 73cc49b9ef3c00428df6b1833cd6debeb369eb3d040d5d44d62487fb5f79c011. The no-override rule is composeux-architect's ruling, recorded for HoP to review.
+- status: proposed
+- status-detail: proposed: awaiting ratification by composeux-architect; the no-override clause is the architect's own ruling and awaits HoP's review
+- provenance: architect-synthesis: rule text composed by corpus-editor (Sonnet) from composeux-architect's brief under ruling-one-text-author-per-spec-2026-11-26
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+- see-also: [CXC-SCL-NO-DEVICE-IDENTITIES-IN-PUBLIC]
+
+## Rule: Every in-tree dependent pins composebus to exactly the in-tree version [CXC-SCL-COMPOSEBUS-PIN-MATCHES-TREE]
+
+- rule: Every in-tree package that depends on composebus (today composeio and compose-plugins) declares exactly composebus==<the in-tree python/composebus version>, enforced by python/tests/test_composebus_pin_matches_tree.py. A composebus version bump updates every dependent's pin in the same change. When a new dependent appears, the hand-listed dependents in that test are updated.
+- tell: A dependent installs an older composebus than the tree ships (found 2026-11-26: composeio pinned 0.1.0, which loses messages, while the tree and compose-plugins were at 0.1.2).
+- source: The pin-bump candidate review, finding P2-2, g10/build/proof/candidate-review-pin-bump.md sha256 60a74ebddd4b334badbd9fa86d04a72c34aeb343d746d39e442039f46a3144c8.
+- status: proposed
+- status-detail: proposed: awaiting ratification by composeux-architect
+- provenance: architect-synthesis: rule text composed by corpus-editor (Sonnet) from composeux-architect's brief under ruling-one-text-author-per-spec-2026-11-26
+- part-of: [SPEC:CXC-SPEC-CHECKLIST]
+
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-SCL-PLACEMENT] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-HOST-CITES-VERSION] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-MANIFEST-FIELD-RELEASE] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-RESERVED-NAME-ADOPTION] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-HOST-SECTION] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-HOST-PROTOCOL-MEMBER] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-GRANTED-VOCABULARY] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-CONSENT-BEFORE-IMPORT] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-FIXTURE-COVERAGE] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-BUS-NAMESPACE] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-CTL-FRAMES] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-LIFECYCLE-TABLE] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-RELEASE-PINS] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-STANDARD-QUESTIONS-POINTER] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-EXTRA-PANELS] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-HOST-PROVIDED-PACKAGES] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-HOST-PROVIDED-PACKAGES]
+- [CXC-SCL-HOST-PROVIDED-PACKAGES] RELATED_TO [CXC-PC-NC-HOST-PROVIDED-REQUIREMENT]
+- [CXC-SCL-HOST-CITES-VERSION] RELATED_TO [CXC-PC-STANDING-HOST-CITES-VERSION]
+- [SPEC:CXC-SPEC-CHECKLIST] DEPENDS_ON [SPEC:CXC-PLUGIN-CONTRACT]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-PLACEMENT]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-HOST-CITES-VERSION]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-MANIFEST-FIELD-RELEASE]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-RESERVED-NAME-ADOPTION]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-HOST-SECTION]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-HOST-PROTOCOL-MEMBER]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-GRANTED-VOCABULARY]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-CONSENT-BEFORE-IMPORT]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-FIXTURE-COVERAGE]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-BUS-NAMESPACE]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-CTL-FRAMES]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-LIFECYCLE-TABLE]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-RELEASE-PINS]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-STANDARD-QUESTIONS-POINTER]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-EXTRA-PANELS]
+- [CXC-SCL-PROVENANCE-CLASSES] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [CXC-SCL-CONSOLIDATION] PART_OF [SPEC:CXC-SPEC-CHECKLIST]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-PROVENANCE-CLASSES]
+- [SPEC:CXC-SPEC-CHECKLIST] CONTAINS [CXC-SCL-CONSOLIDATION]
+- [CXC-SCL-PROVENANCE-CLASSES] RELATED_TO [CXC-PC-ARCHITECT-PROPOSALS]
+
+---
+
+**Version**: 0.1 — 2026-11-26, created by factlattice-editor at the composeux-architect's request, because spec 95's `CXC-PC-STANDING-HOST-CITES-VERSION` says the architect creates ComposeIO's spec checklist before the build.
+**Status**: Draft. Rule 1 is decided; the other rules are proposed until composeux-architect ratifies them. Registering this checklist in PROC-SPEC-AUDIT product-checklists is NOT done by this file.

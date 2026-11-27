@@ -1,0 +1,126 @@
+---
+scope: "The LottieWidget — vector animation for non-interactive motion (dradis sweep, alert animations), rendered via skottie on the Skia tier and a baked sprite sheet on the CYD, with bus-bindable playback controls."
+audience: "Render-engine developers, widget authors"
+boundary: "IN: the LottieWidget, its per-tier rendering, bindable playback, and the CYD sprite-sheet pipeline. OUT: SVG ([SPEC:CXC-SVG]); the binding mechanism itself ([SPEC:CXC-BIND], reused here); After-Effects authoring."
+not-this: "Not an interactive-animation framework; Lottie content is non-interactive motion. Not a general video primitive (that is [CXC-RM-MEDIA])."
+depends-on: [12-composeux-render-engine.lts, 16-composeux-bindings-behaviors.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+# ComposeUX Lottie Animation Widget [SPEC:CXC-LOTTIE]
+
+> A widget that plays a Lottie (Bodymovin) vector animation, realizing [CXC-R-DRAW-LOTTIE]. It renders through Skia's own Lottie module (skottie) on the workhorse tier — so it is pixel-consistent by construction — degrades to a baked sprite sheet on the CYD, and exposes playback controls that bind to the bus the same way any attribute does: state on the bus, motion in the widget.
+
+---
+
+## 1. Intent
+
+### [CXC-LOT-INTENT] Vector Motion Without Frames on the Bus
+
+- definition: The LottieWidget plays a vector animation defined by a Lottie JSON document. Its use is non-interactive motion — a dradis sweep, a pulsing alert glyph, a spinner, a transition flourish.
+- key-insight: Lottie is the *pure-Skia* animation primitive — **skottie** is Skia's own Lottie renderer, so it composites through the same backend as everything else and needs no external decoder (contrast [CXC-RM-MEDIA], which does). Playback is driven by bus state, never by streaming frames.
+- status: OPERATIONAL on the Skia tier (2026-07-07) — `render/widgets/lottie.py` + `render/lottie/` package; C1–C5, C7 PASS; C6 (CYD sprite sheet) deferred to M5. NOTE the renderer-seam change record below: skottie is NOT bound by skia-python, so the Skia tier currently renders via the engine's Canvas-contract Lottie evaluator (Skia still rasterizes every pixel).
+- part-of: [SPEC:CXC-LOTTIE]
+
+---
+
+## 2. Rendering Per Tier
+
+### [CXC-LOT-RENDER] One Source, Three Renderers
+
+- skia-tier (macOS / RPi / MinnowBoard): render via **skottie** (skia-python's Skottie module). The engine advances the animation to a logical time and skottie draws that frame into the Skia surface — pixel-consistent across the tier by construction.
+- skia-tier-as-built (2026-07-07): skia-python does NOT bind skottie (see change record); the tier renders via `render/lottie/` — a zero-dependency Lottie-SUBSET evaluator emitting Canvas-contract calls, behind a documented renderer seam (`render_lottie()` / `RENDERER`). Skia rasterizes every pixel, so [CXC-R-C1] identity holds; a future skottie-capable build swaps in behind the seam without touching widget/bindings/tests.
+- browser: **skottie ships inside CanvasKit** — so under Decision 1 Option A (Pyodide + CanvasKit) the browser plays the same animation nearly for free; a TS re-port would need lottie-web instead (a point for Option A).
+- cyd: skottie is too heavy for the ESP32 at runtime, so the CYD plays a **pre-rendered sprite sheet** ([CXC-LOT-CYD]) — design-identical frames baked from the same Lottie.
+- test: the same Lottie at the same logical time renders design-identically on the Skia tier and (as sprite frames) on the CYD.
+- part-of: [SPEC:CXC-LOTTIE]
+
+### [CXC-LOT-DETERMINISM] Deterministic Frame Sampling
+
+- constraint: like state-driven behaviors ([SPEC:CXC-BIND]), Lottie playback is time-based; for pixel-goldens it must sample deterministically — render the animation at a fixed logical time (reuse `RenderApp.render_frame_at(t)`), so golden frames reproduce byte-identically macOS↔RPi.
+- part-of: [SPEC:CXC-LOTTIE]
+
+---
+
+## 3. Bus-Bindable Playback
+
+### [CXC-LOT-PLAYBACK] Playback Controls Are Just Bindings
+
+- role: The player exposes a control surface that binds to namespaces/variables via the [SPEC:CXC-BIND] mechanism — the same "state on the bus, behavior in the widget" model, applied to animation transport.
+- controls (each literal or namespace-bound): `autoplay` (bool), `loop` (bool | count), `speed` / `setSpeed` (float multiplier), `goToAndStop` (frame or `0..1` progress — jump-and-hold), `playSegments` (`[a, b]` frame/marker range to play/loop). Marker names from the Lottie resolve to frames.
+- dradis: the sweep is a Lottie whose `speed` (or `goToAndStop` progress) is bound to a `scanning`/heading namespace — the needle position is bus-driven, the interpolation is engine-owned.
+- test: publishing to the bound `speed` namespace changes playback rate within one frame; `goToAndStop` bound to a value holds the matching frame; `playSegments` loops the named range.
+- as-built (2026-07-07): .compose.yaml attributes are snake_case (`speed`, `autoplay`, `loop`, `go_to_and_stop`, `play_segments`); the parser normalizes lottie-web aliases (`setSpeed`/`goToAndStop`/`playSegments`). Registered in `BINDABLE_ATTRS_BY_TYPE['lottie']` so the Composer Bindings tab surfaces the transport with zero editor changes ([CXC-BE-INTROSPECT]). `play_segments` binds via the object form only (a bare string is a marker-name literal). Transport mutations rebase the playhead against the engine's logical clock (`on_clock_tick`, the new runtime clocked-widget registry) — pure function of the clock, per [CXC-LOT-DETERMINISM]. Widgets may declare `coerce_bound_attr(attr, raw)` for binding coercion the generic type rules cannot infer (engine/bindings.py hook, added this pass).
+- part-of: [SPEC:CXC-LOTTIE]
+
+### [CXC-LOT-ASSET] Lottie Source Is a Bus Asset
+
+- role: the animation JSON is referenced as `src: doc://…/x.json` or `bus://assets/…/x.json`, fetched via the asset manager (`render/engine/assets.py`) with caching. Embedded images inside the Lottie resolve through the same asset path.
+- part-of: [SPEC:CXC-LOTTIE]
+
+---
+
+## 4. CYD Sprite-Sheet Pipeline
+
+### [CXC-LOT-CYD] Bake, Don't Decode
+
+- role: `composeio push` pre-renders the Lottie (via skottie, offline) into a **sprite sheet** stored in document_store ([CXC-R-C18]); the CYD firmware plays the frame sequence. Frame count/size are bounded for the ESP32 (PSRAM budget); a `fps`/`frames` cap is declared per animation.
+- degradation: bound playback controls that the sprite-sheet can honor (play/pause/loop, goToAndStop to a baked frame) work; continuous `setSpeed` maps to nearest baked frame rate. Segment/marker playback maps to baked frame ranges.
+- part-of: [SPEC:CXC-LOTTIE]
+
+---
+
+## 5. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-LOT-C1 | Skia playback | A Lottie plays on the Skia tier; frame at time t is deterministic and pixel-identical macOS↔RPi ([CXC-R-C17]) |
+| CXC-LOT-C2 | Bindable speed | `speed` bound to a namespace changes the play rate within one frame |
+| CXC-LOT-C3 | goToAndStop | `goToAndStop` bound to a value holds the matching frame |
+| CXC-LOT-C4 | Segments | `playSegments [a,b]` plays/loops exactly the named range |
+| CXC-LOT-C5 | Dradis demo | A dradis Lottie whose sweep is namespace-driven renders the needle at the bound position |
+| CXC-LOT-C6 | CYD sprite sheet | `composeio push` bakes a sprite sheet; the CYD plays the frame sequence ([CXC-R-C18]) |
+| CXC-LOT-C7 | Asset fetch | The Lottie JSON loads from doc://` / `bus://` via the asset manager |
+
+- results (2026-07-07): C1 PASS (8/8 sampled dradis frames SHA-256-identical macOS↔RPi5, `tests/render/captures/lottie/*/manifest.json`; goldens `lottie_*` regression-pinned; whole-demo composition incl. engine text also SHA-identical) · C2 PASS (rate change lands on the very next sampled frame, playhead rebases continuously — no jump) · C3 PASS (frame + 0..1 progress forms; release resumes from held frame) · C4 PASS (frame pairs, marker names, "a,b" strings; range never exits [a,b)) · C5 PASS (`render/examples/dradis_lottie.compose.yaml`, markers sweep/calibrate; Intelligence-over-MQTT smoke 5/5 BOTH platforms `smoke_lottie_intelligence_mqtt.py`) · C6 DEFERRED to M5 (needs the embedded config-driven boot; design retained in [CXC-LOT-CYD]) · C7 PASS (doc:// base64 payloads + bus:// via AssetManager, plus a LIVE bus_storage round-trip: `bus://assets/animations/dradis_lottie.json`). Suites: 276 green macOS, 272+4skip RPi5; live window 58fps macOS with a mid-run bound-speed change applied.
+- compliance-tests: `tests/render/test_lottie.py` (25).
+
+---
+
+## Change Records
+
+- change: "Skia-tier renderer = the engine's Canvas-contract Lottie evaluator (`render/lottie/`), NOT skottie (2026-07-07, build pass) — a DEPENDENCY DECISION RATIFIED by David 2026-07-07; the widget/bindings/tests are renderer-agnostic behind the `render_lottie()` seam."
+- context_for_change:
+  - prior_state: "The spec named skottie (skia-python's Skottie module) as the Skia-tier renderer, 'pixel-consistent by construction'."
+  - reasoning: "Verified 2026-07-07: skia-python does NOT bind skottie — upstream issue kyamagu/skia-python#57 open since 2020, zero skottie symbols in the shipped m144 binaries on BOTH macOS-arm64 and linux-aarch64 (the deployed wheels), and no newer wheel exists. The kickoff's sanctioned fallback was 'a Lottie evaluator rasterizing through the Canvas contract'; the natural parser dependency (python-lottie, PyPI `lottie`) is AGPLv3+ — license-incompatible with ComposeIO's open-reuse posture — so the evaluator is a zero-dependency hand-written Lottie-SUBSET (shapes/groups/transforms/keyframes with bezier easing/markers/gradients/parenting/precomp; unsupported features warn-once and skip). Scene evaluation is pure IEEE-754 arithmetic with fixed-iteration bezier solves; Skia rasterizes every pixel through the same backend as all widgets, so cross-platform identity is preserved — proven byte-exact (8/8 SHA-256) macOS↔RPi5."
+  - rejected_alternative: "(a) python-lottie as a dependency — rejected on AGPLv3+. (b) rlottie bindings — rejected: rasterizes outside the Canvas contract, breaking the one-rasterizer pixel gate. (c) Building a skottie-capable skia-python fork now — deferred, not rejected: it means owning a patched pybind11 binding + custom Skia builds for macOS-arm64/linux-aarch64/x86_64 indefinitely, for a widget whose scope is non-interactive motion."
+  - counter_argument: "A subset evaluator will never play arbitrary After-Effects exports (mattes, trim paths, effects, text layers) the way skottie would."
+  - counter_response: "The spec's own scope is non-interactive motion (sweeps/pulses/spinners/flourishes — [CXC-LOT-INTENT]); the subset covers it and degrades honestly (warn-once, screen never broken). The renderer seam means adopting a skottie build later is a swap, not a rewrite — and the same custom-Skia lift would ALSO be what strict byte-identity for stroked content requires (see the determinism record), so the two decisions merge into one future build investment."
+  - invalidating_assumption: "That skia-python remains skottie-less and that Lottie usage stays within non-interactive motion. If designers need arbitrary AE exports (mattes/effects), or upstream ships Skottie bindings, reopen and swap the seam."
+  - implication: "`render/lottie/RENDERER = 'canvas-contract'` names the active implementation. The CYD sprite-sheet baker ([CXC-LOT-CYD], M5) can reuse the same evaluator offline — design-identical frames without a Skia dependency on the build host."
+
+- change: "Determinism finding + authoring rule (2026-07-07): STROKED cubic contours (e.g. stroked circles) can diverge ±1 on isolated pixels between the macOS-arm64 and linux-aarch64 skia-python builds; FILLS are bit-exact. Circular rings in determinism-gated Lottie assets are authored as annulus FILLS (paired `el` with the inner reversed, `d: 3`)."
+- context_for_change:
+  - prior_state: "[CXC-BIND-C6] established byte-identical sampled frames macOS↔RPi5, on flat/rect content. First Lottie captures failed strict SHA-256 (1–5 px per frame, Δ=1) while passing tolerance goldens."
+  - reasoning: "Bisected to a single primitive: a stroked large-radius cubic-bezier circle under a translated CTM (e.g. r=100 at +12,+12, width 1.5 or 2.0) rasterizes with ±1 differences on a handful of AA pixels; the same geometry at the origin, all gradient fills (linear, radial, alpha-stop), path fills, annulus fills at any offset, and straight-line strokes are byte-identical. The engine's Lottie evaluator emits bit-identical path commands on both platforms (verified) — the divergence is inside Skia's stroker/AA pipeline across differently-compiled wheel builds (compiler FMA/rounding), i.e. a Skia-build property that would affect skottie identically."
+  - rejected_alternative: "(a) Loosen [CXC-LOT-C1] to tolerance-only — rejected: byte-identity is achievable and was achieved by removing the divergent primitive from the asset. (b) Engine-side deterministic stroker (convert strokes to fill outlines) — deferred: real scope (caps/joins/curve offsetting) for a case authoring avoids."
+  - counter_argument: "Asset-side authoring rules are fragile — any third-party Lottie with stroked circles will fail strict identity."
+  - counter_response: "Third-party stroked content still passes the tolerance goldens (Δ≤1 on <0.01% of pixels) — visually indistinguishable; strict SHA identity is the DEMO/golden-pinning bar, and hand-authored deterministic assets are already this spec's norm (license posture). The `d: 3` annulus idiom is standard Lottie, not a private extension."
+  - invalidating_assumption: "That both tiers run differently-built upstream skia-python wheels. A single pinned self-built Skia (the same investment a skottie binding needs) would make stroked content bit-exact too — if that build ever lands, this authoring rule relaxes to a note."
+  - implication: "`scripts/generate_dradis_lottie.py` regenerates the flagship asset reproducibly with annulus rings; the renderer supports `el.d == 3` reversed winding. Result: 8/8 sampled frames + the full demo composition SHA-256-identical macOS↔RPi5."
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-LOTTIE] IMPLEMENTS [CXC-R-DRAW-LOTTIE]
+[CXC-LOT-PLAYBACK] DEPENDS_ON [SPEC:CXC-BIND]
+[CXC-LOT-RENDER] RELATED_TO [CXC-RM-D1]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-07-06
+**Status**: Operational on the Skia tier (C1–C5, C7 PASS 2026-07-07; C6/CYD deferred to M5) — renderer-seam decision ratified by David 2026-07-07

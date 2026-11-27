@@ -1,0 +1,390 @@
+---
+scope: "Build roadmap to bring the renderer-agnostic ComposeUX render engine to production and rebuild Composer on it — the path from today's CTk-load-bearing state to define-once widgets rendering on web, desktop, and CYD"
+audience: "The builder taking the first pass (Claude Fable), ComposeUX/render-engine developers, David"
+boundary: "Sequencing, milestones, deliverables, acceptance, and the one blocking language/runtime decision. IN: what to build and in what order. OUT: the render-engine architecture itself (that is 12-composeux-render-engine.lts, the normative source); the Composer UX redesign (specs/ux/); per-widget visual specs."
+not-this: "Not a rewrite of the render engine spec; not a commitment to a specific web toolchain (that is Decision 1, deliberately open); not a schedule with dates — it is not date-driven."
+depends-on: [12-composeux-render-engine.lts, 11-composer-widget-renderers.lts, 00-composer-overview.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# ComposeUX Render Engine & Composer — Build Roadmap [PROJECT:CXC-ROADMAP]
+
+> How to get the "correct" model working: a renderer-agnostic ComposeUX where a widget is defined once and renders pixel-identically on web, desktop, and CYD, with Composer itself rebuilt on that engine. Written as a first-pass build brief. The normative architecture is [SPEC:CXC-RENDER]; this document only sequences its construction.
+
+---
+
+## 1. Intent — the End-State
+
+### [CXC-RM-ENDSTATE] What "Correct" Means
+
+- definition: ComposeUX is the three-layer render engine of [CXC-R-ARCH] — declarative `.compose.yaml` widgets over a platform-independent engine (layout, hit-test, focus, text, animation, assets) over thin per-platform drawing backends. A widget is authored once and renders pixel-identically on desktop, browser, and CYD. Composer is rebuilt on this engine (ultimately a browser app), previews *real* engine-rendered widgets, and stays bus-native and Intelligence-drivable.
+- key-insight: CTk is not the foundation — it is the interim runtime the engine is designed to replace ([CXC-R-PHASES]: "Phase 1 replaces CTk widget rendering"). The destination is toolkit-agnostic; CTk retires to the Python/Skia dev-reference role.
+- status: planned
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-RUNTIME-DIST] Widget Runtime Distribution (where deployed widgets run)
+
+- clarification: This is **runtime-location frequency** — where deployed ComposeUX widgets actually execute in production — NOT development order. By frequency: (1) **macOS**, (2) **Raspberry Pi**, (3) **Browser**. CYD is a low-volume POC tier; mobile is out of scope. (This ranks where *widgets* run; where the *Composer tool* runs is a separate question — see [CXC-RM-M4].)
+- key-insight: The two highest-frequency runtimes collapse into ONE backend — macOS and RPi both run **Python + Skia** (RPi is a capable Linux/ARM SBC, not a constrained MCU like the CYD). So the workhorse backend, carrying the bulk of production widget execution, is Python-Skia; the browser is the lowest-frequency of the three.
+- consequence-invest: Backend hardening/perf effort follows frequency — Python-Skia (macOS+RPi) is the workhorse and earns the most investment; the browser backend serves fewer sessions, which relaxes its perf bar and argues against letting it drive the architecture.
+- consequence-decision1: Because the high-frequency runtimes are Python and mobile is out of scope, keep the engine Python and do NOT adopt Flutter (it would demote the workhorse to reference-only to serve the least-frequent target). Decision 1 narrows to Python-in-browser vs a browser-only re-port — see [CXC-RM-D1].
+- consequence-dev-order: Development order is set by the critical path ([CXC-RM-PATH]), not by this frequency — but they align: the M0–M2 Python trunk happens to build the two highest-frequency runtimes first; the browser (lowest frequency) is M3.
+- implication-rpi: Linux/aarch64; fullscreen/kiosk (DRM-KMS or Wayland/X11), possibly rotated. May need skia-python built for aarch64 or a GL surface — a bounded M0 risk. RPi can run the config-driven fungible-display boot ([CXC-R-BOOT]) as a Python app — the middle tier between macOS and CYD.
+- status: planned
+- part-of: [PROJECT:CXC-ROADMAP]
+
+---
+
+## 2. Current State (measured 2026-07-06)
+
+### [CXC-RM-STATE] Two Parallel Worlds; the Hard Bet Is Already Proven
+
+- key-insight: The architectural risk is retired. The same widget code renders pixel-comparable on **desktop Skia** and a **resource-starved ESP32/CYD** (ILI9341, 7.6 KB band buffer), verified by a working pixel-diff QA harness. "One tiny contract, render anywhere" is demonstrated, not aspirational.
+- production-world: `ux_composer/src/composeio_renderers/` — ~11 widgets, each a `CTkFrame` subclass, wired into the dashboard + preview. **Load-bearing. CTk-coupled by design.**
+- engine-world: `python/composeio/render/` — the `Canvas` contract (ABC) + a real Skia raster backend + `cyd/` C++ backend + 5 agnostic widgets (gauge/led/label/rect/circle). **Not wired into any app.**
+- gaps-that-define-the-work:
+  - Skia backend is raster-only — `present()` is a no-op; **no live window / event loop**.
+  - **No Layer 2 engine** (layout, hit-test, focus, text, gesture, animation) in the agnostic world.
+  - **No `.compose.yaml` runtime** — widgets are constructed programmatically/statically, not parsed from config.
+  - Only 5 of ~16 widgets exist on the contract; the 11 production widgets are CTk-only.
+  - **No browser backend** — the web target is spec + an SSE bus-bridge (`web.py`), zero renderer.
+  - CYD backend implements a *subset* of the contract (no fill_arc/paths/transforms/draw_image/opacity) and has no config-fetch boot.
+- status: operational (as described)
+- see-also: [CXC-RM-ENDSTATE]
+- part-of: [PROJECT:CXC-ROADMAP]
+
+---
+
+## 3. Guiding Principles
+
+### [CXC-RM-PRINCIPLES] How This Build Proceeds
+
+- p1-independently-useful: Every milestone ends in a demonstrable, pixel-verifiable artifact. No milestone is a prerequisite-only stub.
+- p2-front-load-the-common-trunk: Build what is needed under *every* option first (the Python engine foundation) before resolving the web toolchain fork. This retires CTk on desktop early and de-risks everything downstream.
+- p3-ctk-stays-until-parity: CTk remains load-bearing until desktop-Skia renders the full production composition from config in a live window. No removal before that gate.
+- p4-model-stays-agnostic: Nothing new is authored against CTk. Widget definitions are `.compose.yaml` + the `Canvas` contract. The Composer UX redesign (specs/ux/) is toolkit-neutral by construction.
+- p5-pixel-verified-always: Every backend and widget is regression-tested against the Skia reference via the existing `pixel_comparison.py` harness. Fidelity is a gate, not an afterthought ([CXC-R-C1], [CXC-R-C2]).
+- p6-bus-native-intelligence-drivable: The engine, its interaction model, and Composer-on-the-engine all remain bus-native; an Intelligence drives and observes identically to a human, over MQTT/websocket.
+- part-of: [PROJECT:CXC-ROADMAP]
+
+---
+
+## 4. The Blocking Decision
+
+### [CXC-RM-D1] Decision 1 — In What Language Does Shared Engine+Widget Code Run in the Browser?
+
+- decision: OPEN. Must be resolved before [CXC-RM-M3] (browser backend), not before the M0–M2 trunk.
+- problem-statement: Layer 2 engine + widgets are Python today; CYD is C++ (unavoidable for embedded); a browser cannot run Python natively. So: does the shared code run in-browser as WASM, or is it re-authored in a browser-native language?
+- context: The two highest-frequency widget runtimes (macOS + RPi) are Python+Skia, mobile is out of scope, and the browser is the *lowest*-frequency of the three ([CXC-RM-RUNTIME-DIST]). So this fork serves one lower-traffic, non-Python target — it must not reshape the whole engine.
+- option-a: **Pyodide + CanvasKit (WASM).** The one Python engine+widgets run in-browser via Pyodide, drawing through CanvasKit (WASM Skia). Truest define-once — all runtimes run the *same Python code*; C++ only for CYD. Risk: Pyodide payload (multi-MB) + interactive latency — but the browser's low runtime frequency relaxes this bar. Preserves the entire Python investment.
+- option-b: **Browser-only TypeScript re-port.** Re-author Layer 2 + widgets in TS for the browser alone; a second engine codebase (Python + TS), pixel-verified against the Skia reference. Proven browser perf; bounded because it targets exactly one, lower-frequency platform.
+- option-c-rejected: **Flutter / Dart.** REJECTED under the current runtime distribution — mobile is out of scope and the browser is lowest-frequency, so Flutter's one-codebase-many-platforms advantage is moot while it would demote the macOS+RPi Python workhorse to reference-only. Revisit only if mobile becomes a significant runtime.
+- recommendation: Lean **Option A** for define-once; gate on a **time-boxed Pyodide spike** (cold-start payload + interaction latency on a non-trivial `.compose.yaml`). If it fails, fall back to **Option B (browser-only TS)** — one extra codebase for one lower-frequency platform. Not Flutter.
+- invalidating_assumption: "That mobile stays out of scope and the browser stays low-frequency. If either changes, reopen Flutter. If the Pyodide spike fails, Option B is the fallback."
+- status: planned
+- part-of: [PROJECT:CXC-ROADMAP]
+
+---
+
+## 5. Milestones
+
+### [CXC-RM-M0] M0 — Live, Interactive Desktop-Skia
+- goal: Turn the raster-only Skia backend into a live windowed surface with an event loop feeding the engine. Formalize the `Canvas` contract as a single source of truth with a conformance test both Python-Skia and C++/CYD must pass.
+- unlocks: Any interactive rendering at all — preview, then Composer. The pixel-verification baseline.
+- deliverables: Skia live window on **macOS and Raspberry Pi** (windowed on macOS; fullscreen/kiosk via DRM-KMS or Wayland on RPi — RPi may need skia-python built for aarch64 or a GL surface) + run loop; pointer/keyboard/touch capture → engine events; contract conformance suite (reference shapes).
+- reuse: `render/skia_backend.py` (add windowing to the working raster path), `render/canvas.py`, existing `render/widgets/` (5 widgets), `pixel_comparison.py`.
+- acceptance: the 5 agnostic widgets render live in a Skia window; a bus value change updates within one frame ([CXC-R-C4]); a mouse click reaches the backend; both backends pass the conformance suite ([CXC-R-C2]).
+- status: operational (first pass, 2026-07-06) — `render/window.py` `SkiaWindow(SkiaCanvas)`: SDL2 window presents the raster surface; SDL pointer/key/touch/wheel events → engine `PointerEvent`/`KeyEvent`/`WindowEvent`; 60fps sustained windowed on macOS (verified `tests/render/smoke_live_window.py`, 6/6 checks incl. window==reference at 100.00% identical AND `SDL_RenderReadPixels` presented-pixel readback at max_delta 0 — the readback catches N32 channel-order bugs that surface reads cannot see: N32 is RGBA on the macOS wheel, BGRA on Linux/aarch64, and the texture format is now selected from the surface colorType). Conformance suite `render/conformance.py`: 11 contract scenes + goldens (`conformance_golden/`), capability-tagged so the CYD subset SKIPs rather than FAILs unimplemented primitives; Skia self-verifies 11/11 at 100.00%. CYD hardware run of the suite pending device access (scenes are contract-only and mirror the crosscheck harness).
+- rpi-confirmed: SAME build on (a private host name, not published) (RPi 5, aarch64, Debian 12, skia-python 144 == macOS version): conformance 11/11 against the macOS-generated goldens (geometry+atlas-text pixel-identical across OS/arch); engine acceptance tests green; LIVE window on the Wayland kiosk at 59.8fps with presented-pixel readback max_delta 0. Two RPi requirements: (1) system SDL2 via `PYSDL2_DLL_PATH=/usr/lib/aarch64-linux-gnu` — the bundled pysdl2-dll build hangs against this compositor; (2) typeface cache in the backend — Linux fontconfig `MakeFromName` cost ~1.5ms/call and dragged a frame from 2.2ms to 37ms before caching.
+- change: "Windowed presentation = SDL2 streaming-texture blit of the SAME raster surface the pixel harness diffs; not a Skia GPU surface."
+- context_for_change:
+  - prior_state: "present() was a no-op; the assumed windowing path was GLFW + Skia GL surface."
+  - reasoning: "Blitting the raster reference makes the on-screen pixels byte-identical to the golden PNGs (verified 100.00% identical), collapsing 'window fidelity' into the existing pixel gate. SDL2 also carries the RPi path (KMSDRM/Wayland/X11) with zero code change, where GLFW cannot do KMSDRM."
+  - rejected_alternative: "GLFW + GPU surface — macOS-deprecated GL, and a GPU rasterizer's AA differs subtly from the raster reference, splitting the golden set."
+  - counter_argument: "CPU raster + full-surface blit may not scale to large/high-DPI surfaces."
+  - counter_response: "Measured: 960x620 full redraw ~1ms, blit <1ms (GL render driver on macOS; Metal driver blocked ~8ms/present and was bypassed). A GPU surface can be added behind SkiaWindow later without touching the Canvas contract."
+  - invalidating_assumption: "That target surfaces stay ≤~2MP at 60fps on CPU raster. If a 4K/120Hz surface becomes a real target, revisit the GPU-surface path."
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-M1] M1 — Layer 2 Engine (the meaty core)
+- goal: Build the platform-independent engine: layout (flex + the **pixel-stack container** from the Composer UX work + grid), hit-testing/pointer dispatch, focus, animation (interpolation/easing), asset manager (`doc://` fetch + cache), and the **`.compose.yaml` → widget-tree parser**.
+- unlocks: Config-driven, interactive rendering independent of backend. This is the single biggest value step.
+- deliverables: engine modules per [CXC-R-ENGINE]; `.compose.yaml` parser; layout managers incl. pixel-stack; hit-test; animation; asset manager. Text-editing may be partial (defer IME).
+- reuse: [SPEC:CXC-RENDER] §4 as the contract; the pixel-stack layout mode we designed for Composer.
+- acceptance: load a `.compose.yaml` → correct layout + data binding on the M0 window ([CXC-R-C3], [CXC-R-C7]); click dispatches to the correct widget ([CXC-R-C6]); gauge animates at 60fps desktop ([CXC-R-C11]); config change re-renders ([CXC-R-C10]).
+- status: operational (first pass, 2026-07-06) — `render/engine/` package: `layout.py` (FlexContainer + GridContainer + **PixelStackContainer**, two-pass measure/arrange), `runtime.py` (RenderApp event loop: hit-test topmost-first, tap/long-press/pan gesture synthesis, pointer capture, `_app/render/interaction` publishing per [CXC-R-CONTROL]), `focus.py` (tap-focus + Tab cycling + engine-drawn ring), `animation.py` (property interpolation, 5 easings), `assets.py` (bus://+doc://+file:// fetch/cache via composeio.resolve; verified against live bus_storage), `parser.py` (BOTH dialects: nested spec widgets/children AND the production modules/grid_row dialect — unported production widget types render as honest PlaceholderWidgets pending M2). Acceptance evidence: `tests/render/test_engine_m0_m1.py` (14 tests: C2/C3/C4/C6/C7/C10/C11) green on macOS AND RPi5/aarch64; live-window smoke 6/6 on macOS incl. presented-pixel readback; MQTT end-to-end against NODERED_HOST broker updated a gauge in 14ms.
+- deferred-in-first-pass: text editing (no TextInput on the contract until M2), pinch/multitouch recognition, dirty-REGION redraw (full-frame redraw at 60fps measured cheap: ~1ms macOS / ~2.2ms RPi5 at 960x620), spec-14 `use:` component stamping in the engine parser.
+- known-gap-fonts: macOS↔Linux text is NOT pixel-identical (fontconfig resolves different faces; geometry scenes match at 100%). The atlas covers only 6-16px (CYD sizes). Resolution needs the [CXC-R-DRAW-FONT] decision: bundle ONE licensed TTF as a bus asset, load via Typeface.MakeFromFile on all desktop backends, regenerate the CYD atlas from the same file. Escalated to David (font choice = product/licensing decision).
+- depends-on: [CXC-RM-M0]
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-M2] M2 — Widget Parity on the Contract (retires CTk on desktop)
+- goal: Port the ~11 production CTk widgets (Button, Relay, Command, TextInput, Checkbox, PowerToggle, DocPicker, BusMonitor, Tab, Coordinate) plus Image + Callout (the M31 flagship) to the `Canvas` contract as agnostic `Widget` subclasses. Single Python source of truth.
+- resolved-inputs (2026-07-06, David): (1) font = **IBM Plex Sans + IBM Plex Mono** — bundle as a bus asset, regenerate the CYD atlas from the same file, bake widget goldens against it once; record in [CXC-R-DRAW-FONT] via `change`/`context_for_change`. (2) `decode_image(bytes)` **promoted to the `Canvas` contract** — add to the Python ABC + `cyd/include/canvas.h`, keep the Skia impl, record normatively in [CXC-R-DRAW] via `change`/`context_for_change`.
+- unlocks: **The gate that makes CTk removable on macOS + Raspberry Pi** — the workhorse runtimes where CTk actually runs.
+- deliverables: full widget set on the contract, each with reference screenshots + regression tests. The existing CTk renderers are the visual spec for each port.
+- reuse: `composeio_renderers/*` (visual logic to match), `render/widget.py` base, pixel-diff harness.
+- acceptance: the current dashboard + ComposeUX composition render via the engine at parity with the CTk version, within pixel tolerance ([CXC-R-C1]). CTk can now be demoted to reference role.
+- status: operational (2026-07-06) — all 12 widgets on the contract as agnostic Widget subclasses (`render/widgets/`): Button (all 5 led_behaviors), Relay (true visuals, replaces the M1 LED approximation), Command (arm-confirm gate replaces the OS dialog; ${ns} runtime resolution; host runner via EngineContext.invoke), TextInput (engine-native single-line editing: focus/cursor/keyboard/SDL text events, secret→$6$ hash, [CXC-R-C8] proven on the live SDL path), Checkbox, PowerToggle, DocPicker (threaded doc-store query; verified against the LIVE document_store), BusMonitor (bus.on_message, color-coded), Tab (segmented bar; "all" routing semantics — active_only unsubscribe optimization deliberately dropped), Coordinate (multi-namespace arm/status/coordinates), Image (fit modes + decode_image contract path), Callout (M31 flagship CalloutOverlayWidget — first realization, no CTk precedent). Parser resolves every production type + spec-14 `components:`/`use:` stamping (engine/components.py) — test_dashboard, minnow-bringup, and fleet-540-soak render with ZERO placeholders. Runtime M2 additions: thread-safe update queue (bus/runner callbacks → render thread, [CXC-R-C4] still one-frame), pointer down/up hooks, text-event routing, EngineContext.invoke/launch. Evidence: 179 tests green macOS AND 175 green RPi5 (goldens baked on macOS, byte-compared on RPi); 15 M2 golden scenes; conformance 12/12 both platforms incl. the new text_native scene at 100.00%/max_delta 0; full compositions macOS↔RPi: m31_flagship byte-identical (0/263k px), test_dashboard 6/576k px ≤5 delta (stroke-arc AA edge); live-window interaction smoke 9/9 (macOS), RPi kiosk loop 59.5fps with bus-driven gauge.
+- font-outcome: David's two resolved inputs landed, with one measured correction recorded in [CXC-R-DRAW-FONT]: bundling Plex + Typeface.MakeFromFile was NOT sufficient for pixel identity (platform glyph scalers differ, ~8% text pixels diverged) — desktop text is now rasterized by the engine itself via pinned freetype-py and blitted, giving 100.00% cross-platform text identity; CYD atlas regenerated from the same Plex faces. decode_image is on both contracts (Python ABC + canvas.h; ESP32 stub returns nullptr pending M5).
+- ctk-status: parity proven; CTk demotable to reference role. Actual retirement is a separate David call (per kickoff). Known visual divergences vs CTk, accepted: GaugeWidget keeps its Phase-1 ComposeUX design (gauge was not in the M2 port list); grid rows top-pack instead of CTk's equal-weight vertical spreading; confirm gates are engine-native arm-confirm instead of OS dialogs.
+- deferred-from-m2: TextInput multiline/IME ([CXC-R-ENGINE-TEXT] P2/P3); Tab active_only dynamic bus unsubscribe; DocPicker scrollbar visuals; CYD firmware rebuild against the regenerated Plex font_atlas.h (header is committed; on-device verify pending device access — CYD stays POC-priority).
+- depends-on: [CXC-RM-M1]
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-CTK-RETIRE] CTk Retirement Review — Divergences Dispositioned (2026-07-06, David)
+- decision: With M2 parity proven, CTk is cleared to **demote** (stop depending on it); actual deletion is a later mechanical step. The accepted CTk↔engine divergences were reviewed:
+- blessed: (1) **arm-confirm replaces OS confirmation dialogs** (Command/PowerToggle) — OS modals don't exist on CYD/browser, break the pixel gate, and aren't bus-native/Intelligence-drivable; arm-confirm is portable and safer. (2) **Gauge keeps its ComposeUX design** as canonical (CTk's was interim). (4) **Tab keeps hidden tabs subscribed** ("all" routing) — warm state enables event-driven auto-focus to a hidden tab (e.g. a "Damage Control" tab that fires on a hit); `active_only` stays a future opt-in.
+- closed-not-blessed: (3) **grid top-pack vs CTk equal-weight spread** — resolved by adding grid row/column weights in [CXC-RM-M4], so the engine can reproduce CTk's fill; the actual look is chosen live later.
+- status: operational
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-M3] M3 — Browser Backend (the web unlock)
+- goal: Implement Layer 1 for the browser per Decision 1 ([CXC-RM-D1]); bus over MQTT-websockets (extend `web.py`'s bridge). Because Layer 2 + widgets are shared, this is a backend + event plumbing, not a rewrite.
+- unlocks: **Both** widgets-on-web **and** Composer-as-a-web-app — the same investment serves both.
+- deliverables: browser Layer-1 backend (per D1); DOM events → engine events; bus-over-websocket; `.compose.yaml` rendered in-browser.
+- acceptance: the same `.compose.yaml` renders pixel-identically in browser vs Skia reference ([CXC-R-C1]); interaction + live bus binding work.
+- depends-on: [CXC-RM-M2], [CXC-RM-D1]
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-M4] M4 — Composer on the Correct Model (desktop-first)
+- goal: Rebuild Composer (the WW / WC / layers / telemetry-bar redesign in specs/ux/) on the render engine — editing `.compose.yaml` pixel-stack composites and previewing *real* engine-rendered widgets. Bus-native and Intelligence-drivable throughout.
+- decoupled-from-m3 (2026-07-06, David): M4 no longer waits on the browser backend. The desktop engine is widget-complete (M2), so Composer is rebuilt on it **now** — the redesigned tool in hand on the workhorse runtimes (macOS + RPi), previewing real widgets. A browser-hosted Composer follows M3.
+- design-intent: build toward the interactive pre-vis `specs/ux/composer-workshop-previs.v1.html` — the approved visual target (Widget Workshop 2/3 with pixel rulers + pixel-stack canvas; tabbed Widget Configuration 1/3 = Overview / Layers / Widgets; spanning telemetry bar with bus/MQTT/UART and Bus-Monitor pop-out).
+- engine-additions (land in this pass — small, and on the Composer critical path):
+  - **Grid row/column weights** — closes CTk-retirement divergence #3 ([CXC-RM-CTK-RETIRE]); default stays top-pack, a config can request equal-weight spread to match CTk.
+  - **Declarative `visible:` binding** — bind any widget's existing `visible` attribute to a namespace in `.compose.yaml` (the attribute + layout support already exist; wire the generic binding). Enables the Layers-tab visibility toggles and the Red-Alert image toggle.
+  - **Dialog / overlay widget** — engine-rendered modal: `visible`-bound + scrim + centered panel + z-top (pixel-stack) + hit-capture. The portable, bus-native, own-every-pixel alternative to OS dialogs.
+- unlocks: The dogfooding endgame — Composer previews the exact artifact the browser and CYD will run.
+- deliverables: Composer as a render-engine app; the redesigned UX; live preview = real engine render; MCP/Intelligence bridge (internal bus on desktop; websocket bus later for the web host).
+- acceptance: build the M31 composite in Composer, preview renders identically to the deployed target, export `.compose.yaml`, run it on desktop-Skia (macOS/RPi). (Browser/CYD deploy follow M3/M5.)
+- status: operational (first pass, 2026-07-06) — `python/composeio/composer/` package: CompositeDocument (the pixel-stack composite model; nested-dialect .compose.yaml serialization, save→load→save byte-identical per [DP-CXC-7]) + ComposerCore (headless dual-bus backbone on ComposeApp: command dispatcher, intelligence responders, file ops — the CTk non-visual-module architecture re-hosted without CTk) + engine-rendered chrome (WorkshopWidget with pixel rulers/0,0-at-corner/selection handles/move+resize drag; WC = real TabWidget with Overview/Layers/Widgets panels; spanning telemetry bar; Bus-Monitor = M4 DialogWidget in-window, subprocess pop-out window when MQTT bridged). Launch: `python -m composeio.composer [file]`. **Preview == deployed by construction**: the WW preview parses the exact pixel_stack spec that export writes (single source), gate-tested at ≤tolerance-2 pixel diff.
+- protocol-compatibility: the engine Composer speaks the SAME `composer/*` namespaces as the CTk Composer — `composer/command/execute` (MCP `_publish_command` shape), `composer/canvas/*`, `composer/config/*`, `composer/intelligence/*` — so intelligence_mcp drives it with ZERO server changes. Composite-mode vocabulary: module_id="composite"; row/column ≡ y/x px; rowspan/columnspan ≡ h/w px; set_property visible/z_index = Layers-tab eye/reorder; WC tab = imported state `composer/wc/active_tab`.
+- evidence: 203 render tests green on macOS AND RPi5 (M4 adds 24: engine-additions goldens incl. Red-Alert visible toggle + Dialog open/closed; document round-trip; bus-driven mutation; intelligence snapshots; M31 gate). M31 built via bus commands end-to-end; exported artifact committed as `render/examples/m31_workshop.compose.yaml` and runs standalone on macOS + RPi5 — **full Composer window AND standalone artifact byte-identical macOS↔RPi5 (0 px, max delta 0)**. Live-window interaction smoke 12/12 (`tests/render/smoke_m4_composer.py`: tab click, catalog add, drag-move +60/+40, SE-handle resize, eye toggle, Dialog open/scrim-dismiss; 385fps macOS full-redraw). Intelligence over REAL MQTT (NODERED_HOST) 5/5 (`smoke_m4_intelligence_mqtt.py`: remote add_widget/set_property/tab-switch/state-snapshot from a separate bus peer). RPi5 kiosk live window 59.5fps at 1440x900.
+- engine-additions-status: all three landed + golden-tested in `tests/render/test_m4_engine_additions.py` (15 tests). Grid weights: `row_weights`/`column_weights` = "equal" | dict | list on GridContainer + both parser dialects; all-zero = top-pack; legacy stretch default untouched. visible: binding: bool | namespace-string (truthy) | {namespace, when, invert, initial} on any widget. DialogWidget: modal hit-capture verified (scrim swallows, panel children reachable, scrim-tap dismiss publishes "off").
+- change: "Flex containers gained a grow factor (layout.grow / spec key `grow`) with CSS `flex: N` semantics (basis 0, free-space share) — an M4 layout addition beyond the three planned."
+- context_for_change:
+  - prior_state: "FlexContainer children always took their measured size; there was no way to express the Composer's 2/3-1/3 WW/WC split or fill-remaining-height panels."
+  - reasoning: "Grid track weights fix weighted spreading INSIDE a grid, but the Composer chrome (and any module that should fill its panel) needs proportional main-axis division in a flex; basis-0 grow is the smallest primitive that provides it and is what the pre-vis's CSS grid `2fr 1fr` reduces to."
+  - rejected_alternative: "Additive grow (keep measured basis, share only leftover) — implemented first; children that measure 'fill' leave zero leftover, so proportions silently degenerate."
+  - invalidating_assumption: "That percent sizing ('66%') would have sufficed; it breaks when siblings are fixed-px (rulers, bars) since percentages don't subtract them."
+- change: "Two additive `.compose.yaml` keys emitted/consumed by Composer: `visible:` on any widget (the sanctioned engine-addition #2) and `design.purpose` (metadata only; the runtime parser ignores it)."
+- context_for_change:
+  - prior_state: "No declarative visibility; the design block had no purpose/description field."
+  - reasoning: "purpose is the Overview tab's intent text and belongs in the artifact (an Intelligence reading the file should see the design intent); it is additive metadata, unknown-key-safe in every parser."
+  - invalidating_assumption: "That design-block metadata stays parser-ignored. If a future schema validation pass goes strict, register both keys in [SPEC:CIO-CONFIG-SCHEMA]."
+- deferred-from-m4 (first pass): zoom/pan/measure rail tools (zoom pinned 100%); drag-reorder in Layers (arrow buttons instead of grip-drag); binding editor + namespace picker UIs (Overview shows derived read-only summaries; + New creates a default json namespace); undo/redo history module (command protocol carries do/undo; no stack yet); preview-actuation mode (WW is select-tool only — preview widgets follow the DESIGN bus live but taps edit, not actuate); multiline purpose editing; catalog search; resizable splitter (fixed 2fr/1fr); UART cluster is an honest stub; design>module>widget hierarchy collapsed to the single composite module. CTk Composer untouched (reference, per [CXC-RM-CTK-RETIRE]).
+- depends-on: [CXC-RM-M2]
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-BINDING-EDITOR] Composer Binding Editor + Source Tab (Composer follow-on)
+- goal: The next Composer pass after the binding/behavior layer lands — give the WC real editing surfaces: (1) a **visual binding editor** (DP-CXC-3) that authors [SPEC:CXC-BIND] — namespace picker / drag-connect + behavior config (blink/pulse/rotate/… with params), never raw YAML; (2) a **Source (YAML) tab**.
+- source-tab (David 2026-07-06): a 4th WC tab **Source** — a live, bidirectional YAML view of the `CompositeDocument`. The document/visual stays the source of truth (DP-CXC-2); the YAML is a synced projection (DP-CXC-7). Canvas↔YAML **selection linkage** (select a widget → scroll/highlight its block; edit a block → canvas updates). Validate-on-edit, commit-only-on-valid-parse (a half-typed edit can't corrupt visual state). **Pop-out** to a full-width own window (reuse the Bus-Monitor pop-out mechanism) for editing room. Reuses the existing byte-identical `CompositeDocument` serialization — a view + re-parse + selection link, not a from-scratch editor. Bus-native: an Intelligence editing over the document bus stays in sync too.
+- also-folds-in (M4-deferred Composer polish): widget-catalog **thumbnails** (cheap — headless-render each type small, cache); **undo/redo** (port `history.py`); zoom/pan; resizable splitter; catalog search.
+- depends-on: [CXC-RM-M4], [SPEC:CXC-BIND]
+- spec: **[SPEC:CXC-BINDEDIT]** (`specs/ux/01-composer-binding-editor.lts`, 2026-07-06) — build-ready.
+- status: **operational (2026-07-07)** — C1–C8 all PASS. Landed: engine introspection tables ([CXC-BE-INTROSPECT]); the WC **Bindings** tab (picker + literal-map editor + behavior config w/ schema-driven fields + preview-bus test states); the WC **Source** tab (engine-native YAML editor, commit-on-valid-parse, selection linkage both ways, full-width DialogWidget pop-out); raw-spec fidelity fixes (visible-binding + doc-level `variables:` passthrough, preview `$var` substitution); `is_exact:` trigger; rotated-selection AABB hint; DSL-candidate capture (`~/.composeio/dsl_candidates.jsonl`). Polish LANDED: undo/redo + catalog search; DEFERRED: drag-connect, thumbnails, zoom/pan, splitter. Evidence: 19 compliance tests (`tests/render/test_bindedit.py`), suites green macOS(251)+RPi5(247+4skip), Intelligence-over-MQTT smoke 8/8 from BOTH platforms, new chrome pixel-compared macOS↔RPi5 Δ≤1px (pop-out 0px). Ops fix: Composer MQTT client_id now unique per process (same-id peers rc=7-kick each other, dropping events).
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-FLOW] Composer Flow Mode & Bus Discovery (Composer follow-on)
+- goal: The Widget Workshop's **Flow mode** — a node-graph lens of the bus wiring (namespace hub nodes ↔ widget attribute ports, wires = bindings) — plus **bus discovery**: a filterable Bus·Live rail of every namespace speaking on the ComposeBus, INCLUDING traffic the design never declared, so widgets stop being deaf to the outside world.
+- spec: **[SPEC:CXC-FLOW]** (`specs/ux/02-composer-flow-mode.lts`); pre-vis `specs/ux/composer-flow-previs.v2.html`.
+- status: **operational (2026-07-07)** — C1–C9 all PASS. Landed: `composer/flowpanel.py` (FlowPane rail+graph as ONE widget → drag-to-wire without a cross-panel drag primitive; FlowInspectorPanel = 6th WC tab; `build_graph` pure raw-spec projection = Intelligence parity by construction) + `composer/discovery.py` (BusDiscovery: wildcard observation + `_bus/discovery` engine harvest + declared>peer>~inferred legibility) + Layout|Flow toggle (`composer/ww/mode` bus state) + `NamespaceDef.external` (subscribed-external / declare-expected, additive `external: true`) + P0 filter (substring/glob/category + emergent prefix chips + N-of-M) + Bindings-tab LIVE-ON-THE-BUS picker group. **NEW BUS PRIMITIVE (escalated, RATIFIED by David 2026-07-07 — transport-abstraction + CAN hardware-mask model in [SPEC:CXC-PATSUB]): `ComposeIOBus.subscribe_pattern` — trailing-glob-only ('prefix/*'|'*'), MQTT-native (`composeio/+/prefix/#`), delivering the actual member namespace; wired through runtime/preview for widget-family subscriptions ([CXC-FL-PATTERN]).** Bus fixes found: on_message monitors were deaf to transport arrivals; unknown external namespaces auto-created as `binary` dropped any non-binary value (now json); bare-string `visible` bindings were coerced to the eye bool on the command path. Evidence: 31 compliance tests; suites 307 macOS / 303+4skip RPi5; live-broker smoke 13/13 BOTH platforms (separate ComposeApp peer; pattern binding receives a member created AFTER authoring); 11-shot walkthrough macOS↔RPi5 Δ≤3 px/shot (stroked-circle AA class), exported artifact byte-identical. Deferred: minimap/grouping/graph-focus, persistent node positions, ComposeApp late-export wiring + discovery re-announce-on-reconnect (infra).
+- depends-on: [CXC-RM-BINDING-EDITOR], [SPEC:CXC-BIND]
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-M5] M5 — Embedded Tier: Config-Driven Boot + Board Family (parallel, POC→)
+- goal: Generalize the embedded backend from the one CYD into a **board-profile** abstraction — SoC (ESP32 / S3 / C-series / P4), display driver (ILI9341 / round GC9A01 / ST7701 RGB panels), panel **geometry incl. shape (rect/round)**, touch controller, and pins — all behind the one `Canvas` contract. Add the config-fetch boot (fungible firmware: fetch `.compose.yaml` from bus_storage → render) and fill the classic-CYD's missing primitives (fill_arc/paths/transforms/draw_image/opacity). A new board = a new profile, not a new rasterizer.
+- board-family (David 2026-07-06): the classic CYD (ESP32 + ILI9341 240×320, 7.6 KB band buffer) is a **PROXY** for a family AND the **performance FLOOR** of the whole system — what renders acceptably on it bounds what is universally deployable. Named future target: **Adafruit Qualia ESP32-S3 + round RGB LCD (~480×480)** — the S3's PSRAM holds a **full framebuffer** (no band-rendering constraint), a **capable embedded sub-tier** closer to the Linux tier than to the classic CYD (plausibly config-driven boot + fuller widget set + some transforms).
+- round-displays: the display descriptor gains **shape** (round/rect + diameter/res); the engine clips to the panel shape and offers round-friendly layouts. A **dradis on a round LCD** is the flagship embedded demo. Ties to [CXC-R-BOOT].
+- sub-tiers: 'embedded' is NOT monolithic — constrained (classic ESP32/CYD) vs capable (S3-class). Effort + achievable parity scale with the board. **Do the classic-CYD generalization + config-driven boot FIRST** (David 2026-07-06); a Qualia/round profile then = 'add a profile + round geometry', not a from-scratch bring-up.
+- perf-floor (deliverable): characterize the classic-CYD floor — fps, per-frame budget, max widget count/complexity that renders acceptably — since it bounds universal deployability.
+- deliverables: contract-complete `ESP32Canvas`; the board-profile abstraction; config-driven boot ([CXC-R-BOOT]); widgets hand-ported to C++ as needed, pixel-verified; the perf-floor characterization.
+- reuse: `cyd/` (verified on hardware 2026-07-06 — Plex atlas + current widgets match Skia to AA/RGB565 noise), `cyd_dashboard_crosscheck.py`.
+- acceptance: ESP32 boots → fetches config → renders → responds to touch in <5s ([CXC-R-C9]); generic firmware renders different configs ([CXC-R-C12]).
+- status: classic-CYD pass = **OPERATIONAL 2026-07-07** (hardware-verified on the attached CYD, device `(a device id, not published)`). Config-driven boot real ([CXC-R-BOOT] as-built change record: config = `bus://assets/displays/<device_id>.compose.yaml` + default fallback, RATIFIED by David 2026-07-07); ONE binary rendered THREE configs (dashboard / status board / dradis) by asset swap, incl. a LIVE 60s-re-poll scene swap (C10) and boot→frame 2.2–2.9s typical (C9; worst 14s on slow WiFi assoc). Board-profile seam landed (`cyd/include/board_profile.h`: PanelGeometry incl. `shape` rect/round + DisplayDriver + TouchDriver-with-calibration; `boards/classic_cyd.cpp` is the first profile; canvas/dispatcher/main are board-agnostic — Qualia = add `boards/qualia_s3.cpp`). Contract fill: fill_arc, draw_path/fill_path, draw_image + BMP24/32/CI16 decode_image, real set_opacity; **transforms stay documented no-ops (escalated — see the [CXC-R-DRAW] M5 change record; live rotation on this tier needs its own per-band inverse-mapping pass, or the Qualia full-framebuffer tier)**. Widgets: +Button (M2 visual port, touch-toggling), +Image, +Sprite, +Placeholder (honest stand-in; still unported: lottie-live/callout/coordinate/relay/command/text_input/checkbox/power_toggle/doc_picker/bus_monitor/tab/dialog). [CXC-R-C18] DELIVERED: dradis Lottie baked offline by the ratified evaluator (`scripts/bake_lottie_sprite.py` → CI16 frames in bus_storage) plays on-device via draw_image (~3.7fps sweep, capture on file). Pixel gate: `scripts/cyd_config_crosscheck.py` (config-driven successor to the hand-coded crosscheck) — both static configs PASS vs the Skia reference (AA/RGB565 + ≤1px bold-glyph-advance classes; solid-structural-divergence gate <1% frame). DEFERRED, logged not faked: MQTT bindings/behaviors on-device, PNG decode, flex/grid layout (CYD configs are pixel_stack compositions — exactly Composer's export format), dirty-band rendering.
+- perf-floor (MEASURED 2026-07-07, the deliverable): full-frame band render (20×16-scanline bands, 27MHz SPI): **empty-scene floor 56ms (17.9fps)** = clear+transfer; per-widget adders ≈ **gauge 44ms, LED (gradient+glow) 34ms, rect/label/button ~1.2ms**; reference points: 10-widget gauge dashboard 367ms (2.7fps), 18-widget status board 154ms (6.5fps), 36 cheap widgets 100ms (10fps), dradis sprite scene 170ms (5.9fps raster / 3.7fps loop). Bounds for universal deployability: bus-refresh dashboards (~1s cadence) comfortable to ~20 mixed widgets; tap→visual response = one frame (0.15–0.6s); ANIMATION needs dirty-band rendering (unbuilt) or the sprite path; heap: ~199KB free baseline, −~10KB/decoded image, sprite budget ≤~102KB (8×80×80 CI16) — beyond that HTTP TX stalls under fragmentation (capture push now fails cleanly; was an infinite-wedge bug, fixed).
+- part-of: [PROJECT:CXC-ROADMAP]
+- depends-on: [CXC-RM-M1]
+
+### [CXC-RM-SVG] Planned — SVG Rendering (own pass)
+- goal: Implement the specified-but-unbuilt SVG capability ([CXC-R-DRAW-SVG]) — a platform-independent SVG parser that decomposes SVG into the existing `Canvas` primitives (the spec already maps every element). Renders on every backend.
+- why: Unlocks crisp vector graphics (e.g. a stylized "Red Alert") AND every Mermaid/Graphviz/D3/matplotlib diagram on any surface — far more than a one-off.
+- note: NOT in M4. Interim: crisp large text is already covered by engine FreeType rasterization; stylized vector graphics use a pre-rendered PNG via the Image widget + `visible`.
+- spec: **[SPEC:CXC-SVG]** (`18-composeux-svg.lts`, 2026-07-06) — build-ready.
+- status: spec'd; build queued
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-BEHAVIORS] Operational (declarative layer) — State-Driven Behaviors
+- goal: A declarative, HA-informed behavior/binding layer in `.compose.yaml`: (a) bindable widget attributes — `visible`, and per David 2026-07-06 also **transforms** `rotation` (deg), `opacity`, `scale` — bound to a namespace; (b) **inline variables** (declare once, reuse/bind; parse-time substitution); (c) state-driven **temporal behaviors** (blink, pulse, pulse-opacity, ramp-color, animate/transition) triggered by a namespace condition.
+- principle: **state on the bus, behavior in the widget** — the bus carries semantic state (`red_alert = on`, published once), the widget owns the temporal presentation (blink at 2s); frames are never streamed over the bus. Same separation as ComposeBus state engines, extended to presentation. Engine-owned → consistent + pixel-verified across every backend; Intelligence-drivable at intent altitude (flip one bit).
+- seed: Button `led_behaviors` + `engine/animation.py` prove the pattern; generalize to a config-level mechanism attachable to any widget/attribute. Bindable rotation is trivial on the Skia tier (`canvas.rotate`); costly on CYD (raster bitmap rotation) — note, not a blocker.
+- reference: Home Assistant's trigger→condition→action model + its inline `variables:`.
+- decision-inline-code (2026-07-06, David): **NO arbitrary inline Python in `.compose.yaml`.** It breaks define-once (Python can't run on the CYD/C++ or a TS-browser backend) and is an RCE surface on a fetch-from-bus display fleet. ESPHome's inline-C++ works only because it targets ONE compiled runtime; ComposeUX is define-once-render-many. Escape hatch for real logic = a **bus workload** (compute → publish a namespace → widget binds it) — compute where it belongs, config stays declarative + portable.
+- dsl-deferred (2026-07-06, David): a **sandboxed, restricted expression DSL** (HA-Jinja-flavored: arithmetic, `ns()` lookups, conditionals — interpretable identically on Python AND CYD/JS) is the sanctioned middle ground, but it is its **own scope + deliverable** and is **use-case-gated** — collect ~5 real high-need use cases before speccing, because a DSL is testing-heavy and we minimize test scope. Start with the declarative 90%.
+- dsl-gate-MET (2026-07-07): the use-case gate is now **satisfied** — Headless Widgets Pass 1 ([CXC-RM-HEADLESS]) harvested **6** real high-need use-cases from building the jump-drive triad declaratively (logged `~/.composeio/dsl_candidates.jsonl`, source `headless-pass1`): (1) variable-rate integration per tick (`remaining -= rate·dt`); (2) conditional rate arithmetic over a subscribed value; (3) multi-namespace boolean condition (AND) in one trigger — the flagship, which cost 3 widgets + 2 namespaces + 2 bus hops to fake declaratively; (4) open-ended comparison operators in triggers (no `>=`, forced a `1e9` sentinel); (5) canon-aware/typed value-map lookup (bool `True` misses the `"on"` key the `is:` canonicalizer would match — divergent matching rules); (6) derived/scaled output values (`fuel_pct = remaining/capacity*100`). These 6 are the Pass-2 DSL scope — the DSL is now **un-gated on use-cases**, gated only on being scheduled as its own deliverable.
+- spec: the declarative layer is specified in **[SPEC:CXC-BIND]** (`16-composeux-bindings-behaviors.lts`, 2026-07-06); the Composer binding editor follows it.
+- status: declarative layer (a/b/c) = **OPERATIONAL 2026-07-06** — [SPEC:CXC-BIND] compliance C1–C8 all PASS (29 tests + 5 goldens, `tests/render/test_bind_behaviors.py`); suite 232 green macOS + RPi5; sampled behavior frames SHA-256-identical macOS↔RPi5 (deterministic `render_frame_at` sampling); Intelligence-over-real-MQTT smoke 4/4 (`smoke_bind_intelligence_mqtt.py`); demos `render/examples/red_alert.compose.yaml` + `dradis.compose.yaml`. C++ contract gained translate/rotate/scale/set_opacity declarations w/ ESP32 no-op stubs (see the [CXC-R-DRAW] change record — flagged for David). Expression DSL = still deferred, use-case-gated (0 of ~5 gating use-cases collected so far — nothing in this pass needed it).
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-LOTTIE] Planned — Lottie Animation Widget (own pass)
+- goal: A LottieWidget realizing the specified-but-unbuilt Lottie capability ([CXC-R-DRAW-LOTTIE], [CXC-R-C17]/[CXC-R-C18]) — vector animation for non-interactive motion (e.g. the dradis sweep).
+- fit: renders via **skottie** (Skia's own Lottie module) on the Skia tier (macOS/RPi/MinnowBoard) — pixel-consistent by construction; **skottie ships in CanvasKit**, so the browser gets it nearly free IF Decision 1 goes Pyodide+CanvasKit (a further point for Option A); on CYD, degrade to a **pre-rendered sprite sheet** baked from the same Lottie ([CXC-R-C18]).
+- bus-bindable playback (David 2026-07-06): bind namespaces/variables to `loop`, `autoplay`, `goToAndStop(frame)`, `playSegments(a,b)`, `setSpeed` — "state on the bus, behavior in the widget" applied to animation. Dradis sweep = a Lottie whose speed/segment is namespace-bound.
+- spec: **[SPEC:CXC-LOTTIE]** (`17-composeux-lottie.lts`, 2026-07-06) — build-ready.
+- status: Skia tier = **OPERATIONAL 2026-07-07** — C1–C5, C7 PASS (25 compliance tests `tests/render/test_lottie.py`; suites 276 macOS / 272+4skip RPi5; 8/8 sampled dradis frames **SHA-256-identical** macOS↔RPi5; Intelligence-over-MQTT smoke 5/5 BOTH platforms; live window 58fps w/ mid-run bound-speed change). C6 (CYD sprite sheet) DELIVERED in M5 2026-07-07: `scripts/bake_lottie_sprite.py` bakes any Lottie through this same evaluator into CI16 frames at `bus://assets/animations/<name>/`, and the CYD SpriteWidget plays them (dradis sweep verified on hardware). **Skottie verdict: skia-python (m144) does NOT bind skottie (issue #57 open since 2020, no symbols in either platform wheel)** — built instead on a zero-dep Canvas-contract Lottie-subset evaluator (`render/lottie/`, renderer seam documented; python-lottie rejected on AGPLv3+), pending David's ratification — see the [SPEC:CXC-LOTTIE] change records, incl. the stroked-cubic-contour cross-build divergence finding (fills bit-exact; annulus-fill authoring rule; a pinned self-built Skia would fix strokes AND unlock skottie in one investment).
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-GESTURE] Planned — Single-Touch Swipe Gestures
+- goal: Extend the interaction engine ([CXC-R-ENGINE-TOUCH]) with **4-way directional swipe** (up/down/left/right) on a **single touch point** (no multitouch/pinch needed, David 2026-07-06). Tap/long-press/pan already exist (M1).
+- bus-native: a swipe publishes an interaction event to a namespace, so an Intelligence can "swipe" identically to a finger; matters for touch displays (CYD, touch monitors on RPi/Minnow).
+- spec: **[SPEC:CXC-GESTURE]** (`19-composeux-gestures.lts`, 2026-07-06) — build-ready.
+- status: spec'd; build queued (near-term interaction pass)
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-MEDIA] Planned — Media Surface (video file + webcam/stream) — heaviest, own pass
+- goal: One **frame-source widget** that composites a stream of externally-decoded frames via `draw_image`, with **pluggable sources** — `file://clip.mp4` (H.264/MP4), `camera://0` (attached webcam), `rtsp://…` / `mjpeg://…` (network stream). Video and webcam are two sources of the *same* widget, not two special cases.
+- why-trickier (David 2026-07-06): unlike Lottie (pure Skia via skottie), media needs external **decode/capture pipelines** (FFmpeg/PyAV or GStreamer; platform camera APIs — AVFoundation on macOS, V4L2 + HW H.264 decode on RPi/Minnow) that produce frames the engine then `draw_image`s. Heavy, non-uniform deps.
+- pixel-gate exception: the widget CHROME/layout is pixel-verifiable, but decoded-video/live-camera CONTENT is NOT golden-able (H.264 decode is non-deterministic across decoders/HW; a live feed is non-reproducible). The one bounded place [CXC-R-C1]'s cross-platform pixel identity applies to the frame *around* the media, not the content. (Contrast static Image: PNG decode IS deterministic and passes the gate.)
+- tiers: workhorse (macOS/RPi/MinnowBoard) real; browser via `<video>`/getUserMedia → CanvasKit; **CYD: not supported** (can't decode H.264 — poster frame or omit).
+- bus-bindable controls: play/pause/seek/speed (file); device-select/connect (camera) — same state-on-bus model.
+- trigger-model (David 2026-07-18): the INVOCATION is state-on-bus too, not just the transport controls. A capable device (decoder + attached display) SUBSCRIBES a semantic namespace and, in response, plays a stream to its display — the decode/play behavior lives entirely in that leaf (complexity down; intent up). Crucially the trigger MAY be a pure semantic state (`briefing = "cylon_attack"` / a scene bit), NOT necessarily a media URL: the device maps the semantic to a local asset itself. So `[CXC-RM-MEDIA]` generalizes — the bus carries INTENT (a source ref OR a higher-level semantic), the capable device owns PLAYBACK; a device without a decoder ignores it or shows the placeholder (graceful degradation, no special-case). This is "state on the bus, behavior in the (capable) widget" applied to media, and "define-once/actuate-many" (one semantic bit → a video on a capable screen, a colored alert on a CYD). NO frames ever cross the bus.
+- status: planned — heaviest of the new widgets; sequence after the pure-Skia items (Lottie/SVG).
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-WLED] Planned — WLED Panel as a Low-Res Render Surface (own pass, sequenced LAST)
+- goal: make a WLED addressable-LED matrix (e.g. a 16×16 panel) a genuine low-res ComposeUX **render surface** — the engine composites a small Canvas framebuffer and STREAMS pixels to the panel over WLED's realtime protocol (**DDP / E1.31-sACN**), treating WLED as a dumb pixel sink. "Define once, render many" reaching all the way down to an LED grid — the cheapest possible ComposeUX display, below the CYD tier.
+- why (David 2026-07-10): high wow-factor AND WLED is ubiquitous among makers, so a WLED render surface + adaptor is probably the single best open-source on-ramp (nearly every maker already has WLED on the shelf). Elevated from backlog onto the schedule for this reason.
+- fit: reuses the **Canvas contract** on a tiny RGB framebuffer + a new **WLED-pixel-stream backend** (a surface/board profile, sibling to the Qualia RGB666 framebuffer tier). The DRIVEN/output side (switch presets/effects/brightness from semantic namespaces) is separate and lands earlier as the WLED adaptor in **[SPEC:CXC-HAL]** ([CXC-HAL-ACTUATE]); THIS item is the pixel-streaming surface. Round-trips the reactive-tier framebuffer learnings (dirty-band, define-once render).
+- sequencing: scheduled **LAST** of the render-surface passes (after the core widget/surface work) — a wow-factor capstone, explicitly NOT a critical-path dependency and NOT backlog.
+- status: scheduled (David 2026-07-10) — on the dev schedule, last; spec TBD (a WLED surface spec, or a section of the embedded-tier board-family).
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-EMBED-REACTIVE] Planned — Reactive Embedded Tier (two reference boards; own spec)
+- goal: make an ESP32 a LIVE ComposeUX node, not a static-config renderer — an on-device bus/MQTT client + the binding/behavior engine ported to C++ (which finally CALLS the on-chip DSL interpreter [CXC-RM-DSL] Pass 2b) + dirty-band re-rendering. Reframed from "Reactive CYD": the acceptance criterion is **two reference boards**, because a second target is what proves the board-profile seam is real (the same falsification logic as 2b-first).
+- slices (revised 2026-07-10 — three ESP32 variants connected: CYD Xtensa `usbserial-3120`, Qualia S3 `usbmodem31101`, bare ESP32-C3 RISC-V `usbmodem11301`; the dispatcher's call to LEAD with the C3, separating the reactive CORE from render):
+  - **R1 — reactive core on the bare ESP32-C3 (headless)**: board-agnostic bus/MQTT client + namespace store + binding/behavior eval calling the on-chip DSL. Verify: Mac publish → C3 evaluates → GPIO/serial. Isolates the core (no display to conflate) AND **re-verifies the DSL on RISC-V** (2b was Xtensa-only).
+  - **R2 — output-actuator HAL on the C3 → bring up the two built actuator boards** ((a local path, not published)): lego_dots (12× BC337 lights, Output Tier 1) then rack_triple_gauge (steppers via MCP23017/L293D, Output Tier 2). Grounds [CXC-HAL-ACTUATE] on real hardware.
+  - **R3 — render integration on the CYD**: the proven core + bind→widget-attr + dirty-band re-render (leverages the working M5 renderer). Verify: publish → a gauge moves on the CYD screen.
+  - **R4 — core on the ESP32-S3** (Qualia, headless): quick port of the proven core to the third variant — the Qualia display's foundation.
+  - **R5 — Qualia RGB666 display**: the hard parallel-panel/framebuffer piece (also unlocks live transforms), on a proven core. Fallback if RGB-parallel is fiddly: a plain S3 + SPI display.
+  - **deferred (David 2026-07-10): the CH32V003 relayed daughtercard** (button_matrix_4x4) — focus on the ESP32-C3 boards first; the CH32 model is captured ([CXC-HAL-TOPOLOGY]) and waits.
+- why C3-first (not CYD-first): three suspects collapse to two — a bare headless C3 isolates "does the reactive core run on silicon" from "does render integration work"; and the C3 is the real target for two soldered-and-waiting actuator boards, so its bring-up delivers working hardware, not just a test.
+- retires: dev-plan §8-A (reactive) + the live-transforms deferral, on the more-capable tier; the classic CYD proves the floor.
+- device-model (David 2026-07-10, [CXC-HAL-DEVICE]): the reactive tier gives a device its **local bus**, which makes headed/headless and emit-scope orthogonal — the CYD (headed, with 4-pin JST peripheral connectors) can render AND read HAL sensors AND choose per-namespace whether a reading stays local (self-contained, works disconnected) or bridges to the shared ComposeBus. A device config becomes a composition (render widgets + HAL descriptors + logic + a bridge policy); this tier is where the display-config ([CXC-R-BOOT]) and headless-roster ([CXC-HW-DEPLOY]) paths would converge.
+- participation spectrum (David 2026-07-10, [CXC-HAL-TOPOLOGY]): the phase spans embedded ComposeBus *participation*, not just the reactive-render port. Top: a capable MCU (CYD/Qualia ESP32) runs the full reactive engine + render. **Floor: the CH32V003** (the ~10¢ RISC-V chip that inspired ComposeIO), below the reactive-engine RAM floor — it does peripheral management (16-switch matrix via 2× MCP23017, R503 enrollment) and participates as **first-class-minimal** (compiled semantic mapping over CAN, no on-chip DSL) OR **relayed** (a HAL peripheral over I2C/serial to an ESP32/MinnowBoard host that maps it to the bus). A trivial 2×20-LCD "head" is a text-output HAL peripheral, not a Canvas surface. Fold-in target: a CH32V003 slice (first-class-CAN-emitter and/or relayed-HAL-peripheral) alongside the CYD/Qualia reactive slices — same semantic contract, chosen topology.
+- grounded in 3 real boards ((a local path, not published), reviewed 2026-07-10, [CXC-HAL-ACTUATE]): **button_matrix_4x4** (CH32V003 relayed daughtercard — 16 illuminated switches via 2× MCP23017, UART to a host ESP32); **rack_triple_gauge** + **lego_dots** (first-class **ESP32-C3 SuperMini** actuator boards — 3 stepper gauges via L293D, and 12× BC337 light switches). Refinements: the HAL has a symmetric **output-actuator** side (GPIO/PWM/relay/stepper), and physical actuation is "define once, actuate many" — a stepper gauge and the on-screen GaugeWidget are the SAME `gauge/value` namespace. In the shipping designs first-class = ESP32-C3 (not CH32); a CH32 first-class board would ride the future CAN transport.
+- gates: 2b already retired the hardest de-risk (float64 bit-exactness on Xtensa). Needs a `[SPEC:CXC-EMBED-REACTIVE]`; also reads on fleet-integrity §8-B (an on-device bus client sharpens the unauthenticated-config concern).
+- status: planned — meaty Fable build; not yet dispatched.
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-AUDIO] Captured — ComposeUX Audio (sound as an actuator; own spec)
+- goal: a widget (headed OR headless) plays a **sound** in response to bus state — "state on the bus, sound in the widget." Sound is an **actuator output parallel to the display**: a define-once intent (a small Audio contract) realized by a per-platform backend — **I2S/DAC**, **DFPlayer-Mini** (MP3-from-SD, serial "play track N"), **MIDI synth** (SAM2695 / Seeed XIAO), **HDMI/ALSA** (RPi/MinnowBoard/desktop). The audio backend is a board-profile fact like the display driver.
+- headless fit: a sound-only ESP32 (DFPlayer, no screen) is a headless ComposeUX node whose peripheral is audio — [CXC-HW-INTENT] taken at its word.
+- spec: **[SPEC:CXC-AUDIO]** (`25-composeux-audio.lts`, 2026-07-10) — CONCEPT CAPTURE; framing settled, [CXC-AUDIO-OPEN] decisions (intent-set boundary, clip addressing, widget-vs-behavior shape, latency) need David's shaping before build-ready.
+- fit: natural companion to [CXC-RM-EMBED-REACTIVE] (a reactive ESP32 that can also make noise).
+- status: captured (David 2026-07-10); not build-ready.
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-NFC] Captured — ComposeUX NFC (input peripheral; minor)
+- goal: an NFC reader sees a tag and **publishes a semantic namespace** — presence + uid (+ optional NDEF payload), a value-map turning raw uid → meaning ([CXC-BIND-C8]). "Internal to the widget" vs "push to the bus" = namespace **scope**, not two mechanisms. Reader hardware (PN532/RC522 over I2C/SPI/UART, or USB/PC-SC) is a board-profile fact like the display/audio backend.
+- framing: the **input dual of audio** ([CXC-RM-AUDIO]) — together they name an input/output peripheral-binding pattern (inputs publish, outputs actuate; all namespace-scoped, all board-profile). NFC is the first explicit input-peripheral beyond touch.
+- spec: **[SPEC:CXC-NFC]** (`26-composeux-nfc.lts`, 2026-07-10) — CONCEPT CAPTURE; small. [CXC-NFC-OPEN]: payload depth, tag-writing, presence/debounce, and the UID-is-an-identifier-not-an-authenticator security note.
+- fit: natural with the MinnowBoard lure sensors + the embedded-reactive tier.
+- status: captured (David 2026-07-10); minor, not build-ready.
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-HAL] Captured — Peripheral HAL (tiered sensor abstraction; own spec)
+- goal: make binding a physical sensor to a namespace CHEAP — a tiered HAL so the long tail of value/edge sensors is config-only. **Tier 1 declarative** (GPIO/ADC value/edge: reed, PIR, hall, pot, thermistor — a descriptor reads/debounces/scales/maps→publishes, zero pipeline code); **Tier 2 HAL + reusable chip driver** (I2C/SPI register parts: BME280, VL53L0X, and NFC/PN532 [CXC-RM-NFC] lives here); **Tier 3 direct integration** (stateful protocol devices: R503 fingerprint, GPS — a driver exposing bus commands+events). Boundary test: value/event = HAL, operations/state/protocol = direct. The seam is **per-interaction-face** — R503's scan face is HAL-shaped, its enroll/manage face is Tier 3.
+- framing: generalizes [CXC-NFC-PATTERN]; the input dual of the display/audio actuator backends. Define-once descriptor over per-platform drivers (C++ on MCU, Python/libgpiod on MinnowBoard/Pi — the lure I2C/serial is the transport). Board-profile fact like the display driver.
+- spec: **[SPEC:CXC-HAL]** (`27-composeux-peripheral-hal.lts`, 2026-07-10) — CONCEPT CAPTURE; [CXC-HAL-OPEN]: descriptor schema/home, driver registry, debounce/scale knobs, direct-integration command convention, HAL-vs-headless overlap.
+- fit: high-leverage companion to [CXC-RM-EMBED-REACTIVE] (it's what makes "bind reality in incrementally" easy); realizes the MinnowBoard lure-sensor role.
+- status: captured (David 2026-07-10); not build-ready.
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-BRINGUP] Captured — Board Bring-Up as a Descriptor-Driven Surface (own spec)
+- goal: systematize board bring-up — from an ad-hoc flash loop rediscovered per device to a **descriptor-driven discipline** + a generalized ComposeUX control surface that stands up ANY node (Linux SBC or MCU) from ONE machine-readable per-board descriptor. Generalizes [minnow-bringup] from "provision a MinnowBoard" to "bring up any board."
+- grounded: FOUR real boards this cycle (CYD, Qualia S3, ESP32-C3 ×3, CH32V203) — the schema is proven, not hypothetical; four divergent ad-hoc shapes reconciled into one.
+- model: the per-board descriptor is the **single source** (the markdown recipe demotes to a generated view); a **two-tier verdict** gates acceptance — `verify.machine` (serial pass-tokens, wchisp verify, capture-pixel-diff) is necessary but **machine-green ≠ glass-green** (sourced from the real CYD silent-SPI-ACK freeze: `[PERF]` healthy + `capture.bmp` moving while the glass was dead), so a reasoned `verify.human` eyes-on gate is load-bearing; **flash-tool + entry dispatch** off the descriptor (`esptool` auto vs `wchisp` BOOT0-reset-manual); `requires:`-from-bus reproducibility; auto-capture to `doc://fleet_devices` + Restore (the [minnow-bringup] patterns).
+- spec: **[SPEC:CXC-BRINGUP]** (`31-composeux-board-bringup.lts`, 2026-07-10) — CONCEPT CAPTURE. Local-first descriptors landed (`docs/board-bringup/*.descriptor.yaml` ×4, byte-consistent schema, David-ratified 2026-07-10); bus home `doc://board_profiles/*` (push pending). [CXC-BRINGUP-OPEN]: the char-signedness DSL fix (CH32V203 3/234 canon_equality), per-unit extended-flash verify, the generic flash mcp_action schema.
+- fit: the fleet-tooling companion to [CXC-RM-EMBED-REACTIVE] + [CXC-RM-RUNTIME-DIST]; unifies the Linux-SBC and MCU fleet story under one surface + one descriptor shape.
+- status: captured + spec'd (David 2026-07-10); the generalized bring-up surface is the build (implementation phase).
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-HEADLESS] Planned — Headless Widgets (bus-native declarative logic; own spec)
+- goal: Rendering-optional widgets — the declarative alternative to a Python bus workload. Decouples logic from devices (run headless anywhere; ESP32 only for *physical* bindings). Deploy surface + 3 scheduling modes (continuous / periodic / bus-triggered). NOT Node-RED (domain-logic, not integration-hub; interop via MQTT).
+- spec: **[SPEC:CXC-HEADLESS]** (`20-composeux-headless-widgets.lts`, 2026-07-07).
+- build-gated: on the headless runtime + the expression DSL (headless widgets *harvest* the DSL's use-cases). Authored in Flow mode (the `FlowNode.kind=logic` hook is already in place).
+- pass-1 OPERATIONAL (2026-07-07): the headless runtime + scheduler + declarative-only triad LANDED. Fable delivered `--headless` RenderApp mode (canvas nulled at the old backend seam, lazy skia import — a headless host never imports skia), one `RenderApp.tick(t)` primitive fed by three clocks (continuous 10 Hz / periodic / bus-triggered via `subscribe_pattern`), single-process cooperative scheduler (`render/engine/headless.py`), and the one-contract roster loader (`LocalFileLoader` for goldens + `BusStorageLoader` for prod — triad live-deployed to bus_storage NODERED_HOST:8420 and fetched+run end-to-end). New declarative `outputs:` (publish-on-change). Compliance C1/C3/C4/C5/C6/C8/C9/C10/C11/C12 PASS; C2 partial-as-scoped (arithmetic residue → DSL); C7 deferred. Evidence: **325 tests green macOS** (307 pre-existing incl. all visual goldens + 18 new headless), deterministic `tick(t)` goldens, `smoke_headless_mqtt.py` 5/5 against the real broker (remote peer drives `pump/damaged`/`ship/charge` and reads `jumpdrive/readiness` back). Spec bumped to v0.3. **The 6 DSL use-cases were the primary harvest** — see [CXC-RM-BEHAVIORS] dsl-gate-MET.
+- pass-3 OPERATIONAL (2026-07-10) — **Flow-mode headless authoring landed** ([SPEC:CXC-FLAUTH]). A headless widget is now a `kind="logic"` node authored in Flow: static introspection → ports, first-class output wires, inline DSL-validated expr editor, schedule picker, and roster deploy to bus_storage on the SAME Pass-1 loader (write-side added). The **Confirmation observability tier** shipped in-scope — live port values (from discovery, zero new producer) + an opt-in runtime heartbeat (`_bus/headless/<rid>/health`). CXC-FLAUTH-C1…C11 PASS; **662 tests green** (+29); author→deploy→run proven in-suite AND via `smoke_flauth_mqtt.py` 9/9 on real bus_storage:8420 + MQTT:1883. Delivered by Fable. Spec → v0.2.
+- pass-4 OPERATIONAL (2026-07-10) — **the Headless Monitor landed** ([SPEC:CXC-HMON]); the observability arc is COMPLETE (Confirmation Pass 3 + Diagnosis Pass 4). Producer: the runtime instruments its tick loop → publishes per-widget trace/state/health to `_bus/headless/<id>/*` (opt-in/throttled ring buffer, never per-tick), backed by a new **DSL `evaluate_traced`** (bit-exact parity with `evaluate` over all 234 corpus cases; branch-taken + dead-branch-not-evaluated recorded). Viewer: one Monitor surface (`composer/monitor.py`) with the annotated-tick hero + replayable timeline + state + health, hosted as a Flow pop-out (the Pass-3 "Inspect ▸" stub now publishes `composer/monitor/open`) and a standalone ops app. **Default-off byte-identical AND trace-ON observation-neutral** (traced==untraced event streams). **920 tests green** (+258); `smoke_hmon_mqtt.py` 11/11 on real broker. Notable new seam: the **inbound trace control plane** `_bus/headless/<wid>/trace/ctl` (first sanctioned runtime-control namespace). One flag for David: the Monitor is engine chrome (Canvas + DSL traces), not a `.compose.yaml` primitive surface — a fully-declarative Monitor is a future custom-panel-parser option.
+- status: **Headless arc COMPLETE** — Pass 1 (runtime) + 2 (DSL) + 2b (DSL on silicon) + 3 (Flow authoring + Confirmation) + 4 (Monitor / Diagnosis) all OPERATIONAL. Downstream: the DSL JS/Web-tier interpreter ([CXC-RM-M3]); the hardware/edge-node frontier (audio [CXC-RM-AUDIO], NFC [CXC-RM-NFC], HAL [CXC-RM-HAL], reactive embedded tier [CXC-RM-EMBED-REACTIVE]).
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-DSL] In build — Sandboxed Expression DSL (Headless Pass 2)
+- goal: The sandboxed, restricted expression language that closes the 6 use-cases harvested in Headless Pass 1 ([CXC-RM-BEHAVIORS] dsl-gate-MET) — arithmetic, `ns()` lookups, comparisons, booleans, ternary, a closed 7-function set — usable at three `expr:` sites (output / binding-value / trigger-condition). It is the sanctioned middle ground between the declarative 90% and arbitrary code ([CXC-BIND-BOUNDARY] upheld).
+- hard constraint: **bit-identical across CPython / C++·ESP32 / JS**, or define-once breaks. Enforced by an executable **conformance corpus** ({expr,inputs→expected}) that every backend interpreter must reproduce byte-for-byte — the golden-frame discipline ([CXC-R-C1]) applied to expression eval. float64 everywhere (no float32 shortcut on CYD); guarded div/mod-by-zero → 0.0 (never NaN); NO transcendentals in v1 (cross-libm divergence); round() pinned half-to-even.
+- stateless: integration (`remaining -= rate·dt`) is a read-modify-write OUTPUT expr reading its own namespace under the [CXC-HW-RUNTIME] deterministic `tick(t)` — the bus is the state; the expression stays pure.
+- spec: **[SPEC:CXC-DSL]** (`22-composeux-expression-dsl.lts`, 2026-07-07) — build-ready.
+- slice: Pass 2 = Python reference interpreter + conformance corpus (the contract) + 3-site integration + triad re-author (closes [CXC-HW] C2). **Pass 2b = C++/CYD interpreter**, JS interpreter = Web tier — each its own pass, gated ONLY on passing the identical corpus.
+- pass-2 OPERATIONAL (2026-07-07): Python reference interpreter `render/engine/dsl.py` (own-AST tree-walking evaluator, sandboxed by construction — malicious exprs `__import__`/attribute/subscript/unknown-call fail at PARSE); the cross-backend conformance corpus `render/engine/dsl_conformance/dsl_corpus.json` (**226 cases, IEEE-754-bit-exact**, format `composeux-dsl-conformance-v1` + language-agnostic README — the byte-contract for Pass 2b/JS); `expr:` promoted refused→sanctioned at the 3 sites; the jump-drive triad re-authored to `expr:` → **[CXC-HW] C2 CLOSED** (single-expression readiness AND, real variable-rate drain, `min()` conditional pump rate). CXC-DSL-C1…C12 all PASS. Evidence: **570 tests green macOS** (325 baseline + 245 DSL incl. the 226 corpus cases CI-enforced via `tests/render/test_dsl.py`). Delivered by Fable (agent died on an API server error at the finish line; the reference + corpus + triad were complete and green — the dispatcher wrote the pytest wrapper `test_dsl.py`, verified sandbox + C2, and committed). Spec [SPEC:CXC-DSL] → v0.2.
+- pass-2b OPERATIONAL (2026-07-09) — **define-once PROVEN on silicon.** C++/CYD interpreter `cyd/src/dsl.{h,cpp}` (host-compilable, `double` everywhere, own-AST recursive descent, bounded recursion for the MCU) passes the corpus byte-for-byte: **native harness 234/234** (`[env:native_dsl]` — the hardware-free CI foothold, §8-H) and **on-device 226/226 on the real ESP32 xtensa soft-double** (`(a device id, not published)`, 254 µs/case, `[env:cyd_dsl_test]`; corpus baked to a flash header via `gen_dsl_corpus_header.py`, no JSON/FS on the MCU). Expression eval now bit-identical macOS arm64 / x86_64 / ESP32. **Falsification payoff (2b-first thesis paid off):** the first independent implementation + a 30k-expr differential fuzz exposed a latent reference non-totality — `round/floor/ceil/%` of a `1e400`→inf overflow RAISED uncaught in dsl.py, outside its value|error contract. Totalized to IEEE (matches C++, consistent with guarded-div); corpus 226→234 (deterministic inf/finite only; NaN soft-float bit-parity left unpinned). Spec [SPEC:CXC-DSL] → v0.3, [CXC-DSL-SEMANTICS] change record.
+- next: JS/browser interpreter arrives with the Web tier ([CXC-RM-M3]) — third corpus consumer. Pass 3 = Flow-mode authoring of the now-arithmetic-capable headless widgets ([CXC-HW-AUTHORING]).
+- status: **Pass 2 + 2b OPERATIONAL** (2b 2026-07-09, on-device proven); JS (Web tier) queued, gated only on the corpus; Pass 3 (Flow authoring) follows.
+- part-of: [PROJECT:CXC-ROADMAP]
+
+### [CXC-RM-PATSUB] ComposeBus Pattern Subscription — ratified, transport-abstracted
+- goal: The wildcard-subscribe bus primitive (`subscribe_pattern`, trailing-glob prefix) as a transport-agnostic contract, filtered natively per transport (in-process registry / MQTT broker wildcard / **CAN hardware acceptance mask**). Underpins Flow pattern subscription + Headless bus-triggering.
+- spec: **[SPEC:CXC-PATSUB]** (`21-composebus-pattern-subscription.lts`, 2026-07-07) — CAN hierarchical-ID encoding + ESP32-TWAI + graceful HW-filter-bank fallback baked in.
+- status: in-process + MQTT **operational** (built in the Flow pass, ratified 2026-07-07); CAN binding = design, pending a CAN transport.
+- part-of: [PROJECT:CXC-ROADMAP]
+
+---
+
+## 6. Critical Path & Sequencing
+
+### [CXC-RM-PATH] The Trunk and the Branches
+- trunk: **M0 → M1 → M2** is Python, needed under every option, and ends by retiring CTk on the workhorse runtimes (macOS + RPi). Build this first; it is the highest-value, lowest-risk block and requires no resolution of Decision 1.
+- gate: **Decision 1** ([CXC-RM-D1]) is resolved (spike) between M2 and M3.
+- branch: **M3 → M4** turns the web unlock into web-rendered widgets *and* a web-native Composer in one stroke.
+- parallel: **M5 (embedded)** hangs off M1 and proceeds opportunistically at POC priority.
+- near-term order (confirmed David 2026-07-06): with M0–M4 + the reactive layer done, the queued slugs run **binding editor ([CXC-RM-BINDING-EDITOR]) → Lottie ([CXC-RM-LOTTIE]) → classic-CYD M5 ([CXC-RM-M5])**. SVG, gestures, media, and the Qualia/round-LCD profile follow.
+- part-of: [PROJECT:CXC-ROADMAP]
+
+---
+
+## 7. For the Builder (Claude Fable) — First Pass
+
+### [CXC-RM-FABLE] Where to Start and What to Avoid
+- start-here: **M0 + M1** — make desktop-Skia live and build the Layer 2 engine incl. the `.compose.yaml` parser and the pixel-stack layout. This is the meaty foundation and the correct first block: it stands alone, is fully pixel-verifiable, and unlocks M2–M4.
+- reuse-not-rewrite: extend the *working* assets — `render/skia_backend.py`, `render/canvas.py`, `render/widget.py`, `render/widgets/`, `cyd/`, `pixel_comparison.py` — do not start clean.
+- optional-early-spike: the Decision-1 Pyodide-perf spike ([CXC-RM-D1]) can run in parallel with M0/M1 since it gates only M3.
+- guardrails:
+  - Keep CTk running and load-bearing (p3) — this is additive; nothing in production is removed until M2 acceptance.
+  - Author only against the `Canvas` contract + `.compose.yaml` (p4) — no new CTk.
+  - Pixel-verify every widget/backend against the Skia reference (p5).
+  - Stay bus-native + Intelligence-drivable (p6).
+  - Do NOT gold-plate CYD (M5 is POC-priority); do NOT resolve Decision 1 by building — spike it.
+- deliverable-of-first-pass: a live Skia window rendering an interactive `.compose.yaml` widget tree (incl. a pixel-stack composite), bus-bound, pixel-verified — i.e., M0+M1 acceptance met. Target macOS first; confirm the same build runs on RPi/aarch64 (the second-highest-frequency runtime).
+- part-of: [PROJECT:CXC-ROADMAP]
+
+---
+
+## Relationships
+
+### Semantic
+[CXC-RM-M1] DEPENDS_ON [CXC-RM-M0]
+[CXC-RM-M2] DEPENDS_ON [CXC-RM-M1]
+[CXC-RM-M3] DEPENDS_ON [CXC-RM-M2]
+[CXC-RM-M3] DEPENDS_ON [CXC-RM-D1]
+[CXC-RM-M4] DEPENDS_ON [CXC-RM-M2]
+[CXC-RM-M5] DEPENDS_ON [CXC-RM-M1]
+[PROJECT:CXC-ROADMAP] IMPLEMENTS [SPEC:CXC-RENDER]
+[CXC-RM-M4] RELATED_TO [CXC-CORPUS-UX]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-07-06
+**Status**: Draft — first-pass build brief for Claude Fable

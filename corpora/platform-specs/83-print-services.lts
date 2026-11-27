@@ -1,0 +1,164 @@
+---
+scope: "print_services as a bus-native print surface, and two DESIGNED-BUT-NOT-IMPLEMENTED direct peers that ground it: the Apple ImageWriter (a print_services realization) and the 1984 Macintosh 512K (an independent input/display peer, not a print_services member, cited here because the two share a thesis — the bus decouples what 1984 coupled). Carries its own PRE-INTEGRATION questions (answered — this is a design pass, not an open question list) and its own POST-INTEGRATION evidence slots (ALL EMPTY — nothing here has touched a bench), both as first-class queryable properties per [DX-SPEC-CARRIES-ITS-EVIDENCE]. As of the v1 build dispatch (2026-08-22), print_services itself and printer discovery carry lifecycle-position: spec-authored (build-ready, still evidence-empty) and the hookup decision is decided; the ImageWriter, Cashino CSN-A2, and classic Mac nodes stay lifecycle-position: proposed, so lts_find(status=proposed) now returns that narrower designed-not-built subset."
+audience: "The ComposeUX/ComposeIO architect ruling on placement and on the via-Mac-vs-direct question this document already answers direct; the firmware author who eventually wires an ImageWriter or a Retro68 Mac build; any Intelligence asking by QUERY whether print_services has ever touched hardware."
+boundary: "IN: the print_services surface model (content-first submit, three realization backends, cap-not-gate policy); the ImageWriter as a direct print_services peer; the classic Mac as a co-equal bus peer (input/display, not print); the hookup-model decision (direct peer, Mac out of the print path) and its rationale. OUT: any actual firmware, driver, or protocol implementation; the CUPS/SDCP backend wiring for a modern printer (referenced, not specified here); Haven's print-service implementation, which is prior art only and not a dependency."
+not-this: "Not a bring-up recipe and not a claim that any of this has been built. Every property below is a DESIGN decision or a named-EMPTY evidence slot; nothing here has run on hardware. Not a decision record for which printer ships first — that is a separate, later call."
+depends-on: [62-composeplatform-vision.lts, 27-composeux-peripheral-hal.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+lifecycle-position: spec-authored
+created: 2026-08-22
+---
+
+# print_services: one semantic print surface, many realizations [SPEC:CXC-PRINT-SERVICES]
+
+> **[PLACEMENT UNRATIFIED].** This document was written into `corpora/platform-specs/` because that
+> is where its neighbours live, not because the placement was ruled — see [CXC-VISION-PLACEMENT] for
+> the standing note on this directory's unratified filename numbering. Filename `83-print-services.lts`
+> was chosen as the first non-colliding slot after `82-document-store-containment.lts`; it is provisional.
+>
+> **v1 build dispatched 2026-08-22, IN PARALLEL with this spec being made build-ready — this is the
+> FROZEN contract the build is dispatched against.** print_services itself (bus contract, HP direct-IPP
+> backend, Elegoo status-only backend) and printer discovery are moving to `spec-authored`/build; the
+> ImageWriter direct peer, the Cashino CSN-A2, and the classic Mac bus peer remain `proposed` — designed
+> but not being built in this pass. Every evidence slot on every node stays named `EMPTY` until a real
+> bench fills it: this document being build-ready is not a claim that anything has touched hardware yet.
+> That is the whole point of [DX-SPEC-CARRIES-ITS-EVIDENCE] applied to this slice: *designed*,
+> *build-ready*, and *implemented* must never be visually indistinguishable in a spec that reads as finished.
+
+- lifecycle-position: spec-authored
+- placement: UNRATIFIED
+- the-model: a bus-native print surface. Each physical printer is a co-equal bus PEER (announce-then-bind), presenting `print_services/<printer>/submit` (content-first: accepts text / markdown / html / svg / scene, returns a job_id), `.../status` (ready|busy|paper_out|offline), `.../jobs` (recent history). This is [CXC-HAL-ACTUATE] — a printer is an output actuator peer.
+- content-first: submit SEMANTIC content and let the realizer rasterize — NOT file-first. Generalizes [CXC-VISION-SEMANTIC-REALIZATION] to paper: one value flows to screen, needle, numeral, AND print, and the print realizer is just one more backend for the same semantic submission.
+- realization-spectrum: ONE surface, three backends. (1) wrap-an-OS-driver — a modern printer reached via CUPS `lp`. (2) speak-native-protocol — a networked printer reached via its own protocol, e.g. SDCP for resin 3D. (3) raw-hardware — a dumb/vintage printer reached via its raw serial command set plus a ComposeUX Canvas backend that rasterizes to the device's dot-graphics. The backend is the realization; the surface is the meaning, and a caller submitting content never needs to know which of the three answered.
+- policy-cap-not-gate: print-freely, cap-safely. A per-period page/resource cap is the runaway-loop safety net, NOT an approval queue — nothing here blocks on human sign-off before a job runs. Adopted from Haven's print-service DP-PRINT-2 as prior art for the content-first plus cap-safely plus wrap-vs-native pattern; Haven is a SEPARATE project and print_services depends on none of its code.
+- reference-provenance: the Haven project's `haven_print` (CUPS-wrap) and `print_3d_service` (SDCP-native) at ~/haven were studied as prior art for the three-backend split and the cap-safely policy. Nothing in this file imports, depends on, or forks Haven code.
+- pre-integration-questions: ANSWERED, not open — this is a design pass. The three realization backends (see realization-spectrum), the cap policy (see policy-cap-not-gate), and the content-first submit contract (see content-first) are the design; no unmade decision is silently carried forward here.
+- bus-surface-registry: RETAINED `print_services/registry/<id>` = `{id, kind, width, color, graphics, dpi, content_types[], status_ns, backend, heartbeat_ts}`; heartbeat republish on an age contract (default 30s); tombstone published on graceful exit.
+- bus-surface-submit: `print_services/<id>/submit` = `{job_id?, content_type: text|markdown|html|svg|pdf|scene, content, options?{copies?}}`. `content_type` is the PLATFORM union; each backend advertises the SUBSET it accepts via its registry descriptor (see [CXC-PRINT-DISCOVERY] descriptor-carries-capabilities) — HP: text/markdown/html/svg/pdf; the raw-hardware peers (ImageWriter/CSN-A2): scene/text via their Canvas backends.
+- bus-surface-result: `print_services/<id>/result` = `{job_id, status: submitted|done|error, detail?, pages?}`; in-memory job history, last 50 retained.
+- bus-surface-status: RETAINED `print_services/<id>/status` = `{state: ready|busy|paper_out|offline, ts}`.
+- policy-cap: per-period page cap, env `PRINT_SERVICES_DAILY_CAP` default 100, enforced at submit; error-not-gate — the cap is the safety net named in policy-cap-not-gate, never an approval queue.
+- service-shape: bare-Python service at `services/print_services/`; MQTT client via env `COMPOSEIO_MQTT_URL`; `/api/v1/status` HTTP endpoint (hostname plus git-sha, the P-c identity shape) on env `PRINT_SERVICES_PORT` default 8425.
+- v1-scope: HP backend FULL — driverless IPP-Everywhere direct to (a private LAN address, not published), NO CUPS. Elegoo backend STATUS-ONLY — SDCP status to (a private LAN address, not published); 3D print-submission is deferred to v2 (needs slicing/upload).
+- reachability-evidence: MEASURED 2026-08-22 from (a private host name, not published) — see [DEC-(a private host name, not published)-STAYS-ON-LOCAL-SUBNET]; HP (a private LAN address, not published) reachable via IPP/IPPS/raw, Elegoo (a private LAN address, not published) reachable via SDCP. This is the pre-integration reachability confirmation for v1-scope.
+- evidence-ipp-hp: EMPTY
+- evidence-native-3d: EMPTY
+- evidence-raw-imagewriter: EMPTY
+- evidence-cap-enforced: EMPTY
+- see-also: [CXC-HAL-ACTUATE], [CXC-VISION-SEMANTIC-REALIZATION]
+
+---
+
+## [CXC-PRINT-IMAGEWRITER] Apple ImageWriter as a direct print_services peer
+
+- part-of: [CXC-PRINT-SERVICES]
+- lifecycle-position: proposed
+- the-model: a DIRECT print_services peer. A small module (recommend ESP32 WITH PSRAM — page-raster buffering wants RAM) speaks the ImageWriter's RS-422 serial (~9600 baud, DB-9, DIP-configurable) on one side and MQTT/ComposeBus on the other. The Mac is NOT in the print path — the printer owns itself and is available fleet-wide regardless of the Mac's uptime ([DX-LEAF-OWNS-BEHAVIOR]).
+- v1-text: `print/text` plus raw ESC control codes — a trivial byte stream, the cheapest possible first slice.
+- v2-graphics: an ImageWriter ComposeUX Canvas backend rasterizing a widget/scene to the ImageWriter's dot-addressable graphics — the SAME widget the CYD/Mac render, printed on dot-matrix.
+- rasterization-reference: the classic Mac's Printing Manager is the best REFERENCE for the ImageWriter's ESC/dot-graphics command sequences — crib the protocol, do not route through it at runtime. This is a documentation source, not a runtime dependency on [CXC-CLASSIC-MAC-PEER].
+- silicon-note: not the $0.10 floor — rasterizing a page bitmap wants RAM; ESP32(+PSRAM) tier, native MQTT, no bridge needed.
+- pre-integration-questions: ANSWERED — serial params (see the-model), direct-peer topology (see the-model), and the two-phase build (text first, then a graphics backend; see v1-text and v2-graphics) are the design. No open pre-wiring decision remains.
+- evidence-serial-link: EMPTY
+- evidence-text-print: EMPTY
+- evidence-graphics-backend: EMPTY
+- evidence-paper-status: EMPTY
+
+---
+
+## [CXC-PRINT-DISCOVERY] Discovering printers on the bus — announce-then-bind, not a registry
+
+- part-of: [CXC-PRINT-SERVICES]
+- lifecycle-position: spec-authored
+- build-status: built in print_services v1
+- the-model: discovery IS announce-then-bind ([CXC-VISION-ANNOUNCE-BIND]), NOT a central registry service — a registry would be a center, and there is none. Each printer peer publishes a RETAINED descriptor to `print_services/registry/<printer>` on join. A participant subscribes `print_services/registry/+` and receives the full roster immediately (retained means new subscribers catch up), plus live join/leave.
+- descriptor-carries-capabilities: id, kind (thermal|impact|laser|resin|fdm), width (58mm|80mm|letter|A4|page), color (mono|color), graphics (bool), dpi, content-types (text|markdown|html|svg|pdf|scene — the PLATFORM union; a given descriptor advertises the SUBSET that backend accepts, e.g. HP: text/markdown/html/svg/pdf, ImageWriter/CSN-A2: scene/text), status-namespace, realization-backend. Capabilities let a publisher pick the right printer for a job.
+- availability-is-state: a printer's presence is STATE on the bus, never a poll — retained descriptor plus an age contract ([DEC-IMPLEMENT-MQTT-RETAIN-WITH-AN-AGE-CONTRACT]): periodic heartbeat re-publish; a silent printer ages out; graceful exit publishes a tombstone clearing the retained descriptor. This is freshness-verdict-is-state ([DEC-A-FRESHNESS-VERDICT-IS-STATE-NOT-A-HANDLER]).
+- no-center: the roster is EMERGENT from peer announcements on the shared namespace; a "directory" view may aggregate for convenience but holds no authority.
+- optional-capability-routing: submit MAY target a specific printer (`print_services/<printer>/submit`) OR a capability selector (e.g. `to: any-thermal`) resolved against the descriptors — a policy layer, not core.
+- pre-integration-questions: ANSWERED — the announce-then-bind mechanism (see the-model), the descriptor shape (see descriptor-carries-capabilities), and the age-contract freshness model (see availability-is-state) are the design. No open pre-wiring decision remains.
+- evidence-retained-roster: EMPTY
+- evidence-ageout: EMPTY
+- evidence-capability-routing: EMPTY
+- see-also: [CXC-VISION-ANNOUNCE-BIND], [DEC-IMPLEMENT-MQTT-RETAIN-WITH-AN-AGE-CONTRACT], [CXC-PRINT-SERVICES]
+
+---
+
+## [CXC-PRINT-CSN-A2] Cashino CSN-A2 thermal printer as a direct print_services peer
+
+- part-of: [CXC-PRINT-SERVICES]
+- lifecycle-position: proposed
+- the-model: a 58mm thermal receipt printer, DIRECT print_services peer front-ended by an ESP32 (TTL UART to the printer, MQTT to the bus). Same raw-hardware realization class as [CXC-PRINT-IMAGEWRITER], simpler wiring.
+- interface: TTL UART, typically 9600/19200 baud, 5V logic — ESP32 TX into printer RX may want a level check; printer TX at 3.3V TTL into ESP32 RX is fine. Command language: ESC/POS — text formatting, dot-addressable bitmap graphics, barcodes/QR. No OS driver exists; the module IS the driver.
+- realization: raw-hardware plus an ESC/POS ComposeUX Canvas backend. ESC/POS is a de-facto standard across cheap thermal printers, so the ESC/POS backend is REUSABLE across a whole device class — define-once-realize-many at the BACKEND level.
+- prototype-first: cheaper, more available, more forgiving, and better documented than the ImageWriter — the right device to PROTOTYPE the raw-hardware Canvas backend on BEFORE the finicky vintage ImageWriter; then port the pattern to the ImageWriter's command set.
+- silicon-note: smaller raster than a page, so plain ESP32 works with no PSRAM strictly needed; native MQTT, no bridge.
+- power-gotcha: thermal printers spike roughly 1.5-2A while burning a line — the printer needs its OWN supply, NEVER the ESP32's regulator, or brownout resets mid-print will masquerade as protocol bugs. Prove power at the part before debugging the protocol.
+- pre-integration-questions: ANSWERED — the UART interface and command language (see interface), the realization backend and its device-class reuse (see realization), and the prototype-first sequencing against the ImageWriter (see prototype-first) are the design. No open pre-wiring decision remains.
+- evidence-uart-link: EMPTY
+- evidence-escpos-text: EMPTY
+- evidence-escpos-graphics: EMPTY
+- evidence-power-headroom: EMPTY
+- see-also: [CXC-PRINT-SERVICES], [CXC-PRINT-IMAGEWRITER], [CXC-HAL-ACTUATE]
+
+---
+
+## [CXC-CLASSIC-MAC-PEER] 1984 Macintosh (512K) as a bus peer
+
+- lifecycle-position: proposed
+- the-model: the Fat Mac (68000 @ 7.83MHz, 512KB, 512x342 1-bit, Z8530 SCC serial, NO FPU, NO networking) as a co-equal bus peer — an INPUT/DISPLAY peer, distinct from print_services. It rides the compact UART frame ([0xC1][len][ns_hash_hi][ns_hash_lo][type_scope][value][crc8]) out its serial port to a `uart_mqtt_bridge`; it is UART-slaved exactly like a CH32V003 daughtercard, but with 256x the floor's RAM.
+- quickdraw-backend: a ComposeUX Canvas backend over QuickDraw (in ROM) — subscribe `throttle`, draw the widget on the 9-inch CRT; own the blink locally (state-on-bus, behavior-in-leaf). NO FPU means integer/fixed-point primitives only (the FPU-absent rule).
+- toolchain: Retro68 (modern GCC cross-compiler for 68K classic Mac); FloppyEmu to load, since the 400K floppy is likely dead; the classic Serial Driver (`.AIn`/`.AOut`) async ring-buffer read.
+- thesis-note: on the bus the Mac and the ImageWriter are INDEPENDENT co-equal peers — the bus decouples the 1984 hierarchy where the Mac owned the printer.
+- related-to: [CXC-PRINT-IMAGEWRITER] — decoupled, not dependent: the two are independent bus peers and neither requires the other, in deliberate contrast to the 1984 hierarchy where the Mac owned the printer.
+- pre-integration-questions: ANSWERED — transport (UART-bridge; see the-model), render backend (QuickDraw, integer-only; see quickdraw-backend), and toolchain (Retro68 plus FloppyEmu; see toolchain) are the design. No open pre-wiring decision remains.
+- evidence-boots: EMPTY
+- evidence-serial-banner: EMPTY
+- evidence-frame-decode: EMPTY
+- evidence-quickdraw-widget: EMPTY
+- evidence-publish-back: EMPTY
+
+---
+
+## [DEC-PRINT-SERVICES-HOOKUP-MODEL] Decision — print_services peers connect directly, never via another device
+
+- lifecycle-position: decided
+- decision: print_services is a bus-native surface where each printer is a DIRECT co-equal peer that owns itself; the ImageWriter connects directly (Mac out of the print path), NOT via the Mac. Content-first submit; three realization backends (CUPS-wrap / native-protocol / raw-serial-plus-Canvas-backend); print-freely-cap-safely policy.
+- rationale: a printer is a fleet resource and must not depend on another device's uptime — routing through the Mac would gate "can the fleet print?" on "is the Mac on?", the exact accidental coupling decentralization dissolves. The bus decouples what 1984 coupled.
+- alternative-rejected: ImageWriter-via-the-Mac — reintroduces a Mac-uptime dependency; kept only as a rasterization REFERENCE (see [CXC-PRINT-IMAGEWRITER] rasterization-reference) and a possible bootstrap, not the target.
+- human: David chose print_services (plural) and the direct-module model over the via-Mac alternative, 2026-08-22.
+- ratified: David 2026-08-22 — kicked off the build+deploy.
+- driverless-hp-refinement: the HP is IPP-Everywhere, so the HP backend uses direct IPP with NO CUPS and NO Haven dependency (refines gate-2 reuse boundary).
+- relates-to: [DEC-(a private host name, not published)-STAYS-ON-LOCAL-SUBNET]
+- see-also: [CXC-PRINT-SERVICES], [CXC-PRINT-IMAGEWRITER], [DX-LEAF-OWNS-BEHAVIOR]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-PRINT-IMAGEWRITER] PART_OF [CXC-PRINT-SERVICES]
+- [CXC-PRINT-DISCOVERY] PART_OF [CXC-PRINT-SERVICES]
+- [CXC-PRINT-CSN-A2] PART_OF [CXC-PRINT-SERVICES]
+- [CXC-PRINT-SERVICES] REALIZES [CXC-HAL-ACTUATE]
+- [CXC-PRINT-SERVICES] REALIZES [CXC-VISION-SEMANTIC-REALIZATION]
+- [CXC-PRINT-IMAGEWRITER] REALIZES [CXC-PRINT-SERVICES]
+- [CXC-PRINT-IMAGEWRITER] UPHOLDS [DX-LEAF-OWNS-BEHAVIOR]
+- [CXC-PRINT-CSN-A2] REALIZES [CXC-PRINT-SERVICES]
+- [CXC-PRINT-DISCOVERY] UPHOLDS [CXC-VISION-ANNOUNCE-BIND]
+- [CXC-CLASSIC-MAC-PEER] CONTRAST_WITH [CXC-PRINT-IMAGEWRITER]
+- [DEC-PRINT-SERVICES-HOOKUP-MODEL] RESOLVES [CXC-PRINT-IMAGEWRITER]
+- [DEC-PRINT-SERVICES-HOOKUP-MODEL] UPHOLDS [DX-LEAF-OWNS-BEHAVIOR]
+- [CXC-PRINT-SERVICES] UPHOLDS [DX-SPEC-CARRIES-ITS-EVIDENCE]
+
+### Causal
+
+- [CXC-PRINT-CSN-A2] PRECONDITION_FOR [CXC-PRINT-IMAGEWRITER]
+
+---
+
+**Version**: 0.2 — 2026-08-22. Upgraded [SPEC:CXC-PRINT-SERVICES] from proposed DESIGN to build-ready: added the concrete v1 bus contract (registry/submit/result/status topics, the page-cap policy, the service shape, the v1 backend scope, and the measured reachability evidence) as the FROZEN contract a v1 build is dispatched against in parallel. Moved [SPEC:CXC-PRINT-SERVICES] and [CXC-PRINT-DISCOVERY] to `spec-authored` and ratified [DEC-PRINT-SERVICES-HOOKUP-MODEL] (`decided`, with the driverless-HP refinement). The ImageWriter direct peer, the Cashino CSN-A2 direct peer, and the classic Mac bus peer remain `proposed` — designed, not being built in this pass. `[PLACEMENT UNRATIFIED]`.
+**Status**: In progress for print_services v1 (bus contract + discovery); Draft for the three nodes left `proposed`. Every evidence slot on every node is still `EMPTY` and stays that way until a real bench fills it — build-ready is not implemented.

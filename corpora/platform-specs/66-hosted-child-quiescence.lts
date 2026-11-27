@@ -1,0 +1,633 @@
+---
+scope: "The QUIESCENCE of a widget-hosted child Claude instance, decomposed into the two halves the predecessor fused: MEASUREMENT, which needs the child's byte stream and is therefore local to whoever hosts it, and NUDGING, which is a semantic act needing nothing but the bus. Covers the heartbeat as BUILT, the four residual gaps measured on 2026-08-13 (no cadence readback, an accidental cadence identity axis, an unproven nudge delivery, and idle's total invisibility), the invariant that a nudge is never activity, and the six design-decision nodes — four OPEN, one ratified by David on 2026-08-13, one settled earlier — that the architect ratifies before any build."
+audience: "the builder wiring the hosted child's cadence readback, its quiescence publication and its channel nudge; the composeux-architect ratifying the four open DD forks; anyone who reads that a hosted child 'has no quiescence tracking' and needs the measured correction"
+boundary: "IN: the measure/nudge decomposition and why it is the load-bearing content; the nudge as a CHANNEL message rather than a PTY keystroke, and the announce-then-bind design check that argues for it; the invariant that a nudge must not reset the idle clock, restated across a transport boundary; which identity axis the cadence config keys on; the readback that makes a configured cadence distinguishable from a defaulted one; idle observability on bus and glass; the display-state naming collision; the boundary matrix and the acceptance bar. OUT: `HarnessMonitor`'s own tier logic and echo-grace semantics ([CXC-IC-HEARTBEAT-CADENCE] — consumed unchanged, never forked); the context-threshold half of the same monitor ([CXC-TERM-CHILD-TELEMETRY]); the single-write-site and injection-log contracts ([CXC-TERM-CONVERGE] — untouched, because nothing here writes to a PTY); away-watch idle tracking ([SPEC:CXC-IDLE-TRACKING] — a different clock over a different subject)."
+not-this: "Not a claim that the hosted child has no quiescence tracking — that was the starting hypothesis and MEASUREMENT REFUTED IT ([CXC-CQ-AS-BUILT]). Not a keystroke-injection design: a nudge into a hosted child is a bus message on the child's channel, and [CXC-CQ-NUDGE-TRANSPORT] states the four reasons plus the platform-spine argument that settles it. Not a second monitor: every requirement here is a wiring argument to the ONE shared `ptycore.build_monitor`, and a widget-local heartbeat implementation is a review reject for the reason [CXC-TERM-CHILD-TELEMETRY] already gave. Not a redefinition of idle: idle remains CONTINUOUS idle since the last GENUINE child output. Not away-watch idle: [SPEC:CXC-IDLE-TRACKING] measures the HUMAN's dead clock to size a work queue; this measures a CHILD INSTANCE's dead clock to decide whether to nudge it."
+depends-on: [56-terminal-widget.lts, 34-composeux-intelligence-console.lts, 62-composeplatform-vision.lts, 42-idle-tracking.lts]
+elements: CXC-CQ-*, DD-CQ-*
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-08-13
+---
+# The Hosted Child's Quiescence — measure locally, nudge over the bus, and put idle on the glass [SPEC:CXC-CHILD-QUIESCENCE]
+
+> The console can host a live `claude` child inside a widget. The predecessor host, `intelligence/launcher/launcher.py`,
+> has run a two-tier quiescence heartbeat over its child since BUG 3, and the two-tier shape exists only because a
+> single fixed tier failed in production. The starting question was whether the widget-hosted child had that
+> heartbeat at all. It does — [CXC-TERM-CHILD-TELEMETRY] shipped the wiring on 2026-08-11 and the code confirms it.
+> What it does not have is any way to tell whether the heartbeat runs at the cadence anyone intended, whether its
+> nudges arrive, or how long the child has actually been quiet. A heartbeat nobody can observe is precisely the
+> condition that let BUG 3 run for about eight hours and forty-eight pings before a human caught it by hand. The
+> load-bearing content below is a DECOMPOSITION: measurement and nudging were fused only because one process did
+> both, and separating them is what makes the mechanism reusable at the next host.
+
+---
+
+## 1. What was measured, and what the starting hypothesis got wrong
+
+### [CXC-CQ-AS-BUILT] The hosted child's quiescence heartbeat EXISTS — the gap is observability, not absence
+
+- claim: the widget-hosted child DOES run the predecessor's two-tier quiescence heartbeat, through the same class
+  and the same factory. The hypothesis that it has no idle tracking is refuted by the code as of 2026-08-13, so
+  every requirement in this spec is an OBSERVABILITY requirement over a live mechanism, not a request to build one.
+- evidence: `python/composeio/render/widgets/terminal.py` — `_start_monitor` (line 967) calls the shared
+  `ptycore.build_monitor` and starts `HarnessMonitor.start_thread()` (line 990); `start_session` calls it at line
+  872 and `stop_session` tears it down at line 1067; `_on_child_bytes` (line 476) calls `mon.note_activity()` on the
+  reader thread at line 487; a `{"cmd":"context"}` query reaches `self._monitor.handle_query()` at line 1123.
+- evidence: `python/composeio/ptycore.py::build_monitor` (line 1628) passes the FULL two-tier cadence —
+  `heartbeat_base_s`, `heartbeat_backoff_after_s` and `heartbeat_then_s` from `load_heartbeat_cadence`, plus a live
+  `cadence_provider` and `echo_grace_s`. The hosted child therefore inherits both scars intact: the two-tier
+  escalation, and the self-echo guard that stops a nudge resetting the idle it measures.
+- correction: the effective hosted default is NOT a single `600`. `heartbeat_idle_s = 600.0` is the LEGACY
+  single-tier alias on `HarnessMonitor.__init__` (`monitor.py` line 105), superseded whenever the three-value
+  cadence is supplied — which `build_monitor` always does. The real hosted default is
+  `base 600 s / backoff_after 3600 s / then 3600 s`, i.e. 10 / 60 / 60 minutes (`ptycore.py` lines 1600-1602).
+- correction: the seven `idle` and `timeout` occurrences in `terminal.py` ARE display state and I/O timeouts as
+  measured, and `self._state = "idle"` (line 365) does mean "nothing is running here". That reading was right. The
+  inference that therefore nothing measures quiescence was wrong, because the quiescence clock lives inside the
+  monitor thread and is never spelled `idle` in the widget at all. That invisibility is [CXC-CQ-OBSERVABLE].
+- depends-on: [CXC-IC-HEARTBEAT-CADENCE]
+- see-also: [CXC-TERM-CHILD-TELEMETRY]
+- see-also: [DD-TERM-CHILD-TELEMETRY-HOST]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [CXC-CQ-NOT-AWAY-WATCH] Two idle clocks exist and they measure different subjects — relate, never conflate
+
+- constraint: [SPEC:CXC-IDLE-TRACKING] and its `CXC-IT-*` family measure the HUMAN's dead clock —
+  `build_complete_ts` to `resumed_ts` — so the next away-watch queue can be sized empirically. This spec measures a
+  CHILD INSTANCE's dead clock, time since its last genuine PTY output, so the harness can decide whether to nudge
+  it. Different subject, different actor, different consumer, different storage.
+- requirement: a build MUST NOT reuse the away-watch columns, the `away_watch` row, or the `self/away_watches`
+  projection for hosted-child quiescence. Sharing the English word `idle` across the two is tolerable; sharing a
+  field is not, because a query returning both would be answering two questions with one number.
+- verify-machine: a grep guard asserting no hosted-child quiescence code path reads or writes `build_complete_ts`,
+  `resumed_ts` or `idle_seconds` on the `away_watch` table.
+- verify-human: David reads the away-watch sizing readout and a hosted child's quiescence readout side by side and
+  can say in one sentence which is which.
+- see-also: [SPEC:CXC-IDLE-TRACKING]
+- see-also: [CXC-IT-MEASURE]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+---
+
+## 2. The decomposition — measurement and nudging are separable
+
+### [CXC-CQ-SPLIT] Measurement needs the byte stream; nudging needs only the bus
+
+- claim: quiescence measurement and quiescence nudging are two mechanisms, not one. They were fused because the
+  predecessor process happened to own both the PTY and the publish path, and that fusion is an artefact of one
+  implementation rather than a property of the problem.
+- constraint: MEASUREMENT is mechanical and local. Idle is defined as continuous idle since the last GENUINE child
+  output ([CXC-IC-HEARTBEAT-CADENCE]), so something must observe the child's actual bytes. Only the process holding
+  the PTY master can do that, whichever host it is.
+- constraint: NUDGING is semantic and remote. It is an addressed message to a peer asking whether it is still
+  working. It requires no fd, no terminal, no emulator, and no co-location with the child — only the bus.
+- consequence: the two halves have different placement constraints, different failure modes and different tests. A
+  design that keeps them fused inherits the union of both constraint sets for no benefit, which is what makes the
+  split the load-bearing content of this spec rather than a presentational choice.
+- consequence: this WEAKENS [DD-TERM-CHILD-TELEMETRY-HOST]. A monitor that nudges over the channel needs only the
+  READ side of the PTY, which the widget's reader thread already provides; it never needs the write side. The
+  where-does-the-monitor-live question shrinks to "where does the byte observer live", and the byte observer has
+  exactly one possible home.
+- consequence: separable is not the same as independently USEFUL. [DD-CQ-BRIDGELESS-CHILD] rules that on THIS
+  surface — a child running `--ax-screen-reader` ([DD-TERM-TARGET-MODE]) — measurement with no reachable peer to
+  nudge has no consumer, so the monitor refuses to arm rather than measuring into the void. The split stays true of
+  the ARCHITECTURE and pays off at the next host; it does not license instrumenting an unreachable one.
+- requirement: the two halves MUST be independently testable. A test of the measurement half MUST be able to drive
+  idle across the tiers with no bus at all, and a test of the nudge half MUST be able to assert the published
+  message with no PTY at all. If either test needs both, they are still fused.
+- verify-machine: two test modules exist, one importing no bus fake and one importing no PTY fake, and both pass.
+- verify-human: David can state, without reading code, which half breaks when the bus is down and which half breaks
+  when the child dies — the split is only real if it is legible.
+- see-also: [CXC-CQ-AS-BUILT]
+- see-also: [CXC-CQ-NUDGE-TRANSPORT]
+- see-also: [DD-CQ-MONITOR-LOCATION]
+- see-also: [DD-CQ-BRIDGELESS-CHILD]
+- see-also: [DD-TERM-TARGET-MODE]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [CXC-CQ-NUDGE-TRANSPORT] A nudge is a CHANNEL message, never a keystroke into the PTY
+
+- claim: the nudge is delivered as an addressed bus message on the child's channel. Typing a nudge into the child's
+  terminal is rejected as the mechanism — not deferred, not a fallback by default, rejected — and the reasons are
+  four independent ones plus a platform-spine argument.
+- rationale: (1) it never touches the PTY, so there is no injection into a terminal a human may also be typing
+  into, no race with their keystrokes, and no escape-sequence hazard against a live TUI.
+- rationale: (2) it is addressed and auditable. It carries who sent it and why, it lands on the bus where it can be
+  observed, and it appears in the child's transcript AS A MESSAGE. A keystroke is anonymous input that nobody can
+  later attribute to a sender.
+- rationale: (3) the child can REASON about it — answer, defer, or explain why it is quiet. A keystroke can only be
+  absorbed, which discards the one thing a language model is uniquely able to contribute to the question.
+- rationale: (4) it is host-independent. A launcher-hosted instance, a widget-hosted instance and a break-glass
+  terminal session are all bus peers, so one nudge mechanism serves all three.
+- design-check: [CXC-VISION-ANNOUNCE-BIND]'s design-check — "a mechanism built for level N MUST be reusable at N+1; if
+- see-also: [CXC-VISION-ANNOUNCE-BIND]
+  it is not, it was designed too specifically." The keystroke nudge FAILS that check: it is reusable only by a host
+  that owns a PTY. The channel nudge PASSES it: it is reusable by any peer that can address the child. This is the
+  strongest available argument for the design and it comes from the platform's own spine rather than from taste.
+- consequence: [CXC-TERM-CONVERGE]'s single-write-site and injection-log contracts are UNTOUCHED by this spec,
+  because nothing specified here writes to a PTY. That is a feature: the audit property those contracts establish
+  cannot be weakened by a change that never uses them.
+- consequence: the nudge inherits the bus's delivery semantics, which means it inherits the bus's failure modes.
+  What a nudge does when the child has no bridge behind its namespace is [DD-CQ-BRIDGELESS-CHILD], and the
+  message's own shape is [DD-CQ-NUDGE-MESSAGE-SHAPE].
+- verify-machine: a grep guard asserting no quiescence code path calls `inject`, `inject_line`, `write_keys` or
+  `PtyChild._write`; a test asserting a fired heartbeat produces exactly one publish and zero PTY writes.
+- verify-human: David watches a nudge arrive in a hosted child's transcript as a visible, attributable message and
+  confirms it did not disturb what he was typing at the glass.
+- see-also: [CXC-TERM-CONVERGE]
+- see-also: [DD-CQ-NUDGE-MESSAGE-SHAPE]
+- see-also: [DD-CQ-BRIDGELESS-CHILD]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [CXC-CQ-NUDGE-ECHO-GUARD] INVARIANT — a nudge and its echo MUST NOT reset the idle clock
+
+- claim: this is settled by measurement and is NOT a fork. A nudge is ECHO, not genuine activity. Letting it reset
+  the idle clock means the cadence can never escalate, because the nudge resets the very quantity it measures.
+- evidence: `intelligence/launcher/monitor.py` lines 153-158, in its own words — child output within
+  `echo_grace_s` of a harness self-emit "is treated as an echo, NOT genuine activity, so it does not reset the idle
+  clock. Without this, the cadence can never escalate (the nudge resets the idle it measures): the recurrence of
+  BUG 3." The mechanism is the single self-emit chokepoint `_emit` (line 184), which stamps `_last_self_emit`
+  before every publish.
+- requirement: the invariant holds for the channel nudge exactly as it held for the launcher's. Every path that
+  emits a harness message to a hosted child MUST pass through the stamping chokepoint before publishing. A second
+  emit site that publishes without stamping silently reintroduces BUG 3 and no test that drives `note_activity()`
+  by hand will catch it — the prior fix shipped a green suite over exactly that hole.
+- constraint: the invariant now spans a TRANSPORT BOUNDARY, which is a new way for it to fail. The launcher's
+  self-emit and the child's echo were separated by one process and a PTY read. A channel nudge leaves this process,
+  crosses the bus, is rendered by the child, and returns as PTY output — so the echo window must now absorb bus
+  latency, bridge queuing and the child's render time, none of which the 90-second default was chosen against.
+- requirement: an echo arriving back over the bus MUST be recognisable as the system's own nudge. The nudge message
+  MUST carry an identifier the emitter can recognise on the return path, so that echo detection does not rest on a
+  timing window alone. A time-only guard degrades silently under load: it does not fail, it just stops
+  discriminating, which is the same shape as the defect it was written to prevent.
+- default: `echo_grace_s` stays at 90 s until measured otherwise. The default is inherited, not endorsed — see
+  [DD-CQ-CONSTANTS], which covers the cadence constants and this one together.
+- scenario:
+  - when: a nudge is published and the child renders a short reply to it
+  - then: the reply does NOT reset the idle clock, and continuous idle keeps accumulating toward `backoff_after`
+  - when: the child genuinely resumes work and produces sustained output past the echo window
+  - then: the clock resets to zero and the cadence returns to the `base` tier
+  - when: bus latency delays the echo past `echo_grace_s`
+  - then: the carried identifier still marks it as an echo, and the clock still does not reset
+- verify-machine: a test drives an emit-then-echo cycle under an injected clock and asserts continuous idle crosses
+  `backoff_after` despite an echo on every nudge — the escalation that BUG 3's green suite failed to prove; a test
+  delays the echo past `echo_grace_s` and asserts the identifier still suppresses the reset; a grep guard asserting
+  exactly one self-emit chokepoint in the tree.
+- verify-human: David leaves a hosted child quiet for longer than `backoff_after` and confirms on the glass that
+  the cadence actually backed off rather than pinning at the fast tier — the exact observation that caught BUG 3.
+- depends-on: [CXC-IC-HEARTBEAT-CADENCE]
+- see-also: [CXC-CQ-NUDGE-TRANSPORT]
+- see-also: [DD-CQ-PEER-INJECT-IS-ACTIVITY]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+---
+
+## 3. The four residual gaps
+
+### [CXC-CQ-CADENCE-READBACK] The hosted child publishes no effective cadence, so SET-versus-CURRENT is dark for it
+
+- premise: (measured) `ptycore.build_monitor` accepts a `publish_cadence` hook (line 1634). The launcher's wrapper
+  passes one, publishing to `intelligence/<id>/config/heartbeat/current` (`launcher.py` lines 301-302).
+  `TerminalWidget._start_monitor` (terminal.py lines 978-984) passes `intelligence_id`, `publish_in`, `jsonl_path`,
+  `thresholds` and `log`, and does NOT pass `publish_cadence`. The hosted child therefore publishes nothing on its
+  `config/heartbeat/current` topic.
+- constraint: that readback is not decoration. [CXC-IC-HEARTBEAT-CADENCE] records it as the fix for the
+  observability gap that drove BUG 3's recurrence: with no readback of the cadence actually running, a cadence edit
+  gives no feedback that it took, so a working edit and a dead one look identical. For a hosted child the situation
+  is strictly worse than the launcher's pre-fix state, because there is not even a terminal log line to read.
+- requirement: `TerminalWidget._start_monitor` MUST pass a `publish_cadence` hook that publishes the effective
+  `base`, `backoff_after` and `then` — in MINUTES, matching the Config tab's set values — under the CHILD's id per
+  [CXC-TERM-CHILD-ID]. On change only, never as a stream.
+- requirement: a publish failure MUST be logged through `self._log` and never swallowed. A readback that can fail
+  silently reintroduces the gap it exists to close.
+- default: publish on change only, with the first publish emitted at monitor construction so a freshly mounted
+  widget is never a blank readout.
+- scenario:
+  - when: a hosted child's monitor is constructed
+  - then: exactly one cadence readback carries the three effective values in minutes, under the CHILD's id
+  - when: David edits the cadence and `config_persister` writes it while the child runs
+  - then: within one `poll_s` (default 20 s) the running monitor re-reads it via `cadence_provider` AND a new
+    readback reflects the new value — set and current agree with no relaunch
+- verify-machine: a test asserts `build_monitor` is called from the widget with a non-None `publish_cadence`; a test
+  drives a cadence change through a fake `cadence_provider` and asserts exactly one new publish carrying the new
+  values in minutes; a test asserts the topic carries the CHILD's id and not the host's.
+- verify-human: David changes the cadence on the Config tab while a hosted child runs and watches the console's
+  set-versus-current indicator reach agreement without relaunching anything.
+- depends-on: [CXC-IC-HEARTBEAT-CADENCE]
+- see-also: [CXC-TERM-CHILD-ID]
+- see-also: [DD-CQ-NUDGE-MESSAGE-SHAPE]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [CXC-CQ-CADENCE-IDENTITY] A hosted child's cadence resolves from a manifest that may not exist, and from the HOST's environment
+
+- premise: (measured) `load_heartbeat_cadence(intelligence_id)` (`ptycore.py` line 1577) reads
+  `default_meta_manifest(intelligence_id)` and, on any `OSError` or `ValueError`, falls through to the coded
+  defaults with the exception swallowed and NOTHING logged (lines 1585-1599). A hosted child's instance id is minted
+  per [CXC-TERM-CHILD-ID]; nothing guarantees an instance-scoped meta-object exists at that path.
+- premise: (the identity leak) the same function then applies `HEARTBEAT_BASE_S`, the legacy `HEARTBEAT_IDLE_S`,
+  `HEARTBEAT_BACKOFF_AFTER_S` and `HEARTBEAT_THEN_S` from `os.environ` (lines 1603-1613). For a hosted child that
+  environment is the CONSOLE HOST's. One operator pin in the host's env therefore overrides the cadence of EVERY
+  child the console hosts — a HOST-axis value silently beating an INSTANCE-axis one, which is symptom 2 of
+  [CXC-TERM-CHILD-ID] wearing a new costume.
+- requirement: the cadence source MUST be self-declaring. Whatever [DD-CQ-CADENCE-AXIS] settles, the readback
+  required by [CXC-CQ-CADENCE-READBACK] MUST carry a `source` field naming where each value came from — one of
+  `instance-meta`, `role-meta`, `host-env` or `coded-default` — so a reader can distinguish a CONFIGURED 10/60/60
+  from a DEFAULTED 10/60/60. Those two are indistinguishable today and they are not the same fact.
+- requirement: a manifest that cannot be read MUST be logged through the monitor's `log` at construction, naming the
+  path tried. A silent fall-through to defaults is the failure class this corpus has now paid for three times on
+  [CXC-IC-HEARTBEAT-CADENCE].
+- constraint: this node does NOT settle which axis wins — that is [DD-CQ-CADENCE-AXIS]. It settles only that
+  whichever answer wins must be VISIBLE in the readback rather than inferred from surprise.
+- scenario:
+  - when: no meta-object exists for the child's instance id
+  - then: the monitor logs the path it tried and the readback's `source` reads `coded-default`
+  - when: `HEARTBEAT_BASE_S` is set in the console host's environment and two children are hosted
+  - then: each child's readback names `host-env` as its source, so the shared pin is visible
+- verify-machine: a test with a missing manifest asserts a log line naming the attempted path and a `coded-default`
+  source; a test with `HEARTBEAT_BASE_S` in env asserts `host-env` for both of two hosted children; a test asserts
+  a configured 10/60/60 and a defaulted 10/60/60 yield DIFFERENT `source` values.
+- verify-human: David sets a cadence for one hosted child and confirms on the glass that a second hosted child's
+  readout does not move with it.
+- see-also: [CXC-TERM-CHILD-ID]
+- see-also: [CXC-TERM-MANIFEST-CHAIN]
+- see-also: [DD-CQ-CADENCE-AXIS]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [CXC-CQ-DELIVERY] An undelivered nudge is silent, and the system then believes it acted
+
+- premise: (measured) the widget's `publish_in` is `_publish_to_child` (terminal.py line 942). It publishes a
+  harness envelope to the raw topic `intelligence/<child-id>/in` through the bus's foreign-channel seam, wrapped in
+  a bare `except Exception` that logs `harness message DROPPED (bus down)` into a bounded in-memory list (lines
+  959-965). Nothing on the glass, nothing on the bus, no counter — and the monitor's state advances as though the
+  nudge landed.
+- premise: (the sharper case, measured by the architect on 2026-08-13) publishing into a namespace behind which no
+  channel bridge is bound fails WITHOUT raising. The console runs one `channel_bridge`, bound to a single instance
+  id — `architect-hosted` is the id the shipped scene and `ptycore` both name. A peer whose id has no bridge behind
+  it therefore publishes into a namespace with nothing listening, and the publish SUCCEEDS. A nudge that vanishes
+  is worse than no nudge, because the idle clock keeps running and the system believes it acted.
+- requirement: an undelivered nudge MUST NOT advance the heartbeat clock. Advancing `_last_heartbeat` on a nudge
+  that did not land converts a broken delivery path into an apparently healthy quiet child, and the escalation to
+  the `then` tier then fires against a child that never heard the `base` tier.
+- requirement: the undelivered condition MUST be machine-readable, not merely logged. A bounded in-memory list that
+  dies with the process cannot be asserted on, cannot be alerted on, and cannot be read from the glass; a condition
+  visible only in a log is the shape that made an unoriented instance indistinguishable from an oriented one.
+- requirement: what a bridgeless child DOES about it is SETTLED — [DD-CQ-BRIDGELESS-CHILD], ratified by David on
+  2026-08-13: REFUSE TO ARM. The heartbeat half is not armed while no bridge is bound, so this node's rules govern
+  the narrower surviving case: a bridge that was bound when the monitor armed and vanished before the next poll.
+- constraint: delivery proof stronger than "the publish did not fail and a bridge is bound" is out of scope. The
+  bus offers no per-message ack on this seam and inventing one is a larger change than this gap warrants. The bar
+  is that a nudge into a namespace with nothing behind it is never counted as a nudge that landed.
+- scenario:
+  - when: a bridge was bound at arm time, vanishes, and a heartbeat fires before the next poll disarms
+  - then: the condition is recorded machine-readably and the monitor's heartbeat clock does NOT advance
+  - when: a bridge is bound behind the child's namespace and a heartbeat fires
+  - then: the clock advances exactly once
+- verify-machine: a test with a raising publish asserts the recorded condition and an unchanged `_last_heartbeat`; a
+  test with a succeeding-but-unbound namespace asserts the SAME outcome, which is the case a naive test misses; a
+  test asserts a bound, successful publish advances the clock exactly once.
+- verify-human: David removes the bridge behind a hosted child, watches the console say so within one heartbeat
+  interval, restores it, and watches the condition clear.
+- see-also: [CXC-TERM-DEGRADE]
+- see-also: [DD-CQ-BRIDGELESS-CHILD]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [CXC-CQ-OBSERVABLE] The child's idle clock is private to a thread — nothing publishes it and nothing renders it
+
+- premise: (measured) `HarnessMonitor` holds `_last_activity`, `_last_heartbeat` and `_last_self_emit` as private
+  attributes on the monitor thread (`monitor.py` lines 171-179). The widget exposes only `monitor` as a property
+  (terminal.py line 1002). No topic carries the child's idle seconds, no topic carries which tier it is in, and no
+  widget draws either. A human looking at a hosted child cannot tell "working" from "quiet for two hours".
+- requirement: the hosted child's quiescence MUST be published as retained state under `self/<child-id>/quiescence`,
+  keyed on the CHILD's id, carrying at minimum `idle_seconds`, `tier` (`base` or `backed-off`), `cadence_s` and
+  `last_heartbeat_ts`. This is the shape the launcher already writes to its log per check; the requirement is that
+  it becomes a bus fact instead of a log line.
+- constraint: publication is state-on-change, not a stream. An `idle_seconds` republished every tick is a
+  per-second write per child, and [CXC-TERM-DAMAGE] is explicit that per-child work inside the render process is the
+  cost class the entire widget budget exists to avoid. Publish on tier change, on heartbeat fire, and on the
+  activity edge that resets the clock — three events, not a clock.
+- default: the publish floor is `poll_s` (default 20 s); no quiescence publish is emitted more often than that
+  regardless of how many edges occur.
+- requirement: the readout MUST be renderable without the render thread computing it. The monitor publishes and a
+  binding renders. No idle arithmetic on the draw path.
+- scenario:
+  - when: a hosted child produces no genuine output for longer than `backoff_after`
+  - then: exactly one quiescence publish records the transition to `backed-off`, carrying the new `cadence_s`
+  - when: the child resumes producing genuine output
+  - then: one publish records `tier: base` with an `idle_seconds` near zero, and nothing further until the next edge
+- verify-machine: a test drives the monitor under an injected clock across the `backoff_after` boundary and asserts
+  exactly one transition publish rather than one per tick; a test asserts no publish occurs more often than
+  `poll_s`; a test asserts the topic carries the CHILD's id.
+- verify-human: David looks at a hosted child that has been quiet all afternoon and can read how long it has been
+  quiet and whether the harness has backed off, without opening a log.
+- depends-on: [CXC-IC-HEARTBEAT-CADENCE]
+- see-also: [CXC-TERM-DAMAGE]
+- see-also: [CXC-TERM-CHILD-ID]
+- see-also: [DD-CQ-CADENCE-AXIS]
+- see-also: [CXC-CQ-DISPLAY-STATE-NAMING]
+- see-also: [CXC-CQ-NOT-AWAY-WATCH]
+- see-also: [DD-CQ-CONSTANTS]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [CXC-CQ-DISPLAY-STATE-NAMING] The word `idle` already means the opposite on this widget's glass
+
+- premise: (measured) `terminal.py` line 365 sets `self._state = "idle"` for a widget with NO child, and line 1425's
+  `_idle_plate()` is the no-session plate. In the widget's vocabulary `idle` means "nothing is running here". In the
+  quiescence vocabulary `idle` means "something is running here and has produced nothing for N seconds". Opposite
+  conditions, one word, one surface.
+- requirement: the quiescence readout MUST NOT be labelled `idle` on the glass or on the bus. The bus key is
+  `quiescence` ([CXC-CQ-OBSERVABLE]) and the glass label is `quiet for H:MM` or equivalent. The widget's existing
+  `idle` display state is UNCHANGED — renaming a shipped display state to make room for a new word is a larger edit
+  than choosing a different word.
+- consequence: a reader who greps the tree for `idle` keeps finding display state, and that stays correct. The
+  quiescence clock is greppable as `quiescence`, which returns the mechanism and nothing else.
+- verify-machine: a grep guard asserting no quiescence topic or payload key contains the token `idle` other than
+  `idle_seconds`, and that no quiescence plate string uses the word `idle`.
+- verify-human: David reads both states on the glass in one session and never has to ask which sense is meant.
+- see-also: [CXC-CQ-OBSERVABLE]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+---
+
+## 4. Boundaries and the acceptance bar
+
+### [CXC-CQ-BOUNDARIES] Error and boundary conditions, stated so that none of them lands on the happy path
+
+| # | Condition | Required behaviour |
+|---|-----------|--------------------|
+| 1 | no meta-object for the child's instance id | coded defaults apply, the attempted path is LOGGED, the readback `source` reads `coded-default` |
+| 2 | a `HEARTBEAT_*_S` pin in the console host's env | the pin applies and the readback `source` reads `host-env` for every hosted child, so the sharing is visible |
+| 3 | effective `base <= 0` | the heartbeat is DISABLED per the existing `heartbeat_interval` contract, and the readback says disabled rather than reading as a zero-second cadence |
+| 4 | nothing bound behind the child's channel namespace | the heartbeat is NOT ARMED and the plate names the remedy ([DD-CQ-BRIDGELESS-CHILD], ratified 2026-08-13); re-probed each poll, so a later bridge arms it with no relaunch |
+| 5 | the publish raises outright | identical treatment to row 4 — a raising publish and a vanishing one are the same fact to the clock |
+| 6 | the child's transcript cannot be resolved yet | quiescence still publishes; idle is measured from PTY output, not from the transcript, so it is available before context is |
+| 7 | the echo returns later than `echo_grace_s` | the carried identifier still marks it as an echo and the clock still does not reset ([CXC-CQ-NUDGE-ECHO-GUARD]) |
+| 8 | the widget unmounts while the child is quiet | the monitor thread stops with the session and the retained quiescence state is CLEARED, never left as a stale last reading |
+| 9 | two children hosted in one console | two monitors, two topics, two clocks, and no shared cadence state beyond whatever [DD-CQ-CADENCE-AXIS] rules |
+| 10 | the human types at the glass and the child echoes | that echo counts as genuine activity exactly as it does for the launcher — unchanged, and deliberately so |
+
+- constraint: rows 1, 2, 4 and 5 are the four that resolve SILENTLY today. That is what makes them the acceptance
+  bar rather than documentation.
+- see-also: [CXC-CQ-ACCEPTANCE]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [CXC-CQ-ACCEPTANCE] The two-tier bar — a machine signal per gap, and a glass gate for the three a human owns
+
+| id | Criterion | Tier |
+|----|-----------|------|
+| CQ-A1 | the widget constructs the monitor with a non-None `publish_cadence`, and one readback carries the three values in MINUTES under the child's id | machine |
+| CQ-A2 | a cadence edit reaches a RUNNING hosted child within one `poll_s` and the readback agrees, with no relaunch | machine and glass |
+| CQ-A3 | a configured 10/60/60 and a defaulted 10/60/60 are distinguishable by the readback's `source` field | machine |
+| CQ-A4 | a nudge that raises AND a nudge into an unbound namespace both leave the heartbeat clock UNADVANCED and both record a machine-readable condition | machine |
+| CQ-A5 | crossing `backoff_after` emits exactly ONE quiescence publish, and no quiescence publish is emitted more often than `poll_s` | machine |
+| CQ-A6 | continuous idle crosses `backoff_after` and the cadence escalates DESPITE an echo on every nudge, including an echo delayed past `echo_grace_s` | machine |
+| CQ-A7 | zero PTY writes occur on any quiescence path, proven by a grep guard and by a fired-heartbeat test | machine |
+| CQ-A8 | a human can read, from the glass alone, how long a hosted child has been quiet and whether the harness has backed off | glass |
+| CQ-A9 | a nudge arrives in the child's transcript as an attributable message and does not disturb what the human is typing | glass |
+| CQ-A10 | with no bridge bound the heartbeat is NOT armed and the plate names the remedy; a bridge appearing on a later poll arms it, and one disappearing disarms it, both with no relaunch | machine and glass |
+
+- verify-machine: CQ-A1, CQ-A3, CQ-A4, CQ-A5, CQ-A6 and CQ-A7 are unit tests under an injected clock with a fake
+  publish and no real bus; CQ-A2's machine half drives `cadence_provider` directly, and CQ-A10's drives a fake
+  bridge probe that appears and disappears across polls.
+- verify-human: CQ-A2's glass half, CQ-A8 and CQ-A9 are David at the console. CQ-A8 in particular cannot be closed
+  by a test, because the failure it guards against is a readout that is present and unreadable.
+- constraint: no criterion here is met by the code as measured on 2026-08-13. This spec's entire content is ten
+  criteria that currently fail.
+- see-also: [CXC-CQ-BOUNDARIES]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+---
+
+## 5. The design forks — four OPEN, two settled
+
+### [DD-CQ-MONITOR-LOCATION] WHERE the idle monitor lives — settled elsewhere, and WEAKENED by the split
+
+- decision: SETTLED, and not re-opened by this spec. [DD-TERM-CHILD-TELEMETRY-HOST] was resolved by David on
+  2026-08-11 in favour of an IN-PROCESS monitor thread, against its own weak recommendation for a standalone
+  publisher, and it is BUILT — `TerminalWidget._start_monitor` starts `HarnessMonitor.start_thread()` and
+  `stop_session` stops it.
+- alternatives: "(a) IN-PROCESS, a monitor thread the widget owns, published through the console's client — lifetime is exactly the child's, no orphan to reap, no second flock, at the cost of per-child work inside the render process. (b) STANDALONE `self_publisher --namespace-by-id <child-id>` spawned beside the child — real isolation, nothing it does can cost a frame, and the child's telemetry survives a console bounce, at the cost of a second process whose lifetime must be tied to the child's or it orphans. (c) PUBLISH NOTHING and let the console read the child's transcript in its existing data layer — rejected in [DD-TERM-CHILD-TELEMETRY-HOST] because it puts transcript parsing for N children on the render process's critical path and makes the child's telemetry a console feature rather than the child's own signal." (a) was chosen; recorded here in full so this node is readable without opening the fork it cites.
+- rationale: the deciding argument was lifetime. The thread's lifetime is exactly the child's, so there is no orphan
+  to reap, no second flock and no daemon-launcher edit; an orphaned publisher republishing a dead child's last
+  reading is a stale gauge that the in-process shape cannot produce.
+- consequence: [CXC-CQ-SPLIT] WEAKENS the fork rather than reopening it. Once nudging is a channel message, the
+  monitor needs only the READ side of the PTY, which the widget's reader thread already provides. The question
+  shrinks from "which process owns the child's harness" to "which process observes the child's bytes", and only one
+  process can answer that.
+- consequence: every requirement in this spec therefore constrains code running INSIDE the render process, which is
+  why [CXC-CQ-OBSERVABLE] carries a publish-on-edge rule and a `poll_s` floor rather than a publish-per-tick design.
+  The cost that branch (b) was chosen against is the cost this spec must not incur.
+- invalidating_assumption: "That the monitor's per-child work stays off the frame budget. If a measured frame cost
+  is ever attributable to a hosted child's monitor thread — a wedged transcript parse, a blocking publish — then
+  [DD-TERM-CHILD-TELEMETRY-HOST] branch (b) reopens on evidence and this spec's publish requirements move with it."
+- status: decided
+- see-also: [DD-TERM-CHILD-TELEMETRY-HOST]
+- see-also: [CXC-CQ-SPLIT]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [DD-CQ-NUDGE-MESSAGE-SHAPE] What the nudge MESSAGE is — its namespace, its payload, and STATE versus EVENT
+
+- decision: OPEN. [CXC-CQ-NUDGE-TRANSPORT] settles that the nudge is a channel message rather than a keystroke.
+  It does not settle the message's namespace, its payload, or its bus KIND, and the last of those is not cosmetic.
+- constraint: (the live hazard) the bus dispatches STATE and EVENT to DIFFERENT subscriber sets —
+  `bus.publish_state` and `bus.publish_event` are separate entry points with separate delivery semantics. Choosing
+  the wrong one produces a message that publishes successfully and reaches nobody, which is the same silent shape
+  as [CXC-CQ-DELIVERY]'s unbound namespace and is a live failure class in this codebase.
+- alternatives: "(a) EVENT on the child's existing inbound channel — reuses `intelligence/<child-id>/in`, the exact
+  address `channel.mjs` already subscribes, so the child cannot tell a widget nudge from a launcher nudge. Zero new
+  namespace, and it inherits whatever that path's failure modes are. (b) EVENT on a dedicated quiescence namespace
+  — `intelligence/<child-id>/quiescence/nudge`, separable, independently subscribable, greppable, and observable by
+  a third party that is not the child. Requires the child's bridge to relay a second namespace. (c) STATE on a
+  quiescence namespace — retained, so a child that reconnects sees the outstanding nudge. Wrong for a nudge that
+  should expire, and a retained nudge that survives a reconnect is a message the child will answer twice."
+- rationale: the argument for (a) is that it is the address that already works and already carries the launcher's
+  nudges; the argument for (b) is that a nudge observable only by its recipient cannot be audited by anyone else,
+  which forfeits reason (2) of [CXC-CQ-NUDGE-TRANSPORT].
+- recommendation: (weak) (a) for delivery plus (b) as an OBSERVATION copy — the child hears it on the address it
+  already listens to, and the audit trail exists on a namespace anyone can subscribe. Two publishes, one act,
+  clearly labelled which is which.
+- consequence: whichever wins, the payload MUST carry sender, reason and the echo identifier
+  [CXC-CQ-NUDGE-ECHO-GUARD] requires. Those three fields are settled by other nodes and are not part of this
+  fork.
+- invalidating_assumption: "That a third party ever wants to observe a nudge. If nothing but the child and its own
+  monitor ever reads it, the observation copy is unread traffic and (a) alone is correct — check whether any
+  console surface or supervisor would bind a nudge namespace before building the second publish."
+- status: proposed
+- see-also: [CXC-CQ-NUDGE-TRANSPORT]
+- see-also: [CXC-CQ-CADENCE-READBACK]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [DD-CQ-BRIDGELESS-CHILD] What a hosted child does when nothing is bound behind its channel namespace — RATIFIED
+
+- decision: RATIFIED (David, 2026-08-13) — **(a) REFUSE TO ARM.** No bridge, no idle monitor, and the glass says
+  so. This is a DEVIATION from the architect's recommendation of (b) degrade-loudly, and David's reason is the
+  better one, so it is recorded verbatim below rather than paraphrased into the argument it overturned.
+- deviation: the architect recommended (b) ARM AND DEGRADE LOUDLY, on the grounds that measurement and nudging are
+  separable ([CXC-CQ-SPLIT]), so losing the nudge should not cost the idle clock. That argument ASSUMED the child
+  was otherwise a usable collaborator. It is not: a hosted child runs `--ax-screen-reader` ([DD-TERM-TARGET-MODE]),
+  a deliberately restricted surface, so the channel is not one of several ways to work with it — without the
+  channel it is barely collaborable at all. The recommendation rested on a premise this deployment does not supply.
+- claim: `refuse to arm` is not caution, it is REFUSING TO INSTRUMENT AN UNREACHABLE PEER. A child with no bridge
+  is not a degraded child, it is a non-functional one, and arming an idle monitor on it is theatre — measuring the
+  quiescence of something nobody can reach produces a number with no action attached to it, and the entire point of
+  the two-tier heartbeat is to ACT on the idle rather than to record it.
+- premise: (measured, 2026-08-13) the console runs ONE `channel_bridge`, bound to a single instance id. A peer
+  whose id has no bridge behind it publishes into a namespace with nothing listening and the publish SUCCEEDS.
+  There is no error, no drop counter and no signal of any kind.
+- alternatives: "(a) REFUSE TO ARM — the widget checks for a bound bridge before starting the monitor's heartbeat
+  half and, finding none, does not arm it and says so on the glass. Honest, and it means the absence of nudges is
+  explained rather than mysterious; it also means a child whose bridge arrives later never gets nudged. (b) ARM AND
+  DEGRADE LOUDLY — arm the heartbeat, attempt every nudge, and mark the undelivered condition on the glass and on
+  the bus per [CXC-CQ-DELIVERY]. Self-healing when a bridge appears, at the cost of a widget that shows a fault
+  condition for a configuration nobody intended to be an error. (c) FALL BACK — deliver the nudge by some other
+  path when no bridge is bound. This is where a PTY keystroke would re-enter, and [CXC-CQ-NUDGE-TRANSPORT]'s
+  four reasons argue against it as strongly here as anywhere."
+- rationale: the choice turned on a question this spec could not answer from measurement — whether a bridgeless
+  hosted child is a MISCONFIGURATION or a legitimate deployment. David answered it by naming a fact the spec had
+  not weighed: the SURFACE. `--ax-screen-reader` makes the channel the only practical way to work with the child,
+  so a bridgeless child is neither a misconfiguration to tolerate nor a deployment to support — it is unreachable,
+  and (a) is right and loud. The lesson worth keeping is that the deciding evidence was a property of the terminal
+  mode, not of the heartbeat, and no amount of reasoning about the monitor would have surfaced it.
+- recommendation: (weak, NOT TAKEN — recorded because a superseded recommendation is evidence about the reasoning,
+  not noise) (b), because it degrades rather than refuses and because [CXC-CQ-DELIVERY] already requires the
+  machine-readable condition it depends on.
+- requirement: the widget MUST probe for a bound bridge on the child's namespace BEFORE arming the monitor's
+  heartbeat half, and MUST NOT arm it when none is bound. With the heartbeat unarmed there is no quiescence tier
+  and no cadence, so [CXC-CQ-OBSERVABLE] publishes the REFUSAL in place of a reading rather than a tier nobody is
+  maintaining. `_on_child_bytes` already no-ops its `note_activity()` call when `self._monitor is None`
+  (terminal.py lines 484-489), so the unarmed shape needs no new branch on the byte path.
+- requirement: (the refusal names the REMEDY, not the condition) the glass MUST carry what to DO, not only what is
+  wrong. "no bridge for `<child-id>`" is a symptom; "start a `channel_bridge` for `<child-id>`" is actionable. The
+  fix is a known one-line change rather than a mystery, so reporting only the symptom is a choice, not a limit —
+  and a refusal that does not say what to do is one people learn to ignore, which turns a loud signal into a silent
+  one by habit instead of by code.
+- requirement: (RE-CHECKABLE, never one-shot) the probe MUST be re-evaluated on the monitor's existing poll, so a
+  bridge that appears later ARMS the heartbeat and clears the plate with no relaunch, and a bridge that disappears
+  DISARMS it rather than emitting nudges nobody receives. A sticky refusal makes someone restart a whole console to
+  clear a condition that has already resolved itself.
+- consequence: [CXC-CQ-DELIVERY]'s clock rule survives and NARROWS. With the heartbeat unarmed there is no clock to
+  advance, so the undelivered-nudge case shrinks to a bridge that was bound at arm time and vanished before the
+  next poll — which the re-check converts into a disarm instead of a stream of undelivered nudges.
+- consequence: this STRENGTHENS [CXC-CQ-SPLIT] rather than weakening it. Measurement and nudging remain separable
+  IN THE ARCHITECTURE; the ruling is that in THIS deployment, on THIS surface, measurement without nudging has no
+  consumer. The split keeps its value for the next host — one not screen-reader-restricted — and this node records
+  why its independent halves are not independently USEFUL here.
+- scenario:
+  - when: a hosted child is spawned and no bridge is bound behind its namespace
+  - then: the heartbeat is NOT armed, and the plate names both the condition and the remedy
+  - when: a bridge is started for that child while the widget is still mounted
+  - then: the next poll arms the heartbeat and the plate clears, with no relaunch
+  - when: the bridge disappears while the heartbeat is armed
+  - then: the next poll DISARMS it and the plate returns, rather than firing nudges nobody receives
+- verify-machine: a test asserts no heartbeat is armed when the bridge probe reports none bound; a test asserts the
+  plate string carries the remedy and not only the condition; a test appears-then-disappears the bridge across
+  polls and asserts arm and disarm both happen with no relaunch.
+- verify-human: David spawns a hosted child with no bridge, reads the plate, does what it names, and watches the
+  monitor arm itself without a relaunch.
+- invalidating_assumption: "That a hosted child is only collaborable through the channel. This ruling rests on
+  `--ax-screen-reader` being V1's target mode ([DD-TERM-TARGET-MODE]); if the target mode changes to one a human
+  can work with directly at the glass, a bridgeless child stops being non-functional and (b) degrade-loudly becomes
+  correct again. Anyone changing the terminal mode MUST reopen this node."
+- invalidating_assumption: "That one bridge per console is the durable topology. If the console gains a bridge per
+  hosted child, or the bridge learns to bind ANNOUNCED namespaces rather than a configured id, the bridgeless case
+  stops existing and this ruling closes as not-applicable. That second option is [CXC-VISION-ANNOUNCE-BIND] applied
+  one level up, which is worth checking before building the probe."
+- status: decided
+- dsd-source: docs/intelligence-console/DECISIONS-2026-08-13-crossing-primer-and-publication.md
+- see-also: [CXC-CQ-DELIVERY]
+- see-also: [CXC-CQ-SPLIT]
+- see-also: [CXC-CQ-OBSERVABLE]
+- see-also: [DD-TERM-TARGET-MODE]
+- see-also: [CXC-VISION-ANNOUNCE-BIND]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [DD-CQ-CADENCE-AXIS] Which of the three identity axes owns a hosted child's quiescence config and namespace
+
+- decision: OPEN. A hosted instance has three axes — ROLE selects the artifacts it orients from, INSTANCE ID is what
+  it is called on topics and telemetry, HOST is where it renders. Telemetry is already ruled to the INSTANCE axis by
+  [CXC-TERM-CHILD-ID], which is why [CXC-CQ-OBSERVABLE] keys the quiescence topic on the child's id and treats that
+  as settled. The CONFIG axis is not ruled, and today it resolves from a mixture of all three by accident.
+- alternatives: "(a) INSTANCE — each hosted child carries its own `lifecycle.heartbeat`, edited per child. Most
+  precise, and it creates one meta-object per spawn, most of which will never be edited. (b) ROLE — the cadence
+  lives on the role manifest the child orients from, so every `composeux-architect` child shares one cadence. This
+  matches how the role already selects artifacts, and it makes a per-child override impossible without a fourth
+  mechanism. (c) HOST — the console's own config sets the cadence for everything it hosts, which is what the env pin
+  does today by accident. Simplest and least defensible, because it makes a host-axis value beat an instance-axis
+  one."
+- rationale: the `source` field required by [CXC-CQ-CADENCE-IDENTITY] is what makes any of these three honest, and
+  it is required regardless of which wins — which is why it is a requirement and this is a fork.
+- recommendation: (weak) (b) with (a) as an override. The role is the axis that already carries every other
+  orientation artifact, and a per-instance override costs one lookup rather than one file per spawn.
+- consequence: whichever wins, the HOST env pin must stop being an unannounced fourth axis. Under (a) or (b) it
+  becomes an explicit operator override that the readback names as `host-env`.
+- invalidating_assumption: "That a hosted child's cadence is ever edited at all. If in practice every hosted child
+  runs at the coded default forever, the axis question is academic and the fork collapses into 'the default is the
+  config' — check whether any cadence value has ever been persisted for a non-launcher instance before building
+  either branch."
+- status: proposed
+- see-also: [CXC-CQ-CADENCE-IDENTITY]
+- see-also: [CXC-TERM-CHILD-ID]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [DD-CQ-CONSTANTS] Whether 10 / 60 / 60 minutes transfers to a hosted child, and on what measurement
+
+- decision: OPEN, and explicitly not to be settled by taste. The current effective hosted default is
+  `600 s / 3600 s / 3600 s`, inherited wholesale from a launcher serving a session David talks to directly. A
+  widget-hosted child may be a bounded worker nobody is waiting on, or a long-lived peer, and those want different
+  numbers. `echo_grace_s = 90` rides the same question and is now stretched across a transport boundary
+  ([CXC-CQ-NUDGE-ECHO-GUARD]), so it is in scope here rather than in a fork of its own.
+- alternatives: "(a) INHERIT — one cadence for every host, which is what ships today and is defensible precisely
+  because it is one number to reason about. (b) MEASURE THEN SET — instrument the hosted children that already run,
+  collect the distribution of genuine-quiet intervals over a week, and set `base` below the interval at which a
+  nudge would have helped and `backoff_after` above the interval at which nudging is noise. (c) PER-ROLE —
+  different cadences for different roles, which presupposes [DD-CQ-CADENCE-AXIS] resolving to (b) or to (a) with an
+  override."
+- rationale: the predecessor's own numbers were not chosen from a measurement either. 10/60/60 arrived as David's
+  Config-tab values after a single-tier 600 failed. Repeating that derivation for a different host would be
+  repeating a guess and calling it inheritance.
+- recommendation: (weak) (a) NOW and (b) LATER — ship the inherited cadence so nothing is blocked, and make
+  [CXC-CQ-OBSERVABLE]'s publication the instrument that (b) needs. The quiescence topic this spec requires IS the
+  measurement apparatus for this fork, which is an argument for building it before deciding.
+- consequence: choosing (b) makes this spec's observability work a PREREQUISITE rather than an improvement, and the
+  decision cannot be taken until the data exists.
+- invalidating_assumption: "That a hosted child benefits from being nudged at all. If a quiescent hosted child is
+  simply finished, the right cadence is 'never' and the correct behaviour is to report it quiet and let a human or
+  a supervisor reap it — at which point this is a lifecycle question, not a cadence question."
+- status: proposed
+- see-also: [CXC-CQ-OBSERVABLE]
+- see-also: [CXC-CQ-NUDGE-ECHO-GUARD]
+- see-also: [CXC-IC-HEARTBEAT-CADENCE]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+### [DD-CQ-PEER-INJECT-IS-ACTIVITY] Whether a PEER's bus inject counts as genuine activity or as an echo
+
+- decision: OPEN, and currently answered by accident. `HarnessMonitor._emit` stamps `_last_self_emit`, so the
+  child's reply to a HARNESS message is discounted as echo. `PtyChild.inject()` — the path a bus peer's keystroke
+  takes — does not stamp it. A peer injecting into a hosted child therefore produces child output that resets the
+  idle clock to the fast tier, exactly as a human keystroke would.
+- alternatives: "(a) GENUINE — a peer nudged it and it responded, which is real work, so the clock should reset.
+  (b) ECHO — a peer's inject is machine-originated the same way a harness nudge is, and discounting it keeps idle
+  meaning 'nothing external caused this'. (c) DEPENDS ON THE ORIGIN — a human-originated inject relayed by a peer
+  is genuine and a machine-originated one is echo, which requires the envelope to carry an origin field it does not
+  carry today."
+- rationale: the launcher never faced this because its injects were its own. The convergence [CXC-TERM-CONVERGE]
+  built — a bus keystroke and a keyboard keystroke are indistinguishable to the child BY CONSTRUCTION — is exactly
+  what makes the question unanswerable at the fd and forces it up to the envelope.
+- recommendation: (weak) (a), because it is what ships, because it is the conservative direction (over-counting
+  activity produces fewer nudges, not more), and because (c) needs an origin field nothing currently carries.
+- consequence: if (b) or (c) wins, `_emit` stops being the single stamping chokepoint and the echo window becomes a
+  property of the write path rather than of the harness — a change to `ptycore`, not to the widget.
+- invalidating_assumption: "That peers inject into hosted children at all. If the only writers are the human at the
+  glass and the child's own harness, this fork has no subject and should be closed as not-applicable rather than
+  decided."
+- status: proposed
+- see-also: [CXC-TERM-CONVERGE]
+- see-also: [CXC-CQ-NUDGE-ECHO-GUARD]
+- part-of: [SPEC:CXC-CHILD-QUIESCENCE]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-08-13
+**Status**: Draft — awaiting the architect's ratify on the four open forks (six DD nodes: [DD-CQ-BRIDGELESS-CHILD] ratified by David 2026-08-13, [DD-CQ-MONITOR-LOCATION] settled 2026-08-11)

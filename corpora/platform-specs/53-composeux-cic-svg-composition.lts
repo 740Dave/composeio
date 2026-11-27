@@ -1,0 +1,469 @@
+---
+scope: "The SVG is the source of truth for screen COMPOSITION on the `colonial_console`/CIC shell — for ART ([DEC-COLONIAL-OS-SVG-IS-SOURCE-OF-TRUTH]), for the render's LAYER Z-ORDER, for its LIVE-SLOT positions, and for TEXT STYLING ([DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH], [DEC-CXC-COMP-SLOT-DELIMITER-AT]). One contract over a THREE-LAYER shell: (L1) a single authoritative BASE common SVG (`colonial_base_ux.svg` -> `bus://assets/cic/base.svg`) — the amber master-mask frame + `slot:radio@mode` + the status/firmware area + the shared row-1 controls + the shared confirmation dialog — composited UNDER every mode; (L2) a MODE SURFACE per radio mode (STD/DRADIS/EXT/CHRONO), each a SELF-CONTAINED surface owning its OWN navigation + content (STD's two-level tab nav lives IN STD, not in global chrome); (L3) per-(console, sub-tab) STD screens resolved BY REFERENCE, each a static BACKDROP + named live SLOTS. Facets: (1) LAYER-ORDER DERIVATION — Python introspects an `.svg`, sorts its top-level groups into THREE categories (rendered content/backdrop, `slot:` live widget, `ref:` ignored) and derives the canonical render z-order from the SVG's OWN group document order into a manifest the render picks up automatically, eliminating the hand-maintained code z-order that caused the EXT screen-area inversion; (2) the live-SLOT binding contract — a group whose label begins `slot:` is a binding point (`slot:<widget>@<binding>`, `@` delimiter) into which the render layers a reusable, bus-bound widget, its styling read from the slot's INNER SVG elements, its widget KIND naming the interaction/behavior (not the appearance); and (3) TEXT STYLING derived from each SVG `<text>` element. The SVG is the layout FRONT-END; the render LOWERS it; composition is intrinsic to the source, never re-specified in code ([DX-NARROW-WAIST])."
+audience: [David (architect) — ratify the deepened mode-surface model (all design decisions now SETTLED), "the builder implementing the layer-order derivation + the slot router", the render-engineer maintaining the colonial_console shell, any screen author mocking a mode or a (console, sub-tab) in Inkscape, any Intelligence inspecting/swapping a screen, a mode surface, the base, or a composition manifest as a bus artifact]
+boundary: "IN: the SVG-as-composition-source principle ([CXC-COMP-CREDO]); the three-layer shell model — the authoritative BASE common SVG ([CXC-COMP-BASE]), the self-contained MODE SURFACES that own their own nav ([CXC-COMP-MODE-SURFACE]), and the `ref:`/skip authoring convention + the derivation's THREE group categories ([CXC-COMP-REF]); the layer-order derivation from SVG group z-order ([CXC-COMP-LAYER-ORDER]) + the change/context_for_change that falsifies hand-maintained code z-order; the composition-manifest artifact format ([CXC-COMP-MANIFEST]); live-widget/art interleave by SVG z-position ([CXC-COMP-INTERLEAVE]); the STD per-(console, sub-tab) by-reference content contract ([CXC-COMP-STD-CONTENT]); the named live-SLOT binding convention with the `@` delimiter ([CXC-COMP-SLOT]); slot + chrome TEXT styling read from the inner SVG elements ([CXC-COMP-TEXT-STYLE]); the widget-KIND-names-behavior discipline ([CXC-COMP-WIDGET-KIND]); the three screen KINDS ([CXC-COMP-KINDS]); missing-art -> placeholder + the base-shared/mode-owned split, where ownership is decided by element LOCATION with NO override mechanism ([CXC-COMP-MISSING], [DD-COMP-OWNERSHIP]); the machine+glass acceptance gates ([CXC-COMP-VERIFY]); and the hand-maintained->derived migration note ([CXC-COMP-LAYER-ORDER]). OUT: the CIC shell layer STACK definition + frame-as-master-mask ([CXC-CIC-WIDGET], reused not respec'd); the two-level nav + the row1 radio-mode content-source model ([CXC-CIC-NAV] / [CXC-CIC-RADIO-MODE], EXTENDED by reference — this doc deepens them into the mode-surface + STD-screen model); the Inkscape element-name -> scene-element mapping vocabulary + the artwork-kinds + the re-scan tool ([CXC-CIC-SVG-MAP] / [CXC-CIC-SVG-TABLE], reused as the derivation's input contract); the bus-asset resolve model + the baker (`bus://assets/...`, reused); the reusable widget implementations a slot binds (GaugeWidget/segmented_tab_row/graph/table/value — defined in the render-engine + widget-primitives specs, positioned here, not defined here). all design decisions are SETTLED: spec home, manifest format, slot grammar (`@` delimiter), and migration scope ([DEC-CXC-COMP-DDS-SETTLED], [DEC-CXC-COMP-SLOT-DELIMITER-AT]); and the base-vs-mode ownership rule — location decides ownership, no override — with the status/firmware area settled base-shared ([DD-COMP-OWNERSHIP], David 2026-08-04)."
+not-this: "Not a new render engine or a new compositing path — the layer stack is still the `pixel_stack` + the opaque-overlay/transparent-window master mask ([CXC-CIC-WIDGET], [CXC-R-SPRITE-CONTAINER]); this doc changes WHERE composition comes from (the SVG, derived) not HOW layers composite. Not a new scan tool — it EXTENDS the existing deterministic SVG scan/bake ([CXC-CIC-SVG-MAP]) with a three-category sort + a layer-order/slot-position/text-style derivation pass. Not a widget catalogue — the reusable widgets a slot binds are defined elsewhere and reused by reference. Not a CIC-shell respec — [SPEC:CXC-CIC] stands; this is its composition-source deepening. Not a hand-authored composition file — the manifest is DERIVED from the SVG and never hand-edited; a layer-inversion or masking problem is fixed in the `.svg`, not in code (David 2026-08-04). Not global chrome that owns the tab rows — the tab rows are STD's, owned by the STD mode surface, not shared chrome (this SUPERSEDES the earlier tabs-are-shared-chrome language; see [CXC-COMP-MODE-SURFACE])."
+depends-on: [SPEC:CXC-CIC]
+depends-on: [SPEC:CXC-RENDER]
+depends-on: [SPEC:CXC-PATSUB]
+depends-on: [50-composeux-cic-shell.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-08-04
+updated: 2026-08-04
+---
+# ComposeUX — The SVG is the Source of Truth for Screen Composition [SPEC:CXC-COMP]
+
+> The SVG is authoritative not just for the Colonial-OS ART ([DEC-COLONIAL-OS-SVG-IS-SOURCE-OF-TRUTH]) but for the screen's COMPOSITION — the render's LAYER Z-ORDER, its LIVE-SLOT positions, and its TEXT STYLING ([DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH], [DEC-CXC-COMP-SLOT-DELIMITER-AT]). The shell is THREE layers. (L1) ONE authoritative BASE common SVG — `colonial_base_ux.svg` — carries the shared shell (amber master-mask frame + `slot:radio@mode` + the status/firmware readout + the shared row-1 controls + the shared confirmation dialog) and is composited UNDER whatever mode is active. (L2) The radio row selects a top-level MODE; each mode (STD/DRADIS/EXT/CHRONO) is a SELF-CONTAINED surface that owns its OWN navigation + content — STD's two-level tab nav lives INSIDE STD, it is NOT global chrome (this is why EXT never shows tab rows: they were never shared). (L3) For STD, per-(console, sub-tab) screens are resolved BY REFERENCE, each a static BACKDROP + named live SLOTS. Composition is DERIVED: Python introspects an `.svg`, sorts its top-level groups into THREE categories — rendered content/backdrop, `slot:` (a live bus-bound widget), and `ref:` (an authoring-context copy the derivation SKIPS) — and reads the render z-order from the SVG's own group order into a manifest the render picks up automatically, eliminating the hand-maintained code z-order that caused the EXT screen-area inversion. A `slot:` group names `slot:<widget>@<binding>` (the `@` delimiter, hyphen-safe); its styling comes from its INNER SVG elements, and its widget KIND names the interaction/behavior, not the look. The SVG is the layout FRONT-END; the render is the BACK-END that LOWERS it ([DX-NARROW-WAIST]). This doc EXTENDS [CXC-CIC-NAV] / [CXC-CIC-RADIO-MODE] and formalizes `compose_projects/bsg/resources/screen_base_layout/STD-screen-modeling-guidance.md` (the architect's ratified guidance; this doc lowers it, it does not redesign it).
+
+---
+
+## 1. Intent & Contract
+
+### [CXC-COMP-WHY] Why — composition, like art, belongs in the SVG the author already owns
+
+- definition: David authors the Colonial-OS look in Inkscape and has invested heavily in the exact shapes, colors, groups, LAYER ORDER, and TEXT of the screen SVGs (all art 0,0-aligned so SVG placement extracts directly, [DEC-COLONIAL-OS-SVG-IS-SOURCE-OF-TRUTH]). The z-ORDER of those groups, the POSITION of the live slots, and the STYLING of the text are already expressed IN the SVG. This doc makes the render DERIVE composition from that source rather than a parallel, hand-maintained code copy.
+- role: the composition-source contract for the `colonial_console`/CIC shell — the three-layer base+mode+screen model, layer-order derivation, the live-slot binding convention, and text styling, folded into one implementable contract a builder implements without re-specifying any z-order, slot rect, or font size in code.
+- requirement: the render MUST take a screen's canonical layer order, its live-slot positions, and its text styling from the SVG ([CXC-COMP-LAYER-ORDER], [CXC-COMP-SLOT], [CXC-COMP-TEXT-STYLE]); it MUST NOT carry a hand-maintained z-order, a hand-placed slot rect, or a hardcoded font size in code as the source of truth. Correctness of layering/masking is the SVG author's concern; the render FAITHFULLY lowers what the SVG declares (David 2026-08-04).
+- reuse-by-reference: the layer stack is the existing `pixel_stack` + master-mask compositing ([CXC-CIC-WIDGET], [CXC-R-SPRITE-CONTAINER]); the derivation input is the existing SVG scan vocabulary + the artwork-kinds ([CXC-CIC-SVG-MAP], [CXC-CIC-SVG-TABLE]); the by-reference resolve + placeholder behavior is the radio-mode model ([CXC-CIC-RADIO-MODE]); the widgets a slot binds are defined in the render/widget specs. No fork.
+- see-also: [CXC-COMP-CREDO], [CXC-COMP-BASE], [DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH], [DEC-COLONIAL-OS-SVG-IS-SOURCE-OF-TRUTH]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-CREDO] Composition is DERIVED from the SVG, never hand-maintained in code — the SVG is the front-end, the render lowers it
+
+- definition: the SVG is the COMPOSITION front-end (it declares layer z-order, slot positions, and text styling); the render is the back-end that LOWERS it. A composition fact has EXACTLY ONE source — the SVG — and the code reads it, never restates it. This is [DX-NARROW-WAIST] applied to screen composition: the SVG lowers to the render's `pixel_stack` contract; the render is extended to consume the SVG's order/positions/styling, never taught a second copy of its own.
+- consequence: a layer-inversion, masking, mis-placed-slot, or wrong-font-size bug is fixed in the `.svg`, not in code (David 2026-08-04); a re-scan/re-bake of the corrected SVG re-derives the composition with no code change. This is the drop-nothing / single-source discipline: no second copy to drift.
+- constraint: where the render MUST hold a composition fact in memory (the derived layer order for a `pixel_stack`, a slot rect, a font size), it is DERIVED at bake time into the manifest ([CXC-COMP-MANIFEST]) or at load time by the same deterministic function ([CXC-COMP-INTERLEAVE]) — never an independently authored constant. A builder MUST NOT reintroduce a hardcoded layer index, slot rect, or font size.
+- see-also: [CXC-COMP-LAYER-ORDER], [CXC-COMP-TEXT-STYLE], [DX-NARROW-WAIST]
+- part-of: [SPEC:CXC-COMP]
+
+---
+
+## 2. The shell model — base common SVG + self-contained mode surfaces
+
+### [CXC-COMP-BASE] The base common SVG — the ONE authoritative shared shell, composited under every mode
+
+- definition: `compose_projects/bsg/resources/screen_base_layout/colonial_base_ux.svg` (baked -> `bus://assets/cic/base.svg` + its `.composition.json`) is the SINGLE authoritative shared shell. It carries ONLY the elements common to every mode: the amber master-mask frame; `slot:radio@mode` (the radio-button-group that selects the top-level mode); the status/firmware readout (`slot:text@firmware`); the shared row-1 system controls (`slot:button@reboot`, `slot:button@shut-down`); and the shared confirmation dialog (a normally-hidden overlay carrying `slot:button@confirm`, `slot:button@abort`, `slot:button@close`, `slot:text@message`). Everything mode-specific — including a mode's navigation — is NOT in the base; it lives on the mode surface ([CXC-COMP-MODE-SURFACE]). The render ALWAYS composites the base UNDER the active mode surface.
+- requirement: the render MUST composite the base common SVG under every mode (the base renders identically regardless of the selected mode); the base MUST carry only shared shell elements and MUST NOT carry any mode-specific navigation or content; and a builder MUST NOT re-embed the base's shared elements into a mode surface or a screen (the base is drawn once, shared). The base's live slots resolve by the same convention as any screen ([CXC-COMP-SLOT]).
+- status-bar (SETTLED base-shared, David 2026-08-04): the status/firmware area — `slot:text@firmware` — is BASE-SHARED: it lives in the base SVG, renders identically across modes, and is NOT overridable by any mode. This is a settled EXAMPLE of the location-decides-ownership rule ([CXC-COMP-MODE-SURFACE]): because the status area is authored in the base, it is shared; there is no per-mode override. Were the status ever meant to be mode-specific, `slot:text@firmware` would be REMOVED from the base and authored in each mode's SVG — not "overridden" (David's framing).
+- default: the base composites under every mode from `bus://assets/cic/base.svg`; the status/firmware area is base-shared (owned by the base, not mode-overridable).
+- scenario:
+  - when: any mode (STD, DRADIS, EXT, CHRONO) is selected via `slot:radio@mode`
+  - then: the amber frame, the radio row, and the status/firmware readout render identically from the base beneath the active mode surface — no mode redraws them
+- see-also: [CXC-COMP-MODE-SURFACE], [CXC-COMP-SLOT], [CXC-COMP-MISSING], [DD-COMP-OWNERSHIP], [CXC-CIC-WIDGET]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-MODE-SURFACE] Each mode is a self-contained surface that owns its OWN navigation + content
+
+- definition: the radio row (`slot:radio@mode`) selects a top-level MODE — STD, DRADIS, EXT, CHRONO. Each mode is authored as ONE self-contained MODE SURFACE (`<mode>_mode.svg` -> `bus://assets/cic/<mode>_mode.svg`) that owns EVERYTHING in the screen area INCLUDING the mode's own navigation. SHARED = the base ([CXC-COMP-BASE], frame + radio + status). MODE-OWNED = the screen area, including the mode's nav. Concretely: STD owns the two-level tab nav — `slot:tab_row@console` (row 2, the 7 consoles) and `slot:tab_row@subtab` (row 3, the sub-tabs), each a `segmented_tab_row` widget — plus its per-(console, sub-tab) screens ([CXC-COMP-STD-CONTENT]); DRADIS owns its own nav + the live scope; EXT is a fullscreen external view with NO tab rows; CHRONO owns its own. The tab rows are STD's, NOT global chrome — which is precisely why EXT must never show them.
+- ownership rule (location decides ownership; NO override mechanism — David 2026-08-04): whether an element is SHARED or MODE-OWNED is decided by WHERE it is authored, not by any override flag. An element is SHARED iff it lives in the BASE SVG ([CXC-COMP-BASE]); it is MODE-OWNED iff it lives in the MODE SVG. There is NO per-mode-override primitive: if something must become mode-specific, it is REMOVED from the base and authored in each mode's SVG (David's framing: "if [status] were meant to be mode-overridable, it would be cleaner to remove `slot:text@firmware` from the base and insert it in each mode document"), never "overridden" in place. This is why the status/firmware area is base-shared ([CXC-COMP-BASE]) and the tab rows are STD-owned — each simply by its authored location.
+- requirement: the render MUST composite exactly ONE mode surface over the base at a time, selected by `slot:radio@mode`; a mode surface MUST own its own navigation (the tab rows are placed as slots IN `std_mode.svg`, not drawn by shared chrome); switching modes MUST swap the entire mode surface over the unchanged base; no mode's navigation MUST leak into another mode (EXT MUST NOT render STD's tab rows); and the render MUST decide shared-vs-mode-owned SOLELY by an element's authored location (base SVG = shared, mode SVG = mode-owned) — it MUST NOT implement any per-mode override mechanism.
+- change: "A mode is a self-contained surface that owns its own navigation; the STD tab rows are STD-owned, not global/shared chrome."
+- context_for_change:
+    prior_state: "The composition model described the chrome (amber frame + the two tab rows + row1 radios + status bar) as a single shared `chrome.svg` — i.e. the tab rows were global/shared chrome drawn independent of the mode."
+    reasoning: "That model produced the tabs-in-EXT defect: if the tab rows are shared chrome they render under EXT (a fullscreen mode with no tabs). David and the architect converged on a mode-surface model — shared = the base (frame + radio + status); mode-owned = the screen area INCLUDING the mode's own nav — so STD's two-level tab nav lives in STD and EXT simply has no tab rows by construction."
+    rejected_alternative: "Keep tab rows in shared chrome and special-case EXT to hide them (rejected: a per-mode suppression list is exactly the hand-maintained divergence the SVG-source discipline removes; the next fullscreen mode re-opens the same bug)."
+    counter_argument: "Sharing the tab rows once is less duplication than authoring nav per mode."
+    counter_response: "The tab nav is a reusable `segmented_tab_row` widget placed via a slot, not duplicated art; STD authors two slot rects, not a tab bar. The 'shared chrome' economy was false — it charged the tabs-in-EXT defect."
+    invalidating_assumption: "That every mode wants the same navigation chrome — FALSIFIED by EXT (fullscreen, no tabs). If a future design genuinely wants identical nav across all modes, that nav moves to the base — recorded, not a silent return to shared-chrome tab rows."
+    implication: "Tab rows migrate under STD (`std_mode.svg`); the tabs-in-EXT problem is designed out; each mode's nav is its own concern."
+- default: the selected mode's surface renders over the base; STD's nav is `slot:tab_row@console` + `slot:tab_row@subtab`; a mode with no nav (EXT) simply carries none.
+- scenario:
+  - when: David selects EXT via the radio row
+  - then: `ext_mode.svg` (fullscreen external view) composites over the base; NO tab rows appear (they are STD's, not shared) — the base's frame + radio + status remain
+  - and: selecting STD composites `std_mode.svg` with its two tab-row slots over the same base
+- see-also: [CXC-COMP-BASE], [CXC-COMP-REF], [CXC-COMP-STD-CONTENT], [CXC-COMP-MISSING], [CXC-CIC-NAV], [CXC-CIC-RADIO-MODE]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-REF] The `ref:` ignore convention + the derivation's THREE group categories
+
+- definition: for practical Inkscape authoring an author wants the base's common elements visible while drawing a mode. So a mode SVG MAY include a copy of the base's common elements as a `ref:`-prefixed group (e.g. `ref:base-chrome`) purely for authoring context — the derivation SKIPS it entirely (neither rendered nor a slot). David's legacy label `cic-reference-art-for-inspiration-not-coding` is recognized as an ALIAS for `ref:`. Consequently the derivation sorts each SVG's top-level groups into EXACTLY THREE categories: (1) RENDERED content/backdrop (drawn as-is in SVG z-order); (2) `slot:` groups (a reusable bus-bound widget layered in at the group's z-position, [CXC-COMP-SLOT]); (3) `ref:` groups (IGNORED — the base owns those elements). The base is authoritative; a `ref:` copy is an authoring aid only.
+- requirement: the derivation MUST classify every top-level group into exactly one of the three categories by its label/id prefix — `slot:` -> live slot, `ref:` (or the `cic-reference-art-for-inspiration-not-coding` alias) -> ignored, everything else -> rendered backdrop; it MUST fully SKIP `ref:` groups (they mint no render layer and no slot and are never composited); and the render MUST derive its layers ONLY from the base + the active mode's non-`ref:` groups (a stale `ref:` copy MUST NOT affect the render). An unrecognized non-prefixed group is rendered backdrop (preserve-and-flag per [CXC-COMP-LAYER-ORDER]), never dropped.
+- default: a group with no `slot:`/`ref:` prefix is rendered backdrop; a `ref:` (or alias) group is skipped; if a mode SVG carries no `ref:` group it simply has none (the base still composites under it either way).
+- caveat (authoring drift, not a correctness risk): if the base changes, the `ref:` copies in mode SVGs go stale — the render stays correct (it only ever uses the base) but the authoring context drifts; a future tool can re-stamp the base into each `ref:` layer. Not needed for correctness.
+- scenario:
+  - when: `std_mode.svg` includes a `ref:base-chrome` group plus `slot:tab_row@console`, `slot:tab_row@subtab`, and STD backdrop
+  - then: the derivation SKIPS `ref:base-chrome`, treats the two `tab_row` groups as live slots, and renders the STD backdrop — the base's real chrome comes from the base SVG, not the `ref:` copy
+  - and: a group labeled `cic-reference-art-for-inspiration-not-coding` is skipped identically (recognized alias)
+- see-also: [CXC-COMP-MODE-SURFACE], [CXC-COMP-LAYER-ORDER], [CXC-COMP-SLOT]
+- part-of: [SPEC:CXC-COMP]
+
+---
+
+## 3. Facet 1 — layer-order derivation
+
+### [CXC-COMP-LAYER-ORDER] Python derives the canonical render layer order from the SVG's own group z-order
+
+- definition: a derivation pass (an extension of the existing SVG scan, [CXC-CIC-SVG-MAP]) introspects an `.svg` and reads the render layer order DIRECTLY from the SVG's group document order (SVG paints in document order: earlier siblings are BELOW, later siblings ABOVE; nested groups compose within their parent's z-slot). The derived order is the canonical `pixel_stack` order the render composites in. Input: the SVG group order + the [CXC-CIC-SVG-TABLE] labels (each recognized group's role/z-layer) + the three-category sort ([CXC-COMP-REF]). Output: an ordered layer list (bottom -> top) of RENDERED and `slot:` groups only (`ref:` groups excluded), each entry naming its source group, resolved role/z-layer, and bounding box.
+- derivation rule (DETERMINISTIC, STATED so the builder does not guess): (1) walk the SVG's top-level groups in document order; (2) classify each into the three categories ([CXC-COMP-REF]) — SKIP `ref:`; (3) for a rendered/backdrop group, resolve its role via [CXC-CIC-SVG-TABLE] (unrecognized -> preserve-and-flag as an unmapped ambient layer, never dropped, per [MODEL-EDGE] drop-nothing); (4) for a `slot:` group, record its widget@binding + bbox ([CXC-COMP-SLOT]); (5) emit each retained layer in document order — the group's POSITION in the SVG IS its z-index, NOT a code-assigned index. Two groups' relative render order EXACTLY matches their relative order in the SVG. The occluding matte (`screen-area`) sits wherever the SVG places it — ABOVE the content when the author drew it there — so layer-occlusion masking is expressed by the author's z-order, not a code clip_rect.
+- requirement: the derivation MUST be DETERMINISTIC (the same SVG yields a byte-identical layer order); it MUST preserve the SVG's relative group order as the render z-order with NO code-side reordering; it MUST skip `ref:` groups, resolve each rendered group's role from [CXC-CIC-SVG-TABLE], and preserve-and-flag an unrecognized group; and it MUST record each layer's bounding box (for slot placement, [CXC-COMP-SLOT]). The render MUST composite in the derived order and MUST NOT apply a hand-maintained layer index. A masking/occlusion outcome MUST be achievable by re-ordering groups in the SVG alone (re-bake -> re-derive), with no code edit.
+- default: absent an explicit per-group z override in the SVG, document order IS the order; an unrecognized rendered group defaults to the ambient/content z-slot (layer 2 of [CXC-CIC-WIDGET]) and is flagged; the occluding `screen-area` matte's z is whatever the SVG declares (the landed CIC SVG places it ABOVE content, [DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH]).
+- migration note (hand-maintained -> derived; SCOPE settled at [DD-COMP-MIGRATION-SCOPE]): the current CIC shell hand-maintains its z-order in code — `compose_projects/bsg/widgets/colonial_console.py`, the `ColonialConsoleWidget(PixelStackContainer)` layer stack assembled bottom->top in `__init__` (and the 10-band layer docstring), plus the `compose_projects/bsg/widgets/cic/` support modules. This hand-maintained order is EXACTLY the EXT-inversion bug source (screen-area pinned at idx 1, behind content, contradicting the SVG). Under this contract that hand-maintained list BECOMES DERIVED: the `PixelStackContainer` is populated from the derived layer order, not a literal build sequence. A builder MUST migrate the layer assembly to consume the derived order and MUST NOT leave a parallel hand-maintained index as a fallback source of truth (an in-memory DERIVATION from the SVG is the only permitted fallback, [CXC-COMP-INTERLEAVE]).
+- change: "Screen composition (render layer z-order, live-slot positions, and text styling) is DERIVED from the SVG, not hand-maintained in code."
+- context_for_change:
+    prior_state: "The CIC render hand-maintained the layer z-order in code (the ColonialConsoleWidget PixelStackContainer build sequence), pinning screen-area at idx 1 behind content."
+    reasoning: "That code order contradicted the SVG (where screen-area sits ABOVE ext-view as the occluding matte), so the intended layer-occlusion clip failed and an active clip_rect was wrongly added — the EXT screen-area inversion. Deriving the order from the SVG makes the SVG the single source and eliminates the class of bug by construction."
+    rejected_alternative: "Keep the hand-maintained code z-order and fix the EXT inversion locally (the landed 4c71eb2 layer-only-clipping fix) without generalizing — rejected as insufficient: it fixes the instance, not the class; the next screen re-opens the same divergence."
+    counter_argument: "Deriving from the SVG adds a derivation pass and a manifest artifact where a code list is simpler to read."
+    counter_response: "A code list is simpler to read and guaranteed to drift from the art it orders; the derivation is deterministic and the manifest is a build artifact (like the baked CI16/PNG assets), not a second hand-maintained source. The simplicity is a false economy the EXT bug already charged for."
+    invalidating_assumption: "That render layer z-order is safe to hand-maintain in code — FALSIFIED by the EXT screen-area inversion. If a future tier genuinely cannot derive order at bake or load (e.g. a build with no SVG at hand), that tier's exception is recorded, not a silent return to a hand-maintained default."
+    implication: "The CIC layer assembly migrates to consume the derived order; masking/occlusion becomes an SVG-authoring concern; a corrected SVG re-derives with no code change."
+- scenario:
+  - when: David re-orders the `screen-area` group ABOVE `ext-view` in `ext_mode.svg` (making it the occluding matte) and re-bakes
+  - then: the derivation emits `screen-area` at a HIGHER render z than `ext-view`; the render composites the matte over the content and the left-bleed is occluded by layering — with NO code edit and NO clip_rect
+- scenario:
+  - when: a screen SVG carries a group whose name is not in the [CXC-CIC-SVG-TABLE] vocabulary and has no `slot:`/`ref:` prefix
+  - then: the derivation places it in the ambient/content z-slot, records it in the layer order, and emits a lint warning naming it — never drops it and never crashes
+- scenario:
+  - when: the derivation runs twice on the unchanged SVG
+  - then: it produces a byte-identical layer order (deterministic)
+- see-also: [CXC-COMP-REF], [CXC-COMP-MANIFEST], [CXC-COMP-INTERLEAVE], [CXC-CIC-SVG-MAP], [DD-COMP-MIGRATION-SCOPE]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-MANIFEST] The composition manifest — a DERIVED JSON sidecar the render picks up automatically
+
+- definition: the derivation ([CXC-COMP-LAYER-ORDER]) emits a COMPOSITION MANIFEST — the canonical layer order (bottom -> top), each entry's source group, resolved role/z-layer, bounding box, artwork-kind ([CXC-CIC-SVG-MAP] P/R/RSVD/GRP/TXT), and (for `slot:` groups) the slot binding intent (`<widget>`, `<binding>`, [CXC-COMP-SLOT]) + the derived text styling ([CXC-COMP-TEXT-STYLE]). FORMAT (settled, [DEC-CXC-COMP-DDS-SETTLED] / [DD-COMP-MANIFEST-FORMAT]): a machine-generated JSON SIDECAR co-located with the baked SVG bus asset — `bus://assets/cic/std/<console>/<subtab>.composition.json` beside `bus://assets/cic/std/<console>/<subtab>.svg` (and `base.composition.json` beside `base.svg`, `<mode>_mode.composition.json` beside each mode surface) — resolved BY REFERENCE at render time exactly as the SVG + raster assets are ([CXC-CIC-RADIO-MODE] bus-asset model).
+- format rationale (why JSON sidecar): (a) it is a DERIVED BUILD ARTIFACT, not hand-authored config — JSON matches the deterministic extraction outputs the scan already emits, and its non-hand-editable feel signals "regenerate from the SVG, do not edit"; (b) it is resolved by reference over the bus alongside the SVG, so the render picks it up AUTOMATICALLY (no separate wiring); (c) it lets the render — including the constrained tier — consume a pre-baked order without a full SVG parse at render time. In-memory-only derivation is retained as the FALLBACK, not the default ([CXC-COMP-INTERLEAVE]).
+- requirement: the manifest MUST be DERIVED (regenerated deterministically by the bake/scan from the SVG), NEVER hand-edited — it carries no fact the SVG does not already declare; the render MUST consume the manifest as the composition source and populate the `pixel_stack` from its layer order; and the render MUST re-derive equivalently in memory from the SVG when no manifest is present (preserve-and-flag: a screen with art but no baked manifest still composes correctly, [CXC-COMP-INTERLEAVE]). A stale manifest whose source SVG changed MUST be re-baked, not patched.
+- default: a baked SVG (base, mode surface, or screen) ships its `.composition.json` sidecar; absent the sidecar, the render derives the order in memory from the SVG at load (the same deterministic function) and logs that it fell back — it never composites from a hand-maintained default.
+- scenario:
+  - when: `std/helm/velocity.svg` is baked
+  - then: `bus://assets/cic/std/helm/velocity.composition.json` is emitted beside it, carrying the derived layer order + the `slot:` entries + text styling; the render resolves both by reference and composites the `pixel_stack` from the manifest
+  - and: re-baking the unchanged SVG yields a byte-identical manifest
+- scenario:
+  - when: a screen SVG is present on the bus but its composition manifest is not
+  - then: the render derives the layer order in memory from the SVG at load, composites correctly, and logs the manifest-absent fallback — never a hardcoded order
+- see-also: [CXC-COMP-LAYER-ORDER], [CXC-COMP-INTERLEAVE], [DD-COMP-MANIFEST-FORMAT]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-INTERLEAVE] Live-widget layers interleave with art layers by their SVG z-position
+
+- definition: a screen mixes STATIC ART layers (backdrop groups) and LIVE-WIDGET layers (`slot:` groups, [CXC-COMP-SLOT]). Both are layers in the ONE derived order: a live widget composites at the z-position of its `slot:` group in the SVG. So a gauge can sit BEHIND a decorative frame overlay and ABOVE the backdrop simply because the author placed its `slot:` group between them in Inkscape — the interleave is authored in the SVG, not assembled in code.
+- requirement: the render MUST insert each live-widget layer into the `pixel_stack` at the z-index its `slot:` group occupies in the derived order ([CXC-COMP-LAYER-ORDER]); it MUST NOT force all live widgets above (or below) all art. The single deterministic derivation function used at bake ([CXC-COMP-MANIFEST]) and the in-memory fallback MUST produce the identical interleaved order (same input SVG -> same order).
+- default: a live-widget layer inherits the z-position of its `slot:` group; a slot group with no z override composites in SVG document order like any other group.
+- scenario:
+  - when: `std/helm/velocity.svg` places `slot:gauge@velocity` in document order between the backdrop and a decorative overlay group
+  - then: the GaugeWidget composites ABOVE the backdrop and BELOW the overlay — the interleave matches the SVG order exactly, with no code-side layer surgery
+- see-also: [CXC-COMP-LAYER-ORDER], [CXC-COMP-SLOT], [CXC-CIC-WIDGET]
+- part-of: [SPEC:CXC-COMP]
+
+---
+
+## 4. Facet 2 — the screen-content contract + live-slot binding
+
+### [CXC-COMP-STD-CONTENT] Per-(console, sub-tab) STD screens resolved BY REFERENCE
+
+- definition: within the STD mode surface ([CXC-COMP-MODE-SURFACE]), each console screen is authored as ONE file per (console, sub-tab), resolved BY REFERENCE — the deepening of the [CXC-CIC-RADIO-MODE] by-reference model one level down (STD's two-level nav instead of a single radio index). Authoring source `compose_projects/bsg/resources/screen_base_layout/std/<console>/<subtab>.svg` -> baked -> `bus://assets/cic/std/<console>/<subtab>.svg` (+ its `.composition.json`, [CXC-COMP-MANIFEST]), resolved at render time. A nested path (not a flat `CONSOLE+SUBTAB.svg`) mirrors the menu tree; lower-case, hyphenate multiword sub-tabs (`fire-control/`, `prm-output.svg`).
+- requirement: on a (console, sub-tab) selection ([CXC-CIC-NAV]) the render MUST resolve the screen's content source BY REFERENCE from `bus://assets/cic/std/<console>/<subtab>.svg` and its composition manifest; it MUST swap ONLY the STD screen-area content, leaving the base ([CXC-COMP-BASE]) and STD's own nav ([CXC-COMP-MODE-SURFACE]) intact; and publishing a screen's `bus://` ref MUST light it up with NO code change (the drop-in discipline). An unbuilt (console, sub-tab) MUST render a clean placeholder, never a fall-through to another screen's content ([CXC-COMP-MISSING]).
+- default: the screen for the selected (console, sub-tab) resolves from its `bus://` ref; absent that ref, the placeholder ([CXC-COMP-MISSING]) renders; authoring order is the author's — each screen appears the moment its ref is published.
+- scenario:
+  - when: David bakes and publishes `std/navcon/cartography.svg` while the other STD screens are unbuilt
+  - then: selecting NAVCON -> CARTOGRAPHY renders that screen (backdrop + its slot widgets) inside STD's nav over the base; every other (console, sub-tab) shows its clean placeholder; no code changed and no other screen was touched
+- see-also: [CXC-COMP-MODE-SURFACE], [CXC-COMP-SLOT], [CXC-COMP-KINDS], [CXC-COMP-MISSING], [CXC-CIC-NAV], [CXC-CIC-RADIO-MODE]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-SLOT] The named live-SLOT convention — a `slot:` group is a bus-bound widget binding point (the new build surface)
+
+- definition: THE genuinely new build surface. An SVG (base, mode surface, or screen) carries (1) a static BACKDROP (labels, decorators, layout, an axis — rendered as-is) and (2) named live SLOTS. A group whose `inkscape:label` (or `id`) begins `slot:` is a LIVE SLOT: at render time the console layers a reusable, bus-bound widget into it. The slot's BOUNDING BOX is the widget's layout rect; the slot group's static children (if any) are the PLACEHOLDER shown until the binding resolves. Everything NOT under a `slot:` or `ref:` group is static backdrop. A screen with no `slot:` groups is a pure static screen (legitimate). The SVG says WHERE a widget goes; the widget owns its presentation; live data flows up the bus — [DX-NARROW-WAIST] applied to a screen.
+- slot grammar (SETTLED, [DEC-CXC-COMP-SLOT-DELIMITER-AT]): `slot:<widget>@<binding>` with the `@` delimiter, where `<widget>` names a registered reusable widget KIND (see [CXC-COMP-WIDGET-KIND]) and `<binding>` names the bus binding key. Ground-truth examples from the committed base SVG: `slot:radio@mode`, `slot:button@reboot`, `slot:button@shut-down`, `slot:button@confirm`, `slot:button@abort`, `slot:button@close`, `slot:text@firmware`, `slot:text@message`; STD nav: `slot:tab_row@console`, `slot:tab_row@subtab`; screen instruments: `slot:gauge@velocity`, `slot:readout@heading`, `slot:graph@velocity-history`. The `@` delimiter is UNAMBIGUOUS even when the binding contains hyphens (`shut-down`, `velocity-history`) — it SUPERSEDES the earlier first-hyphen split, which was fragile for hyphenated bindings. The binding key resolves under the screen's station+console scope ([CXC-CIC-DUTY-STATION]) — e.g. `slot:gauge@velocity` on a HELM screen at station `cic.1.helm` binds `colonial_console/cic.1.helm/helm/velocity` (or the console-relative `helm/velocity`).
+- requirement: the render MUST treat a group whose label/id begins `slot:` as a live slot and every other non-`ref:` group as static backdrop; it MUST parse the label as `slot:<widget>@<binding>` splitting on the FIRST `@` (widget = before `@`, binding = the remainder, hyphens preserved); it MUST layer the resolved reusable widget into the slot's bounding box at the slot group's derived z-position ([CXC-COMP-INTERLEAVE]); it MUST resolve `<widget>` to a REGISTERED widget kind (an UNREGISTERED kind is preserve-and-flag: render the slot's static placeholder children + a lint warning, never crash and never guess a widget); it MUST bind the widget to the derived bus namespace; and until the binding resolves (no published value) it MUST show the slot's static placeholder children (or an explicit empty state), never a blank rect read as "no data". The SAME reusable widget (one GaugeWidget) MUST serve every screen whose slot names it — define-once, render-many.
+- change: "The `slot:` grammar delimiter is `@` (`slot:<widget>@<binding>`), superseding the first-hyphen split."
+- context_for_change:
+    prior_state: "The slot grammar was `slot:<widget>-<binding>` — the widget kind was the FIRST hyphen-delimited segment, the binding the remainder ([DD-COMP-SLOT-NAMING] as originally chosen, D1 of [DEC-CXC-COMP-DDS-SETTLED])."
+    reasoning: "David, on authoring the base SVG, saw the first-hyphen split is fragile when the BINDING contains hyphens (`shut-down`, `velocity-history`): it happened to work (widget = first segment) but reads ambiguously and breaks the moment a widget kind ever contains a hyphen. The `@` delimiter is unambiguous forever ([DEC-CXC-COMP-SLOT-DELIMITER-AT]); the architect had originally recommended `@`, David first chose first-hyphen, then reversed his own call."
+    rejected_alternative: "Keep the first-hyphen split and forbid hyphenated widget kinds (rejected: it leaves the binding-side hyphen ambiguity and is a latent breaking rename of every screen's slot labels the moment a hyphenated kind appears)."
+    counter_argument: "Changing the delimiter after D1 was settled churns the convention."
+    counter_response: "The base SVG had not yet shipped screens against first-hyphen; David reversed his own D1 call before the convention was load-bearing across many files, so the churn is one guidance-doc + one spec edit, not a fleet rename."
+    invalidating_assumption: "That the binding key and widget kind never both need hyphens unambiguously — the `@` delimiter removes the assumption entirely; there is no premise left to reopen."
+    implication: "[DD-COMP-SLOT-NAMING] and this node use `@`; every base/mode/screen slot label uses `slot:<widget>@<binding>`; the guidance doc is aligned."
+- default: a group without a `slot:` prefix (and not `ref:`) is static backdrop; a slot's placeholder is its own static children (or, if none, an explicit "unbound" state); a slot binding is change-driven ([CXC-PS-GRANULARITY]), not re-read every tick.
+- scenario:
+  - when: `std/helm/velocity.svg` carries a static "VELOCITY" heading + axis (backdrop) and groups `slot:gauge@velocity`, `slot:readout@heading`, `slot:graph@velocity-history`
+  - then: the render draws the backdrop as-is and layers a GaugeWidget (bound to the velocity namespace) into `slot:gauge@velocity`'s bbox, a readout into `slot:readout@heading`, and a graph into `slot:graph@velocity-history` — each at its slot group's z-position; the same GaugeWidget class serves any other screen with a `slot:gauge@*`
+  - and: before any value is published, each slot shows its static placeholder children, not a blank pane
+- scenario:
+  - when: a base slot is labeled `slot:button@shut-down`
+  - then: the render splits on the first `@` -> widget `button`, binding `shut-down` (the hyphen preserved), and binds a Button widget to the `shut-down` action — the `@` delimiter handles the hyphenated binding unambiguously
+- scenario:
+  - when: a screen carries `slot:hologram@target` and `hologram` is not a registered widget kind
+  - then: the render shows that slot's static placeholder children and emits a lint warning naming the unknown widget kind — it does not crash, blank, or guess a widget
+- scenario:
+  - when: a screen carries NO `slot:` groups
+  - then: it renders as a pure static backdrop (a legitimate screen), with no live widgets layered
+- see-also: [CXC-COMP-STD-CONTENT], [CXC-COMP-TEXT-STYLE], [CXC-COMP-WIDGET-KIND], [CXC-COMP-INTERLEAVE], [CXC-CIC-DUTY-STATION], [DD-COMP-SLOT-NAMING]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-TEXT-STYLE] Slot + chrome styling comes from the inner SVG elements, not the slot group
+
+- definition: a slot group declares ONLY `slot:<widget>@<binding>`; its STYLING lives on the group's INNER SVG elements, read by the render (SVG-source-of-truth). Text styling — font-family, font-size, fill (color) — is read from the inner `<text>` element and MUST be set on the `<text>`, NOT on its `<tspan>` child (the render reads the `<text>`; a size set only on the `<tspan>` is not honored). Shape/fill for a shaped widget comes from the inner shape element (e.g. a `button-shape` rect with its `ry` rounding). So a `slot:button@reboot` group holds a `button-shape` + a `button-text-label` `<text>` styled normally; the Button widget renders that SVG art and adds ONLY the interactivity + the `reboot` binding. Font sizes are DESIGN-SPACE values (×~3.78 to device at 960px); pick the design value that yields the intended on-glass size. Changing a size or color in the SVG re-drives the render with no code change (landed 2026-08-04).
+- requirement: the render MUST read a slot widget's text styling (font-family/size/fill) from the inner `<text>` element (set on `<text>`, not `<tspan>`) and its shape styling from the inner shape element; a builder MUST NOT place font/color/size properties on the slot GROUP itself, and MUST NOT hardcode a font size in code (the SVG `<text>` is the source, [CXC-COMP-CREDO]); chrome text (tab labels, radio captions, buttons, status) MUST likewise take its `font-size` from each `<text>` element. The render MUST re-derive styling on re-bake with no code edit.
+- default: styling is read from the slot's inner elements; a slot with no inner `<text>` uses the widget's own default styling; a font-size present only on a `<tspan>` (not the `<text>`) is not honored — set it on the `<text>`.
+- scenario:
+  - when: David changes the `font-size` on the `<text>` of `slot:button@reboot`'s `button-text-label` and re-bakes
+  - then: the REBOOT button label re-renders at the new size with no code change; a size left only on the `<tspan>` would not have taken effect
+- scenario:
+  - when: `slot:button@confirm` carries a `button-shape` with rounded `ry` and a fill
+  - then: the Button widget renders that exact shape + fill as its art and adds only interactivity + the `confirm` binding — the shape is SVG art, not a code-drawn button
+- see-also: [CXC-COMP-SLOT], [CXC-COMP-WIDGET-KIND], [CXC-COMP-CREDO], [DEC-CXC-COMP-SLOT-DELIMITER-AT]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-WIDGET-KIND] A widget KIND names the interaction/behavior, not the appearance
+
+- definition: the `<widget>` segment of a `slot:<widget>@<binding>` label names the INTERACTION/BEHAVIOR model, NOT the look. A custom-shaped button is still `button` — its distinctive shape is SVG art read from the inner shape element ([CXC-COMP-TEXT-STYLE]), not a new widget kind. The registered kinds distinguish interaction models: `button` (momentary action), `radio` (mutually-exclusive selection), `tab_row` (segmented navigation selection), `text` (a static/bound text readout), `readout`/`value` (a bound scalar readout), `gauge` (a bound analog indicator), `graph` (a bound series), `table` (a bound tabular/list view), `led_bar`, … — the closed set the render registers.
+- requirement: a screen author MUST name a slot's widget by its interaction kind (`button`, `radio`, `tab_row`, `gauge`, `readout`, `graph`, `table`, `text`, `led_bar`, …) and MUST NOT mint a per-appearance kind (no `custom-button`, `round-button`, `red-gauge`); appearance MUST be expressed as SVG art on the slot's inner elements ([CXC-COMP-TEXT-STYLE]). The render MUST resolve `<widget>` against the registered interaction-kind set (an unregistered kind is preserve-and-flag, [CXC-COMP-SLOT]).
+- default: the widget kind is the interaction model; two buttons that look different are both `button` and differ only in their inner SVG shape art.
+- scenario:
+  - when: `slot:button@reboot` (a pill-shaped `button-shape`) and `slot:button@confirm` (a wider rounded shape) both use kind `button`
+  - then: both bind the same Button interaction; their differing shapes come from their inner shape elements — neither introduces a `custom-button`/`round-button` kind
+- see-also: [CXC-COMP-SLOT], [CXC-COMP-TEXT-STYLE]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-KINDS] Three screen KINDS, keyed by (console, sub-tab)
+
+- definition: each (console, sub-tab) is one of three KINDS, and the content router dispatches by kind (do not force a bespoke SVG where it is not honest):
+  - (a) BESPOKE-SVG BACKDROP + LIVE SLOTS — a distinctive layout/instrument look; a `std/<console>/<subtab>.svg` with backdrop + `slot:` groups (most screens; e.g. HELM+VELOCITY, NAVCON+CARTOGRAPHY, FTL+GENERATOR).
+  - (b) PURE-WIDGET COMPOSITION, NO BESPOKE ART — data-heavy, generic layout (a list/table/log); NO Inkscape file, just a reusable table/log widget composed directly (e.g. FTL+LOG, SECURITY+DISPATCH, DC+DISPATCH).
+  - (c) LIVE DROP-IN — an existing self-contained live widget mounted as the screen's content (DRADIS already is this, [CXC-ER-DRADIS-BUS]).
+- requirement: the content router MUST dispatch a (console, sub-tab) by its declared kind; a kind-(a) screen resolves an SVG + manifest + slots ([CXC-COMP-STD-CONTENT], [CXC-COMP-SLOT]); a kind-(b) screen composes a reusable widget with NO SVG file (and needs no composition manifest); a kind-(c) screen mounts the named drop-in by reference ([CXC-CIC-NAV] drop-in consoles). A (console, sub-tab) with no declared kind and no resolvable source renders the placeholder ([CXC-COMP-MISSING]).
+- default: a (console, sub-tab) whose kind is unset is treated as kind-(a) and its `std/<console>/<subtab>.svg` is looked up; absent the ref, the placeholder renders.
+- scenario:
+  - when: FTL+LOG is keyed kind-(b) and SECURITY+DISPATCH kind-(b)
+  - then: each composes a scrollable table/log widget directly, with no Inkscape file to author and no composition manifest
+- scenario:
+  - when: the DRADIS console screen is keyed kind-(c)
+  - then: the already-built DRADIS scene mounts as that screen's content by reference, not respec'd here
+- see-also: [CXC-COMP-STD-CONTENT], [CXC-COMP-SLOT], [CXC-CIC-NAV]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-MISSING] Missing art -> clean placeholder; the base is shared, the mode surface owns its nav
+
+- definition: an unbuilt (console, sub-tab) — its `bus://` ref does not resolve, or a kind-(a) SVG/manifest is absent — renders a CLEAN LABELED PLACEHOLDER ("<CONSOLE> / <SUBTAB> — screen not built"), never a fall-through to another screen's content (the discipline [CXC-CIC-RADIO-MODE] already enforces for radio modes). The shared shell is the BASE ([CXC-COMP-BASE]) — the amber master-mask frame + `slot:radio@mode` + the status/firmware area — composited under every mode; the mode surface ([CXC-COMP-MODE-SURFACE]) owns its OWN navigation (STD's tab rows are STD's, NOT shared chrome). A screen swap within a mode changes ONLY the mode's screen-area content; a MODE swap changes the whole mode surface over the unchanged base.
+- change: "The shared shell is the BASE (frame + radio + status); the tab rows are mode-owned (STD's), not part of a shared `chrome.svg`."
+- context_for_change:
+    prior_state: "Missing-art handling described the CHROME as a single shared `chrome.svg` carrying the amber frame + the TWO TAB ROWS + row1 radios + status bar, drawn once and shared across all modes."
+    reasoning: "Treating the tab rows as shared chrome is the tabs-in-EXT defect source (see [CXC-COMP-MODE-SURFACE]). The converged model splits shared (the base: frame + radio + status) from mode-owned (the screen area INCLUDING the mode's nav), so a screen swap touches only the mode's content and a mode swap swaps the mode surface over the base — the tab rows are never a shared layer that leaks into EXT."
+    rejected_alternative: "Keep a shared `chrome.svg` with tab rows and suppress them per fullscreen mode (rejected: a per-mode suppression list is the hand-maintained divergence the SVG-source discipline removes)."
+    counter_argument: "A single chrome.svg is one asset to manage instead of a base plus per-mode surfaces."
+    counter_response: "The base IS that single shared asset for the truly-shared elements; the tab rows were never truly shared (EXT proves it), so folding them into shared chrome was the error, not the economy."
+    invalidating_assumption: "That the tab rows are shared across all modes — FALSIFIED by EXT. Truly-shared nav, if ever wanted, belongs in the base, not in a shared chrome layer atop every mode."
+    implication: "There is no `chrome.svg` owning tab rows; the base owns frame+radio+status, STD owns its tab rows; missing-art placeholders render inside the mode surface over the base."
+- requirement: the render MUST render the clean labeled placeholder for a missing/unbuilt (console, sub-tab) and MUST NOT fall through to another screen's content or to a base/mode group (the [CXC-CIC-RADIO-MODE] EXT-defect discipline); a builder MUST NOT re-embed the base's shared elements into a mode surface or screen, and MUST NOT re-introduce a shared-chrome layer that owns the tab rows (they are STD-owned, [CXC-COMP-MODE-SURFACE]); and publishing the missing screen's `bus://` ref MUST light it up with NO code change (preserve-and-flag / drop-in).
+- default: a missing screen -> the placeholder inside the active mode surface; the base always composites under every mode from `bus://assets/cic/base.svg`, independent of the mode's screen-area content.
+- scenario:
+  - when: NAVCON -> PLOT is selected in STD and no `std/navcon/plot.svg` has been published
+  - then: STD's screen-area shows "NAVCON / PLOT — screen not built"; the base's amber frame + radio + status and STD's own tab rows stay; nothing falls through to another screen
+  - and: once `std/navcon/plot.svg` is baked + published, PLOT lights up with no code change
+- see-also: [CXC-COMP-BASE], [CXC-COMP-MODE-SURFACE], [CXC-COMP-STD-CONTENT], [CXC-CIC-RADIO-MODE], [CXC-CIC-WIDGET]
+- part-of: [SPEC:CXC-COMP]
+
+---
+
+## 5. Acceptance — machine signal + glass gate per surface
+
+### [CXC-COMP-VERIFY] Two-tier verdicts — every human-perceptible surface carries a glass gate
+
+- definition: each requirement carries a machine signal (`verify.machine`) AND, for a human-perceptible surface, an explicit human/glass gate (`verify.human`). A machine-green build with an unseen console is not accepted ([CXC-CIC-VERIFY] precedent).
+
+| ID | Requirement | verify.machine | verify.human (glass) |
+|----|-------------|----------------|----------------------|
+| COMP-C1 | Layer order is DERIVED from SVG group order, deterministically ([CXC-COMP-LAYER-ORDER]) | a test derives the order from a fixture SVG twice and asserts byte-identical layer lists; asserts the render z-order matches the SVG's relative group order with no code reordering | n/a (structural) |
+| COMP-C2 | Re-ordering groups in the SVG re-derives composition with NO code change ([CXC-COMP-CREDO], [CXC-COMP-LAYER-ORDER]) | a test moves `screen-area` above `ext-view` in a fixture, re-derives, and asserts the matte's render z is now above the content; a pixel probe asserts the content overflow is occluded by the matte, no active clip_rect | on glass: the EXT left-bleed is occluded by the matte after only the SVG changed |
+| COMP-C3 | The composition manifest is derived + consumed; absent, in-memory derivation matches ([CXC-COMP-MANIFEST], [CXC-COMP-INTERLEAVE]) | a test bakes a fixture, asserts the `.composition.json` sidecar equals the in-memory derivation; deletes the sidecar and asserts the render composites the identical order from the SVG at load | n/a (structural) |
+| COMP-C4 | Live-widget layers interleave with art by SVG z-position ([CXC-COMP-INTERLEAVE]) | a test with a `slot:` group between backdrop and overlay asserts the widget composites above the backdrop and below the overlay, matching SVG order | on glass: the gauge sits under the decorative overlay and over the backdrop as drawn |
+| COMP-C5 | STD screens resolve by reference; publishing a ref lights one up with no code change ([CXC-COMP-STD-CONTENT]) | a test resolves `bus://assets/cic/std/navcon/cartography.svg`, asserts the screen renders inside STD's nav over the base; publishes a new screen ref and asserts it appears with no code edit | on glass: authoring + publishing one screen makes it appear; others stay placeholders |
+| COMP-C6 | A `slot:<widget>@<binding>` group binds a reusable bus-bound widget into its bbox at its z; `@` splits widget/binding (hyphen-safe); unknown kind -> placeholder + warning ([CXC-COMP-SLOT]) | a test asserts `slot:gauge@velocity` layers the SAME GaugeWidget class (define-once) into the slot bbox bound to the derived namespace; asserts `slot:button@shut-down` splits on first `@` to widget `button` + binding `shut-down` (hyphen preserved); an unbound slot shows its static placeholder; `slot:<unknown>@x` renders the placeholder + a lint warning, never crashes | on glass: the gauge sits where the slot was drawn and moves with published bus values; an unbound slot shows its placeholder, not a blank rect |
+| COMP-C7 | Slot + chrome styling is read from the inner `<text>`/shape, set on `<text>` not `<tspan>` ([CXC-COMP-TEXT-STYLE]) | a test asserts the render reads font-family/size/fill from a slot's inner `<text>` element (a size on `<text>` is honored, a size only on `<tspan>` is not); asserts shape/fill read from the inner shape; asserts no hardcoded font size in code (grep/lint) | on glass: changing a `<text>` font-size or a shape fill in the SVG re-drives the label/button with no code change |
+| COMP-C8 | A widget KIND names interaction, not appearance ([CXC-COMP-WIDGET-KIND]) | a test asserts two differently-shaped `button` slots resolve the SAME Button interaction (shape from inner art); a lint/grep asserts no per-appearance kind (`custom-button`, `round-button`) is registered or used | on glass: two visually different buttons behave identically as buttons |
+| COMP-C9 | Ownership is by element LOCATION (base = shared, mode = mode-owned), no override; `ref:` groups are skipped ([CXC-COMP-BASE], [CXC-COMP-MODE-SURFACE], [CXC-COMP-REF], [DD-COMP-OWNERSHIP]) | a test asserts the base composites under every mode; asserts STD's `slot:tab_row@console`/`@subtab` render only under STD and NOT under EXT; asserts `slot:text@firmware` is drawn from the base only and no mode overrides it (no per-mode override path exists); asserts a `ref:` (and the `cic-reference-art-for-inspiration-not-coding` alias) group is skipped by the derivation (no render layer, no slot) | on glass: EXT is fullscreen with no tab rows; STD shows its two tab rows; the base frame/radio/status are identical across modes |
+| COMP-C10 | The three screen kinds dispatch correctly ([CXC-COMP-KINDS]) | a test asserts kind-(a) resolves SVG+manifest+slots, kind-(b) composes a table widget with no SVG/manifest, kind-(c) mounts the DRADIS drop-in by reference | on glass: a bespoke screen, a data-table screen, and DRADIS each render appropriately |
+| COMP-C11 | Missing art -> clean placeholder, never fall-through; base shared, tab rows mode-owned ([CXC-COMP-MISSING]) | a test selects an unbuilt (console, sub-tab) and asserts the "<CONSOLE> / <SUBTAB> — screen not built" placeholder (NOT another screen's content, NOT a base/mode group); asserts the base renders from `base.svg` independent of screen-area; asserts no shared-chrome layer owns the tab rows | on glass: an unbuilt screen shows a clean placeholder with the base + STD nav intact; no fall-through |
+| COMP-C12 | The CIC layer assembly is migrated off the hand-maintained code z-order ([CXC-COMP-LAYER-ORDER] migration note) | a test asserts `ColonialConsoleWidget` populates its `pixel_stack` from the derived order (no literal hand-maintained index remains as source of truth); grep/lint asserts no residual hardcoded layer index | n/a (structural) |
+| COMP-C13 | The SVG/composition linter IS the derivation run in `--check` mode (lint == the render contract, by construction — no second rule copy); it enforces conformance to this contract, and the bake/publish pipeline REFUSES on lint failure ([CXC-COMP-LINT]) | a test asserts the linter shares [CXC-COMP-LAYER-ORDER]'s parse + three-category sort (same code path in check mode, not a parallel rule set — a lint-clean SVG renders per the contract by construction); asserts an SVG missing a required label (e.g. the base's `radio-button-group-bounding-box`) yields a clear "missing required label X" diagnostic AND the bake REFUSES (not an opaque bake-time crash); asserts invalid `slot:<widget>@<binding>` grammar, an unregistered widget kind, and duplicate/dangling slot bindings are ERRORS, while an unmapped/unrecognized group is a WARNING (preserve-and-flag); asserts the CLI (`lint <svg>`), CI, and a bus-peer invocation run the SAME linter | on glass: a malformed SVG fails the bake with a readable diagnostic instead of the current opaque chrome-bake crash; a lint-clean screen renders as authored |
+
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-COMP-LINT] The SVG/composition linter — the authoritative conformance check IS the derivation run in `--check` mode (no drift, by construction)
+
+- definition: the SVG/composition LINTER is the authoritative conformance check for this composition contract. It is NOT a second copy of the rules: it IS the composition derivation ([CXC-COMP-LAYER-ORDER] — the same parse + the three-category sort of [CXC-COMP-REF]) run in a `--check`/report mode. Because the linter and the render consume the SAME derivation, **lint == the render contract, by construction** — a lint-clean SVG renders as this contract specifies, and there is no parallel rule set that can drift from what the render actually does. Conformance to this spec IS what the linter checks.
+- rules (conformance to THIS spec, checked by the shared derivation, each classified ERROR or WARNING):
+  - valid `slot:<widget>@<binding>` grammar — a REGISTERED widget kind before the `@`, the `@` delimiter present ([CXC-COMP-SLOT], [CXC-COMP-WIDGET-KIND]); malformed grammar -> ERROR.
+  - valid `ref:` usage — a `ref:` group (or its `cic-reference-art-for-inspiration-not-coding` alias) is skip-only; it mints no slot and no render layer ([CXC-COMP-REF]); a `ref:` group carrying a live-slot label is inconsistent -> ERROR.
+  - required labels PRESENT for the context — e.g. the base's `slot:radio@mode` and the `radio-button-group-bounding-box` whose ABSENCE currently makes the chrome bake CRASH with an opaque raise ([CXC-COMP-BASE]); the linter turns that opaque raise into a clear "missing required label X" diagnostic -> ERROR.
+  - no DUPLICATE and no DANGLING slot bindings within a document -> ERROR.
+  - an UNREGISTERED widget kind -> ERROR ([CXC-COMP-WIDGET-KIND]); an UNMAPPED/unrecognized group -> WARNING (preserve-and-flag, never dropped, per [CXC-COMP-LAYER-ORDER] / [MODEL-EDGE] drop-nothing).
+  - layer-order / z sanity — the derived order is well-formed (deterministic, every retained group placed) ([CXC-COMP-LAYER-ORDER]).
+- runs (ONE linter, N front-ends — the platform's define-once discipline):
+  - the BAKE/PUBLISH pipeline REFUSES on any lint ERROR (fail-loud) — this is the gate that turns bake-time crashes into readable diagnostics.
+  - the CLI: `lint <svg>`.
+  - CI.
+  - runnable by an Intelligence as a bus peer.
+  - OPTIONAL, LATER, THIN: an Inkscape extension that shells out to the STANDALONE linter for in-tool authoring feedback — a FRONT-END only; the lint logic never lives in Inkscape (a copy there would fork the rules and drift from the render contract).
+- requirement: the linter MUST share the SAME parse + three-category sort + derivation as [CXC-COMP-LAYER-ORDER] (it IS that derivation run in `--check`/report mode) and MUST NOT re-implement the composition rules as a second copy; it MUST enforce the rules above, classifying each finding as ERROR (invalid `slot:` grammar, unregistered widget kind, missing required label, duplicate/dangling binding, `ref:`-with-slot-label) or WARNING (unmapped/unrecognized group — preserve-and-flag); the bake/publish pipeline MUST REFUSE on any lint ERROR (fail-loud), converting an opaque bake-time crash (e.g. the missing `radio-button-group-bounding-box`) into a clear "missing required label X" diagnostic; the CLI (`lint <svg>`), CI, and an Intelligence bus peer MUST invoke the SAME linter; and any optional later Inkscape extension MUST be a THIN front-end that shells out to the standalone linter — it MUST NOT host a copy of the lint logic.
+- change: "The SVG/composition contract gains an authoritative conformance LINTER that IS the derivation run in `--check` mode (lint == the render contract, by construction), and the bake/publish pipeline REFUSES on lint failure — turning opaque bake-time crashes (e.g. the missing `radio-button-group-bounding-box` raise) into readable 'missing required label X' diagnostics."
+- context_for_change:
+    prior_state: "The chrome/composition bake had NO conformance gate: a malformed SVG (e.g. a base missing the required `radio-button-group-bounding-box` label) surfaced as an OPAQUE runtime raise deep in the chrome bake, with no clear diagnostic and no single authoritative statement of what a conformant SVG must contain."
+    reasoning: "Because composition is DERIVED from the SVG ([CXC-COMP-CREDO]), the conformance check can be the SAME derivation run in check/report mode — so the lint IS the render contract, by construction, with no second copy of the rules to drift. Running it as the bake gate makes it fail-loud: an unconformant SVG is REFUSED with a readable 'missing required label X' / 'invalid slot grammar' diagnostic instead of crashing."
+    rejected_alternative: "Author the linter as a SEPARATE rule set (a second implementation of the grammar/label/z-order rules) — rejected: a second copy of the composition rules drifts from the derivation it is meant to guard, exactly the divergence the SVG-source discipline removes ([CXC-COMP-CREDO]). The linter must BE the derivation in check mode, not a parallel checker."
+    counter_argument: "A dedicated linter with its own rules is simpler to reason about than reusing the derivation in a check mode."
+    counter_response: "Reuse is the point: sharing [CXC-COMP-LAYER-ORDER]'s parse + three-category sort GUARANTEES lint == render by construction; a separate rule set would let a lint-clean SVG still mis-render (or a spec-conformant SVG fail lint) — the very gap this node closes."
+    invalidating_assumption: "That the composition derivation and its conformance check can share ONE implementation across every front-end. If a tier ever cannot run the derivation in check mode (e.g. an authoring front-end with no derivation available), that front-end shells out to the standalone linter — it does NOT reimplement the rules."
+    implication: "The bake/publish pipeline gains a lint gate (refuse on ERROR); the CLI / CI / bus-peer front-ends invoke the one linter; an optional later Inkscape extension is a thin front-end shelling out to the same standalone linter, never a fork of the rules."
+- build-basis: this node is the spec basis for a follow-on ENGINE build slice — the linter is BUILT as the composition derivation run in `--check`/report mode, AFTER (and reusing) the composition-derivation build it guards ([CXC-COMP-LAYER-ORDER] migration, [DD-COMP-MIGRATION-SCOPE]); it is derivation-in-check-mode, not a second implementation.
+- default: the bake runs the linter and refuses to emit a manifest/asset on any ERROR; WARNINGs are reported preserve-and-flag and do not block the bake; absent `--check`, the derivation runs in its normal (emit) mode.
+- scenario:
+  - when: a base SVG is baked without the required `radio-button-group-bounding-box` label
+  - then: the linter reports "missing required label: radio-button-group-bounding-box" and the bake REFUSES — not an opaque runtime crash deep in the chrome bake
+- scenario:
+  - when: a screen SVG carries `slot:hologram@target` (unregistered kind) plus a duplicate `slot:gauge@velocity`, and a group with a name absent from [CXC-CIC-SVG-TABLE]
+  - then: the linter emits ERRORs (unregistered widget kind; duplicate slot binding) and the bake refuses; the unmapped group emits a WARNING and is preserved-and-flagged (never dropped)
+- scenario:
+  - when: `lint <svg>` is run in CI (or by an Intelligence bus peer) on a conformant screen
+  - then: it PASSES using the SAME derivation the render consumes — so a lint-clean SVG renders per this contract by construction, with no separate rule set that could disagree
+- scenario:
+  - when (optional/later): an author runs the thin Inkscape extension while drawing a screen
+  - then: it shells out to the standalone linter and shows the same diagnostics in-tool — the lint logic is not duplicated into Inkscape
+- see-also: [CXC-COMP-LAYER-ORDER], [CXC-COMP-REF], [CXC-COMP-SLOT], [CXC-COMP-WIDGET-KIND], [CXC-COMP-BASE], [CXC-COMP-MANIFEST], [CXC-COMP-CREDO], [CXC-COMP-VERIFY]
+- part-of: [SPEC:CXC-COMP]
+
+---
+
+## 6. Design Decisions (all SETTLED)
+
+### [DD-COMP-SPEC-HOME] Spec home — a new `53-` doc extending [SPEC:CXC-CIC], not a section folded into 50
+
+- decision: where the SVG-composition-source contract lives.
+- chosen: author ONE cohesive `.lts` document — `corpora/platform-specs/53-composeux-cic-svg-composition.lts` ([SPEC:CXC-COMP]) — EXTENDING [SPEC:CXC-CIC] by reference (DEPENDS_ON), rather than folding it into spec 50. New node sub-family `CXC-COMP-*` (the registered `CXC-` root accepts it, [CONV-PREFIX]); DD family `DD-COMP-*`.
+- rationale: the corpus convention is one-slice-per-numbered-doc; spec 50 is already a foundational shell doc, and folding the composition-derivation + mode-surface + STD-content/slot contract into it would bloat the foundational surface and mix "the shell exists" with "how composition is sourced". A separate 53 keeps [SPEC:CXC-CIC]'s node ids stable and mirrors the [DD-CAN-SPEC-HOME] precedent.
+- alternatives: (a) fold into spec 50 as new sections (rejected: bloats the foundational shell doc, mixes concerns); (b) split into two docs (rejected: the facets are one decision, [DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH], and share the by-reference + derivation machinery).
+- invalidating_assumption: that the CIC family stays a multi-doc family (50 shell + satellites). If the architect prefers co-location in 50, the `CXC-COMP-*` ids fold to `CXC-CIC-*`.
+- status: settled ([DEC-CXC-COMP-DDS-SETTLED])
+- part-of: [SPEC:CXC-COMP]
+
+### [DD-COMP-MANIFEST-FORMAT] The composition manifest format — a derived JSON sidecar
+
+- decision: what artifact the derivation emits and how the render consumes it.
+- chosen: a machine-generated JSON SIDECAR co-located with the baked SVG bus asset (`bus://assets/cic/.../<name>.composition.json`), resolved by reference at render time; DERIVED from the SVG (never hand-edited); with in-memory derivation from the SVG as the fallback when the sidecar is absent ([CXC-COMP-MANIFEST]).
+- rationale: JSON matches the deterministic extraction outputs the scan already emits and reads as a build artifact — its non-hand-editable feel is the point ("regenerate from the SVG, do not edit"). Bus-by-reference co-location means the render picks it up automatically; the constrained tier can consume a pre-baked order without a full SVG parse. In-memory-only re-parses every load and gives the embedded tier no pre-baked path — so it is the fallback, not the default.
+- alternatives: (a) a hand-authored `.compose.yaml` (rejected: reintroduces a second hand-maintained source of z-order); (b) in-memory-only (rejected as default, kept as fallback); (c) embed the order inside the SVG as custom metadata (rejected: the SVG group ORDER already IS the source).
+- invalidating_assumption: that the render benefits from a pre-baked order and that JSON sidecars fit the bus-asset resolve model. If the bus-asset store changes such that a sidecar is awkward, the in-memory derivation (already the fallback) becomes the sole path.
+- status: settled ([DEC-CXC-COMP-DDS-SETTLED])
+- part-of: [SPEC:CXC-COMP]
+
+### [DD-COMP-SLOT-NAMING] The `slot:` naming convention — grammar `slot:<widget>@<binding>` (the `@` delimiter)
+
+- decision: the exact grammar of a `slot:` group label and how its binding key is scope-qualified. This is the one genuinely new build surface, so the convention is the load-bearing call.
+- chosen (SETTLED, [DEC-CXC-COMP-SLOT-DELIMITER-AT]): `slot:<widget>@<binding>` with the `@` delimiter — `<widget>` is a registered reusable widget KIND ([CXC-COMP-WIDGET-KIND]) and `<binding>` is the bus binding key (the remainder after the first `@`, hyphens preserved), resolved under the screen's station+console scope ([CXC-CIC-DUTY-STATION]). A group whose label/id begins `slot:` is live; everything else (non-`ref:`) is static backdrop; the slot bbox is the widget rect; static children are the placeholder; styling comes from the inner SVG elements ([CXC-COMP-TEXT-STYLE]). Ground truth: `slot:radio@mode`, `slot:button@reboot`, `slot:button@shut-down`, `slot:text@firmware`, `slot:gauge@velocity`, `slot:graph@velocity-history`.
+- rationale: the `@` delimiter is UNAMBIGUOUS even when the binding contains hyphens (`shut-down`, `velocity-history`) — the first-hyphen split was fragile for hyphenated bindings and would break the moment a widget kind contained a hyphen. `@` reads cleanly, keeps authoring in Inkscape (a label edit), and matches the committed base SVG's labels. Station+console scoping reuses [CXC-CIC-DUTY-STATION] so slots never cross-wire between stations; widget attributes (gauge min/max, units) come from a bound namespace, not the SVG label.
+- change: "The slot grammar delimiter is `@` (`slot:<widget>@<binding>`), superseding the first-hyphen split (D1)."
+- context_for_change:
+    prior_state: "D1 of [DEC-CXC-COMP-DDS-SETTLED] chose `slot:<widget>-<binding>` — the widget kind the FIRST hyphen-delimited segment, the binding the remainder. The architect had recommended `@`; David chose first-hyphen."
+    reasoning: "On authoring `colonial_base_ux.svg` David saw `@` is better: first-hyphen is fragile when the binding contains hyphens (`shut-down`). David reversed his own call to `@` ([DEC-CXC-COMP-SLOT-DELIMITER-AT])."
+    rejected_alternative: "Keep first-hyphen and forbid hyphenated widget kinds (rejected: leaves the binding-side hyphen ambiguity; a latent fleet-wide rename)."
+    counter_argument: "Reversing a settled D1 churns the convention."
+    counter_response: "No screens had shipped against first-hyphen; the reversal is one guidance + one spec edit, not a rename of many files."
+    invalidating_assumption: "That the widget kind and binding never both need unambiguous hyphens — the `@` delimiter removes the premise entirely."
+    implication: "[CXC-COMP-SLOT] and every base/mode/screen slot label use `slot:<widget>@<binding>`."
+- alternatives: (a) first-hyphen split (SUPERSEDED — the D1 choice, reversed by [DEC-CXC-COMP-SLOT-DELIMITER-AT]); (b) a `:` delimiter (`slot:gauge:velocity`) — rejected as visually colliding with the `slot:` prefix colon; (c) fully-qualified binding in the label — rejected as verbose; scope-qualification is the render's job.
+- status: settled ([DEC-CXC-COMP-SLOT-DELIMITER-AT])
+- part-of: [SPEC:CXC-COMP]
+
+### [DD-COMP-MIGRATION-SCOPE] The hand-maintained -> derived migration scope
+
+- decision: how far the migration from the hand-maintained code z-order to the derived order reaches in this slice.
+- chosen: migrate the CIC shell's layer assembly — `compose_projects/bsg/widgets/colonial_console.py` (`ColonialConsoleWidget(PixelStackContainer)` + the `compose_projects/bsg/widgets/cic/` support modules) — to populate its `pixel_stack` from the DERIVED layer order ([CXC-COMP-LAYER-ORDER]), removing the hand-maintained build-sequence index as the source of truth (the EXT-inversion bug source). The landed EXT layer-only-clipping fix (4c71eb2) is preserved as the correct BEHAVIOR; this migration removes the hand-maintained ORDER that made it fragile. In-memory derivation from the SVG is the only permitted fallback ([CXC-COMP-MANIFEST]); no parallel hardcoded index remains.
+- rationale: the hand-maintained order IS the bug class; leaving it as a fallback preserves the drift the decision eliminates. Scoping to the CIC shell (the proven bug site + the STD-screen consumer) keeps the slice bounded.
+- alternatives: (a) migrate every `pixel_stack` platform-wide (rejected: over-broad for one slice); (b) keep the hand-maintained order as a fallback (rejected: two sources of z-order is the drift the decision removes).
+- invalidating_assumption: that the CIC shell is the only near-term consumer of SVG-sourced composition. If another surface adopts it, the migration extends (the derivation function is shared — adoption, not a rewrite).
+- status: settled ([DEC-CXC-COMP-DDS-SETTLED])
+- part-of: [SPEC:CXC-COMP]
+
+### [DD-COMP-OWNERSHIP] Base-vs-mode ownership is decided by element LOCATION — no per-mode override
+
+- decision: how an element's shared-vs-mode-owned status is determined, and whether a mode may OVERRIDE a base element (specifically the status/firmware line).
+- chosen (SETTLED, David 2026-08-04): ownership is decided by an element's authored LOCATION, not by any override flag — an element is SHARED iff it lives in the BASE SVG, MODE-OWNED iff it lives in the MODE SVG; there is NO per-mode-override mechanism ([CXC-COMP-MODE-SURFACE]). The status/firmware area (`slot:text@firmware`) is therefore BASE-SHARED and NOT mode-overridable ([CXC-COMP-BASE]). If an element must become mode-specific, it is REMOVED from the base and authored in each mode's SVG — not "overridden" in place.
+- rationale: David's framing — "if [status] were meant to be mode-overridable, it would be cleaner to remove `slot:text@firmware` from the base and insert it in each mode document." Location-decides-ownership keeps the single-source discipline ([CXC-COMP-CREDO]): every element has exactly one authoring home, and there is no second override path to reason about or drift. An override mechanism would be a second source of the same element — the very drift the SVG-source model removes.
+- alternatives: (a) base-shared with an optional per-mode override slot that supersedes when present (REJECTED: introduces a second source for one element — the drift the model exists to remove — and an override-resolution rule to maintain); (b) each mode owns its own status area, none in the base (REJECTED: duplicates the status widget across every mode and loses the shared shell). The chosen rule subsumes both cleanly: want it shared -> put it in the base; want it mode-specific -> author it in each mode SVG.
+- invalidating_assumption: that no element needs to be present-in-base-yet-different-per-mode simultaneously. If such a case ever arises, it is handled by AUTHORING (move the element into each mode SVG), not by adding an override primitive — so the rule holds regardless.
+- status: settled
+- part-of: [SPEC:CXC-COMP]
+
+---
+
+## Relationships
+
+### Semantic
+
+[SPEC:CXC-COMP] DEPENDS_ON [SPEC:CXC-CIC]
+[SPEC:CXC-COMP] USES [SPEC:CXC-RENDER]
+[SPEC:CXC-COMP] USES [SPEC:CXC-PATSUB]
+[SPEC:CXC-COMP] REALIZES [DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH]
+[SPEC:CXC-COMP] REALIZES [DEC-CXC-COMP-DDS-SETTLED]
+[SPEC:CXC-COMP] REALIZES [DEC-CXC-COMP-SLOT-DELIMITER-AT]
+[SPEC:CXC-COMP] REALIZES [DEC-COLONIAL-OS-SVG-IS-SOURCE-OF-TRUTH]
+[SPEC:CXC-COMP] USES [DX-NARROW-WAIST]
+[CXC-COMP-WHY] REALIZES [DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH]
+[CXC-COMP-CREDO] UPHOLDS [DX-NARROW-WAIST]
+[CXC-COMP-CREDO] REALIZES [DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH]
+[CXC-COMP-BASE] DEPENDS_ON [CXC-CIC-WIDGET]
+[CXC-COMP-BASE] RELATED_TO [CXC-CIC-RADIO-MODE]
+[CXC-COMP-MODE-SURFACE] DEPENDS_ON [CXC-COMP-BASE]
+[CXC-COMP-MODE-SURFACE] DEPENDS_ON [CXC-CIC-NAV]
+[CXC-COMP-MODE-SURFACE] RELATED_TO [CXC-CIC-RADIO-MODE]
+[CXC-COMP-REF] DEPENDS_ON [CXC-COMP-MODE-SURFACE]
+[CXC-COMP-REF] USES [CXC-COMP-LAYER-ORDER]
+[CXC-COMP-LAYER-ORDER] USES [CXC-CIC-SVG-MAP]
+[CXC-COMP-LAYER-ORDER] USES [CXC-CIC-SVG-TABLE]
+[CXC-COMP-LAYER-ORDER] DEPENDS_ON [CXC-CIC-WIDGET]
+[CXC-COMP-LAYER-ORDER] DEPENDS_ON [CXC-COMP-REF]
+[CXC-COMP-LAYER-ORDER] REALIZES [DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH]
+[CXC-COMP-MANIFEST] DEPENDS_ON [CXC-COMP-LAYER-ORDER]
+[CXC-COMP-MANIFEST] RELATED_TO [CXC-CIC-RADIO-MODE]
+[CXC-COMP-MANIFEST] REALIZES [DEC-CXC-COMP-DDS-SETTLED]
+[CXC-COMP-INTERLEAVE] DEPENDS_ON [CXC-COMP-LAYER-ORDER]
+[CXC-COMP-INTERLEAVE] USES [CXC-CIC-WIDGET]
+[CXC-COMP-INTERLEAVE] DEPENDS_ON [CXC-COMP-SLOT]
+[CXC-COMP-STD-CONTENT] DEPENDS_ON [CXC-COMP-MODE-SURFACE]
+[CXC-COMP-STD-CONTENT] DEPENDS_ON [CXC-CIC-NAV]
+[CXC-COMP-STD-CONTENT] RELATED_TO [CXC-CIC-RADIO-MODE]
+[CXC-COMP-STD-CONTENT] USES [SPEC:CXC-PATSUB]
+[CXC-COMP-SLOT] DEPENDS_ON [CXC-COMP-STD-CONTENT]
+[CXC-COMP-SLOT] USES [CXC-CIC-DUTY-STATION]
+[CXC-COMP-SLOT] UPHOLDS [DX-NARROW-WAIST]
+[CXC-COMP-SLOT] REALIZES [DEC-CXC-COMP-SLOT-DELIMITER-AT]
+[CXC-COMP-TEXT-STYLE] DEPENDS_ON [CXC-COMP-SLOT]
+[CXC-COMP-TEXT-STYLE] UPHOLDS [DX-NARROW-WAIST]
+[CXC-COMP-TEXT-STYLE] REALIZES [DEC-CXC-COMP-SLOT-DELIMITER-AT]
+[CXC-COMP-WIDGET-KIND] DEPENDS_ON [CXC-COMP-SLOT]
+[CXC-COMP-WIDGET-KIND] RELATED_TO [CXC-COMP-TEXT-STYLE]
+[CXC-COMP-KINDS] DEPENDS_ON [CXC-COMP-STD-CONTENT]
+[CXC-COMP-KINDS] RELATED_TO [CXC-CIC-NAV]
+[CXC-COMP-MISSING] DEPENDS_ON [CXC-COMP-STD-CONTENT]
+[CXC-COMP-MISSING] DEPENDS_ON [CXC-COMP-BASE]
+[CXC-COMP-MISSING] DEPENDS_ON [CXC-COMP-MODE-SURFACE]
+[CXC-COMP-MISSING] RELATED_TO [CXC-CIC-RADIO-MODE]
+[CXC-COMP-MISSING] USES [CXC-CIC-WIDGET]
+[CXC-COMP-VERIFY] RELATED_TO [CXC-CIC-VERIFY]
+[CXC-COMP-LINT] USES [CXC-COMP-LAYER-ORDER]
+[CXC-COMP-LINT] DEPENDS_ON [CXC-COMP-REF]
+[CXC-COMP-LINT] DEPENDS_ON [CXC-COMP-SLOT]
+[CXC-COMP-LINT] DEPENDS_ON [CXC-COMP-WIDGET-KIND]
+[CXC-COMP-LINT] DEPENDS_ON [CXC-COMP-BASE]
+[CXC-COMP-LINT] RELATED_TO [CXC-COMP-MANIFEST]
+[CXC-COMP-LINT] UPHOLDS [CXC-COMP-CREDO]
+[CXC-COMP-LINT] REALIZES [DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH]
+[CXC-COMP-LINT] RELATED_TO [CXC-COMP-VERIFY]
+[DD-COMP-SPEC-HOME] DOCUMENTS [SPEC:CXC-COMP]
+[DD-COMP-MANIFEST-FORMAT] DOCUMENTS [CXC-COMP-MANIFEST]
+[DD-COMP-SLOT-NAMING] DOCUMENTS [CXC-COMP-SLOT]
+[DD-COMP-MIGRATION-SCOPE] DOCUMENTS [CXC-COMP-LAYER-ORDER]
+[DD-COMP-OWNERSHIP] DOCUMENTS [CXC-COMP-MODE-SURFACE]
+[DD-COMP-OWNERSHIP] DOCUMENTS [CXC-COMP-BASE]
+
+---
+
+**Version**: 0.3
+**Created**: 2026-08-04
+**Updated**: 2026-08-04 (v0.3) — ADDED the lint-contract facet [CXC-COMP-LINT] (the SVG/composition linter as the authoritative conformance check) + its acceptance row COMP-C13. The linter IS the composition derivation ([CXC-COMP-LAYER-ORDER] + the three-category sort) run in `--check`/report mode, so lint == the render contract BY CONSTRUCTION (no second rule copy to drift). It enforces slot grammar / `ref:` usage / required-labels-present (turning the current opaque `radio-button-group-bounding-box`-absent chrome-bake CRASH into a readable "missing required label X" diagnostic) / no duplicate-or-dangling bindings / unregistered-kind ERROR / unmapped-group WARNING / layer-z sanity. Runs as ONE linter, N front-ends: the bake/publish pipeline REFUSES on lint failure (fail-loud), plus CLI (`lint <svg>`), CI, and an Intelligence bus peer; an optional later THIN Inkscape extension shells out to the standalone linter (front-end only, never a fork). A `change`/`context_for_change` block records the supersession of the no-gate/opaque-crash bake behavior; the node is flagged `build-basis` for the follow-on ENGINE build slice (derivation-in-check-mode, after the derivation it reuses). Edges declared: [CXC-COMP-LINT] USES [CXC-COMP-LAYER-ORDER]; DEPENDS_ON [CXC-COMP-REF]/[CXC-COMP-SLOT]/[CXC-COMP-WIDGET-KIND]/[CXC-COMP-BASE]; RELATED_TO [CXC-COMP-MANIFEST]/[CXC-COMP-VERIFY]; UPHOLDS [CXC-COMP-CREDO]; REALIZES [DEC-SVG-COMPOSITION-SOURCE-OF-TRUTH].
+**Updated**: 2026-08-04 (v0.2) — deepened from the initial draft into the FULL CIC composition model David and the architect converged on. ADDED the three-layer shell: [CXC-COMP-BASE] (the one authoritative base common SVG composited under every mode), [CXC-COMP-MODE-SURFACE] (each mode a self-contained surface owning its own nav — STD's tab rows are STD's, not shared chrome), and [CXC-COMP-REF] (the `ref:` ignore convention + the derivation's three group categories: rendered / `slot:` / `ref:`). ADDED [CXC-COMP-TEXT-STYLE] (slot + chrome styling read from the inner `<text>`/shape, set on `<text>` not `<tspan>`) and [CXC-COMP-WIDGET-KIND] (a widget kind names interaction/behavior, not appearance). REVISED [CXC-COMP-SLOT] + [DD-COMP-SLOT-NAMING] from the first-hyphen split to `slot:<widget>@<binding>` (the `@` delimiter, hyphen-safe) per [DEC-CXC-COMP-SLOT-DELIMITER-AT]. REVISED [CXC-COMP-MISSING] from a shared `chrome.svg` that owned the tab rows to the base-shared / mode-owned split. SETTLED the base-vs-mode ownership rule as [DD-COMP-OWNERSHIP] (ownership by element LOCATION, NO override mechanism; status/firmware area base-shared) — folding David's 2026-08-04 resolution and REMOVING the former open DD-COMP-STATUS-BAR-OVERRIDE (status-bar-override) node. change/context_for_change blocks record the two supersessions (first-hyphen -> `@` on [CXC-COMP-SLOT]/[DD-COMP-SLOT-NAMING]; tabs-are-shared-chrome -> mode-owned on [CXC-COMP-MODE-SURFACE]/[CXC-COMP-MISSING]), plus the retained hand-maintained -> derived block on [CXC-COMP-LAYER-ORDER].
+**Status**: RATIFY-READY (deepened model — ALL design decisions SETTLED, no open sub-items). SETTLED: [DD-COMP-SPEC-HOME] = this 53- doc; [DD-COMP-MANIFEST-FORMAT] = derived JSON sidecar; [DD-COMP-SLOT-NAMING] = `slot:<widget>@<binding>` (`@` delimiter, [DEC-CXC-COMP-SLOT-DELIMITER-AT]); [DD-COMP-MIGRATION-SCOPE] = CIC-shell-only; [DD-COMP-OWNERSHIP] = ownership by element LOCATION, NO override mechanism (base SVG = shared, mode SVG = mode-owned), with the status/firmware area settled BASE-SHARED (David 2026-08-04 — resolving the former status-bar open call: not override-capable; if a mode ever needs a status line it is authored in the mode SVG, not overridden). NEXT: architect ratifies the deepened model, then the composition-derivation + slot-router build (render-engineer), including moving the tab rows under STD so the tabs-in-EXT problem is designed out.

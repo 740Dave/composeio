@@ -1,0 +1,177 @@
+---
+scope: "The ComposeBus pattern-subscription primitive and its per-transport filtering model — register a prefix pattern, receive only matching traffic, with the filter pushed to the most efficient tier each transport offers (in-process registry, MQTT broker wildcards, CAN hardware acceptance masks)."
+audience: "ComposeBus / transport implementers, MCU firmware developers, render-engine + Flow-mode developers"
+boundary: "IN: the logical subscribe-pattern primitive, the transport bindings (in-process / MQTT / CAN), and the CAN encoding requirements. OUT: the Flow-mode UI that uses it ([SPEC:CXC-FLOW]); Headless Widgets ([SPEC:CXC-HEADLESS]); the keyword/discovery filter (a Composer tool convenience, [CXC-PS-DISCOVERY-VS-SUB])."
+not-this: "Not an arbitrary-pattern matching engine; a hierarchy-aware prefix subscription deliberately constrained to what every transport can filter natively. Not MQTT-specific — MQTT is one binding of three."
+depends-on: [02-composer-internal-bus.lts, 16-composeux-bindings-behaviors.lts]
+domain: plt.cio
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# ComposeBus Pattern Subscription & Transport Filtering [SPEC:CXC-PATSUB]
+
+> A subscriber registers "I want traffic of this shape" (`jumpdrive/*`) and receives *only* matches. The filter is a **bus primitive**, not a client-side discard — a constrained device must not receive the whole bus to throw most of it away. The primitive is transport-agnostic; each transport implements it at the most efficient tier it offers, and **when the transport is CAN-bus, that tier is the CAN controller's hardware acceptance mask.**
+
+---
+
+## 1. Intent
+
+### [CXC-PS-INTENT] Filter at the Bus, Not the Widget
+
+- definition: a subscriber registers a namespace *pattern*; the bus delivers only namespaces (and their values) that match. Filtering is the bus's job, transport-side — never "deliver everything, let the subscriber discard."
+- rationale: receive-then-discard is a non-starter on a constrained MCU (it would parse the whole bus to keep 2%). Push the filter as close to the wire as the transport allows.
+- key-insight: ComposeBus is a *logical* bus over **pluggable transports** — in-process, MQTT, and CAN — so it is **not always CAN**. The subscription primitive is defined once, logically; each transport binding satisfies it natively. The point of this spec is to make the primitive's shape one that *every* transport can push to its own native filter.
+- status: operational (in-process + MQTT); CAN binding = design, pending a CAN transport.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 2. The Primitive
+
+### [CXC-PS-PRIMITIVE] Trailing-Glob Prefix Subscription
+
+- as-built: `ComposeIOBus.subscribe_pattern(pattern, callback)` — **trailing-glob only**: `prefix/*` matches the prefix and its subtree, `*` matches all; a *mid-pattern* glob raises. The callback receives the *actual member namespace* (not the pattern) and fires per publish (liveness), including family members that appear *after* the subscription was authored.
+- why trailing-glob only (the load-bearing constraint): a **prefix** pattern is the subset that maps to *every* transport's native filter — an MQTT topic wildcard AND a CAN acceptance mask. An arbitrary mid-pattern glob (`*/readiness`, `jump*drive`) maps to *neither*. Constraining the primitive to prefixes is what keeps it portable and hardware-pushable; richer matching, if ever needed, is a client-side refinement ([CXC-PS-CAN] fallback), never a transport requirement.
+- test: `subscribe_pattern("jumpdrive/*", cb)` receives every `jumpdrive/...` publish incl. later members; a mid-pattern glob raises; `*` receives all.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 3. Transport Bindings
+
+### [CXC-PS-TRANSPORT] One Contract, Native Filtering Per Transport
+
+- **in-process:** the subscription registry prefix-matches in memory; only matching subscribers are invoked. (Filter tier: process memory.)
+- **MQTT:** maps 1:1 to a native broker wildcard — `subscribe_pattern("jumpdrive/*")` → `composeio/+/jumpdrive/#`. The **broker** filters; the subscriber's socket only ever receives matches. (Filter tier: broker.)
+- **CAN-bus:** maps to a **hardware acceptance filter + mask** on the CAN controller. (Filter tier: silicon — the most efficient of all; see [CXC-PS-CAN].)
+- principle: the same logical subscription is filtered at progressively-lower tiers as the transport allows — memory → broker → hardware — with the subscriber's contract ("I only get matches") identical throughout.
+- test: the identical `.compose.yaml` subscription produces only-matching delivery over each transport, filtered at that transport's native tier.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 4. CAN-Bus
+
+### [CXC-PS-CAN] When the Transport Is CAN, the Filter Is a Hardware Mask
+
+- definition: CAN is a broadcast multi-drop bus — every node sees every frame on the wire — but every CAN controller has **hardware acceptance filters**: load an arbitration-ID mask and non-matching frames are dropped *by the silicon before they reach the CPU*. A ComposeBus prefix subscription becomes a loaded acceptance mask; the "I only want this shape" contract is honored in hardware.
+- REQUIREMENT — hierarchical namespace→CAN-ID encoding: the namespace hierarchy (`jumpdrive/readiness`) must be encoded into the arbitration-ID **bit-fields**, so that a prefix pattern is a *contiguous ID range* expressible as a single mask. This is the whole reason trailing-glob is the primitive's shape. Precedent is mature: **J1939 PGNs and CANopen** already allocate IDs hierarchically. (Use 29-bit extended IDs; namespaces↔IDs via a registry/allocation.)
+- MCU fit (David 2026-07-07): MCU devices riding ComposeBus benefit from *real* CAN hardware — and notably **some ESP32 variants ship an on-board TWAI (CAN 2.0) controller**, so an ESP32 can be a *native* CAN node doing hardware-filtered subscription. For a local device mesh that is far better than MQTT-over-WiFi: no WiFi stack, no broker round-trip, deterministic timing, and the filter in silicon. CAN is the natural ComposeBus transport for an MCU fleet.
+- nuances (all tractable, graceful):
+  - **finite filter banks** — an ESP32 TWAI has ~one acceptance filter+mask; STM32 bxCAN has ~14–28. A node wanting *many* distinct patterns loads a **broad hardware mask + a fine software pass** on the residue; the subscriber still only *sees* matches — a few extra frames cost one cheap software check. Degrades gracefully, never breaks the contract.
+  - **payload size** — classic CAN = 8-byte frames, CAN-FD = 64; a `json`-engine or large value needs segmentation (ISO-TP / J1939-TP).
+  - **ID space** — namespaces↔IDs need an allocation registry; the hierarchical bit-field layout is the schema.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 5. The Publisher's Reciprocal Obligation
+
+### [CXC-PS-GRANULARITY] A Namespace Is a CAN Frame ID — Publish Granular, Semantic Events
+
+- core-claim: a ComposeBus namespace is the equivalent of a **CAN arbitration (frame) ID**. The subscriber-side filter ([CXC-PS-CAN]) is only as precise as the publisher's namespace granularity — so the publisher carries a **reciprocal obligation**: give each distinct semantic event/state its OWN namespace (its own "frame ID"), so a consumer subscribes exactly what it cares about and the broker / CAN silicon delivers only that.
+- rule: **one namespace per distinct meaning.** The finer + more semantic the namespace, the more precisely peers filter at the bus (broker wildcard / hardware acceptance mask, [CXC-PS-TRANSPORT]) — never in the leaf. A coarse namespace forces the mask wide and pushes discrimination back into a software pass on the residue ([CXC-PS-CAN] graceful fallback), defeating the point of filtering at the wire.
+- reciprocity: this is the **producer-side of the same coin** as the subscriber filter ([CXC-PS-INTENT]/[CXC-PS-CAN]). "Filter at the bus, not the widget" is only achievable if the publisher gives the bus a frame ID fine enough to filter on. A hardware acceptance mask can isolate an event only if that event has its own arbitration ID; the subscriber cannot filter more precisely than the publisher named.
+- anti-pattern — **fat periodic broadcast**: re-emitting a whole coarse state list at tick rate forces every subscriber to re-parse a firehose to extract the rare event it wants. MEASURED (2026-07-28 bus capture): the dradis game emits `dradis/contacts` + `dradis/bodies` as full LISTS at ~4 Hz (~1.9 KB/s + ~1.5 KB/s), plus `game/detection` + `game/ftl_ready` scalars at 4 Hz — the DY-SV5F soundboard, correctly filtered to `dradis/contacts` ([CXC-PS-CAN]), STILL re-parses the entire contact list every 250 ms to catch one identify-edge. Prefer **granular event namespaces + change-driven emission**: a `dradis/contact_identified` publish carries the edge itself, filterable to one frame ID, so the reactor wakes only on the event, not on every tick.
+- test: a distinct semantic event (an identify-edge, an FTL-ready flip) is published to its OWN namespace; a subscriber filtering that namespace receives ONLY that event, not a periodic coarse list it must re-parse to recover the edge.
+- part-of: [SPEC:CXC-PATSUB]
+
+### [CXC-PS-SEMANTIC-OWNERSHIP] Publish Meaning You OWN, Never Consumer Commands
+
+- rule: a producer emits events meaningful in its OWN domain and stays **ignorant of who consumes them and what they do**. Publish the **WHY** (what happened, in the producer's own terms), never the **HOW** (what some consumer should do about it). Semantic decoupling: the producer names the event; each consumer owns its own reaction.
+- exemplar: the DRADIS game publishes `contact_identified` — the fog-of-war reveal, meaningful to the GAME (identification is published game state, [CXC-ER-DRADIS-IDENT]). The **DY-SV5F soundboard** is ONE independent reactor that hears that event and derives "play a track" AT THE LEAF (`firmware/reactive_core/src/audio_cover.{h,cpp}`, the C++ port of `composeio.maker.audio_cover`): it SUBSCRIBES existing game state, detects the edge locally, writes a UART "play track" frame, and **never publishes**. Input from the bus, output to the module — the reference implementation of this rule.
+- anti-pattern — **consumer-coupled command**: publishing what a consumer should DO (`audio/cue`, `play_sound`) instead of what happened (`contact_identified`). The game must NEVER publish `audio/cue` — that inverts the producer→consumer dependency and makes the producer know a consumer's side effect. (David's ruling, 2026-07-28: "I don't want the DRADIS to have to know that a sound is being played.")
+- principle: this is [CXC-BIND-PRINCIPLE] (state on the bus / behavior in the widget) turned on the **PRODUCER** — publish semantic state, let each consumer own its own presentation/actuation. It is [plt.cio:SPEC:DP-CIO-3] (push behavior to the edge — "publish semantic events, not raw signals") applied to the SEMANTIC layer of the pub side: the producer names what happened; the consumer decides what to do about it, at its own leaf.
+- decoupling-test: adding, removing, or changing a consumer's side effect (a new sound, a light, a log line) requires ZERO change to the producer; the producer's published namespaces name only its own domain events, never a consumer's action.
+- part-of: [SPEC:CXC-PATSUB]
+
+### [CXC-PS-RATE] Default External Emit Is 1 Hz — Internal Tick Is Decoupled
+
+- rule: the DEFAULT rate for publishing to the **shared external ComposeBus is 1 Hz.** Publish faster ONLY when the application genuinely requires it (a live control loop, fast telemetry); slower / on-change is also fine and often better (pairs with the change-driven emission of [CXC-PS-GRANULARITY]).
+- decoupling: **internal bus speed is unrelated to external emit rate.** A peer may run its internal in-process bus / sim / physics tick at any frequency — the DRADIS world sim ticks at ~4 Hz internally — and that is INDEPENDENT of how often it emits to the shared bus. The external emit is **decimated / throttled from the internal tick at the publish seam**, never equal to it. This is the internal-bus-vs-ComposeBus seam ([02-composer-internal-bus.lts]) — the same collapse-at-the-seam lens as the granularity rule — turned on RATE.
+- anti-pattern — **emit coupled to internal tick**: publishing every internal frame to the shared bus. This is the mechanism BEHIND the fat-periodic-broadcast flood ([CXC-PS-GRANULARITY]) — MEASURED (2026-07-28): the dradis emits full lists at 4 Hz precisely because it publishes on every 4 Hz physics tick, coupling external emit to internal cadence.
+- test: a peer whose internal tick is N Hz emits to the shared bus at ≤ 1 Hz by default (or on-change); the publish seam decimates, so raising the internal sim rate does NOT raise external bus traffic.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 5a. Delivery Multiplicity — How MANY Times, Not Just Which
+
+### [CXC-PS-EXACTLY-ONCE] One Publish Is EXACTLY ONE Delivery Per Registered Callback
+
+- rule: for ONE `publish_*` call on a bus, EVERY subscriber registration on that bus that matches — a `subscribe_pattern` callback, an exact `subscribe` callback, an `on_message` monitor — is invoked **EXACTLY ONCE**. Not "at least once", not "once per transport it is reachable on". The count is a property of the SUBSCRIPTION, not of the transport topology underneath it: attaching a global transport to a bus, or attaching two, MUST NOT change how many times a local publish reaches a local subscriber.
+- why this is stated at all, and why the omission was the defect: this spec's contract was previously written entirely in terms of WHICH namespaces arrive — [CXC-PS-INTENT] "delivers only namespaces that match", [CXC-PS-PRIMITIVE] "fires per publish", compliance C1 "receives every `p/...` publish and nothing else". Every one of those is a SET-MEMBERSHIP claim and every one of them is satisfied by a bus that delivers each message twice. Multiplicity was never named, so no implementation was ever obliged to preserve it and no test ever counted. That is the whole under-spec: an invariant that lives only in the reader's assumption is dropped by the next reimplementation, and here it was dropped by the current one — twice over, in two independent places (below).
+- the two mechanisms this rule outlaws, both found live on 2026-08-11:
+  1. **DOUBLE REGISTRATION.** `ComposeIOBus.on_message(cb)` appended `cb` to `self._on_message_callbacks` AND ALSO handed it to `self._local.subscribe_all(cb)`, while `_send_message` drove BOTH paths — `self._local.send(message)` (which fans out to the local wildcard subscribers) and then its own loop over `_on_message_callbacks`. Every monitor saw every local publish twice. The same bug made `off_message` a lie: it removed only the first registration, so an "unsubscribed" monitor kept receiving. ONE registration per `on_message` call, dispatched from ONE place.
+  2. **SELF-ECHO** — see [CXC-PS-NO-SELF-ECHO].
+- test: with a monitor, a pattern subscriber and an exact subscriber all registered, ONE publish yields a delivery count of EXACTLY 1 to each — asserted as `== 1`, never `>= 1`. The assertion MUST be an exact count: a `>=` assertion is structurally blind to this entire class and would have passed against every version of the code that shipped the defect.
+- part-of: [SPEC:CXC-PATSUB]
+
+### [CXC-PS-NO-SELF-ECHO] A Bus MUST NOT Re-Dispatch Its Own Emission Returning Over a Transport
+
+- definition: when a bus publishes to a namespace it is ALSO subscribed to, a broadcast transport hands that message straight back to it. The bus MUST recognise its own emission on ingress and DROP it, because it has already dispatched that message locally at publish time. Suppression happens once, at the bus's single transport-ingress seam, so it holds for every transport and every subscriber kind at once.
+- WHY IT HAPPENS — this is MQTT's specified behaviour, not a broker bug: MQTT 3.1.1 has no `noLocal` subscription option (it arrived only in MQTT 5), so a broker delivers a published message to EVERY matching subscription including the publishing client's own. `subscribe_pattern("intelligence/<id>/*")` becomes the broker filter `composeio/+/intelligence/<id>/#`, which matches the very topic `publish_state` then emits on. The bus is therefore subscribed to itself BY CONSTRUCTION whenever a namespace is both published and pattern-watched on one bus — the exact shape of `channel_bridge`, of every console data source, and of any peer that watches the family it contributes to.
+- MEASURED, on the live broker (2026-08-11, `COMPOSEIO_FW_DOCUMENT_STORE_URL:1883`, one bus, one MQTT transport, one global-scope namespace, ONE `publish_state`): the pattern subscriber fired at +0.03 ms (local dispatch) and again at +0.74 ms (the broker's echo); the `on_message` monitor fired 3 times (+0.05 and +0.13 ms from the double registration above, +0.74 ms from the echo). End-to-end through the REAL `channel_bridge` under a scratch id, ONE compose commit put TWO byte-identical frames on `intelligence/<id>/in`, 1.2 ms apart — matching the 1 ms gap between the two `INBOUND` lines in the live channel log for David's typed message.
+- MECHANISM OF SUPPRESSION, and its safety argument: the bus fingerprints each envelope it hands to an external transport and drops an inbound whose full serialized envelope matches — `ts` and `seq` INCLUDED — consuming the record on the match so exactly one echo is suppressed per emission. This is NOT content dedup and MUST NOT be implemented as one: a genuine repeat (David typing the same word twice, a heartbeat re-emitting identical text) carries a different `ts` and a different `seq`, so it can never match, and [CXC-IC-NARRATION]'s "repeats are never deduped" ruling stands untouched. Any near-miss (a transport that rewrites the envelope) fails OPEN — it degrades to today's duplicate, never to a dropped message, which is the correct direction for a bus whose governing asymmetry is that under-delivery is unrecoverable ([CXC-SUB-SUPERSET]).
+- rejected alternative — suppress the LOCAL dispatch instead and let the broker be the one dispatcher: that makes in-process delivery depend on broker liveness and adds a network round trip to every local subscriber, and it silently changes local-scope semantics. Ingress suppression keeps local delivery synchronous and free, which is what [CXC-PS-TRANSPORT] already promises for the in-process tier.
+- test: a bus with a transport that echoes what it sends (the faithful model of an MQTT broker with a self-matching subscription) delivers ONE publish exactly ONCE to a pattern subscriber, an exact subscriber and a monitor; and a genuine second publish of the SAME VALUE still delivers, proving the suppressor is not a content dedup.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 6. Discovery Is a Different Filter
+
+### [CXC-PS-DISCOVERY-VS-SUB] Subscription (Bus) vs. Keyword Search (Tool)
+
+- distinction: two "filters" must not be conflated. The **runtime pattern subscription** is this bus primitive (transport-side, hierarchy-aware prefix). The **authoring keyword/substring filter** — the Flow-mode search box ("find anything containing `fuel`") — is a *Composer tool* convenience that filters the *display* of observed namespaces (client-side); it is NOT a bus subscription and carries no transport cost. Arbitrary substring search belongs there; the bus primitive stays prefix-only.
+- part-of: [SPEC:CXC-PATSUB]
+
+---
+
+## 7. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-PS-C1 | Only matches delivered | `subscribe_pattern("p/*")` receives every `p/...` publish and nothing else |
+| CXC-PS-C2 | Prefix-only enforced | a mid-pattern glob raises; `p/*` and `*` are accepted |
+| CXC-PS-C3 | Liveness | family members created AFTER the subscription still deliver |
+| CXC-PS-C4 | MQTT native | the subscription maps to a broker wildcard; the socket receives only matches |
+| CXC-PS-C5 | In-process native | the registry delivers only to matching subscribers |
+| CXC-PS-C6 | CAN mask (design) | given hierarchical IDs, a prefix pattern maps to one acceptance mask; non-matching frames dropped in hardware |
+| CXC-PS-C7 | Graceful HW fallback | more patterns than filter banks → broad mask + software refinement; subscriber still sees only matches |
+| CXC-PS-C8 | Discovery ≠ subscription | the Flow keyword filter is tool-side and creates no bus subscription |
+| CXC-PS-C9 | Granular semantic namespaces | a distinct semantic event has its OWN namespace; a subscriber filtering it receives only that event, not a re-parsed periodic list ([CXC-PS-GRANULARITY]) |
+| CXC-PS-C10 | Domain events, not consumer commands | a producer publishes what happened (`contact_identified`), never what a consumer should do (`audio/cue`); adding/removing a consumer needs no producer change ([CXC-PS-SEMANTIC-OWNERSHIP]) |
+| CXC-PS-C11 | Change-driven over fat periodic | a rare event is emitted on change to its own namespace, not extracted by every subscriber from a coarse tick-rate broadcast ([CXC-PS-GRANULARITY]) |
+| CXC-PS-C12 | Default external emit ≤ 1 Hz | publishing to the shared bus is ≤ 1 Hz (or on-change) unless the application justifies faster ([CXC-PS-RATE]) |
+| CXC-PS-C13 | Internal tick ≠ external emit rate | the publish seam decimates; raising the internal sim/tick rate does NOT raise external bus traffic ([CXC-PS-RATE]) |
+| CXC-PS-C14 | Exactly once per registration | ONE publish invokes each matching `subscribe_pattern` / `subscribe` / `on_message` registration EXACTLY once — asserted `== 1`, never `>= 1` — and the count is unchanged by attaching a global transport; `off_message` actually stops delivery ([CXC-PS-EXACTLY-ONCE]) |
+| CXC-PS-C15 | No self-echo re-dispatch | a bus attached to a transport that returns what it sends (MQTT 3.1.1 with a self-matching subscription) delivers ONE publish ONCE, not twice; and a genuine repeat of the SAME value still delivers, proving suppression is envelope-identity (`ts`+`seq`) and not content dedup ([CXC-PS-NO-SELF-ECHO]) |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-PATSUB] IMPLEMENTS [CXC-FL-PATTERN]
+[SPEC:CXC-FLOW] DEPENDS_ON [SPEC:CXC-PATSUB]
+[SPEC:CXC-HEADLESS] DEPENDS_ON [SPEC:CXC-PATSUB]
+[CXC-PS-GRANULARITY] RELATED_TO [CXC-PS-CAN]
+[CXC-PS-GRANULARITY] RELATED_TO [CXC-PS-INTENT]
+[CXC-PS-GRANULARITY] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-3]
+[CXC-PS-SEMANTIC-OWNERSHIP] UPHOLDS [CXC-BIND-PRINCIPLE]
+[CXC-PS-SEMANTIC-OWNERSHIP] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-3]
+[CXC-PS-SEMANTIC-OWNERSHIP] RELATED_TO [CXC-ER-DRADIS-IDENT]
+[CXC-PS-SEMANTIC-OWNERSHIP] RELATED_TO [CXC-NFC-INTENT]
+[CXC-PS-RATE] RELATED_TO [CXC-PS-GRANULARITY]
+[CXC-PS-RATE] UPHOLDS [CXC-PS-INTENT]
+[CXC-PS-NO-SELF-ECHO] UPHOLDS [CXC-PS-EXACTLY-ONCE]
+[CXC-PS-EXACTLY-ONCE] REFINES [CXC-PS-PRIMITIVE]
+[CXC-PS-EXACTLY-ONCE] REFINES [CXC-PS-TRANSPORT]
+[CXC-IC-CHANNEL] DEPENDS_ON [CXC-PS-EXACTLY-ONCE]
+
+---
+
+**Version**: 0.3
+**Created**: 2026-07-07
+**Status**: Draft — ComposeBus pattern-subscription primitive + transport filtering (in-process + MQTT operational; CAN binding designed). **§5 added 2026-07-28 (design convention — David's rulings):** the PUBLISHER-side reciprocal of the subscriber filter — a namespace is a CAN frame ID, so publish granular semantic events one-per-meaning ([CXC-PS-GRANULARITY]); publish meaning you OWN, never consumer commands ([CXC-PS-SEMANTIC-OWNERSHIP], exemplar: DRADIS `contact_identified` → DY-SV5F soundboard reactor, never `audio/cue`); default external emit ≤ 1 Hz decoupled from internal tick ([CXC-PS-RATE]). Named anti-patterns: fat-periodic-broadcast + consumer-coupled-command + emit-coupled-to-internal-tick. Compliance C9–C13 added. **§5a added 2026-08-11 (defect-driven — David's console message reached the Intelligence twice with a PROVEN-SINGLE relay):** the contract said only WHICH namespaces arrive, never HOW MANY TIMES, so nothing forbade double delivery — [CXC-PS-EXACTLY-ONCE] (one publish = exactly one invocation per registration, transport-topology-independent) and [CXC-PS-NO-SELF-ECHO] (a bus must not re-dispatch its own emission returning over a broadcast transport; MQTT 3.1.1 has no `noLocal`). Both mechanisms measured on the live broker. Compliance C14–C15 added; [CXC-IC-CHANNEL]'s IC-C15 amended, its singleton being necessary-but-not-sufficient.

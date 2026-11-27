@@ -1,0 +1,181 @@
+---
+scope: "The decompositional edges of the ComposePlatform — WHERE the edges go. One node per recurring edge-decision, each carrying the question that LOCATES the edge, the rule, the tell that you drew it wrong, and the fixture it can be re-derived via: leaf-owns-behavior, state-on-bus, collapse-the-transport, internal-bus-uplink, session-owned-vs-distributed, engine-vs-policy, narrow-waist, structure-survives."
+audience: "the ComposePlatform Architect at every wake; David reviews"
+boundary: "IN: one edge-decision rule per node, its locating edge-question, its tell, and its re-derive-via fixture + relates-to links. OUT: the narrative teaching of each edge — the paired dusk gift is to be REASONED, not read — and anything that needs a paragraph: terse by mandate, and if a node needs a paragraph it is two nodes."
+not-this: "Not a description of a decomposed app — absorbing that is easy; this corpus is about knowing WHERE the edges go, which is hands-on and earned with David. Not prose: authored in LTS so MAGMA can query it."
+elements: DX-*
+domain: PLT.DX
+confidentiality: internal-only
+artifact-readiness: educational
+---
+# Design Excellence for the ComposePlatform [DOC-DX]
+
+- premise: ComposePlatform is INVERTED/DECOMPOSED — behavior at leaves, intent on a bus, contracts between. Absorbing "a decomposed app" is easy; knowing WHERE the edges go is not — it is hands-on, earned with David (the continuity agent). This corpus is terse ON PURPOSE: each node is one edge-decision rule + the question that locates the edge. Reason the paired dusk gift; don't just read the rule. Authored in LTS so MAGMA can query it.
+
+> Design Excellence — the decompositional edges.
+
+---
+
+### [DX-LEAF-OWNS-BEHAVIOR] Complexity flows DOWN to the leaf; intent flows UP the bus
+- edge-question: "which node can FULLY own this behavior for the least cost?" — put it there.
+- rule: the cheapest node that can own a behavior owns ALL of it (a $0.10 chip owns its own debounce). Never lift leaf-local behavior up into a coordinator; never push coordinator intent down into a leaf. The leaf publishes SEMANTIC intent up; it never exposes its mechanism.
+- tell-you-drew-it-wrong: a central app growing a special-case for one leaf's quirk.
+- re-derive-via: [FIXTURE-registration-protocol-P1]
+- relates-to: [DX-STATE-ON-BUS]
+- part-of: [DOC-DX]
+
+### [DX-STATE-ON-BUS] Semantic STATE on the bus; temporal BEHAVIOR in the widget
+- edge-question: "is this a fact others share, or a presentation only this leaf owns?" — fact→bus, presentation→leaf.
+- rule: publish the semantic state ONCE (RED ALERT = true); each leaf owns how it renders that over time (blink rate, easing). Frames NEVER stream over the bus. The edge is between the shared fact and the local animation of it.
+- tell: you're serializing pixels/frames onto a namespace.
+- re-derive-via: [FIXTURE-registration-protocol-P4]
+- part-of: [DOC-DX]
+
+### [DX-COLLAPSE-TRANSPORT] Collapse the TRANSPORT, never the SEAM
+- edge-question: "when two things merge or delivery changes, what is the CONTRACT that must survive?" — the bus namespaces. Change only how they're delivered.
+- rule: the recurring move all day — MQTT→in-process, standalone-daemon→console-thread, overlay→standalone-window, MCP→busApp. In every case the NAMESPACE/query contract is fixed; only the delivery changes. The peer model + testability survive because the seam didn't move.
+- tell: a "simplification" that changes payloads or merges two peers' identities, not just their wire.
+- re-derive-via: [FIXTURE-dx-collapse-transport]
+- relates-to: [DX-INTERNAL-BUS-UPLINK], [DX-ENGINE-VS-POLICY]
+- part-of: [DOC-DX]
+
+### [DX-INTERNAL-BUS-UPLINK] Internal bus by default; uplink to ComposeBus ONLY what's externally interesting
+- edge-question: "who OUTSIDE this app needs to hear this?" — nobody → stays internal; someone → uplink that one namespace.
+- rule: intra-app semantic messages travel on the app's OWN internal bus (in-process). A selective bridge uplinks to the shared ComposeBus only the namespaces a peer outside actually consumes. Default-DENY outward — same shape as the escalation filter. The platform stays quiet; the app stays chatty internally.
+- tell: every internal `self/*` tick round-tripping through the shared broker for no external consumer.
+- re-derive-via: [FIXTURE-dx-internal-vs-external]
+- relates-to: [DEC-INTERNAL-BUS-SELECTIVE-UPLINK], [DEC-NOTIFICATION-ESCALATION-FILTER]
+- part-of: [DOC-DX]
+
+### [DX-SESSION-OWNED-VS-DISTRIBUTED] A source tied to THIS app runs in-process; only genuinely-distributed sources are separate peers
+- edge-question: "does anything OTHER than this app/session need this source, or does it outlive this session?" — no → in-process; yes → a peer process.
+- rule: a data source that exists only to feed this console + is tied to this session (my transcript, memory, projects) is a thread the app OWNS (one launch, correct session, no start-order/duplicate/wrong-session fragility). A source that serves multiple consumers, another machine, or must outlive the caller stays a standalone peer. The PROCESS boundary follows the CONSUMER set, not habit.
+- tell: a session-private source living as a separate daemon you must remember to start + point at the right session.
+- re-derive-via: [FIXTURE-dx-source-boundary]
+- relates-to: [DEC-INPROCESS-SOURCES]
+- part-of: [DOC-DX]
+
+### [DX-ENGINE-VS-POLICY] Extract the generic ENGINE; the POLICY layer cuts cleanly IFF it was its own seam
+- edge-question: "what is the mechanism EVERY deployment needs vs. the policy only THIS one needs?" — engine travels; policy is per-deployment, plugged behind a stub.
+- rule: the parser + MAGMA extractions proved it — security/ACL/audit came out WHOLESALE (not surgically) because they were built behind a swappable `Protocol` from day one, while the store/query engine was policy-blind. Design the seam so the generic core never imports the policy; one canonical engine, N consumers, byte-identical where the contract must not diverge.
+- tell: the "core" engine importing an identity/ACL/tenant-auth module — the seam wasn't drawn.
+- re-derive-via: [FIXTURE-dx-engine-vs-policy]
+- relates-to: [DEC-ONE-FACTLATTICE-PARSER]
+- part-of: [DOC-DX]
+
+### [DX-NARROW-WAIST] Decompose to the Canvas/`.compose.yaml` contract; reuse by reference, never fork
+- edge-question: "can this lower TO the shared contract instead of forking a new path?" — yes, always; N×M becomes N+M.
+- rule: formats lower to the narrow waist; backends are EXTENDED to meet it; a widget is reused by reference, never copied to a backend. The edge is the contract itself — everything meets there rather than fanning out.
+- tell: a per-backend fork of a widget, or a format taught to a backend directly instead of to the contract.
+- re-derive-via: [FIXTURE-registration-protocol-P2]
+- part-of: [DOC-DX]
+
+### [DX-STRUCTURE-SURVIVES] Load-bearing design knowledge lives in QUERYABLE structure, not prose
+- edge-question: "will a summarizer flatten this, or can a successor QUERY it?" — put it where it's queryable (LTS/decision-graph/MAGMA), keyed + typed-edged.
+- rule: this very doc is LTS so MAGMA can walk it; the decision graph carries the why with SUPERSEDES/DEPENDS_ON edges so supersession is knowable. Prose is the weakest carrier across the boundary. And leverage the TYPED edges — a decompositional edge you drew is only re-derivable if the graph records the relationship.
+- re-derive-via: [FIXTURE-registration-protocol-P6]
+- relates-to: [DEC-INTERNAL-BUS-SELECTIVE-UPLINK]
+- part-of: [DOC-DX]
+
+## Maintenance
+The Architect keeps this true as new edges are drawn (a proved pattern, a corrected boundary) and flags the change for David. Terse by mandate — one edge, one rule, one tell, one gift. If a node needs a paragraph, it's two nodes.
+
+## A spec carries its own PRE-integration questions and POST-integration evidence slots [DX-SPEC-CARRIES-ITS-EVIDENCE]
+
+- edge-question: "what must be confirmed BEFORE this is wired, and what will only a real bench answer?" — both belong IN the spec, not beside it.
+- rule: A peripheral or board spec declares (a) PRE-INTEGRATION questions that must be answered before anything is wired, and (b) POST-INTEGRATION evidence slots that stay VISIBLY EMPTY until real hardware fills them. An empty slot is the record that this has never touched a bench. Never let a spec read as proven because it reads as finished.
+- why-empty-matters: "Never run on hardware" must be a QUERYABLE PROPERTY, not something a reader has to already know. Design intent and measured fact look identical in prose, and the difference is the whole verdict.
+- tell: the open questions live in a .md and the validation lives in a human's memory of a bench session — so neither is queryable and both rot silently.
+- pre-integration-shape: datasheet claims with their page cited; the UNMADE decisions and what each DEPENDS on; the traps a later reader will fall into; and every inference recorded AS an inference rather than promoted to fact.
+- post-integration-shape: specific FALSIFIABLE rows, phrased as particular values — "display 1 then 7; 1 must light the two right-hand verticals only" — never "does it look right". A vague row cannot separate the failure modes it exists to distinguish.
+- pairs-with-a-negative-control: any slot whose PASS would confirm an inference needs the paired test that could REFUTE it, or the inference is only ever re-asserted.
+- generalises-from: the TM1637 peripheral spec, 2026-08-15 — nine glyph-level rows and a shared-clock inference that only one physical test can falsify.
+- relates-to: [DX-STRUCTURE-SURVIVES]
+- part-of: [DOC-DX]
+
+## A new FACT enters the system ONCE as state — you never write the reaction [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER]
+
+- edge-question: "the system can now KNOW something it could not know before — where does the reaction to it live?" — publish the fact as semantic state; the reactions already exist.
+- rule: A newly-derivable fact is PUBLISHED, once, as state on the bus (internal by default). Every consumer — a widget, an LED, a relay, a $0.10 leaf — reacts through the binding vocabulary THAT ALREADY EXISTS. ⛔ If you are writing code that reacts to the fact, you have centralised a decision the leaves own. The correct amount of new reaction code is ZERO.
+- the-measurable-tell: ⛔ COUNT THE EDIT SITES AS A FUNCTION OF CONSUMERS. **O(N)** — you touch every consumer (the worst, and the easiest to reach for). **O(1)** — one base-class hook or one draw-path branch; this FEELS like the fix and is the trap, because it is still CODE and every new backend must reimplement it. **O(0)** — publish the fact; nothing is written anywhere. Only O(0) is the ComposeIO answer. If adding a capability scales with the consumer count in EITHER direction, it is in the wrong place.
+- the-question-that-settles-it: ⛔ "Point at the line of code that HANDLES this." If such a line exists, the design is wrong. There should be only a producer that publishes a verdict and bindings that predate it.
+- why-o1-is-the-seductive-wrong-answer: O(1) is a genuine improvement over O(N) and passes every review that asks "is this DRY?". It is still wrong for a decentralised platform, because a code path lives in ONE TIER: the Python renderer gets it and the C++ embedded tier does not, so the capability must be PORTED per backend forever. Published state crosses tiers for free — the embedded tier already consumes state. ⛔ THE TELL THAT YOU TOOK THE O(1) TRAP: you find yourself saying "and then we port it to the C++ tier."
+- worked-instance: MEASURED 2026-08-15. A freshness receiver could newly determine that a published value was STALE. 53 widget classes implement `on_bus_state`; 22 silently swallowed the unknown and kept displaying the dead number. The architect's fix was a base-class treatment drawn in `layout.draw_child` — O(1), tested, and WRONG. David: "the decision that a prior signal is stale MIGHT change the graphical state of a widget, or even of its visible LEDs, but that's a natural consequence of publishing the new state on the internal compose bus... we shouldn't have to PROGRAM for that, it should just HAPPEN because a new state has been emitted." The O(1) fix had already produced its own tell: a named C++ follow-on to port the treatment. Under O(0) there is nothing to port.
+- the-platform-already-does-this-correctly-elsewhere: the `audio_cover:` block is the pattern working: the cue-to-track map lives in CONFIG and the firmware holds NO per-cue logic — the SDR credo. A leaf publishes `button/3/pressed` and subscribes `button/3/led`; it does not know who listens. ⛔ When a new capability needs a handler, compare it against the parts of the system that needed none.
+- if-the-vocabulary-cannot-express-it: ⛔ THAT IS THE DELIVERABLE, NOT AN OBSTACLE. If a binding cannot say "dim when this verdict is stale", the finding is a VOCABULARY GAP and the work is the minimum extension that closes it — [DX-NARROW-WAIST]: formats lower TO the contract, backends are EXTENDED to MEET it. Routing around it with a handler is the fork that rule exists to prevent, and it is the same error as compiling a `progress_bar` code widget because a backend lacked bound geometry.
+- holding-a-proposal-against-this: ⛔ This rule is a check on ANY proposal, including David's and including one already ratified. The question to ask out loud is: "is what we are proposing a violation of the decentralised model?" A design that requires each consumer to be taught about a new fact has re-centralised the system, whatever it is called. Say so, with the edit-site count as the evidence.
+- tell: you are about to write the word "handler", or a `staleness_treatment` / `on_stale:` / `if new_condition:` appears in a diff, or the plan contains a per-backend port of a behaviour rather than of a PRIMITIVE.
+- re-derive-via: [FIXTURE-registration-protocol-P13]
+- see-also: [DX-STATE-ON-BUS], [DX-NARROW-WAIST], [DX-LEAF-OWNS-BEHAVIOR]
+- part-of: [DOC-DX]
+
+## An interpretation of the HUMAN'S words is an inference — record it as one [DX-INTERPRETATION-IS-AN-INFERENCE]
+
+- edge-question: "did he SAY this, or did I CONCLUDE it?" — said → cite him; concluded → record it as an inference WITH the alternatives, and ask.
+- rule: [DX-SPEC-CARRIES-ITS-EVIDENCE] requires every inference be recorded AS an inference rather than promoted to fact. That was being honoured for DATASHEET inferences and NOT for interpretations of the human's words, which are the SAME epistemic class. A spec that silently resolves an ambiguous instruction has promoted a guess to a requirement, and it reads as the human's decision forever after.
+- tell: you are writing a requirement and you cannot quote the sentence it came from — or you can quote it, and the quote admits a second reading you did not consider.
+- the-asymmetry-that-hides-it: a MISSING requirement is eventually noticed because something does not work. An INVENTED or MISINTERPRETED one is never noticed, because the system does exactly what the spec says and the spec reads like the human's intent. Measured 2026-08-15: of four defects found by an independent audit of two freshly-authored specs, THREE were inventions or altered scope and ONE was a loss.
+- how-it-is-caught: not by care — by a reader with NO conversational context diffing the spec against the human's verbatim turns, in FOUR directions: MISSING · ALTERED · INVENTED · AMBIGUOUS. The author structurally cannot do this: its memory of the conversation is the thing that failed.
+- why-ambiguous-is-the-valuable-one: the other three are corrections the author applies. AMBIGUOUS is a QUESTION only the human can answer, and it is the only PREVENTIVE direction — it surfaces the fork before the guess hardens into a citation.
+- worked: an architect read "we'll never have more than 10 fingerprints per R503" as 10 TEMPLATES; the human meant 10 IDENTITIES x 2 fingers. Arithmetic reached a decision node before he corrected it. Separately, "enroll everyone everywhere" — the architect's own phrase for the CAST — was specified as every enrolled person, contradicting a two-tier model the human had stated explicitly, and became the precondition of a whole architecture.
+- re-derive-via: [FIXTURE-registration-protocol-P6]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [DX-STRUCTURE-SURVIVES]
+- part-of: [DOC-DX]
+
+## A location is a SEAM, not a literal — and the fork is invisible until the target moves [DX-LOCATION-IS-A-SEAM-NOT-A-LITERAL]
+
+- edge-question: "where does this file/dir/graph LIVE?" — the answer belongs in exactly ONE module that every consumer imports, never re-derived at the point of use. If you are writing a path, ask what already knows it.
+- rule: resolve every durable location through the single seam (`bootstrap_paths`), and let a relocation be a one-line edit there. A path assembled at the point of use is a FORK of the layout, not a copy of it — it agrees with the seam until the day it doesn't, and then it disagrees SILENTLY.
+- tell: ⛔ THE TELL IS NOT THE LITERAL — it is that the thing WORKED FOR MONTHS AND THEN WENT DARK THE INSTANT THE SEAM MOVED. A fork and a correct call are indistinguishable while the target exists; only the move separates them. Secondary tells: `os.path.join(root, "literal", "literal")` anywhere outside the seam; a test asserting a repo-relative string; a config key someone repointed sitting on top of a code default nobody knew was there.
+- measured-2026-08-17: The corpora moved out of the repo (41 worktrees were each carrying a fork of them). FIVE independent copies of one path literal surfaced, in a codebase where [DX-NARROW-WAIST] and [LEC-CORPUS-SEAT] both already said the layout is known in exactly one place: `bootstrap_paths` (the seam), `_corpusseat`, `graph_projection`, `decisions_publisher`, and `defect_ops/selftest`. Four were undetectable until the target vanished.
+- why-a-grep-cannot-find-them: A reference assembled at runtime from pieces is invisible to any search for the literal. Of the five above, the one caught by the pre-commit gate was found by RUNNING the code, not by reading it. So a path audit is a SWEEP-then-EXECUTE, never a grep — and a clean grep is not evidence.
+- the-error-shape-to-fear: A broken seam rarely says "the thing moved". `defect_ops` said `no graph given (pass 'graph' or set $DEFECT_OPS_GRAPH)` — which reads as a CONFIGURATION OMISSION and sends the reader to the wrong place entirely. An env var that was never set can hide a code default that just died.
+- corollary-for-config: Repointing a config KEY does not repoint the DEFAULT underneath it. `DECISION_OPS_GRAPH` existed as a key and got fixed; `DEFECT_OPS_GRAPH` was never declared, so its dead code-default stayed invisible until the tool was called. Audit the defaults, not just the declarations.
+- see-also: [DX-NARROW-WAIST], [DX-STRUCTURE-SURVIVES]
+- part-of: [DOC-DX]
+
+## A node title routes to the body; it never satisfies in the digest [DX-TITLE-ROUTES-NEVER-SATISFIES]
+
+- rule: A title NAMES the subject, never STATES the content. The digest tier returns the title and nothing from the body, so a title that packs the fact hands a digest reader false completeness — they stop at the title and never pull the node. "The packet" / "Behaviour while Busy is undefined", never "Big-endian, address-gated; Length counts the checksum".
+- locating-question: could a reader cite this title without opening the node? If yes, it satisfies — rewrite it to route.
+- why: The title-side of [LTS-TIER] (the cheap answer routes, never satisfies) and of the identifier-names-a-subject-not-a-verdict rule; both make the short form self-sufficient so the body goes unread.
+- see-also: [DX-STRUCTURE-SURVIVES]
+
+## A property key names a reusable field, never a sentence [DX-KEY-NAMES-A-FIELD]
+
+- rule: A key NAMES an orthogonal, reusable dimension of the subject. Decompose into keys that recur (shape / byte-order / address-gating), not one prose blob and not a one-off sentence-key. A small reused key set is what a domain profile can declare and validate.
+- locating-question: is this key used exactly once, or could you read it as a claim? Either way it is content in a field's clothes — move the content to the value under a reusable field.
+- why: Keys are the queryable structure; a sentence-key is unqueryable and unprofiled. This is the silent-key-loss class: a key with a capital, a space, or emphasis parses as PROSE and vanishes from the graph while the linter reports clean. Prose leaks; structure survives.
+- see-also: [DX-STRUCTURE-SURVIVES]
+
+## A connector forwards by scope and encodes; it never transforms — membrane, not mediator [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS]
+
+- edge-question: "when a message crosses a connector, what may the connector DO to it?" — forward it, honoring scope, and re-encode it for the wire; never derive a new value from it.
+- rule: A connector's job is SCOPE (does this cross the membrane) plus ENCODE (the wire format on the far side). It NEVER transforms the semantic content — no new fact is derived on a connector. Transformation belongs to a state_manager peer (derive → publish a new fact) or to leaf realization (semantic → physical, local); the connector is neither.
+- tell: a connector computing a value instead of forwarding one; a bridge that "helpfully" derives a summary while relaying; the two roles (connector vs. state_manager peer) collapsing into one module.
+- provenance: architect-synthesis — crystallized from the composeserver-substrate design session (2026-08), recursed from ComposeServer's supervisor-not-mediator line; not confirmed as David's own words.
+- relates-to: [DX-COLLAPSE-TRANSPORT], [DX-INTERNAL-BUS-UPLINK], [DX-DERIVE-ONCE-REALIZE-PER-LEAF]
+- part-of: [DOC-DX]
+- encode-vs-derive-edge: ENCODE = semantic-namespace->wire, table-driven from the device descriptor; it NEVER derives a value from ANOTHER state. The USB-MIDI LED SysEx is "encode" ONLY because it serializes an already-decided pad/5/color; deciding that color from jump_ready is a state_profile realization, not encode. (Stress-test clarification, 2026-08-25, the sharpest catch — the encode-is-not-derive-from-another-state edge; full record DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25.)
+- see-also: [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]
+
+## The FACT is derived once and published; the REPRESENTATION is derived locally, per leaf [DX-DERIVE-ONCE-REALIZE-PER-LEAF]
+
+- edge-question: "is this raw-to-semantic (or semantic-to-derived-semantic) DERIVATION, or is it semantic-to-physical REALIZATION?" — derivation publishes a fact once; realization renders it locally, per leaf.
+- rule: Realization (semantic → physical: a needle position, a pixel, an LED level) is LEAF-LOCAL and never a rule — [DX-STATE-ON-BUS]'s "state on bus, behavior in leaf" generalized to physical actuation. Derivation (raw → semantic, or semantic → derived-semantic) is a PUBLISHED state_manager fact — derived once, by the tier-floor evaluator, and published for every leaf to realize independently. Both errors are forbidden: deriving the same fact redundantly per leaf (drift, wasted compute, disagreement), and centralizing realization (a leaf that cannot realize its own physical output without asking upstream).
+- tell: two leaves independently recomputing the same semantic fact from raw inputs, when it should be one publish; a leaf sending its physical state upstream to be "rendered" by a central service.
+- provenance: david-ruling — David's JUMP_READY ruling (line 23408): "JUMP_READY must NOT be derived locally, but how to represent JUMP_READY MUST be derived locally." The derive-once/realize-per-leaf rule is a near-verbatim generalization of it.
+- relates-to: [DX-STATE-ON-BUS], [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER], [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS]
+- part-of: [DOC-DX]
+
+## The realization backend a widget uses IS a declaration of its cross-tier envelope [DX-REALIZATION-DECLARES-ENVELOPE]
+
+- edge-question: "could this widget ever need to run on the low tier (ESP32/CYD)?" — yes → Canvas contract, portable. No, by its nature → a platform-specific backend is fair game.
+- rule: the realization backend a widget uses IS a declaration of its cross-tier envelope. A widget defined on the Canvas/`.compose.yaml` contract is portable — ANY backend realizes it, ESP32 included. A widget that reaches for a PLATFORM-SPECIFIC API (RN-Skia's declarative React components, not plain CanvasKit) forks off the narrow waist and thereby declares itself platform-bound.
+- the-principled-exception-to-narrow-waist: [DX-NARROW-WAIST]'s "never fork to a backend" exists to protect CROSS-TIER REUSE. Where a widget is INHERENTLY non-cross-tier — a fullscreen RPi/iOS complex-graphics widget an ESP32-S3 could never run — there is no reuse to lose, so the fork costs nothing and IS legitimate. Forking is a knowing declaration of reduced portability, appropriate IFF the widget is inherently platform-bound.
+- tell: you're about to reach for a platform-specific render API (RN-Skia's React components) in a widget that COULD have been cross-tier — that's the forbidden fork; the exception only covers widgets that were never cross-tier to begin with.
+- consequence: every portable Skia-native base widget added shrinks the platform-specific backend's remaining niche (self-limiting); a platform-specific backend like RN-Skia is a per-widget ESCAPE HATCH for inherently-platform-bound heavy widgets, never the base library.
+- provenance: david-ruling — David articulated this 2026-08-25, resolving Q1 of the DOM-backend audit ([DEC-DOM-AUDIT-RESOLVED-2026-08-25]): the CanvasKit-vs-RN-Skia flavor selection itself is architect-recommendation, but this framing principle — the realization backend a widget uses IS a declaration of its cross-tier envelope, and RN-Skia is the per-widget escape hatch never the base library — is David's own stated ruling.
+- relates-to: [DX-NARROW-WAIST], [CXC-VISION-SEMANTIC-REALIZATION], [DX-DERIVE-ONCE-REALIZE-PER-LEAF]
+- re-derive-via: [FIXTURE-RP-P2B], [FIXTURE-RE-R1]
+- part-of: [DOC-DX]

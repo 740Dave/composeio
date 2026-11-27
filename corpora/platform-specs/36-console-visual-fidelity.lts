@@ -1,0 +1,267 @@
+---
+scope: "The VISUAL-FIDELITY pass of the ComposeUX Intelligence Console WORK flavor — the complete build brief that takes the functional MVP (real bus bindings, stock widget styling: intelligence/console/console.compose.yaml + the chat_thread/gauge/activity/subagent_ledger/label widgets) and makes it MATCH the approved 'blended' pre-vis (docs/intelligence-console/previs/console-blended.html) PIXEL-for-intent, WITHOUT breaking the proven functional wiring. It is the design-system-of-record ([CXC-ICV-TOKENS]) + one fidelity node per widget ([CXC-ICV-CHAT], [CXC-ICV-GAUGE], [CXC-ICV-REGISTERED], [CXC-ICV-LEDGER], [CXC-ICV-ACTIVITY], [CXC-ICV-SUBAGENTS], [CXC-ICV-AVATAR], [CXC-ICV-CANVAS], [CXC-ICV-CHROME]) + the motion/theme systems ([CXC-ICV-MOTION], [CXC-ICV-THEME]) + acceptance ([CXC-ICV-ACCEPT]) + a build sequence ([CXC-ICV-BUILD]). Everything here is Canvas-contract-only ([CXC-R-DRAW-CONTRACT], python/composeio/render/canvas.py) — the visual pass adds NO drawing primitive the backend does not already have; it refines draw(), never on_bus_state()."
+audience: "Fable (the subagent that builds the visual-fidelity pass); the ComposeUX architect who reviews/lints/dispatches it; anyone re-skinning a ComposeUX Skia scene to a pixel target under the Canvas contract"
+boundary: "IN: the exact token set lifted from the pre-vis (every hex, both themes, typography roles, spacing, radii, elevation, motion timings) ([CXC-ICV-TOKENS]); the per-widget target/gap/draw()-requirements for each of the nine console surfaces; the self-avatar's expression states + breathe/blink built on Canvas paths ([CXC-ICV-AVATAR]); the scene-graph motion inventory + reduced-motion gate ([CXC-ICV-MOTION]); dark-primary/light-legible theming as a token system ([CXC-ICV-THEME]); the mermaid-on-Skia degrade risk ([CXC-ICV-CANVAS]); an acceptance table + a build sequence. OUT: the bus semantics themselves (spec 34 — [CXC-IC-*] — owns the namespaces, the payload schemas, the two-publisher avatar arbitration, the transcript streams; this pass consumes them unchanged); the launcher/channel/monitor code (untouched); the Canvas contract itself (consumed, not extended — [CXC-R-DRAW-CONTRACT] is frozen for this pass); the theatrical flavor ([CXC-IC-FLAVORS] — a later reskin over the identical transport); the fleet shell ([CXC-ICD-D13])."
+not-this: "Not a redesign — the blend is DECIDED ([CXC-ICD-D17], PREFERENCE-ratified by David among real pre-vis alternatives); Fable implements the pre-vis, it does not re-open the aesthetic. Not a rewrite of the widgets' bus wiring — on_bus_state, the namespace subscriptions, the payload parsing, and the scene's bindings are PROVEN and stay byte-for-byte; only draw()/measure() and new-widget scaffolding change. Not a CSS port — the pre-vis is HTML/CSS illustrating the target; the console is a Skia SCENE, so motion is scene-graph animation (on_clock_tick), theme is a token swap (not a cascade), and letter-spacing/uppercase are approximated (no Canvas primitive). Not new drawing primitives — if a look seems to need one, it is achieved by composing existing Canvas calls or it is accepted as a documented approximation."
+depends-on: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: "DRAFT for review (2026-07-19). The functional base is BUILT: Slice 1 (Skia scene, intelligence/console/console.compose.yaml) + Slice 2 (chat_thread bound to thread/narration + intelligence/architect/{out,in}) render live; the gauge/activity/subagent_ledger/label widgets exist with STOCK styling. The pre-vis (docs/intelligence-console/previs/console-blended.html) is the approved visual target ([CXC-ICD-D17]). This spec is the brief for the fidelity pass; nothing here is built. New node-prefix CXC-ICV- (Intelligence Console Visual) proposed — needs a [CONV-PREFIX] row (sibling to CXC-IC-/CXC-ICD-)."
+created: 2026-07-19
+---
+# ComposeUX Intelligence Console — Visual Fidelity [SPEC:CXC-CONSOLE-VISUAL]
+
+> Spec 34 declared the Intelligence Console and wired it to the bus; the MVP renders on Skia with real bindings
+> and stock widget chrome. This spec closes the last gap: it makes the WORK flavor LOOK like the approved
+> blended pre-vis — collaboration LAYOUT wearing instrument PALETTE, where only the context gauge is allowed to
+> warm and everything else stays calm and dim. The discipline of this pass is subtractive on risk and additive
+> on polish: the drawing surface is the SAME Canvas contract, the bus wiring is the SAME proven code, and every
+> change lands inside draw() or a new widget's scaffolding. Fidelity is measured against one artifact
+> (`console-blended.html`) and one contract (`canvas.py`); when they disagree with a reflex, both win and the
+> reflex loses.
+
+---
+
+## 1. The Mission
+
+### [CXC-ICV-INTENT] The Visual-Fidelity Pass — Refine draw(), Never Break the Wiring
+
+- definition: this pass takes the functional MVP and makes it match the pre-vis. The invariant that makes it safe: **the functional seam is frozen.** Every widget's `on_bus_state`, its subscribed namespace list, its payload coercion, and the scene's `namespaces:`/bindings in `console.compose.yaml` stay exactly as built — they are green today ([CXC-IC-STREAMS], [CXC-IC-SELF] proven). Fidelity work happens in `measure()`, `draw()`, the widget constructor's style attrs, and NEW-widget scaffolding. A visual change that would require re-touching a subscription or a payload schema is out of scope and routes back to the architect.
+- the blend, restated as a build constraint ([CXC-ICD-D17]): collaboration LAYOUT (chat = hero, calm ambient rail, prominent self-avatar) × instrument PALETTE (dark ground `#070a0f`, ONE azure accent `#4ea8ff`, semantic ok/warn/crit kept SEPARATE from the accent, tabular-mono telemetry). The governing principle Fable enforces everywhere: **only the context gauge warms toward warn/crit; every other surface stays calm/dim regardless of state.** The harness "guidance @90" packet is the single deliberate exception (it earns crit weight because it IS the compaction alarm) — and it is a chat message, not a rail instrument.
+- the two references, ranked: (1) `docs/intelligence-console/previs/console-blended.html` is the VISUAL truth — geometry, color, type, spacing, motion; (2) `python/composeio/render/canvas.py` is the CAPABILITY truth — the only primitives that exist. Where the pre-vis uses a CSS feature with no Canvas equivalent (letter-spacing, `text-transform`, the 40px background grid, `65ch` measures), Fable composes it from existing primitives or accepts a documented approximation ([CXC-ICV-TOKENS] records each).
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+---
+
+## 2. The Design System
+
+### [CXC-ICV-TOKENS] Design System — the Single Token Source of Truth
+
+- definition: one design-system module (proposed: `python/composeio/render/widgets/console_theme.py`, a sibling of `style.py`) holds EVERY token below as named RGBA constants + role definitions, for BOTH themes. Widgets import tokens by NAME (`CONSOLE.accent`, `CONSOLE.crit_dim`), never inline hexes. Editing this module re-skins the whole console at once — the same "this file IS the widget identity" contract `style.py` already carries for the CTk look. All colors are RGBA 0–255 (the Canvas contract's form); the pre-vis `rgba(r,g,b,frac)` tokens convert to `(r,g,b, round(frac*255))`.
+
+- **PALETTE — DARK (default, the identity).** Hexes lifted verbatim from `:root{}` in the pre-vis:
+  - ground: `bg #070a0f`; `bg-grid rgba(120,150,190,.035)` = `(120,150,190,9)`
+  - panels: `panel #0d121b`; `panel-2 #101724`; `panel-3 #0a0f17`
+  - lines: `line #1b2432`; `line-2 #26313f`
+  - ink: `ink #e7ecf3`; `dim #8b98aa`; `faint #55616f`
+  - accent (the ONE azure): `accent #4ea8ff`; `accent-dim rgba(78,168,255,.13)=(78,168,255,33)`; `accent-line rgba(78,168,255,.42)=(78,168,255,107)`
+  - semantic OK: `ok #2fd07b`; `ok-dim (47,208,123,33)`; `ok-line (47,208,123,128)`
+  - semantic WARN: `warn #f5a623`; `warn-dim (245,166,35,33)`; `warn-line (245,166,35,128)`
+  - semantic CRIT: `crit #ff3b5c`; `crit-dim (255,59,92,36)`; `crit-line (255,59,92,140)`
+- **PALETTE — LIGHT (still legible).** From `:root[data-theme="light"]` in the pre-vis:
+  - ground: `bg #e9edf2`; `bg-grid (40,70,110,13)`
+  - panels: `panel #ffffff`; `panel-2 #f4f7fb`; `panel-3 #eef2f7`
+  - lines: `line #d3dbe4`; `line-2 #c2ccd8`
+  - ink `#101720`; dim `#556173`; faint `#8592a2`
+  - accent `#1f7fe0`; `accent-dim (31,127,224,26)`; `accent-line (31,127,224,102)`
+  - ok `#13a45c`; warn `#bd7908`; crit `#d61f3c` (dims ~`.1` = 26; lines ~`.45` = 115)
+- semantic rule (load-bearing): the three semantic hues are NEVER used as decoration. `accent` is the identity/interactive color; `ok/warn/crit` mean a STATE (registered=ok, threshold warm=warn/crit). A rail card at rest uses accent + ink + dim + faint ONLY. This is what keeps "everything but the gauge calm."
+
+- **TYPOGRAPHY — roles** (px at a 16px root; the pre-vis `rem` × 16). Faces: `FONT_UI` → bundled IBM Plex Sans, `FONT_MONO` → bundled IBM Plex Mono ([CXC-R-DRAW-FONT]). Telemetry ALWAYS mono (tabular figures); prose sans.
+  - `display` — header H1: sans 20px weight 600 (accent-colored `em` for the role word).
+  - `body` — thread prose: sans 16px regular, line-height 1.5, measure ≤ 65ch (see spacing).
+  - `reply-who` — "architect · reply": sans ~15px (1.05em of body) weight 600.
+  - `narration` — mirrored thinking-aloud: sans ~14px (.86rem) ITALIC, dim, line-height 1.5.
+  - `label-mono` — card headers / sub-line / who-lines: mono 9–10px (.58–.62rem) UPPERCASE, wide tracking, faint.
+  - `ns-tag` — the `self/context_level` topic tag on a card: mono ~9px (.58rem) accent @ 85% opacity.
+  - `readout-xl` — gauge big number: mono ~34px (2.1rem) weight 600 (state-colored); `%` suffix ~18px (1.1rem) dim.
+  - `readout` — ledger cell value: mono ~15px (.92rem) weight 600 ink; `small` suffix ~10px (.6rem) dim.
+  - `telemetry` — reg/activity/subagents/harness rows: mono 9.5–11.5px (.6–.72rem).
+  - `code` — inline code span: mono .84em of context, on `panel-3` fill w/ `line` border, accent text.
+  - APPROXIMATIONS (no Canvas primitive — document + implement best-effort): `letter-spacing` (the `.1em–.16em` tracking on mono labels) has no `set_font` parameter — approximate by drawing per-glyph with an advance nudge for the few short UPPERCASE labels where tracking is load-bearing (card headers, who-lines), else accept default tracking; `text-transform:uppercase` — uppercase the STRING in the widget, never rely on a CSS transform.
+
+- **SPACING scale** (px, observed in the pre-vis; use these, not ad-hoc): `2, 4, 6, 8, 10, 12, 13, 16, 18, 20, 22`. Frame outer padding 20, inter-section gap 16; rail inter-card gap 13; card header padding `8×13`, card body padding 13; thread padding `22 × clamp(18,4vw,40)` with 20 between turns; ledger cell padding `9×10`. Thread text column max-width ≈ 65ch — approximate with `measure_text("M"×65)` or a fixed ~560px cap at the console width; david/narration bubbles cap ≈ 62–65ch and ANCHOR (david right, others left).
+
+- **CORNER RADII** (px): brandmark 11; read column 16; rail card 14 (`--radius`); inner panels (activity/subagents/gauge card body) 8–10; composer field 10; david bubble `14/14/4/14` (tight bottom-right toward the sender); architect bubble `4/14/14/14` (tight top-left); badges/code 4–5; harness packet 9. The Canvas contract's `fill_round_rect` takes ONE radius — the asymmetric bubble corners are an APPROXIMATION: use a single 12px radius for both bubbles unless Fable composes a per-corner path via `fill_path` (ArcTo). Document the choice.
+
+- **ELEVATION / shadow**: cards + read column carry `shadow = 0 1px 2px rgba(0,0,0,.45), 0 12px 34px rgba(0,0,0,.5)` (dark) / `…rgba(30,45,70,.06/.08)` (light) — the Canvas contract HAS `set_shadow(dx,dy,blur,color)`; use the SECOND (ambient) stop as the single shadow (`0,12,34, (0,0,0,128)`), clear it after the panel fill so text isn't shadowed.
+- **FILLS as gradients**: cards + read column use `linear-gradient(180deg, panel-2 → panel)` — use `set_linear_gradient(x, y, x, y+h, [panel-2@0, panel@1])`. The presence card + the body azure wash + the gauge-wrap use `radial-gradient` — use `set_radial_gradient`. These already exist in the contract.
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+---
+
+## 3. Per-Widget Fidelity
+
+> One node per surface. Each states the TARGET (pre-vis reference), the GAP (what the stock widget lacks), and
+> the DRAW REQUIREMENTS (concrete enough that Fable does not guess). All bus wiring named is FROZEN per
+> [CXC-ICV-INTENT]; the widget↔namespace map is spec 34 §8.
+
+### [CXC-ICV-CHAT] chat_thread — the Four-Voice Hero
+
+- target: the pre-vis `.thread` — the hero column, four visually DISTINCT voices, newest at the bottom, auto-scrolled. (1) **david**: right-anchored, `panel-2` bubble, `line-2` border, radius `14/14/4/14`, ink text, mono uppercase who-line "david" faint. (2) **architect · reply**: left, `accent-dim` fill, `accent-line` border, radius `4/14/14/14`, ink body, who-line "**architect** · reply" in accent (the `architect` bold, larger), an optional trailing `emit` line "↳ emitted **git/graph** · **thread/diagram**" in mono faint w/ accent topic names. (3) **architect narration**: left, the SAME bubble as reply (`accent-dim` fill, `accent-line` border, radius `4/14/14/14`, ink body) — the faint who-line "∿ architect · narration · auto-mirrored main-loop" (the `∿` U+223F mirror glyph) is the SOLE differentiator from reply. (Revised per David's glass request 2026-07-19: the label alone distinguishes it, so narration wears the reply bubble; the earlier no-fill/left-rule/italic treatment is retired — and the Canvas Plex face has no italic anyway.) (4) **harness packet**: centered mono card — see the packet variants below.
+- the harness packet (its own sub-treatment, the pre-vis `.hpk`): a centered ≤64ch mono card, `panel-3` fill, DASHED `line-2` border, radius 9, with a `from harness` label + a `kind` badge (bordered pill) + a `body` + an `attrs` line (mono, values accent). THREE variants keyed off `payload.kind`/`from`: `report` (SOLID `accent-line` border, accent kind badge on `accent-dim`); `beat`/heartbeat (opacity .85, dim kind badge); `guidance` (the ONE warm element — SOLID `crit-line` border, `crit-dim` fill, 3px `crit` LEFT border, crit kind badge, a bulleted list with crit markers, and a bottom `glow` bar = a horizontal `crit` gradient `transparent→crit→transparent`).
+- gap (stock `chat_thread.py`): today it renders every voice as flat colored word-wrapped TEXT lines with a bold sender line — NO bubbles, NO right-anchoring for david, NO accent-edged reply panel, NO narration left-rule/italic, NO harness packet cards, NO emit line, NO mirror glyph. Voice resolution (`_resolve_voice`) and the ring buffer are CORRECT and STAY; only the visual emission of each `_Message` changes.
+- draw requirements: extend `_Message` with a `voice` tag (`david|reply|narration|harness`) resolved from the SAME `(topic, from)` logic already in `_resolve_voice` (no new subscriptions). In `draw()`, per turn: measure the wrapped body, compute a bubble rect (max-width cap per [CXC-ICV-TOKENS] spacing), left/right/center ANCHOR by voice, `fill_round_rect` the bubble fill, `stroke_round_rect` the border (dashed border for harness = a stroked round-rect; if the backend lacks dash, a solid `line-2` at reduced width is the accepted degrade), draw the who-line above in `label-mono`, then the body. For `harness` parse `payload.kind` to select the variant styling and, for `guidance`, render the `ul` items as `crit`-markered lines + the `glow` bar (a thin `set_linear_gradient` rect). Bottom-anchor + clip logic (the auto-scroll) is CORRECT and STAYS. Per-corner asymmetric radii are the documented approximation from [CXC-ICV-TOKENS]. **Body renders BASIC inline markdown** (David 2026-07-20, so console messages read like the terminal): the body is tokenized into styled RUNS (`plain|bold|code`) that word-wrap across runs — `**bold**` → Plex-Sans-bold `ink`; `` `code` `` → Plex-Mono `accent` (no boxed fill inline); a line opening `- `/`* ` → a `•` bullet with hanging indent. NOT full markdown: no headers/links/tables/blockquotes, no italic (Plex has no italic face — single `*` stays literal), and MALFORMED markers (unclosed `**`, lone `` ` ``) render as literal text. Applies to the three bubble voices only; the harness packet keeps its own chrome. (Emoji still renders as a missing-glyph box — a separate font-fallback follow-up, Plex ships no emoji glyphs.)
+- calm rule: the reply/david/narration voices NEVER use semantic colors; accent + ink + dim only. `crit` appears in this widget solely inside a `guidance` packet.
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+### [CXC-ICV-GAUGE] context gauge — the One Surface Allowed to Warm
+
+- target: the pre-vis `.gauge-wrap` SVG — a **180° SEMICIRCLE** (NOT a 270° dial), `viewBox 0 0 220 132`, `cx=110 cy=110`. A ZONE BAND at r=90, stroke-width 13, butt caps, in FOUR segments by fraction: `0–.65` accent-dim, `.65–.80` warn-dim, `.80–.90` warn (solid), `.90–1.0` crit (solid). A PROGRESS lead arc at r=72, stroke-width 6, round caps, `crit` at the shown 90%, from the left origin to the value angle. Three THRESHOLD TICKS at the .65/.80/.90 boundaries (warn/warn/crit), radiating outward. A VALUE MARKER dot (r=5.5, crit, bg-stroked) sitting ON the band at the value angle. `0`/`100` end labels mono 8px faint. Below the arc: the `readout-xl` big number ("90.0%") in the STATE color, a `tok` line ("180,000 / 200,000 tok") dim, a `src` line ("src: **stdin · used_percentage** (authoritative)" — the `stdin` in ok, `jsonl-estimate` in dim). Below that a THRESHOLD ROW: three cells `65 crossed | 80 crossed | 90 reached·hot` (65/80 warn, 90 crit). A FOOT line "⚠ 90 = prepare-to-compact guidance — author's call" crit .56rem, shown only at the 90 zone.
+- geometry recipe (so Fable does not reverse-engineer the SVG): map fraction `f∈[0,1]` to angle `θ = π − f·π` (math convention, y-up: `f=0`→left `(20,110)`, `f=1`→right `(200,110)`, sweeping over the top). Band segment endpoints are `f=.65,.80,.90`. The Canvas contract draws arcs with `stroke_arc(cx,cy,r,start,end)` in radians — mind the backend's y-down convention exactly as the existing `gauge.py` does (it negates degrees); reuse that sign discipline. Ticks: a short radial line from r=90 outward at each boundary angle. Value dot: `(cx + r·cosθ_v, cy − r·sinθ_v)` at the value angle on r=90.
+- state color: the big number, lead arc, and value dot take `ok` below 65, `warn` in 65–90, `crit` at/above 90 (mirrors the zone the value sits in). This is the ONLY widget that changes hue with state.
+- gap (stock `gauge.py`): it is a 270° needle dial in the CHARCOAL M2 palette (`_BG #1e1e2e`, `_TEAL`, `_AMBER`, `_RED`), with tick labels and a needle — visually unrelated to the semicircle target. This is effectively a NEW rendering. Recommendation: add a `style: "semicircle"` (or a new `context_gauge` widget subclass) so the existing 270° gauge stays available for other scenes; the scene binds the new style. Keep `on_bus_state` (float coercion) and the `warning_threshold/danger_threshold` attrs — but drive the FOUR zones + the big readout + threshold row from the value + the 65/80/90 thresholds. The scene currently binds `self/context_pct` (0–100 float); ALSO surface the token count + source label if the payload is a dict (`{pct, tokens, source}`) — a purely additive read, defaulting gracefully when only a float arrives.
+- motion: the lead arc hot-pulses ONLY in the 90 zone ([CXC-ICV-MOTION] `hotpulse`). At rest (below 90) it does not animate.
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+### [CXC-ICV-REGISTERED] self/registered — the Checklist (NEW widget)
+
+- target: the pre-vis `.reg` card — header "self / registered" (label-mono) with a `4/4` count in `ok` weight 600 + the `self/registered` ns-tag; a list of items, each an `ok` DOT (8px, with a 3px `ok-dim` halo ring) + a filename in ink (medium) + its path in faint, ellipsized, mono .63rem. This is the "blind spot un-blinded, made a green light" ([CXC-IC-SELF]) — every item green means the successor read its dusk gifts.
+- gap: today the scene fakes it with a static `label` ("self / registered  4 / 4  ✓"). No per-artifact list, no dots, no count-of-total, no binding to `self/registered`.
+- draw requirements: a NEW `RegisteredChecklistWidget` bound to `self/registered`. Payload is the manifest-driven per-artifact report ([CXC-ICD-D8]): a list of `{name, path, ok}` (or a map). Render the card header with the `n/total` count (green when all ok; if any item is NOT ok, THAT dot and the count go dim/faint — NOT crit; an un-registered artifact is "not yet", not an alarm — calm rule holds). Each row: `fill_circle` dot + `ok-dim` halo, bold `name`, faint `path` via `_ellipsize`. Follows the activity/subagents widget shape (header + bordered `panel` body, corner radius 8, Canvas-contract-only, `measure_text`-driven truncation).
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+### [CXC-ICV-LEDGER] self/ledger — the Telemetry Grid (NEW widget)
+
+- target: the pre-vis `.ledger` card — a 2-column CELL GRID with 1px `line` gutters (cells `panel` fill), header "self / ledger" + `self/*` ns-tag. Cells: `subagents` ("2 · 63.2k tok"), `compactions` ("3 · c9·c10·c11"), `cost · session` ("$4.78"), `effort` ("high", the value in accent). Then TWO full-width cells with a mini BAR each: `rate_limit · 5h window` ("38% · resets 14:22", bar `accent` @38%) and `rate_limit · 7d window` ("12%", bar `ok` @12%). Cell `k` = label-mono faint; cell `v` = `readout` mono ink 600 with a dim `small` suffix.
+- gap: does not exist. spec 34 §8 maps this widget to `self/cost, self/rate_limit, self/compactions, self/output_tokens` (+ subagent counts) — all live on the bus from `self_sensor` ([CXC-IC-SELF]).
+- draw requirements: a NEW `SelfLedgerWidget` subscribing the `self/*` ledger namespaces (each `on_bus_state` updates one cell's cached value; a scene lists them like `chat_thread`'s `namespaces:`). Draw a 2-col grid: for each cell `fill_rect` the `panel` background inside a 1px `line` gutter (draw the gutter as a full-card `line` fill behind, then inset cells), the `k` label top-left, the `v` value below; for the two wide cells add a `bar` (`panel-3` track + a colored `fill_round_rect` inner at the percentage). The bar colors are `accent` (5h) and `ok` (7d) per the pre-vis — NOT state-driven (calm rule; the rate-limit windows are not alarms here). Graceful when a namespace hasn't published (cell shows "—").
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+### [CXC-ICV-ACTIVITY] self/activity — Refine to the Pre-vis Row
+
+- target: the pre-vis `.act` — rows with a leading GLYPH cell (accent `●` for the NOW/active row, dim `»`/`▾` for prior rows), a `tool`+`target` label (`tool` bold ink, `target` faint), a right-aligned `tm` time ("now" / "14s" / "1m"); the active row's glyph + tool go `ok` (green) not accent. Rows separated by 1px `line` bottom-borders; header "self / activity" + `self/activity` ns-tag.
+- gap: stock `activity.py` is close in STRUCTURE (keyed rows, newest-at-top, `_line_text`) but renders a single `"› tool target · dur"` string in accent/dim with NO glyph cell, NO right-aligned time column, NO per-row separator, and the active row is accent (pre-vis uses `ok` green for NOW). Wiring (`self/activity`, start/done phases, `_ellipsize`) is CORRECT and STAYS.
+- draw requirements: keep `on_bus_state` and the `OrderedDict` row model. In `draw()`, lay out three columns per row: a fixed ~16px glyph cell (active `●` in `ok`; done `»` in dim), a flexible middle (`tool` bold + " " + `target` faint, ellipsized to the remaining width), and a right-aligned time cell (`draw_text(..., align="right")` at the row's right edge). Draw a 1px `line` separator under each row except the last. Active row: glyph + `tool` in `ok`, remainder dim. The `now`/relative-time string is derived from the row's age (or the `done` duration) — additive, no new subscription. Font mono `.62rem`.
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+### [CXC-ICV-SUBAGENTS] self/subagents — Refine to the Two-Line Row
+
+- target: the pre-vis `.subs` — each subagent is a TWO-LINE row: line 1 = a STATUS dot (`run` = `ok` w/ `ok-dim` halo + `runpulse` motion; `done` = faint) + the type in accent w/ a faint `[model]`; line 2 (indented) = the task in ink + a dur in dim + a flag ("· running" ok / "· done" dim). Header "self / subagents" + ns-tag.
+- gap: stock `subagent_ledger.py` renders ONE line per row (`"› type [model] · desc · running"` accent / `"✓ … · dur · tokens"` ok) — no status DOT, no two-line layout, no per-row pulse, task not on its own indented line. Wiring (`self/subagents`, dispatched/done, in-place keyed update) is CORRECT and STAYS.
+- draw requirements: keep the `OrderedDict` keyed-row model + `on_bus_state`. In `draw()`, per row emit two lines: line 1 draws a `fill_circle` status dot (`ok` + `ok-dim` halo when running, `faint` when done) then the `type` (accent) + `[model]` (faint); line 2 indented ~15px draws the `desc` (ink, truncated), the formatted `dur`, and the flag word. Running dot animates via `runpulse` ([CXC-ICV-MOTION]). Newest-at-top + `max_rows` cap STAY.
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+### [CXC-ICV-AVATAR] the Self-Animated Avatar — Presence (NEW widget, in depth)
+
+- target: the pre-vis `.presence` card — a radial-glow card (`accent-dim` wash top-center) holding a 132×132 avatar, a name ("architect"), an `expr` line ("self/avatar · ◐ focused" accent uppercase), and a `state` line ("self/registered **✓ grounded** · context climbing", the `grounded` in `ok`). The avatar is a face built from vector paths: a breathing HALO (`accent-dim` circle r=52), a face disc (`panel-2` fill, `accent-line` stroke r=42), a BROW pair, an EYES group (blinks), and a MOUTH — colors: brow accent, eyes ink, mouth dim.
+- the avatar geometry (the pre-vis "focused" face, exact — build on the Canvas contract via `fill_circle`/`stroke_circle`/`draw_path` with `QuadTo`/`LineTo`, [CXC-IC-CANVAS] notes the pre-vis uses SVG; this is that SVG DECOMPOSED to primitives, the same way `SvgWidget` decomposes): centered on (66,66) in a 132-box, scaled to the rect. Halo `circle(66,66,52)` `accent-dim`. Face `circle(66,66,42)` `panel-2` fill + `accent-line` stroke w1.5. Focused brow: `path M44,52 L58,56` and `M88,52 L74,56` (inner edges lowered), accent, w3, round caps. Eyes (the blink group): `path M48,64 Q54,60 60,64` and `M72,64 Q78,60 84,64`, ink, w3, round. Mouth: `line 56,84 → 76,84`, dim, w2.5.
+- **expression states** ([CXC-IC-CANVAS], D20 — SHARE the game's `expression` enum, ratification #4; do NOT fork a new vocabulary). The avatar renders the state on `self/avatar/expression`. Each state is the SAME face parts with different brow/eye/mouth paths — Fable defines the path set per state; the console DRIVES at least these (mapping spec 34's cues): `grounded` (rest — level brow, open round eyes, gentle up-curve mouth; shown when `self/registered` all-ok) · `focused` (the pre-vis face above — lowered inner brow, narrowed eyes, level mouth; shown as `self/context_level` climbs) · `contemplative` (raised/soft brow, eyes slightly up, small mouth; shown mid-reflection, pre-`/compact`). Additional enum members from the game render to the nearest of these three if not separately drawn (graceful — the face is never blank). The `expr` label text = the enum name + a glyph.
+- binding (the TWO publishers, arbitrated — [CXC-ICD-D20], FROZEN): `self/avatar/expression` has an EXPLICIT publisher (the Intelligence itself) and an INFERRED fallback (a monitor reading JSONL activity); a `PriorityCommandSource` arbitrates so explicit ALWAYS wins and inferred only fills the gap. The WIDGET does not implement arbitration — it subscribes ONE resolved namespace and renders whatever value arrives (the arbitration is bus-side, spec 34). The widget's only job: map the arrived enum → the face path set + the `expr`/`state` labels, and NEVER render blank (unknown enum → `grounded`).
+- gap: does not exist. This is a NEW `AvatarWidget` (presence card). It is the most motion-heavy widget: the halo breathes and the eyes blink continuously ([CXC-ICV-MOTION]).
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+### [CXC-ICV-CANVAS] the Mermaid / Canvas Panel — Fidelity + the One Infra Risk
+
+- target: the pre-vis `details.canvaspanel` — a COLLAPSIBLE panel atop the read column: a summary row "canvas · live from the bus" + a `thread/diagram · mermaid` ns-tag + a chevron; a body holding the rendered diagram (instrument-palette flow nodes: `panel-2` fill, `line-2` stroke; `self` nodes `accent-dim`/`accent-line`; `hot` nodes `crit-dim`/`crit-line`) and a `srcline` footer "rendered from **thread/diagram** (`graph LR`) — degrades to source off-browser".
+- **the one infra risk** ([CXC-ICD-D11] invalidating assumption; spec 34 §8 slice 5): mermaid renders natively only on the WEB tier (vendored `mermaid.min.js`); on the SKIA/Canvas backend the existing `MermaidWidget` DEGRADES to a SOURCE-TEXT panel (the bytes on the bus). So on the actual Skia console the pre-vis's rendered flow diagram is NOT achievable by the mermaid widget alone. TWO options, flagged for the architect's call — Fable does NOT pick blind:
+  - (A) **headless mermaid → SVG → SvgWidget**: a Node-side service ([CXC-SVG-C5]) rasterizes `thread/diagram` mermaid to `doc://diagrams/{id}.svg`; the console binds an `SvgWidget` (`src` bound to that doc URI) which decomposes the SVG to Canvas primitives and renders crisp on Skia. Highest fidelity; adds a Node dependency + a pipeline.
+  - (B) **accepted degrade**: keep `MermaidWidget`'s source-text panel on Skia, styled to the pre-vis panel chrome (collapsible header, ns-tag, `panel-3` fill, mono source, the `srcline` footer). Lower fidelity for the diagram itself; ZERO new infra; the panel STILL looks intentional.
+- recommendation: ship (B) for the fidelity pass (it is the built path and honors "the screen is never broken"), and record (A) as the fidelity ceiling to reach later via the diagram service. Either way, the panel CHROME (the collapsible summary + ns-tag + srcline) is in-scope now and is Canvas-drawable today.
+- gap: `MermaidWidget` exists with the two tiers, but not the pre-vis panel chrome (collapsible header, ns-tag, srcline). Collapsibility on Skia = a header the tap toggles (interactive) OR a static open panel for the static render — Fable implements the open state for the golden render and the toggle if hit-testing is wired.
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+### [CXC-ICV-CHROME] Scene Shell — Header, Live-Dot, Composer, Grid, Footer
+
+- target: the pre-vis frame chrome. HEADER: a brandmark tile (`accent-dim` fill, `accent-line` border, radius 11, a centered accent dot with a `accent-dim` ring), an H1 "composeio · where **architect** & david work" (the role word `architect` in accent), a sub-line ("● engaged" live-dot in `ok` that BEATS · "opus-4.8 · self-instrumented peer on the bus" · "intelligence/architect/{in,out}") in label-mono faint, and a theme toggle button (mono uppercase, `panel-3`/`line`, hovers to accent). COMPOSER: a bottom bar on the read column — a `panel-3` field ("Message architect on composeio-channel…" dim) + an accent SEND button (dark ink text). BACKGROUND: the ground `#070a0f` plus a faint 40px cockpit GRID (`bg-grid` 1px lines) and a single soft azure radial wash top-right (`accent-dim`, presence-not-alarm). FOOTER: the "pre-vis — blended target" caption is a pre-vis artifact and is DROPPED in the real scene (or replaced by a build/version tag).
+- gap: the scene has a stock `label` title only — no brandmark, no live-dot, no sub-line, no theme button, no composer bar, no background grid/wash.
+- draw requirements: the background grid + azure wash belong to the SCENE background pass (a full-surface draw before widgets), not a widget — implement as the scene's clear/fill (ground fill, then a light `line` grid via repeated `draw_line`, then a `set_radial_gradient` wash top-right). The header composes existing `label` widgets + a small brandmark widget (rounded-rect tile + dot) + a live-dot element (a `fill_circle` that BEATS via [CXC-ICV-MOTION] `beat`). The composer is a `panel` fill + field + a button (reuse `style.draw_button` recolored to `accent`, or a `fill_round_rect` + centered mono text). The theme button drives [CXC-ICV-THEME].
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+---
+
+## 4. Motion & Theme
+
+### [CXC-ICV-MOTION] Motion Inventory — Scene-Graph Animation, Reduced-Motion Gated
+
+- definition: the pre-vis motion is CSS `@keyframes`; the console is a Skia SCENE, so every animation is scene-graph animation — a clocked widget implements `on_clock_tick(now: float) -> bool` (the same deterministic clock the Lottie widget uses via `register_clocked` in the RenderContext, [SPEC:CXC-LOTTIE] [CXC-LOT-DETERMINISM]) and computes its animated value from `now` (returning True while animating so the runtime redraws). Continuous loops (breathe, blink, beat, pulse) are periodic functions of `now`; they do NOT use the `Animator` (that is for one-shot eased property transitions). The inventory (timing + easing lifted from the pre-vis `@keyframes`):
+  - `beat` (header live-dot, live status): period 2.6s, ease-in-out, opacity 1.0 → 0.35 → 1.0.
+  - `breathe` (avatar halo): period 5.5s, ease-in-out, `scale` 1.0 → 1.06 and opacity 0.85 → 1.0 (about the halo center).
+  - `blink` (avatar eyes): period 6.4s, a STEP function — eyes at full height ~96% of the cycle, `scaleY` collapses to ~0.12 for a ~60ms flick (the pre-vis `5.5%–6.5%` of the period).
+  - `hotpulse` (gauge lead arc): period 2.4s, ease-in-out, opacity 1.0 → 0.45 — ACTIVE ONLY in the 90 (crit) zone.
+  - `runpulse` (subagent running dot): period 1.6s, ease-in-out, opacity 1.0 → 0.35.
+- **reduced-motion** (the one motion system the engine LACKS today — no `reduced_motion` exists in `render/engine/`): introduce a SCENE-level reduced-motion flag (a `design.reduced_motion: true` key in the `.compose.yaml`, plumbed onto the RenderContext, default false; the flag is the scene equivalent of the CSS `@media (prefers-reduced-motion: reduce)`). Every clocked widget CONSULTS the flag in `on_clock_tick`: when set, it renders the REST frame (breathe/beat/pulse at opacity 1.0/scale 1.0; eyes open) and returns False (no per-frame redraw). This mirrors exactly what the pre-vis gates: `.avatar .halo, .avatar .eyes, .live i, .subs .st.run, .gauge .lead` all `animation:none`. Motion is ambient and calm by design — nothing flashes, nothing demands attention except, deliberately, the gauge hot-pulse at 90.
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+### [CXC-ICV-THEME] Theming — a Token Swap, Not a CSS Cascade
+
+- definition: the pre-vis themes via CSS custom-property overrides (`:root[data-theme]` + `@media prefers-color-scheme`); the console has no cascade — theme is a TOKEN SWAP. The design-system module ([CXC-ICV-TOKENS]) exposes TWO token tables (`DARK`, `LIGHT`) and a single `active` selector; the scene's `design.theme: dark|light` (already parsed, `parser.py` line 82/373/685) picks the table at mount, and every widget reads `CONSOLE.active.<token>`. Switching theme = re-point `active` + `request_redraw()` — no widget code changes, no per-widget theme branches. DARK is primary (the identity); LIGHT is the legible daylight variant, fully specified in [CXC-ICV-TOKENS]. The header theme button ([CXC-ICV-CHROME]) toggles `active` and redraws.
+- invariant: NO widget hardcodes a hex or a theme test. A widget that needs a color asks the token by ROLE (`accent`, `crit_dim`, `panel_2`); the role resolves per active table. This is what makes both themes correct from ONE implementation and keeps the two palettes in sync with a single edit.
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+---
+
+## 5. Verification
+
+### [CXC-ICV-ACCEPT] What the Fidelity Pass Must Satisfy
+
+| id | claim | test |
+|---|---|---|
+| ICV-C1 | pixel-fidelity to the pre-vis | a headless PNG (`python -m composeio.render.engine.runtime intelligence/console/console.compose.yaml --headless /tmp/console.png`) matches the pre-vis INTENT — layout (chat hero + rail), the four voices visually distinct, the semicircle gauge with 4 zones + big readout, the presence avatar, the registered checklist, the ledger grid — reviewed against `console-blended.html` as the golden reference |
+| ICV-C2 | bindings still work | every widget's `on_bus_state` + subscribed namespaces + the scene `namespaces:`/bindings are UNCHANGED from the MVP; with `--transports` the thread streams, the gauge tracks `self/context_pct`, the ledger/registered/activity/subagents update live (the fidelity pass touched draw(), never the wiring) |
+| ICV-C3 | Canvas-contract-only | no widget imports skia (or any backend); every new draw call is a method on `render/canvas.py`; features with no primitive (letter-spacing, asymmetric radii, dashed borders, the bg grid) use the documented approximations in [CXC-ICV-TOKENS] |
+| ICV-C4 | only the gauge warms | at rest, NO rail surface uses ok/warn/crit as decoration; semantic hues appear only as STATE (registered dots, gauge zones, the guidance packet); a golden render at a low context level shows a calm, dim rail with a cool gauge |
+| ICV-C5 | the gauge zones + state | at context 90 the gauge shows the crit zone reached, the value dot on the band, the big number crit, the threshold row "65 crossed / 80 crossed / 90 reached·hot", the guidance foot; at 40 the number is ok/cool and no foot shows |
+| ICV-C6 | avatar renders every expression, never blank | each `self/avatar/expression` enum value renders a face; an unknown value renders `grounded`; the halo breathes + eyes blink under normal motion |
+| ICV-C7 | reduced-motion | with `design.reduced_motion: true`, breathe/blink/beat/hotpulse/runpulse render their REST frame and no clocked widget forces a per-frame redraw |
+| ICV-C8 | theme swap | `design.theme: light` renders the fully-specified light tokens with no widget code change; the header button toggles dark↔light and redraws |
+| ICV-C9 | new widgets registered + tested | `RegisteredChecklistWidget`, `SelfLedgerWidget`, `AvatarWidget` (+ the semicircle gauge) self-register with the widget registry, parse from the `.compose.yaml`, and each ships a self-test / render test |
+| ICV-C10 | the suite stays green | the full existing render test suite passes unchanged; new tests are additive; the mermaid panel degrades to the styled source panel on Skia without breaking the screen ([CXC-ICV-CANVAS] option B) |
+
+---
+
+## 6. Build Sequence
+
+### [CXC-ICV-BUILD] The Order Fable Builds In
+
+1. **Design system first** ([CXC-ICV-TOKENS], [CXC-ICV-THEME]) — author `console_theme.py` with both token tables + the `active` selector + the role names. Nothing else is correct until the tokens exist; every later step imports them. Land the reduced-motion + theme plumbing on the RenderContext ([CXC-ICV-MOTION]/[CXC-ICV-THEME]) here.
+2. **The hero widgets** — `chat_thread` ([CXC-ICV-CHAT], the four-voice bubbles + harness packets) and the semicircle context gauge ([CXC-ICV-GAUGE]). These are the highest visual leverage and the most-seen; get them right against the golden render before touching the rail.
+3. **The rail widgets** — refine `activity` ([CXC-ICV-ACTIVITY]) + `subagent_ledger` ([CXC-ICV-SUBAGENTS]) to the pre-vis rows, then build the NEW `RegisteredChecklistWidget` ([CXC-ICV-REGISTERED]) and `SelfLedgerWidget` ([CXC-ICV-LEDGER]). All four share the header + bordered-panel idiom, so build the shared chrome once.
+4. **The avatar + motion** ([CXC-ICV-AVATAR], [CXC-ICV-MOTION]) — the NEW `AvatarWidget` with the expression path sets + the breathe/blink clock ticks, then wire the remaining motion (beat, hotpulse, runpulse) across the header, gauge, and subagents. Verify the reduced-motion gate ([CXC-ICV-ACCEPT] ICV-C7) once all clocked widgets exist.
+5. **The scene chrome + mermaid** — the header/brandmark/live-dot/composer + the background grid/wash ([CXC-ICV-CHROME]), then the mermaid/canvas panel ([CXC-ICV-CANVAS]) as option B (styled source panel) with the collapsible chrome; flag option A (the SVG pipeline) to the architect as the fidelity ceiling.
+6. **Update the scene** — extend `intelligence/console/console.compose.yaml` to bind the new widgets to their spec-34 §8 namespaces (`self/registered`, the `self/*` ledger set, `self/avatar/expression`, `thread/diagram`) and set `theme`/`reduced_motion`. Bindings are ADDED, never rewritten.
+- part-of: [SPEC:CXC-CONSOLE-VISUAL]
+
+---
+
+## 7. Relationships
+
+[SPEC:CXC-CONSOLE-VISUAL] DEPENDS_ON [SPEC:CXC-INTELLIGENCE-CONSOLE]
+[SPEC:CXC-CONSOLE-VISUAL] REALIZES [CXC-IC-FLAVORS]
+[CXC-ICV-INTENT] UPHOLDS [CXC-IC-STREAMS]
+[CXC-ICV-INTENT] RELATED_TO [CXC-ICD-D17]
+[CXC-ICV-TOKENS] REALIZES [CXC-ICD-D17]
+[CXC-ICV-TOKENS] USES [CXC-R-DRAW-CONTRACT]
+[CXC-ICV-CHAT] REALIZES [CXC-IC-STREAMS]
+[CXC-ICV-CHAT] USES [CXC-IC-MONITOR]
+[CXC-ICV-GAUGE] REALIZES [CXC-IC-SELF]
+[CXC-ICV-GAUGE] RELATED_TO [CXC-IC-MONITOR]
+[CXC-ICV-REGISTERED] REALIZES [CXC-IC-SELF]
+[CXC-ICV-REGISTERED] RELATED_TO [CXC-ICD-D8]
+[CXC-ICV-LEDGER] REALIZES [CXC-IC-SELF]
+[CXC-ICV-ACTIVITY] REALIZES [CXC-IC-STREAMS]
+[CXC-ICV-SUBAGENTS] REALIZES [CXC-IC-STREAMS]
+[CXC-ICV-AVATAR] REALIZES [CXC-IC-CANVAS]
+[CXC-ICV-AVATAR] RELATED_TO [CXC-ICD-D20]
+[CXC-ICV-CANVAS] REALIZES [CXC-IC-CANVAS]
+[CXC-ICV-CANVAS] RELATED_TO [CXC-ICD-D11]
+[CXC-ICV-CHROME] REALIZES [CXC-IC-FLAVORS]
+[CXC-ICV-MOTION] USES [CXC-R-ENGINE-ANIM]
+[CXC-ICV-THEME] USES [CXC-R-DRAW-CONTRACT]
+[CXC-ICV-ACCEPT] UPHOLDS [CXC-ICV-INTENT]
+[CXC-ICV-BUILD] RELATED_TO [CXC-IC-FLAVORS]
+
+---
+
+**Status**: DRAFT for review (2026-07-19). The complete build brief for the VISUAL-FIDELITY pass of the
+Intelligence Console WORK flavor: take the functional MVP (real bus bindings, stock widget chrome) and make it
+match the approved blended pre-vis ([CXC-ICD-D17]) WITHOUT touching the proven wiring ([CXC-ICV-INTENT]). One
+design-system module of record — every hex (both themes), typography role, spacing step, radius, elevation, and
+motion timing lifted verbatim from `console-blended.html` ([CXC-ICV-TOKENS]) — then one fidelity node per surface:
+the four-voice chat hero + harness packets ([CXC-ICV-CHAT]), the semicircle context gauge (the one surface allowed
+to warm, [CXC-ICV-GAUGE]), the NEW registered checklist ([CXC-ICV-REGISTERED]) + self/ledger grid ([CXC-ICV-LEDGER]),
+refined activity/subagents rows ([CXC-ICV-ACTIVITY]/[CXC-ICV-SUBAGENTS]), the NEW self-animated avatar with shared
+expression enum + breathe/blink ([CXC-ICV-AVATAR]), the mermaid/canvas panel with its degrade risk flagged
+([CXC-ICV-CANVAS]), and the scene shell ([CXC-ICV-CHROME]). Motion is scene-graph animation with a new
+reduced-motion gate ([CXC-ICV-MOTION]); theme is a token swap, not a cascade ([CXC-ICV-THEME]). Acceptance is
+pixel-fidelity-to-intent + bindings-still-work + Canvas-contract-only + suite-green ([CXC-ICV-ACCEPT]); the build
+order runs tokens → hero → rail → avatar/motion → chrome/mermaid → scene ([CXC-ICV-BUILD]).
+
+**Architect — ratifications flagged:** (1) new node-prefix `CXC-ICV-` (Intelligence Console Visual), a `CXC-`
+sub-family sibling to `CXC-IC-`/`CXC-ICD-` — needs a [CONV-PREFIX] row before lint. (2) the mermaid-on-Skia
+call ([CXC-ICV-CANVAS]): ship option B (styled source-degrade) now, or block the fidelity pass on option A (the
+headless mermaid→SVG→SvgWidget pipeline, a Node dependency) — recommend B now, A as the later ceiling.
+(3) whether the semicircle gauge is a new `context_gauge` widget or a `style:` mode on the existing `gauge`
+(recommend a new subclass so the 270° dial stays available). (4) the reduced-motion flag as a `design.reduced_motion`
+scene key + RenderContext plumbing is NEW engine surface (no `reduced_motion` exists today) — confirm the key name.

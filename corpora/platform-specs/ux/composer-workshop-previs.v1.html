@@ -1,0 +1,471 @@
+<title>Composer — Widget Workshop Pre-vis</title>
+<style>
+  :root {
+    --bg:#e9ecf1; --panel:#ffffff; --panel-2:#f3f5f9; --panel-3:#e8ebf1;
+    --border:#d2d8e1; --border-strong:#bcc4d0;
+    --text:#191f29; --dim:#5f6b7c; --faint:#8b95a5;
+    --accent:#128ba8; --accent-soft:#128ba81a; --accent-line:#128ba855;
+    --good:#1c9e6b; --warn:#c98a1a; --crit:#d85a4f;
+    --canvas:#0c0f16; --ruler:#eef1f6; --tick:#aab3c1; --tick-strong:#7a8496;
+    --sel:#128ba8; --shadow:0 1px 2px #10182808,0 6px 20px #10182812;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,Cantarell,"Helvetica Neue",sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#101319; --panel:#191d25; --panel-2:#20252f; --panel-3:#272d38;
+      --border:#2b323d; --border-strong:#39424f;
+      --text:#e7eaf1; --dim:#96a0b0; --faint:#69727f;
+      --accent:#3fb6d4; --accent-soft:#3fb6d41f; --accent-line:#3fb6d455;
+      --good:#39c48a; --warn:#e0a63a; --crit:#e56d61;
+      --canvas:#080a0f; --ruler:#161a21; --tick:#39424f; --tick-strong:#5a6472;
+      --sel:#3fb6d4; --shadow:0 1px 2px #0006,0 8px 24px #0007;
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#e9ecf1; --panel:#ffffff; --panel-2:#f3f5f9; --panel-3:#e8ebf1;
+    --border:#d2d8e1; --border-strong:#bcc4d0; --text:#191f29; --dim:#5f6b7c; --faint:#8b95a5;
+    --accent:#128ba8; --accent-soft:#128ba81a; --accent-line:#128ba855;
+    --good:#1c9e6b; --warn:#c98a1a; --crit:#d85a4f;
+    --canvas:#0c0f16; --ruler:#eef1f6; --tick:#aab3c1; --tick-strong:#7a8496;
+    --sel:#128ba8; --shadow:0 1px 2px #10182808,0 6px 20px #10182812;
+  }
+  :root[data-theme="dark"]{
+    --bg:#101319; --panel:#191d25; --panel-2:#20252f; --panel-3:#272d38;
+    --border:#2b323d; --border-strong:#39424f; --text:#e7eaf1; --dim:#96a0b0; --faint:#69727f;
+    --accent:#3fb6d4; --accent-soft:#3fb6d41f; --accent-line:#3fb6d455;
+    --good:#39c48a; --warn:#e0a63a; --crit:#e56d61;
+    --canvas:#080a0f; --ruler:#161a21; --tick:#39424f; --tick-strong:#5a6472;
+    --sel:#3fb6d4; --shadow:0 1px 2px #0006,0 8px 24px #0007;
+  }
+
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+    font-size:13px;line-height:1.45;-webkit-font-smoothing:antialiased;}
+  button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  .app{height:100vh;display:grid;grid-template-rows:auto 1fr auto;overflow:hidden}
+
+  /* ---------- top strip ---------- */
+  .topbar{display:flex;align-items:center;gap:14px;padding:0 12px;height:40px;
+    background:var(--panel);border-bottom:1px solid var(--border)}
+  .brand{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:.2px}
+  .brand .glyph{width:16px;height:16px;color:var(--accent)}
+  .doc{display:flex;align-items:center;gap:8px;color:var(--dim)}
+  .doc .name{color:var(--text);font-weight:500}
+  .chip{font-family:var(--mono);font-size:11px;padding:1px 7px;border:1px solid var(--border);
+    border-radius:999px;color:var(--dim);background:var(--panel-2)}
+  .menu{display:flex;gap:2px;margin-left:auto}
+  .menu button{background:none;border:0;color:var(--dim);padding:5px 9px;border-radius:6px;cursor:pointer}
+  .menu button:hover{background:var(--panel-2);color:var(--text)}
+
+  /* ---------- work area ---------- */
+  .work{display:grid;grid-template-columns:2fr 1fr;min-height:0}
+  .ww{position:relative;display:grid;grid-template-columns:44px 1fr;min-width:0;
+    background:var(--panel-2);border-right:1px solid var(--border)}
+
+  /* tool rail */
+  .rail{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0;
+    background:var(--panel);border-right:1px solid var(--border)}
+  .tool{width:30px;height:30px;display:grid;place-items:center;border-radius:7px;color:var(--dim);
+    border:1px solid transparent;cursor:pointer}
+  .tool svg{width:17px;height:17px}
+  .tool:hover{background:var(--panel-2);color:var(--text)}
+  .tool.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
+  .rail .sep{width:22px;height:1px;background:var(--border);margin:5px 0}
+
+  /* rulers + canvas */
+  .surface{position:relative;display:grid;grid-template-columns:26px 1fr;grid-template-rows:26px 1fr;
+    min-width:0;min-height:0}
+  .corner{background:var(--ruler);border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+    display:grid;place-items:center;font-family:var(--mono);font-size:9px;color:var(--faint)}
+  .ruler{position:relative;background:var(--ruler);overflow:hidden}
+  .ruler.h{border-bottom:1px solid var(--border)}
+  .ruler.v{border-right:1px solid var(--border)}
+  .ruler .tk{position:absolute;background:var(--tick)}
+  .ruler.h .tk{bottom:0;width:1px;height:5px}
+  .ruler.h .tk.maj{height:9px;background:var(--tick-strong)}
+  .ruler.v .tk{right:0;height:1px;width:5px}
+  .ruler.v .tk.maj{width:9px;background:var(--tick-strong)}
+  .ruler .lb{position:absolute;font-family:var(--mono);font-size:9px;color:var(--faint)}
+  .ruler.h .lb{top:3px;transform:translateX(3px)}
+  .ruler.v .lb{left:2px;transform:translateY(2px) rotate(0deg);writing-mode:vertical-rl}
+
+  .viewport{position:relative;overflow:hidden;background:
+     linear-gradient(var(--border) .5px,transparent .5px) 0 0/100% 100%,
+     var(--canvas);display:grid;place-items:center}
+  /* the composite widget being built (pixel-stack container) */
+  .composite{position:relative;width:min(92%,560px);aspect-ratio:4/3;border-radius:4px;overflow:hidden;
+    box-shadow:0 0 0 1px #ffffff14, 0 18px 50px #0008;background:#05070c}
+  .imgw{position:absolute;inset:0;
+    background:
+      radial-gradient(120% 80% at 62% 40%, #6b5a8f55 0%, #2a2740 34%, #0a0c14 68%),
+      radial-gradient(60% 42% at 62% 40%, #d9c9a880 0%, #b9a6cc22 30%, transparent 60%);
+    filter:saturate(1.05)}
+  .stars{position:absolute;inset:0;opacity:.9}
+  .callout{position:absolute;transform:translate(-50%,-50%);display:flex;align-items:center;gap:6px}
+  .callout .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 0 3px var(--accent-soft),0 0 10px var(--accent)}
+  .callout .tag{font-family:var(--mono);font-size:10px;color:#eaf2f5;background:#0d1420cc;
+    border:1px solid var(--accent-line);padding:2px 6px;border-radius:5px;white-space:nowrap;backdrop-filter:blur(2px)}
+  .startbtn{position:absolute;right:16px;bottom:14px;padding:7px 16px;border-radius:7px;
+    font-weight:600;font-size:12px;color:#04121a;background:linear-gradient(180deg,#63d0ec,#2ea6c7);
+    border:1px solid #ffffff40;box-shadow:0 4px 14px #0006}
+
+  /* selection chrome on one element */
+  .sel{position:absolute;outline:1.5px solid var(--sel);outline-offset:2px}
+  .sel .h{position:absolute;width:7px;height:7px;background:var(--panel);border:1.5px solid var(--sel);border-radius:1px}
+  .sel .h.nw{left:-6px;top:-6px}.sel .h.n{left:calc(50% - 3px);top:-6px}.sel .h.ne{right:-6px;top:-6px}
+  .sel .h.e{right:-6px;top:calc(50% - 3px)}.sel .h.se{right:-6px;bottom:-6px}.sel .h.s{left:calc(50% - 3px);bottom:-6px}
+  .sel .h.sw{left:-6px;bottom:-6px}.sel .h.w{left:-6px;top:calc(50% - 3px)}
+
+  .zoom{position:absolute;right:10px;bottom:10px;font-family:var(--mono);font-size:11px;color:var(--dim);
+    background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:3px 8px;box-shadow:var(--shadow)}
+
+  /* ---------- config column ---------- */
+  .wc{display:grid;grid-template-rows:auto 1fr;min-width:0;background:var(--panel)}
+  .tabs{display:flex;gap:2px;padding:8px 8px 0;border-bottom:1px solid var(--border);background:var(--panel)}
+  .tab{appearance:none;border:0;background:none;color:var(--dim);padding:8px 12px 9px;border-radius:7px 7px 0 0;
+    cursor:pointer;font-weight:500;position:relative;display:flex;align-items:center;gap:7px}
+  .tab .ct{font-family:var(--mono);font-size:10px;color:var(--faint);background:var(--panel-2);
+    border:1px solid var(--border);border-radius:999px;padding:0 5px}
+  .tab:hover{color:var(--text)}
+  .tab[aria-selected="true"]{color:var(--text)}
+  .tab[aria-selected="true"]::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;
+    background:var(--accent);border-radius:2px}
+  .panel{padding:14px;overflow:auto;min-height:0}
+  .panel[hidden]{display:none}
+
+  .field{margin-bottom:14px}
+  .field>label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin-bottom:5px}
+  .in{width:100%;background:var(--panel-2);border:1px solid var(--border);border-radius:7px;padding:7px 9px;color:var(--text)}
+  .in:focus{outline:2px solid var(--accent-line);outline-offset:0;border-color:var(--accent)}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .dim-cap{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:4px}
+  textarea.in{resize:vertical;min-height:74px;line-height:1.5}
+
+  .sec-h{display:flex;align-items:center;justify-content:space-between;margin:2px 0 7px}
+  .sec-h h4{margin:0;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:600}
+  .addbtn{display:inline-flex;align-items:center;gap:5px;background:var(--accent-soft);color:var(--accent);
+    border:1px solid var(--accent-line);border-radius:6px;padding:3px 8px;cursor:pointer;font-weight:600;font-size:12px}
+  .addbtn:hover{background:var(--accent);color:#04121a}
+  .addbtn svg{width:12px;height:12px}
+
+  .list{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--panel-2)}
+  .li{display:flex;align-items:center;gap:9px;padding:8px 10px;border-bottom:1px solid var(--border)}
+  .li:last-child{border-bottom:0}
+  .ns-name{font-family:var(--mono);font-size:12px}
+  .eng{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--dim);background:var(--panel-3);
+    border:1px solid var(--border);border-radius:999px;padding:1px 7px}
+  .bind{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .bind b{color:var(--text);font-weight:600}
+  .arrow{color:var(--accent)}
+
+  /* layers */
+  .layer{display:flex;align-items:center;gap:9px;padding:8px 9px;border-bottom:1px solid var(--border);cursor:default}
+  .layer:last-child{border-bottom:0}
+  .layer.active{background:var(--accent-soft)}
+  .layer .grip{color:var(--faint);cursor:grab;display:grid}
+  .layer .grip svg{width:13px;height:13px}
+  .layer .ico{width:22px;height:22px;border-radius:5px;display:grid;place-items:center;background:var(--panel-3);
+    border:1px solid var(--border);color:var(--accent)}
+  .layer .ico svg{width:13px;height:13px}
+  .layer .nm{display:flex;flex-direction:column;line-height:1.25}
+  .layer .nm b{font-weight:600;font-size:12.5px}
+  .layer .nm span{font-family:var(--mono);font-size:10px;color:var(--faint)}
+  .layer .eye{margin-left:auto;color:var(--dim);background:none;border:0;cursor:pointer;padding:4px;border-radius:6px}
+  .layer .eye:hover{background:var(--panel-3);color:var(--text)}
+  .layer.hidden{opacity:.5}
+  .layer.hidden .nm b{text-decoration:line-through;text-decoration-color:var(--faint)}
+  .zhint{font-family:var(--mono);font-size:10px;color:var(--faint);text-align:center;padding:6px 0 2px}
+
+  /* widgets catalog */
+  .search{display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:8px;padding:7px 10px;margin-bottom:10px;color:var(--faint)}
+  .search input{background:none;border:0;width:100%;color:var(--text)}
+  .search input:focus{outline:none}
+  .cat{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--border);border-radius:9px;
+    margin-bottom:7px;background:var(--panel-2);cursor:grab}
+  .cat:hover{border-color:var(--accent-line);background:var(--accent-soft)}
+  .cat .ico{width:30px;height:30px;border-radius:7px;display:grid;place-items:center;background:var(--panel);
+    border:1px solid var(--border);color:var(--accent)}
+  .cat .ico svg{width:16px;height:16px}
+  .cat .meta{display:flex;flex-direction:column;min-width:0}
+  .cat .meta b{font-size:12.5px}
+  .cat .meta span{font-size:11px;color:var(--dim)}
+  .cat .plus{margin-left:auto;color:var(--faint)}
+
+  /* ---------- status bar ---------- */
+  .status{display:flex;align-items:stretch;gap:0;height:34px;background:var(--panel);
+    border-top:1px solid var(--border);font-size:12px}
+  .status .msg{display:flex;align-items:center;gap:8px;padding:0 12px;color:var(--dim);min-width:0}
+  .status .msg .mono{color:var(--text)}
+  .status .spacer{flex:1}
+  .cluster{display:flex;align-items:center;gap:7px;padding:0 12px;border-left:1px solid var(--border)}
+  .cluster .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint)}
+  .led{width:8px;height:8px;border-radius:50%;flex:none;box-shadow:0 0 0 3px transparent}
+  .led.good{background:var(--good);box-shadow:0 0 8px var(--good)}
+  .led.warn{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+  .led.crit{background:var(--crit)}
+  .busbtn{display:flex;align-items:center;gap:7px;background:none;border:0;cursor:pointer;color:var(--dim);
+    padding:0 12px;border-left:1px solid var(--border);height:100%}
+  .busbtn:hover{background:var(--panel-2);color:var(--text)}
+  .busbtn .k{color:var(--faint)}
+  .mini{background:var(--panel-2);border:1px solid var(--border);border-radius:6px;padding:3px 7px;
+    font-family:var(--mono);font-size:11px;color:var(--text)}
+  select.mini{cursor:pointer}
+  .connect{background:var(--panel-2);border:1px solid var(--border-strong);border-radius:6px;padding:3px 9px;
+    cursor:pointer;color:var(--text);font-weight:500}
+  .connect:hover{border-color:var(--accent);color:var(--accent)}
+  .connect.live{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
+
+  /* toast */
+  #toast{position:fixed;left:50%;bottom:52px;transform:translateX(-50%) translateY(10px);opacity:0;
+    background:var(--panel);border:1px solid var(--accent-line);border-radius:9px;padding:10px 14px;
+    box-shadow:var(--shadow);display:flex;align-items:center;gap:10px;pointer-events:none;transition:.22s;z-index:50}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast .win{width:26px;height:22px;border:1.5px solid var(--accent);border-radius:3px;position:relative;flex:none}
+  #toast .win::before{content:"";position:absolute;left:0;right:0;top:0;height:5px;background:var(--accent)}
+  #toast .t b{display:block}
+  #toast .t span{color:var(--dim);font-size:11px;font-family:var(--mono)}
+
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+  @media (max-width:820px){.work{grid-template-columns:1fr}.wc{border-top:1px solid var(--border)}
+    .cluster .k,.busbtn .k{display:none}}
+</style>
+
+<div class="app">
+  <!-- top strip -->
+  <div class="topbar">
+    <div class="brand"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h7"/><circle cx="18" cy="14" r="3"/></svg>Composer</div>
+    <div class="doc"><span>Widget</span><span class="name">M31 Annotated Viewer</span><span class="chip">pixel-stack</span></div>
+    <div class="menu"><button>File</button><button>Edit</button><button>View</button><button>Arrange</button></div>
+  </div>
+
+  <!-- work area -->
+  <div class="work">
+    <!-- ── Widget Workshop ── -->
+    <div class="ww">
+      <div class="rail">
+        <div class="tool on" title="Select / move">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 3l7 17 2.5-6.5L21 11 5 3z"/></svg></div>
+        <div class="tool" title="Pan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11V6a1.5 1.5 0 013 0v4m0-1a1.5 1.5 0 013 0v2m0-1a1.5 1.5 0 013 0v4a5 5 0 01-5 5h-2.5a4 4 0 01-3-1.4L6 16.5a1.6 1.6 0 012.3-2.2L9 15"/></svg></div>
+        <div class="tool" title="Zoom">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4-4M11 8v6M8 11h6"/></svg></div>
+        <div class="sep"></div>
+        <div class="tool" title="Measure">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8l5-5 13 13-5 5zM8 6l2 2M11 9l2 2M14 12l2 2"/></svg></div>
+      </div>
+
+      <div class="surface">
+        <div class="corner">px</div>
+        <div class="ruler h" id="rh"></div>
+        <div class="ruler v" id="rv"></div>
+        <div class="viewport">
+          <!-- pixel-stack composite: a stack of real widgets, bottom→top -->
+          <div class="composite" id="comp">
+            <div class="imgw"></div>
+            <canvas class="stars" id="stars"></canvas>
+            <div class="callout" style="left:47%;top:50%"><span class="dot"></span><span class="tag">M31 · core</span></div>
+            <div class="callout" style="left:44%;top:63%"><span class="dot"></span><span class="tag">M32</span></div>
+            <div class="callout" style="left:26%;top:70%"><span class="dot"></span><span class="tag">M110</span></div>
+            <div class="startbtn">Start Tour</div>
+            <!-- selection chrome on the Start button -->
+            <div class="sel" id="selbox">
+              <i class="h nw"></i><i class="h n"></i><i class="h ne"></i><i class="h e"></i>
+              <i class="h se"></i><i class="h s"></i><i class="h sw"></i><i class="h w"></i>
+            </div>
+          </div>
+          <div class="zoom mono">100 %</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Widget Configuration ── -->
+    <div class="wc">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" data-p="overview">Overview</button>
+        <button class="tab" role="tab" aria-selected="false" data-p="layers">Layers <span class="ct">5</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-p="widgets">Widgets</button>
+      </div>
+
+      <!-- Overview -->
+      <div class="panel" id="p-overview" role="tabpanel">
+        <div class="field">
+          <label>Widget name</label>
+          <input class="in" value="M31 Annotated Viewer">
+        </div>
+        <div class="field">
+          <label>Canvas size</label>
+          <div class="row2">
+            <div><input class="in mono" value="800"><div class="dim-cap">width · px</div></div>
+            <div><input class="in mono" value="600"><div class="dim-cap">height · px</div></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="sec-h"><h4>Namespaces</h4>
+            <button class="addbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M12 5v14M5 12h14"/></svg>New</button></div>
+          <div class="list">
+            <div class="li"><span class="ns-name">astro/annotations</span><span class="eng">json</span></div>
+            <div class="li"><span class="ns-name">viewer/click</span><span class="eng">json</span></div>
+            <div class="li"><span class="ns-name">viewer/tour</span><span class="eng">binary</span></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="sec-h"><h4>Bindings</h4></div>
+          <div class="list">
+            <div class="li"><span class="bind"><b>image·m31</b> <span class="arrow">→</span> viewer/click</span></div>
+            <div class="li"><span class="bind"><b>btn·start</b> <span class="arrow">→</span> viewer/tour</span></div>
+            <div class="li"><span class="bind">astro/annotations <span class="arrow">→</span> <b>callouts</b></span></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Purpose</label>
+          <textarea class="in">A star-field viewer that overlays data-driven callouts on a base astronomical image and emits click coordinates on the bus. Callout positions are supplied as fractional coords from doc://astro_annotations/m31; the Start Tour button drives a guided walk-through.</textarea>
+        </div>
+      </div>
+
+      <!-- Layers -->
+      <div class="panel" id="p-layers" role="tabpanel" hidden>
+        <div class="zhint">▲ front — drawn last · on top</div>
+        <div class="list">
+          <div class="layer active">
+            <span class="grip"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="8" width="18" height="8" rx="2"/></svg></span>
+            <span class="nm"><b>btn-start</b><span>Button · 96×36 @ 512,404</span></span>
+            <button class="eye" title="Hide"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+          </div>
+          <div class="layer">
+            <span class="grip"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="2.4"/><path d="M4 16l4-4 3 3M14 4l6 6M14 10l-2 2"/></svg></span>
+            <span class="nm"><b>callout-core</b><span>Callout · anchor 0.47,0.50</span></span>
+            <button class="eye"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+          </div>
+          <div class="layer">
+            <span class="grip"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="2.4"/><path d="M4 16l4-4 3 3M14 4l6 6M14 10l-2 2"/></svg></span>
+            <span class="nm"><b>callout-m32</b><span>Callout · anchor 0.44,0.63</span></span>
+            <button class="eye"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+          </div>
+          <div class="layer hidden">
+            <span class="grip"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="2.4"/><path d="M4 16l4-4 3 3M14 4l6 6M14 10l-2 2"/></svg></span>
+            <span class="nm"><b>callout-m110</b><span>Callout · hidden</span></span>
+            <button class="eye" title="Show"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" opacity=".4"/><path d="M4 4l16 16" /></svg></button>
+          </div>
+          <div class="layer">
+            <span class="grip"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></span>
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9l6 5 4-3 8 6"/></svg></span>
+            <span class="nm"><b>image-m31</b><span>Image · bus://…/m31.jpg</span></span>
+            <button class="eye"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+          </div>
+        </div>
+        <div class="zhint">▼ back — drawn first · background</div>
+      </div>
+
+      <!-- Widgets catalog -->
+      <div class="panel" id="p-widgets" role="tabpanel" hidden>
+        <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4-4"/></svg><input placeholder="Search widgets…"></div>
+        <div class="cat"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="8" width="18" height="8" rx="2"/></svg></span><span class="meta"><b>Button</b><span>Emits a command on press</span></span><span class="plus">+</span></div>
+        <div class="cat"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9l6 5 4-3 8 6"/></svg></span><span class="meta"><b>Image</b><span>Static bus:// image · emits click coords</span></span><span class="plus">+</span></div>
+        <div class="cat"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14a8 8 0 0116 0"/><path d="M12 14l4-3"/></svg></span><span class="meta"><b>Gauge</b><span>Continuous value dial</span></span><span class="plus">+</span></div>
+        <div class="cat"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="9" width="18" height="6" rx="3"/><circle cx="8" cy="12" r="2" fill="currentColor"/></svg></span><span class="meta"><b>Relay</b><span>Two-state toggle actuator</span></span><span class="plus">+</span></div>
+        <div class="cat"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18" stroke-dasharray="2 2"/><circle cx="12" cy="12" r="2.5"/></svg></span><span class="meta"><b>Coordinate Entry</b><span>Lat/long or X/Y input</span></span><span class="plus">+</span></div>
+        <div class="cat"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="2.4"/><path d="M4 16l4-4 3 3M14 4l6 6M14 10l-2 2"/></svg></span><span class="meta"><b>Callout</b><span>Data-bound annotation overlay</span></span><span class="plus">+</span></div>
+        <div class="cat"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M8 5v4"/></svg></span><span class="meta"><b>Bus Monitor</b><span>Live namespace traffic table</span></span><span class="plus">+</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- status / telemetry bar -->
+  <div class="status">
+    <div class="msg"><span>Selected</span><span class="mono">btn-start · 96×36 px @ 512,404 · z-index 5</span></div>
+    <div class="spacer"></div>
+    <button class="busbtn" id="busbtn"><span class="led good"></span><span class="k">Bus</span><span class="mono">live · 54 ns</span></button>
+    <div class="cluster">
+      <span class="k">MQTT</span><span class="led good"></span>
+      <input class="mini" style="width:160px" value="NODERED_HOST">
+      <button class="connect live">Connected</button>
+    </div>
+    <div class="cluster">
+      <span class="k">UART</span><span class="led warn"></span>
+      <select class="mini"><option>/dev/tty.usbserial-A</option><option>/dev/tty.usbserial-B</option></select>
+      <select class="mini"><option>115200</option><option>57600</option><option>9600</option></select>
+      <button class="connect">Connect</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"><div class="win"></div><div class="t"><b>Bus Monitor opened</b><span>composer/window/open → its own window</span></div></div>
+
+<script>
+  // ---- pixel rulers: generate ticks + labels sized to the actual ruler length
+  function ruler(el, horiz){
+    const len = horiz ? el.clientWidth : el.clientHeight;
+    el.innerHTML="";
+    for(let p=0; p<=len; p+=10){
+      const maj = p % 100 === 0, mid = p % 50 === 0;
+      if(!maj && !mid && p%10!==0) continue;
+      const tk=document.createElement("div");
+      tk.className="tk"+(maj?" maj":"");
+      if(horiz) tk.style.left=p+"px"; else tk.style.top=p+"px";
+      el.appendChild(tk);
+      if(maj && p>0){
+        const lb=document.createElement("div");
+        lb.className="lb"; lb.textContent=p;
+        if(horiz) lb.style.left=p+"px"; else lb.style.top=p+"px";
+        el.appendChild(lb);
+      }
+    }
+  }
+  function rulers(){ ruler(document.getElementById("rh"),true); ruler(document.getElementById("rv"),false); positionSel(); }
+
+  // ---- keep the selection chrome glued to the Start button
+  function positionSel(){
+    const comp=document.getElementById("comp"); const btn=comp.querySelector(".startbtn"); const sel=document.getElementById("selbox");
+    const cr=comp.getBoundingClientRect(), br=btn.getBoundingClientRect();
+    sel.style.left=(br.left-cr.left)+"px"; sel.style.top=(br.top-cr.top)+"px";
+    sel.style.width=br.width+"px"; sel.style.height=br.height+"px";
+  }
+
+  // ---- starfield on the image widget
+  function stars(){
+    const c=document.getElementById("stars"); const r=c.getBoundingClientRect();
+    c.width=r.width; c.height=r.height; const x=c.getContext("2d");
+    for(let i=0;i<220;i++){
+      const gx=Math.random(), gy=Math.random();
+      // cluster brightness toward the galaxy core (~0.62,0.4)
+      const d=Math.hypot(gx-0.62,gy-0.40);
+      const a=Math.max(0.05, 0.9-d*1.3)*Math.random();
+      const s=Math.random()*1.4+0.2;
+      x.beginPath(); x.arc(gx*c.width, gy*c.height, s, 0, 7);
+      x.fillStyle="rgba(255,250,240,"+a.toFixed(2)+")"; x.fill();
+    }
+  }
+
+  // ---- tabs
+  document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>{
+    document.querySelectorAll(".tab").forEach(x=>x.setAttribute("aria-selected", x===t));
+    ["overview","layers","widgets"].forEach(p=>document.getElementById("p-"+p).hidden = (p!==t.dataset.p));
+  }));
+
+  // ---- layer visibility toggle (visual only)
+  document.querySelectorAll(".layer .eye").forEach(b=>b.addEventListener("click",e=>{
+    e.stopPropagation(); b.closest(".layer").classList.toggle("hidden");
+  }));
+
+  // ---- Bus indicator pops the monitor into its own window
+  const toast=document.getElementById("toast"); let tmr;
+  document.getElementById("busbtn").addEventListener("click",()=>{
+    toast.classList.add("show"); clearTimeout(tmr); tmr=setTimeout(()=>toast.classList.remove("show"),2600);
+  });
+
+  addEventListener("resize", rulers);
+  requestAnimationFrame(()=>{ rulers(); stars(); });
+</script>

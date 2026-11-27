@@ -1,0 +1,513 @@
+---
+scope: "The TM1637 4/6-digit 7-segment LED driver as a PERIPHERAL of the ComposePlatform fleet: what the part is, what its two-wire interface is and is not, which multi-display topology is recommended and on what strength of evidence, the unmade 3.3 V / 5 V level decision, and where value-to-digits formatting lives. Carries its own PRE-INTEGRATION questions (what must be confirmed before a harness is soldered) and its own POST-INTEGRATION evidence slots (what a lit tube and a human must observe), both as first-class queryable nodes rather than prose."
+audience: "The ComposeUX/ComposeIO architect ruling on I2 and on this document's placement; the firmware author wiring a TM1637 to an ESP32-C3; any Intelligence asking by QUERY whether a peripheral has ever touched a bench; the author of the NEXT peripheral spec, who should copy the shape defined at [CXC-PERIPH-EVIDENCE-SLOTS] rather than re-invent it."
+boundary: "IN: the part and its interface; the chaining question and the datasheet trap that answers it wrongly; the shared-CLK topology and its driver obligation, recorded with its evidential status; fan-out limits; the open level-shift decision; the backend formatting policy and the raster-shaped `digits` finding; the I2 / S3 convergence as an OPTION SET; five pre-integration questions; nine post-integration evidence slots (4 RECORDED as of 2026-09-02, 5 EMPTY). OUT: the driver source (`cyd/src/tm1637.{h,cpp}`, named and not mirrored); the descriptor (`docs/board-bringup/tm1637.descriptor.yaml`, the machine-readable bring-up view); the HAL kind schema (that is [SPEC:CXC-HAL-DECLARE]); the widget contract itself (that is the raster spec); and the I2 ruling, which is David's."
+not-this: "Not a datasheet — it cites Titan Micro TM1637 V2.4 by page and does not restate it. Not a bring-up recipe: the runnable steps stay in the descriptor per [CXC-BRINGUP-DESCRIPTOR]. Not a claim that this part works — every hardware-observable property in it is UNVERIFIED, and section 7 is the honest ledger of that. Not a decision record for I2: the convergence and the option set are recorded, the choice is not made."
+depends-on: [62-composeplatform-vision.lts, 64-pcb-board-landscape.lts, 31-composeux-board-bringup.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+derived-from: docs/board-bringup/tm1637.descriptor.yaml + docs/board-bringup/tm1637.md + cyd/src/tm1637.h, all on branch feat/tm1637-driver commit 73af0d8
+created: 2026-08-15
+---
+
+# TM1637 — 7-Segment LED Driver, The First Non-Raster Peripheral [SPEC:CXC-TM1637]
+
+> A TM1637 is the cheapest physical realization of a semantic value this fleet has: two wires, four
+> digits, no pixels. Its interesting properties are all in what it CANNOT do — it has **no slave
+> address at all**, so it cannot be independently addressed on shared wires, and it has **no serial-out
+> pin**, so it cannot be chained. The datasheet contains a row for a pin that does not exist, and a
+> reader hunting for chaining support will find it and be confirmed in the wrong answer.
+>
+> **Nothing in this document has been observed on hardware.** 108 host checks pass and every one of
+> them is about arithmetic and waveform shape. This document therefore does two things a spec in this
+> corpus has not done before: it carries the questions that must be **answered before a wire is
+> soldered**, and it carries **empty, named slots** for the evidence a lit tube must supply — so
+> *"this has never touched a bench"* is a property you can query rather than a thing you have to
+> remember. That shape is named at [CXC-PERIPH-EVIDENCE-SLOTS] and is meant to be copied.
+
+---
+
+## 0. The reusable shape
+
+### [CXC-PERIPH-EVIDENCE-SLOTS] The pattern — a peripheral spec carries its own pre-integration questions and empty post-integration evidence slots
+
+- pattern-name: pre-integration questions and post-integration evidence slots
+- problem: today a peripheral's open questions live in a `.md` and its validation lives in a human's memory of a bench session. Both sit OUTSIDE the graph, so neither is queryable and both rot without a signal. The corpus can say what a part IS and cannot say what about it has never been checked.
+- shape: a peripheral spec carries two node families alongside its factual nodes. A **PRE** family (`*-PRE-*`) holds what must be confirmed BEFORE the part is wired; an **EV** family (`*-EV-*`) holds one node per observation a human must make AFTER it is wired. Both families exist from the first draft, before any hardware exists.
+- rule-sentinel-not-absence: an unfilled slot carries the key with the literal value `⛔ EMPTY`, never an absent key. An absent key is indistinguishable from a key nobody thought to write, and that ambiguity is the whole failure being closed. `evidence-state: EMPTY` is the queryable form; `evidence-state: RECORDED` is what a bench session changes it to.
+- rule-specific-observation: an EV slot names a SPECIFIC observation with a discriminating expectation, never "does it look right". The generator is [CXC-VISION-EPISTEMICS] rule-ask-specific-colours: a question that names the expected outcome can be answered wrongly and be caught; an open-ended one cannot.
+- rule-negative-control-is-a-slot: where an EV slot's result depends on the harness being what the tester believes, its negative control is its OWN slot and the pair is declared as an edge. An instrument that can only report success is not an instrument, and a control that is only a sentence in the positive test's prose gets skipped under bench pressure.
+- rule-grounds-edge-is-designation: an `EV GROUNDS claim` edge means *this slot is the DESIGNATED evidence for that claim*, not that the evidence exists. Whether it exists is the slot's `evidence-state`. The traversal this buys is the point of the whole pattern: "which claims in this corpus have no hardware evidence" becomes a walk rather than a reading.
+- why-in-this-file: the pattern is defined here because this is the first peripheral to need it and a pattern with no instance is a wish. Its natural long-term home is [SPEC:CXC-BRINGUP], next to the two-tier verdict it extends — that promotion is a placement call, recorded at [CXC-TM1637-PLACEMENT], not taken here.
+- part-of: [SPEC:CXC-TM1637]
+- see-also: [CXC-BRINGUP-VERDICT], [CXC-VISION-EPISTEMICS]
+
+---
+
+## 1. The part, and what its interface is not
+
+### [CXC-TM1637-PART] The part — six grids, eight segments, two wires, one internal oscillator
+
+- vendor: Shenzhen Titan Micro Electronics; datasheet TM1637 V2.4 (English) is the only authority cited in this document, always by page
+- die-versus-module: the die always drives SIX grids (display registers C0H..C5H, p.5) and eight segments; the common breakout populates FOUR digits. Grid count is a MODULE fact, not a chip fact.
+- interface-kind: two-wire bit-bang on CLK and DIO. Nine clocks per byte, not eight — the ACK is a ninth (p.3). LSB first. DIO changes while CLK is low and is latched on the CLK RISING edge (p.2).
+- commands: data write auto-increment `0x40`, data write fixed `0x44`, read keys `0x42` (p.4); set digit address `0xC0 | 0..5` (p.5); display control `0x80 | bright(0..7) | 0x08 if ON` (p.5)
+- brightness-is-not-linear: eight steps with pulse widths 1/16, 2/16, 4/16, 10/16, 11/16, 12/16, 13/16, 14/16 (p.5). There is no 3/16 and no 5..9/16. A bus brightness FRACTION therefore maps to a STEP INDEX and never to a duty cycle.
+- timing-floor: CLK high >= 1 us (tWAIT, p.10) is the binding constraint; PWCLK 400 ns and tSETUP/tHOLD 100 ns all follow from it. Fmax 500 kHz, but key reads carry a SEPARATE 250 kHz ceiling (p.3). The driver default is a deliberately slack 100 kHz.
+- refresh-is-self-clocked: display refresh runs off the internal RC oscillator, fosc typ 450 kHz (p.10), NOT off CLK. This is load-bearing for [CXC-TM1637-SHARED-CLK] and is the reason there is no clock-starvation state.
+- autoincrement-is-one-frame: p.4 diagram 2 — the address command and all N data bytes share a single START..STOP. The address auto-increments only WITHIN a frame, so splitting the data run rewrites digit 0 N times, which displays a plausible single digit rather than obvious garbage.
+- also-an-input: the die carries an 8x2 key-scan matrix the common display breakout does not populate. On that module `tm1637_read_keys` returns the no-key pattern `0xFF` forever — a CORRECT result that a DISCONNECTED DIO with a pull-up returns identically, so it must never be read as evidence that the link works.
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [CXC-TM1637-NO-ADDRESS] The part has NO slave address — the manufacturer says so outright
+
+- claim: the TM1637 has no device address of any kind. It is not I2C, and it cannot be independently addressed on two shared wires.
+- evidence-verbatim: TM1637 V2.4 p.3, "Interface interpretation" — "Microprocessor data realize the communication with TM1637 by means of two-wire bus interface (Note: The communication method is not equal to I2C bus protocol totally because there is no slave address)."
+- evidence-class: DATASHEET FACT, quoted verbatim with a page. Not an inference.
+- the-only-address: the sole "address" in the whole command set is the DISPLAY REGISTER address `C0H..C5H` (p.5), which selects a DIGIT WITHIN ONE CHIP. There is no chip-select, no address byte, no addressing phase.
+- consequence-shared-wires: two parts sharing BOTH CLK and DIO both latch every command and show IDENTICAL content. That is a legitimate topology for a MIRRORED display — a value read from two sides — and it is the only thing two fully shared wires can express. Never expect independent content from it.
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [CXC-TM1637-NO-CHAIN] Chaining is impossible, and the proof is an ABSENCE
+
+- claim: a TM1637 cannot be daisy-chained. Not "should not" — there is no mechanism.
+- evidence-by-absence: the pin list (p.1 pinout, p.2 pin functions) is twenty pins — GND, SEG1-8/KS1-8, GRID1-6, VDD, DIO, CLK, K1, K2. There is NO serial-out pin of any kind. A MAX7219 chains because it has `DOUT`; this part has nothing to chain INTO.
+- evidence-class: DATASHEET FACT, but of an unusual kind — it is proved by what the pin list does not contain, so it is only as strong as the completeness of that list. Two independent tables (pinout and pin functions) agree, which is why it is recorded as fact rather than inference.
+- what-the-headers-actually-are: the pass-through headers on the common breakout bus FOUR NETS along a row — VCC, GND, CLK, DIO — so modules butt together mechanically. Wiring convenience, not topology. They look exactly like a chain connector and are not one.
+- part-of: [SPEC:CXC-TM1637]
+- see-also: [CXC-TM1637-DOUT-TRAP]
+
+---
+
+### [CXC-TM1637-DOUT-TRAP] ⚠ The datasheet trap — an electrical row for a pin that does not exist
+
+- trap: TM1637 V2.4 p.9's electrical table carries a row reading *"DOUT pin output low current, Idout, 4 mA min, Vo=0.4V, dout"* — for a pin that appears NOWHERE in the pinout or the pin-function table.
+- why-it-is-dangerous: anyone searching the PDF for chaining support hits `DOUT` and reads it as confirmation that a serial-out exists. It is the single most misleading line in the document, and it sits in a table a careful reader trusts.
+- what-it-actually-is: the DIO pin's output-low drive, used for the ACK and for key-read data, mislabelled — a copy-paste artifact of Titan Micro reusing electrical tables across the TM16xx family, several of which do have a DOUT.
+- evidence-class: the ROW is a datasheet fact; the EXPLANATION (copy-paste across the TM16xx family) is an INFERENCE from the row's inconsistency with two pin tables. The inference is not load-bearing — the absence at [CXC-TM1637-NO-CHAIN] stands whether or not the explanation is right.
+- why-recorded: this node exists purely so the next reader does not fall in. It is the clearest instance in this part of a machine-readable signal that AGREES WITH THE WRONG ANSWER, which is [CXC-VISION-EPISTEMICS]'s subject.
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+## 2. Multi-display topology
+
+### [CXC-TM1637-SHARED-CLK] Shared CLK, one DIO per display — a STRONG INFERENCE, not a datasheet guarantee
+
+- recommendation: shared CLK with one DIO per display. N displays cost N+1 host pins.
+- evidence-class: ⛔ STRONG INFERENCE. This is the single most important epistemic label in this document and it must not be softened in any restatement.
+- what-the-datasheet-does-say: p.3 — "When CLK is a high level and DIO changes from high to low level, data input STARTS." Data input begins on a DIO EDGE, gated on CLK high, so a display whose DIO never moves is never armed and clock traffic addressed to a sibling is not data to it.
+- what-the-datasheet-does-not-say: there is NO sentence reading "a part with a static DIO ignores CLK", and there is NO state diagram anywhere in V2.4. The recommendation is derived from the stated start condition; it is not stated.
+- upgrade-one-no-clock-starvation: display refresh runs off the internal RC oscillator (fosc typ 450 kHz, p.10), NOT off CLK. An unaddressed part keeps multiplexing its digits out of its own SRAM regardless of what the clock line does, so there is no clock-starvation state to fall into.
+- upgrade-two-stop-resynchronises: every transaction is bracketed by a START on that part's OWN DIO, and p.4 states that a STOP "initializes serial communication". Even under the pessimistic assumption that some die counts clock edges without a start, each transaction RESYNCHRONISES it — so damage from a phantom bit is bounded by ONE transaction rather than being permanent.
+- honest-status: designed-and-argued, not proven, and not checked on a part. The two upgrades turn "probably fine" into "safe under a stated failure model"; they do not turn it into a guarantee.
+- falsifier: [CXC-TM1637-EV-08] is the only test in this document that can falsify this node.
+- part-of: [SPEC:CXC-TM1637]
+- see-also: [CXC-TM1637-DIO-PARK-HIGH], [CXC-TM1637-FALLBACK-TOPOLOGY]
+
+---
+
+### [CXC-TM1637-DIO-PARK-HIGH] ⛔ The driver obligation that makes the shared clock true
+
+- obligation: ⛔ a non-selected DIO must be parked HIGH and never touched.
+- why: pulling an idle display's DIO low while CLK is high IS a start condition (p.3). It would arm that display, and it would then latch the next eight bits meant for its neighbour — a display showing its sibling's value, well-formed and wrong.
+- the-rule-in-one-line: selection is "drive exactly one DIO, leave the rest released".
+- structural-enforcement: the driver's open-drain seams make this structural rather than disciplinary — `tm1637_select()` owns one pin set at a time, and the seams express only "drive low" and "release", never "drive high".
+- evidence-class: DATASHEET FACT for the hazard (the start condition is stated on p.3); ENGINEERING OBLIGATION for the remedy.
+- negative-control-already-exists: the host self-test's injected-fault set includes a spurious mid-frame START — which is EXACTLY the waveform a shared-clock harness produces if the driver touches an idle DIO. The checker rejecting it is the machine half of this obligation.
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [CXC-TM1637-FALLBACK-TOPOLOGY] The fallback — shared DIO, one CLK per display, non-selected CLK parked LOW
+
+- fallback: shared DIO plus one CLK per display, with every non-selected CLK parked LOW. Same pin count as the recommendation: N+1.
+- why-mechanically-stronger: latching is defined on the CLK RISING edge (p.2, CLK: "used for data input and output at rising edge"), so a part whose CLK NEVER RISES cannot latch a bit at all. The gate sits on the latch itself rather than on start detection — it does not depend on the inference at [CXC-TM1637-SHARED-CLK].
+- why-it-is-not-the-default: all parts share the ACK line, so one wedged part holds DIO low for everyone; and selection may only change while DIO is idle high, because raising a parked-low CLK while DIO is low would clock a phantom bit.
+- why-recorded-now: so it is not re-derived at a bench at 11pm after [CXC-TM1637-EV-08] comes back negative. The cost of writing it down today is a paragraph; the cost of re-deriving it under bench pressure is a session.
+- evidence-class: DATASHEET FACT for the rising-edge latch; INFERENCE for the conclusion that a never-rising CLK cannot latch. The inference here is materially stronger than the one it backs up, which is the entire reason it is the fallback.
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [CXC-TM1637-FANOUT-LIMIT] Bus capacitance is NOT the limit — host pins and the 5 V rail are
+
+- headline: the intuition that bus capacitance caps the display count is WRONG for this part, and the reason is non-obvious enough to be worth a node.
+- the-mechanism: each module carries the datasheet reference network (p.8) — a 10 kOhm pull-up on EACH line AND a 100 pF cap to GND — plus the die's own 15 pF input capacitance (CI, p.10). So every module added brings ~115 pF AND a parallel pull-up.
+- the-arithmetic: with N modules on a shared CLK, `R_eff = 10k/N` and `C_eff = 115N pF + C_wire`, so `tau = 10k*115pF + (10k*C_wire)/N` = 1.15 us plus a term that SHRINKS as N grows. The time constant is essentially N-invariant and actually IMPROVES with N.
+- measured-shape: with ~80 pF of harness, rise-to-VIH runs 2.35 us at N=1 down to 1.50 us at N=8, while low-side sink rises only to 4 mA at N=8. The driver's default 5 us half-period has roughly 3x margin over rise time at every N in that range.
+- the-real-limits: host GPIO count — realistically 4-6 displays on an ESP32-C3 Super Mini after strapping-pin and console-UART exclusions — and the 5 V rail, where a 4-digit module draws roughly 20-80 mA by brightness and four modules at full brightness can ask for ~320 mA.
+- expander-is-the-wrong-answer-here: an I2C expander buys pin headroom on pin-starved MCUs (the fleet pattern recorded for `rack_triple_gauge`), but bit-banging DIO THROUGH an expander is slow, and at N+1 pins direct wiring is cheap. Prefer more pins.
+- evidence-class: INFERENCE from datasheet component values (p.8, p.10) plus first-order RC arithmetic. Not measured on hardware. `C_wire` is assumed, not known.
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+## 3. Electrical — the decision that is not made
+
+### [DD-TM1637-LEVEL] ⛔ UNMADE — 3.3 V host against a 5 V part, and it depends on the tube colour
+
+- decision: ⛔ NOT MADE. How a 3.3 V ESP32 GPIO interfaces a TM1637 module is OPEN. This node records the constraint set and the three options; the choice is David's and it must be settled BEFORE a harness is soldered.
+- status: open
+- rationale: the constraint is real in both directions and neither direction has a free answer. VIH min is 0.7 x VDD (p.10) = 3.5 V at VDD = 5 V, so a 3.3 V PUSH-PULL high does not reach it. Open-drain fixes that — the module's own 10 kOhm pull-up takes the line to 5 V and the spec is met — but a RELEASED line then sits at 5 V, and an ESP32 GPIO is NOT 5 V tolerant. Driving open-drain is mandatory for a second, independent reason regardless: the chip drives DIO low itself to ACK (p.3, 8th falling edge), so a master driving DIO high during the ACK window is a supply short through two output stages.
+- alternatives: (a) LEVEL-SHIFT both lines — costs a part and board area, works at 5 V VDD with full brightness; (b) SERIES RESISTOR into each GPIO — cheapest, relies on the pin's clamp diode, an accepted-but-inelegant practice rather than a specified one; (c) RUN THE PART AT VDD 3.3 V — VIH becomes 2.31 V and is comfortably in spec, no extra parts, at the cost of brightness, and p.8 note 3 warns "Since blue-ray nixie tube break over step-down voltage is 3V, TM1637 power supply should be 5V", i.e. BLUE AND WHITE TUBES WILL NOT LIGHT AT ALL at 3.3 V.
+- blocked-on: [CXC-TM1637-PRE-TUBE-COLOUR]. Option (c) is eliminated outright if David's panel uses blue or white tubes, and is the cheapest answer if it uses red, green or yellow. The decision cannot be made without that fact.
+- invalidating_assumption: that the host is a 3.3 V, non-5V-tolerant part. A 5 V host, or an ESP32 variant with 5 V tolerant IO, dissolves the whole question.
+- scope-of-the-decision: this is a BOARD decision. No driver change can fix it, and the driver already does the only thing software can do — it never drives either line high.
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+## 4. Semantic realization — value to digits
+
+### [CXC-TM1637-FORMAT-BACKEND] Formatting is a BACKEND concern, and the policy is pinned against the raster widget
+
+- placement-of-the-decision: value-to-digits formatting belongs to THIS SURFACE, per [CXC-VISION-SEMANTIC-REALIZATION]: the widget is semantic, the backend is the realization. The bus carries a VALUE. How many digits it occupies, whether it is right-justified, whether the pad is blank or zero, and where a decimal point physically goes are properties of the realization.
+- why-not-the-publisher: a publisher that had to know it was feeding a 4-digit tube would have leaked the realization back onto the bus — the exact coupling [DP-CIO-6] exists to prevent.
+- policy-right-justified: the semantic value is a STRING, right-justified into the digit count.
+- policy-blank-pad-not-zero: short values pad LEFT with BLANKS, not zeros. A blank-padded `42` reads as forty-two; a zero-padded `0042` reads as a different quantity, and the widget contract carries no field saying which was meant.
+- policy-keep-rightmost: long values keep the RIGHTMOST digits. Dropping the high end of an over-range reading is a visible nonsense; dropping the low end is a plausible wrong number, which is worse.
+- why-the-same-policy-as-raster: choosing the raster widget's policy is the whole point, not a convenience. "One semantic value reads the same on a panel and on a tube" is only a claim if something checks it.
+- how-it-is-checked: a parity corpus GENERATED from the Python raster widget (`python/scripts/gen_tm1637_corpus_header.py`) pins 26 glyphs against `seven_segment.lit_segments()` and 17 justification cases against `SevenSegmentDisplay._display_value()`. The ORACLE is the raster realization, not a C++ round trip — encoding and decoding with the same code passes with a fully PERMUTED segment table, because both halves make the same mistake.
+- case-selection-matters: the justification cases deliberately span shorter-than, exactly, and longer-than the surface. A corpus of only exact-fit cases cannot tell right-justification from left-justification.
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [CXC-TM1637-DIGITS-NOT-PORTABLE] `digits` is a RASTER-SHAPED field — "12.34" is five cells and four digits
+
+- finding: `digits` is NOT a portable count across realizations, and any scene format carrying a digit count is carrying a raster-shaped number.
+- the-asymmetry: on the raster widget `.` and `:` each consume their OWN narrow CELL (`_PUNCT_WEIGHT`). A TM1637 has no cell to give them — a `.` folds into the PRECEDING digit's dp BIT, and `:` into whichever single bit the module wires the colon to.
+- the-worked-case: the string `"12.34"` is FIVE cells on a 480x320 panel and FOUR digits on a tube. Both are correct renderings of the same semantic value.
+- why-it-is-a-finding-not-a-detail: it is a concrete case where "one value, many realizations" holds at the VALUE level and breaks at the LAYOUT level. A scene format that carries `digits` has silently chosen one realization's geometry as the contract, and the tube is the surface that notices.
+- consequence-for-i2: this is evidence for [DD-TM1637-CHANNELS] — whatever a multi-surface node turns out to be, `digits` is not a field it can carry portably.
+- evidence-class: DERIVED FACT — read directly off the two implementations (`seven_segment.py` and `tm1637_format_string`), not from a datasheet and not from hardware.
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [DD-TM1637-CHANNELS] ⛔ NOT DECIDED — I2 and the compound-peripheral gap S3 are the SAME question, and the contract already half-ships
+
+- decision: ⛔ NOT DECIDED HERE. PLAN item I2 ("how a multi-surface node is expressed", status DECIDE) is David's ruling. This node records the convergence, the option set, and one measurement that makes the work cheaper than it looks.
+- status: open
+- rationale: two forcing cases arrived at one question from opposite directions. From the WIDGET side, [CXC-VISION-SEMANTIC-REALIZATION] channels-not-a-value: a widget maps to a SET OF NAMED CHANNELS, because `gauge = {needle + illumination}` has no single value. From the PCB side, [PCB-STRESS-S3]: an illuminated matrix and a gauge cluster are each ONE semantic object that the nine HAL kinds can only declare as dozens of scattered atomic entries. The TM1637 is the cheapest instance of the same shape: `value`, `brightness` and `power` are three independently addressable actuators on ONE widget, and four TM1637s are four instances of that compound peripheral, each owning a small set of named channels.
+- the-cheapening-measurement: the multi-channel contract ALREADY SHIPS. `SevenSegmentDisplay` already binds `value_namespace` AND `color_namespace` (`python/composeio/render/widgets/seven_segment.py`), and the TM1637 binding already carries `value_ns`, `brightness_ns` and `power_ns`. What is wrong is only the NAME: `color` is the raster name for what is BRIGHTNESS on a tube and BACKLIGHT PWM on a gauge. That makes channels-not-a-value a RENAME PLUS A GENERALISATION, not new surface area — materially cheaper than the vision document's framing implies.
+- alternatives: (a) N independent nodes, one namespace each — cheapest today, and it is what the driver's binding already does; it cannot express "these four are one instrument". (b) One compound node with named channels and an instance index — matches S3 and the gauge cluster, needs the rename above. (c) A grouping declaration layered over atomic entries — leaves the atomic model intact and adds a bundle, which is the [CXC-HALD-RULES] leaf-coupling machinery's shape.
+- invalidating_assumption: that `rack_triple_gauge`-style compound peripherals and multi-instance TM1637 panels are the same shape. If a compound peripheral turns out to need an internal COUPLING RULE (button N lights LED N) that a multi-instance panel never needs, they are two requirements and this convergence is wrong.
+- do-not-decide-here: recorded deliberately. An agent that resolves I2 while writing a peripheral spec has made a fleet-wide architecture decision as a side effect of documenting a part.
+- part-of: [SPEC:CXC-TM1637]
+- see-also: [PCB-STRESS-S3], [CXC-VISION-SEMANTIC-REALIZATION]
+
+---
+
+## 5. What the machine proves, and what it structurally cannot
+
+### [CXC-TM1637-MACHINE-EVIDENCE] The host suite — 108 checks, four independent layers, and an explicit boundary
+
+- what-passes: 108 host checks as of 2026-08-14, `ALL PASS`, exit 0, built as `pio run -e native_tm1637`.
+- layer-glyph-parity: 26 characters checked against `seven_segment.lit_segments()`. The oracle is the RASTER realization, not a C++ round trip.
+- layer-justification-parity: 17 `(value, digits)` cases against `SevenSegmentDisplay._display_value()`, spanning shorter-than, exactly and longer-than the surface.
+- layer-waveform: a golden transaction for command `0x8F`, transcribed BY HAND from the datasheet prose rather than captured from the driver, plus generic p.3 invariants checked over every transaction — DIO moves only while CLK is low except START/STOP, CLK high >= tWAIT, whole 9-clock bytes.
+- layer-negative-controls: four deliberately corrupted traces the checker MUST reject — a spurious mid-frame START, a CLK high shorter than tWAIT, a STOP at a non-byte boundary, an unclosed frame — PLUS a paired check that it still ACCEPTS a valid trace, which guards the mirror-image failure of a checker that rejects everything.
+- mutation-tested: an MSB-first bit order is caught by the golden AND by the independent byte decoder (`0x8F` read back as `0xF1`); a one-segment change to the truth table is caught by the parity corpus. All three instruments are load-bearing rather than decorative.
+- a-real-defect-it-found: the invariant checker had an off-by-one on first run — the STOP sequence contributes a CLK rising edge of its own, since a stop is DIO rising while CLK is high, so every frame counted 10 rising edges rather than 9. Subtracted explicitly rather than fudged into the modulus.
+- nak-is-reported: with the virtual part not ACKing, `tm1637_set_brightness` returns false. A driver that ignores the ACK reports success against a DISCONNECTED part forever — "MCP2515 successfully initialized" in another costume.
+- clamp-is-recorded: a half-period of 0 clamps to 1 us AND sets `timing_was_clamped`. A silent clamp is a limit that lies about having been hit.
+- the-boundary: ⛔ every one of these 108 checks is about ARITHMETIC AND WAVEFORM SHAPE. Not one of them can observe a lit tube. The suite is silent by construction on everything in section 7.
+- part-of: [SPEC:CXC-TM1637]
+- see-also: [CXC-VISION-EPISTEMICS]
+
+---
+
+### [CXC-TM1637-SEGMENT-MAP-UNVERIFIED] ⛔ The canonical silent-wrong-answer — the segment map is a MODULE fact and it is unchecked
+
+- hazard: ⛔ the die exposes SEG1..SEG8; which PHYSICAL bar each drives is decided by the breakout's traces to the tube. The near-universal wiring is SEG1..SEG8 = a,b,c,d,e,f,g,dp, which is what the driver defaults to and what has NOT been checked on a part.
+- why-it-is-the-canonical-case: a wrong table produces CONFIDENT, WELL-FORMED, INCORRECT glyphs. Every write ACKs. Every host check passes — including the parity corpus, which pins the SEMANTIC truth table and says nothing about the physical wiring underneath it. There is no machine signal anywhere in this system that distinguishes a correct map from a permuted one.
+- sibling-hazard-digit-order: whether GRID1 is the LEFTMOST tube is likewise a PCB decision. Most 4-digit breakouts map GRID1 to leftmost; several 6-digit boards scramble the order, a common one being 2,1,0,5,4,3. `4321` instead of `1234` is well-formed and wrong in exactly the same way.
+- sibling-hazard-colon: the colon has no portable answer. On the common 4-digit CLOCK module it is ONE bit, conventionally the dp bit of digit index 1, and the other digits have no decimal point at all; on the non-clock 4-digit variant every digit has its own dp and there is no colon. The driver folds `:` into the preceding digit's dp, which is right for the clock module and needs a board override otherwise.
+- only-observer: a human looking at a lit tube. That is why sections 6 and 7 exist and why their questions name specific characters.
+- part-of: [SPEC:CXC-TM1637]
+- see-also: [CXC-TM1637-EV-01], [CXC-TM1637-EV-02], [CXC-TM1637-EV-03]
+
+---
+
+## 6. PRE-INTEGRATION — what must be confirmed before a wire is soldered
+
+### [CXC-TM1637-PRE-TUBE-COLOUR] PRE — what colour are the tubes on David's panel?
+
+- question-state: OPEN
+- question: what colour are the LED tubes on the TM1637 module(s) David intends to use — red, green, yellow, blue, or white?
+- why-it-matters: p.8 note 3 states "Since blue-ray nixie tube break over step-down voltage is 3V, TM1637 power supply should be 5V". Blue and white tubes will not light at VDD 3.3 V AT ALL. Red/green/yellow will, dimmer.
+- blocks: [DD-TM1637-LEVEL]. Option (c), run at VDD 3.3 V, is the cheapest answer and is ELIMINATED OUTRIGHT by a blue or white tube.
+- how-answered: David looks at the part. No instrument needed and no bench session needed — this is answerable today.
+- answer: ⛔ EMPTY
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [CXC-TM1637-PRE-MODULE-VARIANT] PRE — which module variant, clock or non-clock, and how many digits?
+
+- question-state: OPEN
+- question: is the module the 4-digit CLOCK variant (a colon on one bit, no per-digit decimal points) or the 4-digit non-clock variant (a dp on every digit, no colon)? And is any 6-digit module in play?
+- why-it-matters: the driver folds `:` into the preceding digit's dp bit, which is correct for the clock module and WRONG for the other. It also decides whether [CXC-TM1637-EV-05], the decimal-point observation, is even meaningful on the part in hand.
+- also-decides: whether digit order needs the 6-digit scramble check — several 6-digit boards map grids as 2,1,0,5,4,3.
+- how-answered: read the silkscreen and look at the tube. Answerable today, no bench session.
+- answer: ⛔ EMPTY
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [CXC-TM1637-PRE-HOST-BUDGET] PRE — which host board, how many free GPIOs, and can its 5 V rail carry the modules?
+
+- question-state: OPEN
+- question: which host carries the displays, how many GPIOs remain after strapping-pin and console-UART exclusions, and what can its 5 V rail actually source?
+- why-it-matters: [CXC-TM1637-FANOUT-LIMIT] says the limits are pins and power, not the bus. Both limits are HOST facts this document cannot supply. Four modules at full brightness can ask for ~320 mA, which on a board with a small LDO is the binding constraint.
+- reference-figure: an ESP32-C3 Super Mini exposes ~13 pins, less GPIO2/8/9 strapping, less the console UART — realistically 4-6 displays at N+1 pins.
+- how-answered: from the board descriptor and the regulator part number. Answerable today.
+- answer: ⛔ EMPTY
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [CXC-TM1637-PRE-COUNT-TOPOLOGY] PRE — how many displays, and is the shared-CLK topology accepted on an unproven inference?
+
+- question-state: OPEN
+- question: how many TM1637s, and does the build proceed on [CXC-TM1637-SHARED-CLK] — a topology whose key property is a STRONG INFERENCE that has never been tested — or on [CXC-TM1637-FALLBACK-TOPOLOGY], which is mechanically stronger and costs the same pin count?
+- why-it-matters: this is a knowing acceptance of an unproven claim, and it should be made knowingly rather than by default. The fallback is available at equal pin cost TODAY; the only reasons to prefer the recommendation are the shared ACK line and the DIO-idle selection constraint.
+- cheapest-de-risking: build the two-module harness for [CXC-TM1637-EV-08] FIRST, before committing a four-module panel layout. One evening settles it.
+- how-answered: David's call, informed by the panel design.
+- answer: ⛔ EMPTY
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+### [CXC-TM1637-PRE-DATASHEET-HASH] PRE — which PDF is "V2.4"? The datasheet is unpinned
+
+- question-state: OPEN
+- question: what is the sha256 of the TM1637 V2.4 PDF that every page citation in this document resolves against?
+- why-it-matters: every factual claim here is anchored to a page number in a document identified only by a version string. Titan Micro datasheets circulate in several scans and translations; a page-3 quote is only checkable if the reader has THE SAME FILE.
+- current-state: the descriptor records `datasheet_sha256` as "NOT YET RECORDED". That is an honest placeholder and an open integrity gap, not a formality.
+- how-answered: store the PDF and record its hash on the descriptor. Answerable today, and it should be done before anyone re-verifies a citation.
+- answer: ⛔ EMPTY
+- part-of: [SPEC:CXC-TM1637]
+
+---
+
+## 7. POST-INTEGRATION — evidence slots, 4 of 9 RECORDED as of 2026-09-02
+
+### [CXC-TM1637-EV-INDEX] The evidence ledger — 4 of 9 slots filled, first bench observation 2026-09-02
+
+- slots-total: 9
+- slots-filled: 4
+- hardware-status: TM1637 modules ARE connected and running production firmware, as of 2026-09-02 (glass observation, David — see EV-01, EV-02, EV-03, EV-08). Two modules are YAML-configured and actively driven, correctly and legibly, on a CLK line shared by four wired modules (the 3rd and 4th are wired but not configured, and sit inert). Basic illumination, the segment map (a-g bit order) and digit order are confirmed for the running configuration (EV-01/EV-02/EV-03) via general operation rather than the deliberate single-character protocol those slots specify — see each slot for the precise caveat. The shared-CLK / per-DIO no-cross-talk claim underlying [CXC-TM1637-SHARED-CLK] is directly supported (EV-08). [CXC-TM1637-EV-09], the deliberate negative control EV-08 depends on to mean something, has NOT been run and remains EMPTY — see its `still-needed`. EV-04 (justification), EV-05 (decimal point), EV-06 (brightness step) and EV-07 (display-off-while-writing) remain EMPTY; none were observed on this bench pass.
+- why-a-human: every item here is in the class where a machine signal EXISTS and AGREES WITH THE WRONG ANSWER ([CXC-VISION-EPISTEMICS]). A wrong segment map produces confident, well-formed, incorrect glyphs that no machine signal in this system can distinguish from correct ones.
+- how-to-ask: name SPECIFIC characters and state the expected result, never "does it look right". Each slot below does exactly that, and the expectation is the discriminator. Where a slot was filled from general operation rather than the scripted characters (EV-01/EV-02/EV-03/EV-08 above), the slot itself says so — a scripted re-run remains cheap and would tighten, not replace, this evidence.
+- how-to-fill: replace `evidence-state: EMPTY` with `RECORDED`, fill `observed`, `observed-on-date` and `observed-by`, and leave the question and expectation untouched so the two can be compared later.
+- pairing-is-load-bearing: [CXC-TM1637-EV-08] is the only test that can falsify [CXC-TM1637-SHARED-CLK], and [CXC-TM1637-EV-09] is its NEGATIVE CONTROL. Running 08 without 09 proves nothing, because a harness that is not what the tester believes produces a passing 08 for the wrong reason. As of 2026-09-02 this pairing is still incomplete: 08 is RECORDED, 09 is not — see EV-09's `corroborating-observation` for what the running config's differing-and-correct content already implies, and why it is not a substitute.
+- part-of: [SPEC:CXC-TM1637]
+- see-also: [CXC-PERIPH-EVIDENCE-SLOTS]
+
+---
+
+### [CXC-TM1637-EV-01] EV-01 — segment map, gross check: display `0`
+
+- evidence-state: RECORDED
+- question: display the character `0`. Are all six OUTER bars lit and the CENTRE bar DARK?
+- expected: six outer bars lit, centre bar dark
+- discriminates: any single wrong bar means the segment map is permuted. Note WHICH bar — that identifies the permutation rather than merely reporting failure.
+- grounds-claim: [CXC-TM1637-SEGMENT-MAP-UNVERIFIED]
+- observed: two TM1637 modules on the currently-running firmware correctly and legibly display their configured application values — every glyph renders as a correct, unpermuted digit shape, no garbled or half-lit character seen. This is NOT the literal scripted `0`-only test this slot specifies — no isolated `0` character was deliberately requested — it is the general operational observation that grounds the same gross-level claim: a permuted segment map would render confidently wrong glyphs, and none were seen on either module.
+- observed-on-date: 2026-09-02
+- observed-by: David (glass observation, currently-running firmware)
+- part-of: [CXC-TM1637-EV-INDEX]
+
+---
+
+### [CXC-TM1637-EV-02] EV-02 — segment map, discriminating: display `1`, then `7`
+
+- evidence-state: RECORDED
+- question: display `1`, then `7`.
+- expected: `1` lights the two RIGHT-HAND VERTICAL bars only; `7` adds the TOP bar
+- discriminates: if `1` lights two bars on the LEFT, segments b/c are swapped with e/f. This is the check EV-01 cannot make — `0` is symmetric under exactly that swap, so a gross check passes on a permuted map.
+- grounds-claim: [CXC-TM1637-SEGMENT-MAP-UNVERIFIED]
+- observed: NOT the literal scripted `1`-then-`7` sequence — that isolated pair was not deliberately requested. What was observed: the running configuration's real application values, read correctly and legibly over continuous operation. Live application values on a multi-digit numeric readout necessarily include asymmetric digits (not just `0`/`8`, which are the only shapes symmetric under a b/c-e/f swap), and all rendered correctly on both modules. In substance this satisfies the discriminating condition EV-02 exists to check — a b/c-e/f swap would have shown as visibly wrong shapes on the asymmetric digits actually displayed — but it is recorded as inferred-from-general-operation rather than from the deliberate isolated-character protocol, and is weaker evidence than a scripted `1`/`7` run would be.
+- observed-on-date: 2026-09-02
+- observed-by: David (glass observation, currently-running firmware)
+- part-of: [CXC-TM1637-EV-INDEX]
+
+---
+
+### [CXC-TM1637-EV-03] EV-03 — digit order: display `1234`
+
+- evidence-state: RECORDED
+- question: display `1234`. Is the LEFTMOST tube showing `1`?
+- expected: leftmost tube shows `1`
+- discriminates: if the leftmost shows `4`, GRID1 is the rightmost tube and the buffer needs reversing. On a 6-digit module also check for the common 2,1,0,5,4,3 scramble.
+- grounds-claim: [CXC-TM1637-SEGMENT-MAP-UNVERIFIED]
+- observed: NOT the literal scripted `1234` test — that specific value was not deliberately requested. What was observed: the running configuration's real multi-digit application values read left-to-right in the correct, expected order on both configured modules, with no reversed or scrambled digit positions noticed. This grounds the same claim EV-03 checks (GRID-to-tube-position mapping is correct) via the running config rather than the isolated `1234` protocol value.
+- observed-on-date: 2026-09-02
+- observed-by: David (glass observation, currently-running firmware)
+- part-of: [CXC-TM1637-EV-INDEX]
+
+---
+
+### [CXC-TM1637-EV-04] EV-04 — justification: publish `42` to a 4-digit surface
+
+- evidence-state: EMPTY
+- question: publish the value `42` to a 4-digit surface. What do the four tubes show?
+- expected: two BLANK tubes, then `4`, then `2` — right-justified and blank-padded
+- discriminates: `42` followed by two blanks means LEFT-justified; `0042` means zero-padded. Both are well-formed and both violate [CXC-TM1637-FORMAT-BACKEND].
+- grounds-claim: [CXC-TM1637-FORMAT-BACKEND]
+- observed: ⛔ EMPTY
+- observed-on-date: ⛔ EMPTY
+- observed-by: ⛔ EMPTY
+- part-of: [CXC-TM1637-EV-INDEX]
+
+---
+
+### [CXC-TM1637-EV-05] EV-05 — decimal point: display `12.34`
+
+- evidence-state: EMPTY
+- question: display the string `12.34`. How many tubes are lit and where is the point?
+- expected: exactly FOUR lit tubes, with the decimal point after the `2` — five characters occupying four digits
+- discriminates: five lit positions, or a point on the wrong digit, means the `.` is not folding into the preceding digit's dp bit. This is the observable form of [CXC-TM1637-DIGITS-NOT-PORTABLE].
+- depends-on-answer: [CXC-TM1637-PRE-MODULE-VARIANT] — on the CLOCK variant only digit index 1 has a usable dp, so a failure here may be a module fact rather than a driver defect.
+- grounds-claim: [CXC-TM1637-DIGITS-NOT-PORTABLE]
+- observed: ⛔ EMPTY
+- observed-on-date: ⛔ EMPTY
+- observed-by: ⛔ EMPTY
+- part-of: [CXC-TM1637-EV-INDEX]
+
+---
+
+### [CXC-TM1637-EV-06] EV-06 — brightness: step 0, then step 7
+
+- evidence-state: EMPTY
+- question: set brightness step 0, then step 7. Are both visibly lit, and are they clearly different?
+- expected: both visibly lit and clearly different; step 0 is 1/16 duty and is DIM, NOT OFF
+- discriminates: step 0 reading as OFF means the display-ON bit is being cleared along with the brightness field, which is a command-encoding defect rather than a brightness one.
+- grounds-claim: [CXC-TM1637-PART]
+- observed: ⛔ EMPTY
+- observed-on-date: ⛔ EMPTY
+- observed-by: ⛔ EMPTY
+- part-of: [CXC-TM1637-EV-INDEX]
+
+---
+
+### [CXC-TM1637-EV-07] EV-07 — display off while the host keeps writing
+
+- evidence-state: EMPTY
+- question: send the display-OFF command while the host CONTINUES writing values. Do all tubes blank?
+- expected: ALL tubes blank, and stay blank, while writes continue
+- discriminates: this is what separates "display off" from "wrote zeros". A test that stops writing cannot tell them apart, and the two have different failure consequences on a live panel.
+- grounds-claim: [CXC-TM1637-PART]
+- observed: ⛔ EMPTY
+- observed-on-date: ⛔ EMPTY
+- observed-by: ⛔ EMPTY
+- part-of: [CXC-TM1637-EV-INDEX]
+
+---
+
+### [CXC-TM1637-EV-08] EV-08 — ⛔ THE LOAD-BEARING ONE: two modules, shared CLK, separate DIO
+
+- evidence-state: RECORDED
+- question: wire two modules with a SHARED CLK and SEPARATE DIO. Write `1111` to A and `2222` to B. Then write A REPEATEDLY for a full minute. Does B flicker, blank, or change? Then power-cycle ONLY A and repeat: is B undisturbed?
+- expected: B holds `2222` unchanged throughout both phases — no flicker, no blank, no altered digit
+- significance: ⛔ this is the ONLY test in this document that can falsify [CXC-TM1637-SHARED-CLK], which is a STRONG INFERENCE the datasheet nowhere states. Every multi-display design in the fleet rests on it.
+- if-negative: adopt [CXC-TM1637-FALLBACK-TOPOLOGY] — shared DIO, one CLK per display, non-selected CLK parked LOW. Same pin count, and it does not depend on the falsified inference.
+- requires-control: [CXC-TM1637-EV-09] must be run on the SAME harness. Without it, a passing result is consistent with the two modules never having been wired as believed.
+- duration: a full minute of repeated writes to A, not a few frames. A phantom-bit fault bounded by one transaction would be invisible in a short burst.
+- grounds-claim: [CXC-TM1637-SHARED-CLK]
+- observed: four TM1637 modules are wired sharing ONE CLK line; two are YAML-configured and actively driven, the 3rd and 4th are wired but not configured (inert). The two configured modules display DIFFERENT, correct, independently-updating content continuously under real firmware operation — no flicker, no blanking, no altered digits, no cross-talk between them observed. This is NOT the literal scripted `1111`/`2222`-for-one-minute-then-power-cycle-A protocol — it is stronger in one respect (continuous real operation, far longer than one minute) and weaker in another: the specific power-cycle-only-A / verify-B-undisturbed sub-step was not separately performed as an isolated deliberate action. On the core falsifiable claim — shared-CLK with per-DIO addressing produces no cross-talk — this observation is a direct, positive hit: had [CXC-TM1637-SHARED-CLK] been false, a garbled or duplicated display would have been visible, and none was.
+- observed-on-date: 2026-09-02
+- observed-by: David (glass observation, currently-running firmware)
+- part-of: [CXC-TM1637-EV-INDEX]
+
+---
+
+### [CXC-TM1637-EV-09] EV-09 — the NEGATIVE CONTROL for EV-08: strap both DIO lines together
+
+- evidence-state: EMPTY
+- question: on the SAME harness, deliberately strap the two DIO lines together and write one value. Do both displays go IDENTICAL?
+- expected: both displays show the SAME content, because with no slave address ([CXC-TM1637-NO-ADDRESS]) two parts on fully shared wires latch every command
+- significance: ⛔ if they do NOT go identical, the harness is not what the tester believes — a broken DIO, an unpowered module, a wrong pin — and EV-08 proved nothing whatever its result was. This slot is what makes EV-08's pass mean something.
+- generator: [CXC-VISION-EPISTEMICS] rule-negative-control — an instrument that can only report success is not an instrument.
+- ordering: run EV-09 IMMEDIATELY after EV-08 on the unchanged harness. Rebuilding the harness in between re-opens the question it was run to close.
+- grounds-claim: [CXC-TM1637-NO-ADDRESS]
+- verdict-2026-09-02: STILL OPEN — the 2026-09-02 glass observation does NOT satisfy this slot. EV-09 exists to PROVE the test methodology would catch a miswired harness, by deliberately inducing the fault (strapping both DIO together) and confirming it is visible (identical content). Judged honestly: it is a distinct, deliberate action that was not performed and is not implied by the running configuration.
+- corroborating-observation: the running-config observation at EV-08 is not nothing for this question — two modules showing DIFFERENT correct content on the shared CLK is itself inconsistent with the DIO lines being accidentally shorted together (per [CXC-TM1637-NO-ADDRESS], a shorted-DIO harness would force both to latch every command and show IDENTICAL content, which is not what was seen). This corroborates that the harness is wired as believed, but corroboration-by-absence-of-the-fault-symptom is weaker than EV-09's deliberate induce-and-observe protocol, which additionally proves the harness/observer combination is SENSITIVE to that specific failure mode were it present.
+- still-needed: a deliberate bench action — strap the two DIO lines together on the same or an equivalent harness, write one value, and confirm both displays go identical. Until run, EV-09 stays EMPTY and EV-08's pass is corroborated but not fully controlled.
+- observed: ⛔ EMPTY
+- observed-on-date: ⛔ EMPTY
+- observed-by: ⛔ EMPTY
+- part-of: [CXC-TM1637-EV-INDEX]
+
+---
+
+## 8. Placement
+
+### [CXC-TM1637-PLACEMENT] Placement is UNRATIFIED, and this directory is harder than it looks
+
+- placement-status: UNRATIFIED. This document was written into `corpora/platform-specs/` because that is where every spec it cites already lives, NOT because the placement was ruled.
+- what-makes-it-non-obvious-one: `corpora/platform-specs` is a registered root of THREE corpora at once — `intelligence-console`, `visual-composer` and `headless-monitor` all list it under `area: specs` in the corpus config. Landing a peripheral spec here puts it in all three, and a TM1637 is plausibly relevant to none of them by name.
+- what-makes-it-non-obvious-two: the numeric-prefix convention has collided three times and has no guard — `00-composer-design-principles` versus `00-composer-overview`, `46-console-sources-on-the-bus` versus `46-handover-process`, and (RESOLVED 2026-08-17 by renaming to `76-fleet-console`) `61-config-over-bus` versus `61-fleet-console` ([CXC-VISION-PLACEMENT]). The filenames differ, so git produces no signal of any kind.
+- what-makes-it-non-obvious-three: the next free number is not visible from a directory listing. 66, 67 and 68 were all claimed by branches in flight, and were only discoverable by enumerating branches. `69` was chosen after that enumeration; it is free on `main` and on every local branch as of 2026-08-15.
+- what-makes-it-non-obvious-four: three consecutive neighbours already carry `[PLACEMENT UNRATIFIED]` — 60, 61 and 62 — which is itself the signal that the question is overdue rather than pending. This document is the fourth and does not pretend otherwise.
+- the-recommendation: KEEP IT HERE as `69-tm1637-peripheral.lts`, and register a dedicated `corpora/peripherals` root ONLY when a second peripheral spec exists. A new corpus root for one document is a directory with a naming convention, not a corpus; the moment there are two, the shared vocabulary is real and the root pays for itself.
+- the-alternative-worth-naming: a `peripherals` area registered in `FACTLATTICE_CORPUS_CONFIG` for whichever corpora actually consume peripherals. That is a registry edit, therefore David's, and it is the right answer if peripheral specs are expected to multiply — the TM1637 is the first of an obvious family (R503, the 4x4 keypad, the x27.168 stepper).
+- second-placement-question: [CXC-PERIPH-EVIDENCE-SLOTS] is a REUSABLE pattern living inside a part-specific spec, so the next peripheral will cite into this file. Its natural home is [SPEC:CXC-BRINGUP], beside the two-tier verdict it extends. Promotion should happen when the SECOND peripheral uses it, not before — a pattern with one instance has not been shown to generalise.
+- part-of: [SPEC:CXC-TM1637]
+- see-also: [CXC-VISION-PLACEMENT], [SPEC:CXC-BRINGUP]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-TM1637] EXEMPLIFIES [CXC-PERIPH-EVIDENCE-SLOTS]
+- [CXC-PERIPH-EVIDENCE-SLOTS] EXTENDS [CXC-BRINGUP-VERDICT]
+- [CXC-PERIPH-EVIDENCE-SLOTS] UPHOLDS [CXC-VISION-EPISTEMICS]
+- [SPEC:CXC-TM1637] REALIZES [CXC-VISION-SEMANTIC-REALIZATION]
+- [CXC-TM1637-FORMAT-BACKEND] UPHOLDS [plt.cio:SPEC:DP-CIO-6]
+- [CXC-TM1637-FORMAT-BACKEND] REALIZES [CXC-VISION-SEMANTIC-REALIZATION]
+- [CXC-TM1637-NO-CHAIN] DEPENDS_ON [CXC-TM1637-NO-ADDRESS]
+- [CXC-TM1637-DOUT-TRAP] CONTRAST_WITH [CXC-TM1637-NO-CHAIN]
+- [CXC-TM1637-FALLBACK-TOPOLOGY] CONTRAST_WITH [CXC-TM1637-SHARED-CLK]
+- [DD-TM1637-CHANNELS] RELATED_TO [PCB-STRESS-S3]
+- [DD-TM1637-CHANNELS] RELATED_TO [CXC-VISION-SEMANTIC-REALIZATION]
+- [CXC-TM1637-DIGITS-NOT-PORTABLE] DOCUMENTS [DD-TM1637-CHANNELS]
+- [CXC-TM1637-MACHINE-EVIDENCE] CONTRAST_WITH [CXC-TM1637-SEGMENT-MAP-UNVERIFIED]
+
+### Causal
+
+- [CXC-TM1637-DIO-PARK-HIGH] PRECONDITION_FOR [CXC-TM1637-SHARED-CLK]
+- [CXC-TM1637-PRE-TUBE-COLOUR] PRECONDITION_FOR [DD-TM1637-LEVEL]
+- [CXC-TM1637-PRE-MODULE-VARIANT] PRECONDITION_FOR [CXC-TM1637-EV-05]
+- [CXC-TM1637-PRE-HOST-BUDGET] PRECONDITION_FOR [CXC-TM1637-FANOUT-LIMIT]
+- [CXC-TM1637-PRE-COUNT-TOPOLOGY] PRECONDITION_FOR [CXC-TM1637-EV-08]
+- [CXC-TM1637-EV-09] PRECONDITION_FOR [CXC-TM1637-EV-08]
+- [CXC-TM1637-EV-08] PRECONDITION_FOR [CXC-TM1637-FALLBACK-TOPOLOGY]
+- [CXC-TM1637-SEGMENT-MAP-UNVERIFIED] CAUSES [CXC-TM1637-EV-01]
+
+### Entity
+
+- [CXC-TM1637-EV-01] GROUNDS [CXC-TM1637-SEGMENT-MAP-UNVERIFIED]
+- [CXC-TM1637-EV-02] GROUNDS [CXC-TM1637-SEGMENT-MAP-UNVERIFIED]
+- [CXC-TM1637-EV-03] GROUNDS [CXC-TM1637-SEGMENT-MAP-UNVERIFIED]
+- [CXC-TM1637-EV-04] GROUNDS [CXC-TM1637-FORMAT-BACKEND]
+- [CXC-TM1637-EV-05] GROUNDS [CXC-TM1637-DIGITS-NOT-PORTABLE]
+- [CXC-TM1637-EV-06] GROUNDS [CXC-TM1637-PART]
+- [CXC-TM1637-EV-07] GROUNDS [CXC-TM1637-PART]
+- [CXC-TM1637-EV-08] GROUNDS [CXC-TM1637-SHARED-CLK]
+- [CXC-TM1637-EV-09] GROUNDS [CXC-TM1637-NO-ADDRESS]
+
+---
+
+**Version**: 0.2 — 2026-09-02. First real bench observation recorded (EV-01, EV-02, EV-03, EV-08 RECORDED from David's glass observation of currently-running firmware); corrects the 0.1 "no TM1637 ever connected" baseline. See [CXC-TM1637-EV-INDEX].
+**Status**: Draft — PLACEMENT UNRATIFIED ([CXC-TM1637-PLACEMENT]). Two decisions are recorded OPEN and deliberately not taken: [DD-TM1637-LEVEL] (blocked on a fact only David has) and [DD-TM1637-CHANNELS] (PLAN item I2, David's ruling). Five of nine evidence slots remain EMPTY: EV-04, EV-05, EV-06, EV-07 (not yet observed), and EV-09 (the deliberate negative control for EV-08 — see [CXC-TM1637-EV-09]).

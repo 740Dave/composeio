@@ -1,0 +1,575 @@
+---
+scope: "Shared widget rendering layer for CTk-based ComposeIO applications — one renderer implementation usable in both the Runtime Dashboard and ComposeUX preview"
+audience: "Renderer implementers, ComposeUX developers, dashboard developers"
+boundary: "Visual rendering and bus subscription only; widget type definitions in builtin.py; layout/hosting in consuming applications; bus protocol in ../spec/01-composeio-bus-protocol.smd"
+not-this: "Not the dashboard application (10-composer-runtime-dashboard.lts); not the ComposeUX preview module; not the bus protocol; not firmware rendering (LVGL)"
+depends-on: [SPEC:CIO-BUS-PROTOCOL, SPEC:CIO-CONFIG-SCHEMA, SPEC:CIO-APP, SPEC:CXC-ARCH]
+confidentiality: internal-only
+artifact-readiness: code-generation
+domain: plt.cux
+---
+
+# ComposeIO Widget Rendering Layer [SPEC:CIO-RENDERERS]
+
+> A single set of CTk widget renderers that visualize ComposeIO namespace state — gauges animate, buttons toggle, relays indicate, tabs route. The rendering layer is host-agnostic: the Runtime Dashboard and ComposeUX preview both consume it through an abstraction boundary. The renderers know about the bus and CTk. They do not know which application hosts them.
+
+---
+
+## 1. Problem Statement [REN-PROBLEM]
+
+### 1.1 Two Consumers, One Rendering Need [REN-PROBLEM-GAP]
+
+Two applications need to render ComposeIO widgets as CTk visuals:
+
+| Application | Context | Requirements |
+|-------------|---------|-------------|
+| Runtime Dashboard | Full window, one layout, live bus data, user-interactive | Full-fidelity visuals, animation, bus pub/sub |
+| ComposeUX Preview | Embedded in canvas, many widgets, design-time + optional live data | Same visuals, but hosted in a preview panel with design overlays |
+
+Both render the same widget types (GaugeWidget, ButtonWidget, etc.) with the same visual appearance from the same bus data. The only differences are hosting context and lifecycle management.
+
+### 1.2 The Wrong Approach: Two Renderer Sets [REN-PROBLEM-WRONG]
+
+Building separate renderers for dashboard and preview creates:
+- Duplicate visual code that diverges over time
+- Inconsistency between design-time preview and runtime appearance (confuses makers)
+- Double the maintenance for every new widget type
+
+### 1.3 The Right Approach: One Renderer, Two Hosts [REN-PROBLEM-RIGHT]
+
+One renderer implementation per widget type. An abstraction layer adapts between the renderer and its hosting context. The renderer does not know or care whether it lives in a dashboard window or a ComposeUX preview panel.
+
+---
+
+## 2. Architecture [REN-ARCH]
+
+### 2.1 Layer Separation [REN-ARCH-LAYERS]
+
+```
++-------------------------------------------------------+
+|  Hosting Layer (application-specific)                 |
+|  Dashboard: grid layout, window management            |
+|  ComposeUX: canvas embedding, selection overlays      |
+|                                                       |
+|  Provides: parent frame, lifecycle signals            |
+|  Consumes: RendererFactory.create(type, parent, ctx)  |
++-------------------------------------------------------+
+          |                              |
+          v                              v
++-------------------------------------------------------+
+|  Renderer Layer (shared, this spec)                   |
+|                                                       |
+|  GaugeRenderer, ButtonRenderer, RelayRenderer,        |
+|  CoordinateEntryRenderer, BusMonitorRenderer,         |
+|  TabRenderer, PlaceholderRenderer                     |
+|                                                       |
+|  Each is a CTkFrame subclass.                         |
+|  Receives: RendererContext (bus ref, state engine,     |
+|            namespace, properties, update scheduler)    |
+|  Does: subscribe to namespace, update visuals,        |
+|        handle interaction, publish state changes       |
++-------------------------------------------------------+
+          |
+          v
++-------------------------------------------------------+
+|  Bus Layer (composeio library)                        |
+|  ComposeIOBus, namespace subscribe/publish            |
++-------------------------------------------------------+
+```
+
+### 2.2 RendererContext [REN-ARCH-CONTEXT]
+
+The abstraction boundary between hosting layer and renderer layer is the `RendererContext` — a data object that provides everything a renderer needs without exposing hosting details.
+
+```python
+@dataclass
+class RendererContext:
+    """Everything a renderer needs from its host. Host-agnostic."""
+
+    bus: ComposeIOBus
+    namespace: str
+    state_engine: dict          # State engine config from YAML
+    properties: dict            # Widget properties from YAML
+    schedule_update: Callable   # Thread-safe UI update scheduler
+    publish: Callable           # Publish state change to bus
+    children: list[dict]        # Child widget configs (for TabWidget)
+```
+
+| Field | Purpose | Dashboard Provides | ComposeUX Provides |
+|-------|---------|-------------------|-------------------|
+| `bus` | Namespace subscribe/publish | External bus (imported namespaces) | Design bus (live) or internal bus (offline) |
+| `namespace` | Primary namespace binding | From YAML widget config | From DesignDocument widget config |
+| `state_engine` | Value domain definition | From YAML namespace config | From DesignDocument namespace config |
+| `properties` | Widget-specific config (label, min_val, etc.) | From YAML widget config | From DesignDocument widget properties |
+| `schedule_update` | Thread-safe callback scheduler | `widget.after(0, fn)` | `widget.after(0, fn)` (same — both are CTk) |
+| `publish` | Publish state changes (interactive widgets) | Publishes to internal bus (crossover exports) | Publishes to design bus |
+| `children` | Child widget configs for container widgets | From YAML children array | From DesignDocument WidgetDef.children |
+
+The `schedule_update` callable abstracts the thread-safety requirement. Both hosting contexts use CTk's `after()` today, but the abstraction allows future hosts (e.g., a headless test harness) to provide a different scheduling mechanism.
+
+### 2.3 RendererFactory [REN-ARCH-FACTORY]
+
+A factory maps widget type names to renderer classes:
+
+```python
+class RendererFactory:
+    _registry: dict[str, type[WidgetRenderer]] = {}
+
+    @classmethod
+    def register(cls, widget_type: str, renderer_class: type[WidgetRenderer]):
+        cls._registry[widget_type] = renderer_class
+
+    @classmethod
+    def create(cls, widget_type: str, parent: ctk.CTkFrame,
+               context: RendererContext) -> WidgetRenderer:
+        renderer_class = cls._registry.get(widget_type, PlaceholderRenderer)
+        return renderer_class(parent, context=context)
+```
+
+Built-in renderers register at import time. Plugin renderers register via the same `RendererFactory.register()` call. The factory returns `PlaceholderRenderer` for unknown types.
+
+---
+
+## 3. Base Renderer Contract [REN-CONTRACT]
+
+### 3.1 WidgetRenderer Base Class [REN-CONTRACT-BASE]
+
+```python
+class WidgetRenderer(ctk.CTkFrame):
+    """Base class for all ComposeIO widget renderers.
+
+    Subclasses implement _build_ui() and _update_visual().
+    The base class handles bus subscription, thread-safe update
+    scheduling, and lifecycle management.
+    """
+
+    def __init__(self, parent: ctk.CTkFrame, *, context: RendererContext):
+        super().__init__(parent)
+        self._ctx = context
+        self._current_value = None
+        self._build_ui()
+        self._subscribe()
+
+    def _build_ui(self) -> None:
+        """Subclass: create CTk widgets. Called once at construction."""
+        raise NotImplementedError
+
+    def _update_visual(self, value) -> None:
+        """Subclass: update CTk widgets for new state value.
+        Always called on CTk main thread (via schedule_update).
+        """
+        raise NotImplementedError
+
+    def _subscribe(self) -> None:
+        """Subscribe to the bound namespace on the bus."""
+        if self._ctx.namespace:
+            self._ctx.bus.subscribe(self._ctx.namespace, self._on_state_change)
+
+    def _on_state_change(self, namespace: str, value) -> None:
+        """Bus callback — may arrive from any thread."""
+        self._current_value = value
+        self._ctx.schedule_update(lambda: self._update_visual(value))
+
+    def _publish(self, value) -> None:
+        """Publish a state change (interactive widgets)."""
+        self._ctx.publish(self._ctx.namespace, value)
+
+    def destroy(self) -> None:
+        """Unsubscribe from bus and destroy CTk frame."""
+        # Bus unsubscribe handled by bus cleanup
+        super().destroy()
+```
+
+### 3.2 Renderer Lifecycle [REN-CONTRACT-LIFECYCLE]
+
+```
+Host calls RendererFactory.create(type, parent, context)
+  -> __init__: store context, _build_ui(), _subscribe()
+  -> Renderer is live: bus callbacks update visuals
+
+Bus state change arrives (any thread)
+  -> _on_state_change: store value, schedule_update(_update_visual)
+  -> _update_visual: runs on CTk main thread, modifies widgets
+
+User interaction (interactive renderers only, main thread)
+  -> handler calls _publish(new_value)
+  -> bus publishes to namespace
+  -> crossover forwards to external bus (if exported)
+
+Host calls renderer.destroy()
+  -> unsubscribe, destroy CTk frame
+```
+
+### 3.3 Default Value Handling [REN-CONTRACT-DEFAULTS]
+
+When no bus data has arrived (widget at default state):
+
+- The renderer reads the state engine's default value and calls `_update_visual(default)` once during `_build_ui()`
+- This ensures renderers always show a meaningful state, even in offline/preview mode with no bus traffic
+- Default values: `binary` -> `"off"`, `tri_level` -> `"off"`, `stop_light` -> `"green"`, `continuous_0_255` -> `0`, `enum` -> first value in list, `json` -> `{}`
+
+---
+
+## 4. Built-in Renderers [REN-BUILTIN]
+
+### 4.1 GaugeRenderer [REN-GAUGE]
+
+Circular gauge with animated needle.
+
+**Visual structure**:
+```
+    +-------------------+
+    |     [label]       |
+    |                   |
+    |     ___===___     |
+    |   /     |     \   |
+    |  |      |      |  |
+    |   \_____|_____/   |
+    |                   |
+    |      [value]      |
+    +-------------------+
+```
+
+| Element | Implementation |
+|---------|---------------|
+| Arc | CTk canvas arc, 240-degree sweep (from 7 o'clock to 5 o'clock). Color gradient: green (low) -> yellow (mid) -> red (high). |
+| Needle | Canvas line from center point to arc edge, angle computed from value position in range. |
+| Label | CTkLabel above gauge, text from `properties["label"]`. |
+| Value text | CTkLabel below gauge, current numeric value in monospace. |
+
+**State mapping**: Namespace value (0-255 for `continuous_0_255`) maps linearly to the `min_val`-`max_val` display range. Gauge angle = `start_angle + (value / 255) * sweep_angle`.
+
+**Animation**: When value changes, needle transitions over 100ms using linear interpolation. Implementation: 10 steps at 10ms intervals via `after()`. Current position tracked to avoid animation stacking (new value cancels in-progress animation).
+
+**Properties consumed**:
+
+| Property | Type | Default | Effect |
+|----------|------|---------|--------|
+| `label` | str | `""` | Title above gauge |
+| `min_val` | float | `0.0` | Display minimum (label only — state engine governs actual range) |
+| `max_val` | float | `100.0` | Display maximum |
+
+### 4.2 ButtonRenderer [REN-BUTTON]
+
+Interactive toggle button with LED indicator.
+
+**Visual structure**:
+```
+    +-------------------+
+    |  [O] [label]      |
+    +-------------------+
+```
+
+`[O]` is the LED indicator circle. `[label]` is the button text.
+
+| Element | Implementation |
+|---------|---------------|
+| Button | CTkButton. Click handler advances state engine. |
+| LED | Canvas oval (12px diameter) on the button face. Color follows `led_behavior`. |
+
+**Interaction**: Click calls state engine's transition function:
+- `binary`: toggle between `off` and `on`
+- `tri_level`: cycle `off` -> `half` -> `full` -> `off`
+- `stop_light`: cycle `green` -> `yellow` -> `red` -> `green`
+- `enum`: advance to next value, wrap
+- `continuous_0_255`: cycle through `[0, 128, 255]` (toggle behavior per [CS-STATE-ENGINES-4])
+
+After transition, calls `_publish(new_value)`.
+
+**LED colors**:
+
+| State | Color |
+|-------|-------|
+| Default value (off/green/0) | Gray (#555555) |
+| Active (on/full/255) | Accent blue (#3B8ED0) |
+| Intermediate (half/yellow/128) | Dim blue (#2B6EA0) |
+| Alarm (red) | Red (#E03B3B) |
+
+**LED behaviors** (from `led_behavior` property):
+- `follow_state`: lit when not default, off when default
+- `blink_500ms`: 500ms on/off cycle when active (via `after()` timer)
+- `while_pressed`: lit only during mouse-down (bind `<ButtonPress>` / `<ButtonRelease>`)
+- `solid`: always lit regardless of state
+- `off`: never lit
+
+### 4.3 RelayRenderer [REN-RELAY]
+
+Read-only status indicator.
+
+**Visual structure**:
+```
+    +-------------------+
+    |                   |
+    |       (O)         |
+    |     [label]       |
+    |                   |
+    +-------------------+
+```
+
+`(O)` is a large colored circle (40px diameter).
+
+| Element | Implementation |
+|---------|---------------|
+| Indicator | Canvas oval. Color determined by state engine value. |
+| Label | CTkLabel below indicator. |
+
+**Color mapping**:
+
+| Engine | Value -> Color |
+|--------|---------------|
+| `binary` | `off` -> gray (#555555), `on` -> green (#2ECC71) |
+| `tri_level` | `off` -> gray, `half` -> yellow (#F1C40F), `full` -> green |
+| `stop_light` | `green` -> green, `yellow` -> yellow, `red` -> red (#E74C3C) |
+| `enum` | First value -> gray, last value -> green, others interpolated |
+
+**No interaction** — relay is display-only. Clicks are ignored.
+
+### 4.4 CoordinateEntryRenderer [REN-COORDINATE]
+
+Multi-digit entry with status indicator and arm control.
+
+**Visual structure**:
+```
+    +----------------------------+
+    |  [label]                   |
+    |  [ _ _ _ _ _ _ _ _ ]  [O] |
+    +----------------------------+
+```
+
+**Multi-namespace binding**: This renderer subscribes to three namespaces via `RendererContext`:
+- `properties["namespace_coordinates"]` — publishes entered coordinate string
+- `properties["namespace_status"]` — publishes entry status
+- `properties["namespace_arm"]` — subscribes to arm signal
+
+The `RendererContext.namespace` field holds the primary namespace (`namespace_coordinates`). Additional namespaces are read from `properties`.
+
+**Status states and indicator colors**:
+
+| Status | Color | Behavior |
+|--------|-------|----------|
+| `dark` | Off | Entry not armed |
+| `empty_flashing` | Blue blink | Armed, awaiting input |
+| `partial` | Blue solid | Digits entered, not complete |
+| `confirm_flashing` | Green blink | All digits entered, awaiting confirmation |
+| `committed` | Green solid | Coordinate committed to bus |
+
+**Interaction**: Keyboard entry when focused and armed. Digit keys append to entry. Enter commits. Escape clears.
+
+### 4.5 BusMonitorRenderer [REN-BUSMONITOR]
+
+Scrolling bus traffic log.
+
+**Visual structure**:
+```
+    +----------------------------+
+    |  [label]                   |
+    |  [14:30:01] ftl_arm: ...  |
+    |  [14:30:01] shields: ...  |
+    |  [14:30:02] engine_rpm:.. |
+    |  ...                       |
+    +----------------------------+
+```
+
+| Element | Implementation |
+|---------|---------------|
+| Log | CTkTextbox, read-only, monospace font |
+| Scrollback | Trim oldest lines when `max_lines` exceeded |
+
+**Subscription**: Unlike other renderers, BusMonitorRenderer subscribes to ALL namespaces on the bus. It uses `bus.subscribe_all()` (wildcard subscriber) to capture every message.
+
+**Message formatting**: `[{time}] {namespace}: {type} {value} ({source})`
+
+**Color coding** (via CTkTextbox tags):
+
+| Message Type | Color |
+|-------------|-------|
+| `state` | White (#FFFFFF) |
+| `event` | Cyan (#00BCD4) |
+| `heartbeat` | Gray (#888888) |
+| `discovery` | Yellow (#FFD700) |
+| `config_push` | Magenta (#E040FB) |
+
+**Filtering**: `properties["show_heartbeats"]` (bool, default false) controls whether `heartbeat` and `time_sync` messages appear. When false, they are silently dropped.
+
+### 4.6 TabRenderer [REN-TAB]
+
+Tabbed container hosting child widget renderers.
+
+**Visual structure**:
+```
+    +---[Tab A]--[Tab B]--[Tab C]---+
+    |                                |
+    |  [child widgets of active tab] |
+    |                                |
+    +--------------------------------+
+```
+
+| Element | Implementation |
+|---------|---------------|
+| Tab bar | CTkTabview. Tab titles from child widget `label` properties. |
+| Content | Each tab is a CTkFrame containing child renderers created via `RendererFactory`. |
+
+**Child instantiation**: For each entry in `context.children`, the TabRenderer calls `RendererFactory.create()` with a child-specific `RendererContext`. The child renderer's parent frame is the tab's content frame.
+
+**Routing modes** (from `properties["routing"]`):
+
+| Mode | Behavior |
+|------|----------|
+| `all` | All child renderers remain subscribed regardless of active tab. All tabs receive bus updates. |
+| `active_only` | Only the active tab's child renderers are subscribed. Tab switch triggers unsubscribe (old) + subscribe (new). |
+| `selective` | Per-tab routing rules (from config). Each tab declares which namespaces it receives when inactive. |
+
+**Tab switching**: On tab change event, if routing mode is `active_only`, call `_unsubscribe_tab(old_tab)` and `_subscribe_tab(new_tab)`. The unsubscribe/subscribe cycle is the bus-intermediary pattern from [CXC-TAB].
+
+### 4.7 PlaceholderRenderer [REN-PLACEHOLDER]
+
+Fallback for unrecognized widget types.
+
+**Visual structure**:
+```
+    +----------------------------+
+    |  Unsupported: {type_name}  |
+    |  ns: {namespace}           |
+    |  value: {raw_value}        |
+    +----------------------------+
+```
+
+Subscribes to the bound namespace and displays the raw value as text. Updated on every state change. Border styled as dashed to visually distinguish from real widgets.
+
+---
+
+## 5. Hosting Adaptation [REN-HOSTING]
+
+### 5.1 Dashboard Host [REN-HOST-DASHBOARD]
+
+The Runtime Dashboard ([SPEC:CIO-DASHBOARD]) hosts renderers in a grid layout:
+
+```python
+# Dashboard creates RendererContext
+context = RendererContext(
+    bus=app.internal_bus,          # Namespaces imported from external
+    namespace=widget_config["namespace"],
+    state_engine=namespace_config["state_engine"],
+    properties=widget_config,
+    schedule_update=lambda fn: root.after(0, fn),
+    publish=lambda ns, val: app.internal_bus.publish_state(ns, val),
+    children=widget_config.get("children", []),
+)
+renderer = RendererFactory.create(widget_type, parent_frame, context)
+renderer.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
+```
+
+The dashboard's adaptation is minimal: it constructs `RendererContext` from the parsed YAML and places renderers in the grid.
+
+### 5.2 ComposeUX Preview Host [REN-HOST-COMPOSEUX]
+
+ComposeUX's preview module hosts renderers inside the design canvas:
+
+```python
+# ComposeUX preview creates RendererContext
+context = RendererContext(
+    bus=design_bus,                # The live design bus (or offline in-process)
+    namespace=widget_def.properties.get("namespace", ""),
+    state_engine=namespace_registry.get_engine(namespace),
+    properties=widget_def.properties,
+    schedule_update=lambda fn: self.after(0, fn),
+    publish=lambda ns, val: design_bus.publish_state(ns, val),
+    children=[child.to_dict() for child in widget_def.children],
+)
+renderer = RendererFactory.create(widget_def.type_name, preview_frame, context)
+```
+
+ComposeUX MAY add design-time overlays (selection handles, property badges, namespace labels) as sibling frames around the renderer. The renderer itself is untouched — the overlays are in the hosting layer.
+
+### 5.3 Headless Test Host [REN-HOST-TEST]
+
+For automated testing, renderers can be instantiated with a mock bus and a no-op scheduler:
+
+```python
+context = RendererContext(
+    bus=MockBus(),
+    namespace="test_ns",
+    state_engine={"type": "binary"},
+    properties={"label": "Test"},
+    schedule_update=lambda fn: fn(),  # Execute immediately (no CTk event loop)
+    publish=mock_publish,
+    children=[],
+)
+```
+
+This enables unit testing of renderer logic (state mapping, value formatting) without a running CTk window or bus infrastructure.
+
+---
+
+## 6. Package Structure [REN-PACKAGE]
+
+### 6.1 Location [REN-PACKAGE-LOC]
+
+```
+ux_composer/
+  src/
+    composeio_renderers/           # Shared renderer package
+      __init__.py                  # Exports: RendererFactory, WidgetRenderer, RendererContext
+      context.py                   # RendererContext dataclass
+      factory.py                   # RendererFactory registry
+      base.py                      # WidgetRenderer base class
+      gauge.py                     # GaugeRenderer
+      button.py                    # ButtonRenderer
+      relay.py                     # RelayRenderer
+      coordinate.py                # CoordinateEntryRenderer
+      bus_monitor.py               # BusMonitorRenderer
+      tab.py                       # TabRenderer
+      placeholder.py               # PlaceholderRenderer
+```
+
+The package is `composeio_renderers` — importable by both the dashboard (`from composeio_renderers import RendererFactory`) and ComposeUX (`from composeio_renderers import RendererFactory`). It depends on `customtkinter` and `composeio` but NOT on `composer` (ComposeUX internals) or `dashboard`.
+
+### 6.2 Dependency Direction [REN-PACKAGE-DEPS]
+
+```
+dashboard ----imports----> composeio_renderers
+composer  ----imports----> composeio_renderers
+composeio_renderers ----imports----> composeio (bus library)
+composeio_renderers ----imports----> customtkinter
+```
+
+The renderer package MUST NOT import from `dashboard` or `composer`. If it needs something from those packages, the hosting layer passes it through `RendererContext`.
+
+---
+
+## 7. Compliance Requirements [REN-COMPLIANCE]
+
+A compliant rendering layer implementation MUST:
+
+1. **[REN-C1]** Provide renderers for all six built-in widget types: GaugeWidget, ButtonWidget, RelayWidget, CoordinateEntryWidget, BusMonitorWidget, TabWidget
+2. **[REN-C2]** All renderers accept `RendererContext` as their sole configuration interface — no direct dependency on dashboard or ComposeUX types
+3. **[REN-C3]** All bus callbacks MUST route through `schedule_update` for thread-safe CTk updates — never modify CTk widgets directly from a bus callback thread
+4. **[REN-C4]** Interactive renderers (ButtonRenderer, CoordinateEntryRenderer) MUST publish state changes via `context.publish` — never directly to a transport
+5. **[REN-C5]** `RendererFactory.create()` MUST return `PlaceholderRenderer` for unrecognized widget types — never raise, never return None
+6. **[REN-C6]** All renderers MUST display a meaningful default state when no bus data has arrived (state engine default value)
+7. **[REN-C7]** The `composeio_renderers` package MUST NOT import from `composer` or `dashboard` packages
+8. **[REN-C8]** TabRenderer MUST support all three routing modes: `all`, `active_only`, `selective`
+
+A compliant implementation SHOULD:
+
+9. **[REN-S1]** GaugeRenderer SHOULD animate needle transitions (smooth interpolation over ~100ms)
+10. **[REN-S2]** ButtonRenderer LED behaviors SHOULD match [CS-LED-BEHAVIOR] visual semantics
+11. **[REN-S3]** BusMonitorRenderer SHOULD color-code messages by type
+12. **[REN-S4]** Renderers SHOULD be instantiable with a mock bus for unit testing
+
+---
+
+## Relationships
+
+- depends-on: [SPEC:CIO-BUS-PROTOCOL] (message types, state engines, namespace subscribe/publish)
+- depends-on: [SPEC:CIO-CONFIG-SCHEMA] (state engine definitions, widget property schemas)
+- depends-on: [SPEC:CIO-APP] (ComposeApp bus access, crossover semantics)
+- used-by: [SPEC:CIO-DASHBOARD] (dashboard hosts renderers in grid layout)
+- used-by: [SPEC:CXC-ARCH] (ComposeUX preview hosts renderers in canvas)
+- see-also: [CXC-TAB] (TabWidget routing modes, bus-intermediary pattern)
+
+---
+
+**Version**: 1.0
+**Created**: 2026-03-28
+**Status**: Draft — ready for design review

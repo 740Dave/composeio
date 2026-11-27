@@ -1,0 +1,524 @@
+---
+audience: "ComposeIO/ComposeUX architects, firmware developers on the ESP32 fleet, whoever owns the rpi5 deploy tier, and the Python/MCP tier maintainer"
+boundary: "IN: where a participant's bus binding lives as retained config state, how a change is PROVEN before it is kept (commit-confirmed, both planes, on either tier), the two-tier precedence (per-device over global over compiled), the two-stage rescue floor (a `.local` name, then a capability-gated captive-portal AP) for a device pointing at nothing, what a device announces about its own binding, and the per-class mechanism. OUT: OTA firmware update (does not exist anywhere in this fleet — verified), the migration's data-reconciliation and version-parity work, mosquitto configuration, VLAN design, bus_storage's own API, and the captive-portal HTTP server's implementation (the CONTRACT is specified; the server code is a firmware build detail)."
+not-this: "Not a service-discovery protocol — nothing here finds a bus that was never named; a device only ever adopts a binding it (or the fleet) was explicitly told, or that a human typed in through the rescue portal. Not a replacement for the compiled default, which becomes a permanent rescue channel and is load-bearing BECAUSE it is compiled. Not a migration runbook; it is the capability that makes most of one unnecessary. Not a command protocol — see the superseded [CXC-REPOINT-NON-RETAINED] for the design this replaced and why."
+depends-on: [61-config-over-bus.lts, 60-board-hardware-inventory.lts, 29-composeux-embedded-reactive.lts, 73-bus-storage.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+# ComposeBus Repoint — Assigning a Device to a Bus [SPEC:CXC-REPOINT]
+- build-status: BUILT + LANDED + independently host-verified 2026-08-20, BOTH firmware trees. cyd/ ESP-IDF half (5 boards (a device id, not published)/c3lcd/hosyond/wsc6/qualia): main 123dd40 + fix 4ef328a. reactive_core Arduino half (3 boards office_fan/office_hepa/dual-throttle): main f3570e7 — reuses cyd/src/bus_binding_core BY REFERENCE (pure C++), identical NVS "composeio" bus.<t>.* layout so a binding survives a reflash between the two firmwares. Independent QA (composeplatform-qa) FAILED v1 on a structurally-unreachable broker-echo confirm plane (the self-src loop guard dropped the device's own confirm echo — the green-74/74-suite-over-a-broken-feature trap); fixed via a confirm-topic-scoped guard exception + Kind fix, re-verified with a mandatory POSITIVE CONTROL (a real echoing broker COMMITS, not merely a bad one reverts): cyd/ 83/83, reactive_core 20/20 host selftests, all 8 envs compile. .local rescue dropped (DEC-REPOINT-RESCUE-FLOOR-IS-COMPILED-IP); captive portal is a capability-flag seam only. Behaviour-preserving by default: no NVS binding -> compiled-IP floor, so an existing board is unaffected until a binding is published. ⛔ REMAINING GATE = the BENCH FLASH (8 boards, no OTA, needs David + glass): live repoint, the two-plane confirm round-trip on real silicon, auto-revert within 120s, the two-stage escape-hatch GPIO (currently -1 sentinel on every board pending a GPIO0-free-at-reset check), and Preferences/NVS persistence across reboot. Deferred: announce_pack.h + device_announce.py parity for the _device/<id>/bus word (QA note 4).
+
+> Eight ESP32s hold their bus master's IP in a compile-time `#define` with no override on any path. A ~2,200-line plan was written to choreograph a migration around that constant. This spec removes the constant instead. The devices must be physically reflashed either way — there is no OTA anywhere in this firmware — so the only question that was ever open is whether that bench session buys a NEW CONSTANT or a CAPABILITY. Same labour, permanently different future. A device's bus binding is retained STATE it reacts to, never a command sent to it — there is no command plane. See [CXC-REPOINT-NON-RETAINED] for the full account of what this spec originally specified and why it reversed.
+
+---
+
+## 1. Intent
+
+### [CXC-REPOINT-INTENT] The Address Is Config, Not Firmware
+
+- problem: `cyd/include/wifi_config.h` pins `MQTT_BROKER_URI`, `BUS_STORAGE_URL` and `DOCUMENT_STORE_URL` as compile-time `#define`s, consumed with NO override on any path — `config_fetch.cpp:69`, `capture_server.cpp:78`, `bus_mqtt.cpp:392`. There is no `nvs_get`, no `base_url` fallback and no argument. Moving the bus master therefore requires opening eight boards. Measured, 2026-08-16.
+- dp-cio-7-violation: "[DP-CIO-7] Configuration Is the Product, Firmware Is Infrastructure." The rendezvous address is the single most configuration-shaped fact in the firmware and it is the one fact welded into the binary. `[DEC-FETCH-ON-BOOT-CONFIG-DISCIPLINE]` made SCENES reflash-free and purchased that property with a compiled-in address — the mechanism that removed one reflash class created another.
+- the-gap-already-named: `[CXC-CONFIG-BUS]` bootstrap-trap says the config STRATEGY cannot live only in the scene YAML because the YAML arrives BY the strategy, and it moved the strategy to NVS with `_device/<id>/config_source` as the precedent. The identical argument applies to the rendezvous ADDRESS and was never applied to it. This spec applies it.
+- forcing-case: David 2026-08-17 — "What if we simply design-in the ability to repoint a device (or all devices) from one ComposeBus/WiFi instance to another? ... this could be either a blanket message or a device-specific message."
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-ASSIGNMENT] The Payoff Is ASSIGNMENT, Not One Migration
+
+- claim: a device that can be repointed is a device that can be ASSIGNED. Design for the steady-state operation (put this board on the maker bus), not for the one-off (move everything off NODERED_HOST).
+- design-consequence: every mechanism here is named for the steady state. The record is a `binding`, not a `migration_target`. The fact lives at `_device/<id>/bus` (per-device tier, highest precedence) and `_device/broadcast/bus` (global tier, the fleet default) as RETAINED STATE — never a command envelope. The announce answers "which bus" continuously, not "did the migration finish".
+- test: if any node in this spec reads as one-time-only, it is mis-scoped. The migration is a single invocation of a permanent verb.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-ECONOMICS] What Is The One-Time Flash, And What Is Free Forever
+
+- one-time: ONE bench session, 8 devices, USB access each. It flashes a build containing the binding module (BOTH tiers), the NVS keys, the commit-confirmed state machine, the button escape hatch, the two-stage rescue floor (`.local` name plus a capability-gated captive-portal AP), the `_device/<id>/bus` announce field, and a COMPILED DEFAULT now naming `compose-bus-rescue.local` ([DEC-(a private host name, not published)-RESCUE-HOSTNAME-AND-CAPTIVE-PORTAL]). This is the same physical session a "just change the constant" migration would need — the boards come off the wall either way.
+- not-bought: OTA firmware update. This spec deliberately does not attempt it. A firmware change still needs USB — but a firmware change is now rare, because the address is no longer a firmware fact.
+- honest-cost: the build gets one NVS namespace's worth of keys (~18 strings across two tiers, ~550 B), one esp_timer, two extra subscriptions, one extra periodic publication, and roughly 550 lines of C++ — most of it modelled directly on `bus_transport_select.cpp` and `config_source.cpp`, plus a genuinely new SoftAP + captive-portal surface on the boards that carry it. Nothing in the binding/precedence/commit-confirmed machinery is novel to this codebase; the captive portal is the one piece that is.
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## 2. The Bootstrap Paradox
+
+### [CXC-REPOINT-PARADOX] Both Obvious Mechanisms Require The OLD Infrastructure — Name It
+
+- statement: David proposed two mechanisms and both are correct for the planned case and insufficient for every other case. (a) "update each device's YAML and have them reload it" — the YAML comes FROM bus_storage AT THE ADDRESS BEING CHANGED. (b) "publish the binding fact on the existing ComposeBus" — the fact is retained, but it still only reaches a device that is ON the bus being left; a device already gone cannot receive it there. Each is a bootstrap that consumes the thing it is replacing.
+- uncovered-cases: a device powered off during the window; a device that misses the message (WiFi drop, boot loop, out of range); a wrong address in the payload; a device brought back from a drawer six months later; and recovery after any of those.
+- the-rule-that-falls-out: the address MUST have a home that is (1) local to the device, (2) survives reboot and power loss, and (3) is reachable by a human WITHOUT the bus. NVS satisfies 1 and 2. Only a physical action satisfies 3, which is why [CXC-REPOINT-BUTTON] exists and is not optional.
+- retain-closes-the-temporarily-offline-case: RETAIN closes the "powered off during the window" case cleanly: because the binding fact persists at the broker, a device that reconnects to the SAME broker minutes or hours later receives it on subscribe, exactly as if it had been listening the whole time, and adopts it through the ordinary commit-confirmed path with no operator resend. What retain does NOT close: a device that never reconnects to the bus carrying the fact at all (moved to a different segment, or gone long enough that the fact itself expired — see the age contract in [CXC-REPOINT-RETAINED-STATE]).
+- what-this-does-not-solve: a device that is off long enough, or on a different network segment entirely, that it never sees the fact at all. For that device only, [CXC-REPOINT-ANNOUNCE]'s absence-is-the-fault-report still applies, and recovery is a fresh targeted publish once it is next seen anywhere.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-BINDING] A BUS BINDING Is ONE Record, Not Three Loose URLs
+
+- record: `{ name, mqtt, store, docs }` — a human label, the broker URI, the bus_storage base URL, the document_store base URL.
+- two-tiers: TWO independently retained instances of this record exist per device: a PER-DEVICE tier (this board only) and a GLOBAL tier (the fleet default). Precedence between them, and against the compiled floor, is [CXC-REPOINT-PRECEDENCE]. A device that has never received a per-device fact runs on whatever the global tier says; a device that has is PINNED and ignores global changes until the pin is cleared.
+- the-question-answered: the firmware today treats the three addresses as one artefact by accident (they are three lines in one header). This spec makes them one artefact ON PURPOSE, and the reason is not tidiness. A ComposeBus INSTANCE is its control plane (broker) plus its asset plane (bus_storage) plus its document plane (document_store). A device on Haven's broker holding maker's bus_storage renders a maker scene while publishing to Haven — a silent cross-bus fork that returns HTTP 200 at every step. That is the migration plan's own §4.5 divergence hazard reappearing per-device.
+- so: the three change ATOMICALLY, under ONE retained fact per tier, gated by ONE confirmation. There is no `_device/<id>/broker` and there must never be one.
+- state-not-command: [DEC-BUS-BINDING-IS-STATE-NOT-A-COMMAND] — a binding is retained CONFIG STATE the device reacts to, not a command sent to it. Repoint and assign are the SAME operation: publish the fact. There is no `_device/<id>/repoint-now` and there must never be one; see [CXC-REPOINT-RETAINED-STATE] for the mechanism that makes a retained fact safe.
+- partial-update-is-allowed: an omitted key means UNCHANGED, because a broker that moves while storage does not is a legitimate operation and forcing an operator to retype two correct values is a typo generator. Omission must be by ABSENCE of the key, never by an empty value. This applies per tier independently.
+- but-the-gate-is-always-full: whatever subset changed, confirmation ([CXC-REPOINT-CONFIRM]) exercises BOTH planes — a config fetch AND a broker round trip. A device that reaches its broker but not its store renders nothing while looking connected, and that must fail the gate.
+- dp-cio-6-boundary: a binding is meaningful ONLY on an ADDRESSED transport (MQTT today, any future IP transport). On UART and CAN the wire IS the bus — there is no address to hold, and `bus_transport_selected_name()` already answers "which substrate". A framed-transport device stores no binding, announces `source=n/a`, and REFUSES a binding value written to it loudly rather than storing a value it can never use. Transport stays an implementation detail; the binding does not leak into it.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-PRECEDENCE] Where The Address Comes From, In Order
+
+- order: (1) PHYSICAL OVERRIDE — the boot button held at reset ([CXC-REPOINT-BUTTON]) forces the compiled default for THAT BOOT ONLY, bypassing both NVS tiers, and permanently erases the PER-DEVICE tier. (2) NVS PER-DEVICE `bus.d.*` when `bus.d.state == confirmed`. (3) NVS PER-DEVICE `bus.d.*` when `bus.d.state == trial` — a trial binding IS the binding for that boot; that is what makes it testable. (4) NVS GLOBAL `bus.g.*` when `bus.g.state == confirmed`. (5) NVS GLOBAL `bus.g.*` when `bus.g.state == trial`. (6) COMPILED DEFAULT — `compose-bus-rescue.local`, falling to the capability-gated captive-portal AP if that name fails to resolve ([CXC-REPOINT-MDNS], [CXC-REPOINT-CAPTIVE-PORTAL]).
+- deliberately-absent: there is no DHCP option, no mDNS lookup and no broadcast probe anywhere in the ORDINARY precedence chain (steps 1-5). Each would introduce a fourth party that can change where a device points without anyone deciding it. `.local` resolution enters ONLY at step 6, the rescue floor, where it is now load-bearing — see [CXC-REPOINT-MDNS].
+- nvs-namespace: `composeio` — the SAME namespace `bus_transport_select.cpp` and `config_source.cpp` already use. A second namespace would mean two places to erase during recovery.
+- keys: two tiers, same nine-field shape each. PER-DEVICE (`d`): `bus.d.name` `bus.d.mqtt` `bus.d.store` `bus.d.docs` (the binding); `bus.d.pname` `bus.d.pmqtt` `bus.d.pstore` `bus.d.pdocs` (the PREVIOUS confirmed binding); `bus.d.state` (`confirmed` | `trial`); `bus.d.seq` (u32); `bus.d.reverts` (u32, saturating); `bus.d.why`; `bus.d.deny` (the latched-refusal fingerprint, [CXC-REPOINT-BOUNCE]). GLOBAL (`g`): the SAME ten keys with `g` in place of `d` — `bus.g.name` through `bus.g.deny`.
+- key-length-note: NVS keys are limited to 15 characters. Adding the tier letter costs 2 characters over the original single-tier design: `bus.d.pstore`/`bus.g.pstore` are now 12, `bus.d.reverts`/`bus.g.reverts` are now 13 — one to two characters of slack remain, not ten. A builder extending EITHER tier's key set must check every addition against the 15-char ceiling; `ESP_ERR_NVS_KEY_TOO_LONG` fails at runtime and the natural coding of that failure is a silent skip.
+- source-is-announced: which of the SIX sources (button / per-device-confirmed / per-device-trial / global-confirmed / global-trial / compiled) supplied this boot's binding is a FACT ON THE WIRE, not a log line — see [CXC-REPOINT-ANNOUNCE]. `bus_transport_select.cpp`'s NVS-vs-default bit already established that "this board is on X" and "somebody told this board to be on X and it remembered" are different facts.
+- cross-tier-caching: a publish that targets a tier BELOW the one currently active is still validated and WRITTEN to that tier's NVS slot — so it is ready the instant precedence falls through to it — but it does NOT arm a trial or trigger a restart. Only a change to the ACTIVE tier (the highest-precedence tier with a stored value) ever triggers commit-confirmed. This is what makes "publish a new global default while some boards are individually pinned" free and safe: pinned boards store the new global quietly and adopt it automatically, without a reboot, the moment their pin is cleared.
+- button-clears-per-device-only: the escape hatch erases ONLY the per-device tier. The global tier is left untouched — a personal reset must not silently un-assign the fleet. This is a spec-writer default, not part of the locked decision; see [DD-REPOINT-BUTTON-VS-GLOBAL] for the case it leaves open (a device stranded because the GLOBAL binding itself is bad) and the alternative the architect may prefer.
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## 3. Commit-Confirmed — The Non-Negotiable
+
+### [CXC-REPOINT-COMMIT-CONFIRMED] JunOS `commit confirmed`, And That Is The Right Precedent
+
+- active-tier-defined: the ACTIVE TIER is whichever tier [CXC-REPOINT-PRECEDENCE] currently selects — per-device if it has a stored value, else global, else compiled. Everything below in this section (`p*`, `state`, `seq`, `reverts`) refers to the ACTIVE TIER's own fields (`bus.d.*` or `bus.g.*`), never both at once, and never the compiled floor, which has no trial state because it cannot be written.
+- hazard: one wrong value in a fleet-wide global change and EVERY un-pinned device leaves simultaneously, and the channel you would use to recall them is the one they just left. That is the retained-restart hazard already live on this broker (`_device/(a device id, not published)/restart`, measured `val: 1`, retained) except IRREVERSIBLE — a fleet-wide restart costs 30 seconds, a fleet-wide bad binding change costs eight USB cables.
+- precedent: JunOS `commit confirmed <minutes>` — the router applies a candidate configuration and rolls it back automatically unless a human confirms from the OTHER SIDE of the change. It exists for exactly this failure: a change to the management path that succeeds locally and destroys the operator's ability to observe it. A bus-binding change IS a management-path change.
+- state-machine: on a change to the ACTIVE TIER's retained fact — a new publish that DIFFERS from the currently confirmed value, per [CXC-REPOINT-RETAINED-STATE]'s value-compare rule — the device writes the active tier's `p* <- current binding`, `* <- new binding`, `state <- trial`, `seq++`, commits, publishes a departure notice on the CURRENT bus, and restarts. On the trial boot it arms a one-shot revert timer BEFORE bringing up the network, attempts the new binding, and either CONFIRMS ([CXC-REPOINT-CONFIRM]) or REVERTS ([CXC-REPOINT-REVERT]).
+- the-invariant: the active tier's `p*` is NEVER overwritten while its `state == trial`. A device is therefore only ever in one of two bindings on that tier — the one it had, or the one it was told. There is no third state to be lost in.
+- ordering-is-load-bearing: the timer is armed BEFORE `wifi_init()`, not after a connect attempt. Armed after, a hang in DHCP or in the TLS handshake never reaches the arming code and the device sits in a trial binding forever with no revert scheduled — a failure that presents as a dead board rather than as a revert.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-CONFIRM] Confirmation Is A ROUND TRIP, Because A Publish Proves Nothing
+
+- requires-both: (a) a config fetch from the NEW active-tier `store` that returned HTTP 200 with a non-empty body, AND (b) a round-trip echo through the NEW active-tier `mqtt`.
+- why-a-publish-is-not-evidence: esp-mqtt's `esp_mqtt_client_publish` at QoS 0 returns success once the message is queued to the socket. That proves a TCP connection, not a listener. And a successful CONNACK proves a broker exists at that address — NOT that it is the RIGHT broker. An address typo that lands on some other MQTT service on the LAN would CONFIRM under a publish-only gate and the device would be silently assigned to a stranger's bus. This is `[CXC-VISION-EPISTEMICS]` exactly: an instrument that can only report SUCCESS is not an instrument.
+- the-echo-mechanism: the device publishes `_device/<id>/bus_confirm` carrying the active tier's `seq`, having subscribed to that same namespace, and requires to RECEIVE ITS OWN VALUE BACK. That is a full traversal — TCP, CONNACK, SUBACK, PUBLISH out, broker fan-out, PUBLISH in.
+- why-this-is-cheap-here: MQTT 3.1.1 has no no-local option, so the broker echoes a client's own publication straight back to it. This codebase has ALREADY MEASURED that echo and documented it as a nuisance — `bus_transport_select.cpp:247-264` describes it producing an `ESP_LOGE` every 60 seconds on every board. The nuisance is the instrument. No new broker behaviour is required and nothing needs to be running on the far end except the broker itself.
+- on-confirm: the active tier's `state <- confirmed`, cancel the timer, publish the binding announce. `p*` is RETAINED, not cleared — it is the one-step undo and it costs nothing to keep.
+- negative-control-built-in: point a trial at a TCP port that ACCEPTS but is not a broker (`nc -l 1883`). CONNACK never arrives, the echo never arrives, the device reverts. A gate that passes this test is not measuring what it claims to measure.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-REVERT] The Timer Fires, The Device Goes Home And SAYS WHY
+
+- default-window: 120 seconds ([DEC-(a private host name, not published)-COMMIT-CONFIRM-WINDOW-120S] — David's ruling, a deliberate deviation from this spec's original 90 s recommendation). Basis — measured boot-from-cached-scene is 607 ms and boot-over-the-bus is 1,630 ms ([CXC-CONFIG-BUS-MEASURED]); WiFi association plus DHCP plus DNS on this fleet is single-digit seconds. 120 s is roughly 74x headroom over the measured boot-over-bus path, and the asymmetry deliberately favours generosity — a false revert costs a cheap bounce, a false confirm costs a truck roll.
+- overridable: `confirm=<seconds>` in the payload, CLAMPED to [30, 600]. Out-of-range is CLAMPED AND REPORTED, never silently accepted — an operator who typed `confirm=5` gets 30 and is told so, because the alternative is a fleet that reverts before DHCP finishes and reads as a broken feature.
+- on-timeout: swap the active tier's `* <- p*`, `state <- confirmed`, `reverts++`, commit, restart.
+- the-reason-string-is-the-deliverable: after reverting, the device publishes on the OLD bus `_device/<id>/status` = `bus REVERTED from <name>: <reason>` where reason is one of `no-wifi`, `no-dns`, `store-unreachable`, `store-http-<code>`, `broker-no-connack`, `broker-no-echo`, `timeout`. ⛔ A revert without a reason is a device that mysteriously did not move, and the operator's next action is to re-publish the identical value. The reason is what makes the second attempt different from the first.
+- reason-capture-crosses-a-reboot: the reason is determined on the TRIAL boot and reported on the boot AFTER the revert. It must therefore be written to NVS (the active tier's `why`, a short string) before the restart. A reason held only in RAM is a reason that does not exist.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-BOUNCE] Three Reverts To The Same Target And The Device REFUSES It
+
+- hazard: a target that is genuinely good but intermittently slow produces an infinite bounce — trial, revert, operator republishes, trial. Each cycle costs a reboot and the operator sees a device that "sometimes works", which is the hardest possible fault to reason about.
+- rule: after THREE consecutive reverts away from the same target on a given tier (compared by binding fingerprint, [CXC-REPOINT-ANNOUNCE]), the device latches that tier's `deny` = that fingerprint and REFUSES any further trial toward it, publishing `bus=<name> REFUSED (3 reverts: <last reason>)`.
+- cleared-by: a change to a DIFFERENT target on that tier, or the button escape hatch (for the per-device tier's latch). Not by time — a self-clearing refusal is a refusal that re-enters the loop at 3am.
+- idiom: this is `MisconfiguredTransport`'s posture ([CXC-BOARD-HW-UART-SLAVE]) applied to an address — refuse loudly and stay reachable, never fall back silently and never panic-loop.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-SINGLE-TRIAL] A Second Change During A Trial Is REFUSED, Not Queued
+
+- rule: while the ACTIVE TIER's `state == trial`, a further publish to THAT SAME tier's namespace is refused with `bus=<name> REFUSED (trial in progress, seq <n>)`. A publish to the OTHER tier is accepted and cached per cross-tier-caching, since it does not touch the trial already in progress.
+- why: accepting a second change to the trialling tier would overwrite its `p*` with the trial binding, destroying the last KNOWN-GOOD binding and making the device strandable in exactly the way the whole mechanism exists to prevent. Two changes to the same tier inside the confirm window is an operator correcting a typo, and the correct response to that is "wait for the window", not "lose the way home". Separating the tiers means a global-tier change during a per-device trial (or vice versa) is never forced to wait at all.
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## 4. The Wire
+
+### [CXC-REPOINT-NAMESPACES] `_device/<id>/bus` And `_device/broadcast/bus`
+
+- targeted: `_device/<id>/bus` — the PER-DEVICE tier. `<id>` is the device's config id, the same id keying `bus://assets/displays/<id>.compose.yaml`.
+- blanket: `_device/broadcast/bus` — the GLOBAL tier. Every device subscribes to it; adoption is governed entirely by [CXC-REPOINT-PRECEDENCE], not by a value-matching guard — see the superseded [CXC-REPOINT-FROM-GUARD]. ⚠ This uses the `_device/broadcast/*` shape (as `_device/broadcast/announce` does), NOT the `_device/restart` shape. `announce.cpp:60-70` already records that `_device/broadcast/*` is the better form because it cannot collide with a device literally named `bus`, and that `_device/restart` is the one that should eventually move. A NEW namespace has no field devices to strand, so it adopts the better form immediately.
+- subscription: two exact namespaces via `[SPEC:CXC-PATSUB]`, never a `_device/*` glob — one namespace per distinct meaning ([CXC-PS-GRANULARITY]). Both are RETAINED — a device receives its current fact immediately on connect, which is what lets a device that was offline during a change adopt it on reconnect with no resend ([CXC-REPOINT-PARADOX]).
+- ack-namespace: a device reports its own state in ONE place — `_device/<id>/status`, the same status namespace `restart.cpp` and `bus_transport_select.cpp` already publish to — separate from the two topics that carry WHAT the fleet believes its binding should be.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-PAYLOAD] A `key=value` String, Parsed By The Idiom Already In The Tree
+
+- form: `bus=<name> mqtt=<uri> store=<url> docs=<url> confirm=<seconds>`
+- example: `bus=maker mqtt=mqtt://(a private LAN address, not published):1883 store=http://(a private LAN address, not published):8420 docs=http://(a private LAN address, not published):8421 confirm=120`
+- retained-not-command: this is the RETAINED VALUE of the topic, published via the `state` message type — see [CXC-REPOINT-RETAINED-STATE]. It is never a fire-and-forget instruction; the value published IS the fact from that point forward, until superseded by a new publish.
+- parser: the same one-line `name key=value` scanner `bus_transport_on_bus_value` already implements (`bus_transport_select.cpp:284-328`). Do not write a second parser and do not reach for JSON — the existing one is host-testable, allocation-free and already carries the right failure behaviour.
+- unknown-keys-are-reported: never ignored. `bus_transport_select.cpp:321-326` sets this rule and the reason is measured: a typo'd key that silently does nothing leaves an operator debugging a link that was never reconfigured. An unknown key makes the ack read `(UNKNOWN KEY IGNORED)`.
+- required: `bus=` (the name) plus at least one of `mqtt=` `store=` `docs=`. A published value carrying only `bus=` is a RENAME and is refused — renaming a binding without changing it is a no-op that would burn a reboot.
+- validation-before-write: a URI must begin `mqtt://` or `http://`, must contain a host, and must be under 96 bytes. A malformed value is REFUSED, ACKED as refused, and NOTHING IS WRITTEN — the `config_source_set_selection` posture exactly. Refusing at write time is what keeps a typo from ever reaching the state machine.
+- size: ~100 bytes, well inside DP-CIO-18's 256-byte guideline and inside UART's 252-byte value limit. ⛔ It does NOT fit a classic CAN frame and `CanTransport::publish_state` will refuse it loudly — which is correct and already the established behaviour for oversize values, and moot besides, because a CAN device holds no binding ([CXC-REPOINT-BINDING] dp-cio-6-boundary).
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-FROM-GUARD] SUPERSEDED — Was: The Blanket Form Required `from=`
+
+- change: "The blanket form no longer carries or checks a `from=` field. Population targeting is done by TIER (publish to the per-device namespace to move one board regardless of what it currently believes; publish to the global namespace to move the fleet default), not by matching a device's self-reported current binding name."
+- context_for_change:
+  - prior_state: "`from=` was MANDATORY on `_device/broadcast/bus`; a device applied a blanket command only if its current binding name equalled `from`, buying idempotency (a moved device no longer matches) and population safety (a device on another bus is structurally immune)."
+  - reasoning: "Under the state model the SAME two properties fall out of the tier system for free and more reliably: idempotency comes from the value-compare rule in [CXC-REPOINT-RETAINED-STATE] (an unchanged retained value never re-triggers a trial, regardless of which tier), and population safety comes from precedence itself (a device with a confirmed PER-DEVICE pin ignores GLOBAL-tier changes entirely, whatever name it currently believes it has). `from=` trusted a device's SELF-REPORTED name — a claim; precedence trusts its actual STORED tier state — a fact the device cannot misreport."
+  - rejected_alternative: "Keep `from=` as an additional belt-and-suspenders check on top of tier precedence. Rejected as redundant complexity: it re-adds exactly the state (a device's belief about its own 'current bus name') that the fingerprint-based [CXC-REPOINT-ANNOUNCE] already treats as untrustworthy for the same reason a name can lie."
+  - counter_argument: "A malicious or buggy global publish could still move every un-pinned device at once, which is the exact fleet-wide hazard `from=` existed to bound."
+  - counter_response: "That hazard is bounded by [CXC-REPOINT-COMMIT-CONFIRMED] instead — commit-confirmed applies uniformly to the GLOBAL tier now (a global change is itself trialled per device, with automatic revert), which `from=` never provided; a bad global value self-heals per device within the confirm window rather than requiring an operator to have guessed the right `from=` value in the first place."
+  - invalidating_assumption: "That every device always has SOME confirmed tier value that reflects reality. A device stuck mid-trial or freshly erased (button) briefly has no confirmed tier at all; [CXC-REPOINT-PRECEDENCE] and [CXC-REPOINT-SINGLE-TRIAL] cover that window."
+  - implication: "The `composeio fleet repoint --all` tool flag no longer requires `--from` — see [CXC-REPOINT-TOOLING]."
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-NON-RETAINED] SUPERSEDED — Was: MUST Be Non-Retained; The Binding Is Retained STATE, Not A Command
+
+- change: "The binding fact MUST now be published RETAINED, on the `state` message type, exactly as every other standing fact on this bus is. There is no non-retained requirement and no CONFIG_PUSH widening prerequisite."
+- context_for_change:
+  - prior_state: "This node originally ruled the repoint command MUST be non-retained, because a retained repoint would re-fire on every future broker connect — including for a device that just reverted — producing a permanent bounce that [CXC-REPOINT-BOUNCE] would then latch as a refusal. Satisfying that rule required widening the firmware's control-plane sieve to accept `CONFIG_PUSH` ([DD-REPOINT-CONFIG-PUSH-WIDENING]), because `python/composeio/transport_mqtt.py:61` hard-retains every `state` message and the firmware accepted only `State`/`Heartbeat`."
+  - reasoning: "[DEC-BUS-BINDING-IS-STATE-NOT-A-COMMAND]: that original reasoning was about a retained COMMAND — an instruction obeyed once, the exact sibling of the literally-latched `_device/(a device id, not published)/restart`. A binding STATE is ABSORBING: once a device adopts a binding it is ON that binding and never treats a re-delivery of the SAME value as an instruction to re-trial. The bounce concern is an artifact of the command framing and evaporates under the state model, given the value-compare rule below. This is [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER] applied to the binding, and the device owns adopt-try-confirm-fallback as a leaf ([DX-LEAF-OWNS-BEHAVIOR]) — no handler is written anywhere else."
+  - rejected_alternative: "Complete the CONFIG_PUSH widening and keep the command framing. Rejected — see [CXC-REPOINT-FROM-GUARD]'s supersession for the sibling piece of this same reversal, which removed the last reason a command-shaped envelope was needed."
+  - counter_argument: "Doesn't a device still restart on EVERY reconnect if reconnect delivers the retained value again?"
+  - counter_response: "No — see [CXC-REPOINT-RETAINED-STATE]'s value-compare rule: the retained value is compared byte-for-byte against the ALREADY-CONFIRMED binding on receipt, at ANY time (not only at boot), and an identical value is a silent no-op. Only a value that DIFFERS from what is confirmed arms a trial. A reconnect that re-delivers the SAME retained fact changes nothing."
+  - invalidating_assumption: "That the sanctioned CLI's retain policy (`RETAIN_BY_TYPE[STATE] = True`) and the firmware's accepted message types stay as measured. If either changes, re-verify that `state` is still the retained, accepted path for this namespace."
+  - implication: "[DD-REPOINT-CONFIG-PUSH-WIDENING] is discharged AS A BLOCKER for this spec's bench session. It remains open, independently, for `_device/*/restart`'s own live retained-restart defect ([CXC-REPOINT-AMEND-RESTART]) — that defect is real, still unfixed, and this spec does not fix it; it simply no longer needs fixing FIRST."
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-RETAINED-STATE] The Binding Is Retained STATE — Published, Not Sent
+
+- rule: both binding namespaces (`_device/<id>/bus`, `_device/broadcast/bus`) are published RETAINED, via `MessageType.STATE` — already `RETAIN_BY_TYPE[STATE] = True` in `python/composeio/transport_mqtt.py:61`, and the firmware already accepts `State` on control namespaces (`bus_mqtt.cpp:167-168`). No message-type change and no control-plane sieve widening are required to ship this spec.
+- value-compare-is-the-safety-mechanism: MUST — on receipt of a retained (or live) value on the ACTIVE tier's namespace, the device compares it byte-for-byte against that tier's currently CONFIRMED binding BEFORE doing anything else. An identical value is a no-op — no write, no trial, no restart. Only a value that DIFFERS arms [CXC-REPOINT-COMMIT-CONFIRMED]. This is the mechanism that makes retain safe: it is what makes the binding ABSORBING rather than re-fired, and it is the direct answer to the hazard [CXC-REPOINT-NON-RETAINED] used to worry about.
+- age-contract: a retained binding is subject to the SAME age contract every retained fact on this bus now carries — [DEC-IMPLEMENT-MQTT-RETAIN-WITH-AN-AGE-CONTRACT]: MQTT 5 Message Expiry Interval where the broker negotiates MQTT 5, else periodic re-publish at a bounded interval. This spec does not re-derive that contract; it inherits it. PRE-INTEGRATION QUESTION: does the paho/mosquitto path on this fleet actually negotiate MQTT 5, or silently fall back to 3.1.1? Unanswered as of this revision — see the evidence slot on [CXC-REPOINT-AC-ABSORBING].
+- why-a-command-needed-non-retain-and-a-state-fact-does-not: a COMMAND has no notion of "already applied" — replaying it is replaying an instruction. A STATE FACT is compared against what is already true, so replaying it (which retain necessarily does, by design, to every new subscriber) is inert unless something changed. This distinction is the entire resolution of [CXC-REPOINT-NON-RETAINED]'s original hazard, and it generalizes: any future retained control fact on this bus should carry the same value-compare rule before it is trusted to be safely retained.
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## 5. Recovery — A Device Must Never Be Strandable
+
+### [CXC-REPOINT-COMPILED-DEFAULT] The Compiled Default Stays, Now Names A Rescue HOSTNAME, And Is Load-Bearing
+
+- rule: `wifi_config.h`'s three `#define`s REMAIN and become the permanent floor of the (now six-step) precedence chain — the answer of last resort below BOTH NVS tiers.
+- why-this-is-a-positive-choice: it is the one address that cannot be corrupted by a bus message, a bad NVS write or a flash erase, because changing it requires the thing that is always available — physical access and a rebuild. Every other layer is remotely mutable; this one is not, and a recovery path must not share a failure mode with the thing it recovers from.
+- which-address-it-should-hold: `compose-bus-rescue.local` — a HOSTNAME, not an IP ([DEC-(a private host name, not published)-RESCUE-HOSTNAME-AND-CAPTIVE-PORTAL], overruling this spec's original recommendation to keep the raw IP `COMPOSEIO_FW_DOCUMENT_STORE_URL` and commit it into a tracked header). A compiled default resolving to a NAME rather than a literal address is new load-bearing surface this spec did not previously carry — see [CXC-REPOINT-MDNS] for why that resolution path is now a PRE-INTEGRATION QUESTION rather than an optional experiment, and [CXC-REPOINT-CAPTIVE-PORTAL] for the second-stage fallback when it fails.
+- two-stage-not-one: the compiled floor is no longer a single value; it is a TWO-STAGE fallback in its own right — resolve the name, and if resolution fails, raise the captive-portal AP ([CXC-REPOINT-CAPTIVE-PORTAL]). Only a board incapable of vending a SoftAP (announced via a capability flag) stops at "the name failed to resolve, reflash it."
+- consequence-for-the-gitignored-header: `cyd/include/wifi_config.h` is gitignored, so the fleet's real rescue address lives in one untracked file on one Mac. That was a moderate risk when the value was merely correct; it is a risk now that the file carries a NAME whose resolvability nobody has bench-verified. See [DD-REPOINT-RESCUE-ADDRESS].
+- part-of: [SPEC:CXC-REPOINT]
+- rescue-floor-correction: ⛔ SUPERSEDED 2026-08-20 by [DEC-REPOINT-RESCUE-FLOOR-IS-COMPILED-IP]: the compose-bus-rescue.local / .local mDNS rescue described in this node is DROPPED. The P-b firmware recon MEASURED that .local does not resolve on the 5 cyd/ ESP-IDF boards (their wifi_config.h hardcodes a bus-master IP for exactly this reason). The reliable rescue floor is the COMPILED-DEFAULT IP; the captive portal is a capability-flag seam only. The SHIPPED P-b firmware (both trees, main f3570e7) implements the compiled-IP floor and does NOT resolve .local — a builder reading this node must NOT reintroduce the .local rescue path. A clean rewrite of this node's body to the compiled-IP floor is a pending factlattice-editor follow-up; this note is the inline guard until then.
+
+### [CXC-REPOINT-FALLBACK] A Confirmed Binding That Dies Falls Through The Chain — Without Forgetting
+
+- case: the ACTIVE tier's binding was confirmed and correct, and then the target host died permanently. Commit-confirmed does not cover this — the change was proven good at the time it was made.
+- rule: a device whose ACTIVE tier fails both planes for FIFTEEN consecutive minutes falls through to the NEXT tier DOWN in [CXC-REPOINT-PRECEDENCE] that has a stored, confirmed value (the global tier, if the per-device tier just died; otherwise the compiled floor) for the remainder of that boot, and announces `bus=<name> FALLBACK to <next-tier> (unreachable 15m)`.
+- nvs-is-not-overwritten: ⛔ the device still BELIEVES it belongs to the tier that failed, at every tier it fell through. Overwriting NVS here would silently re-home a fleet during a broker outage, and when the broker came back nothing would return to it. A fallback is a temporary vantage point, not a decision.
+- why-15-minutes: long enough that a broker restart, a DHCP lease renewal or an AP reboot does not trigger it; short enough that a dead host does not cost a working day. It is also long enough to be unambiguous in a log.
+- retry: the device continues attempting its ORIGINAL active-tier binding on the normal reconnect cadence while running on the fallback tier, and returns to it the moment both planes answer there again.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-BUTTON] The Physical Escape Hatch — The Only Answer That Needs No Bus At All
+
+- mechanism: hold the board's BOOT / GPIO0 button at reset for more than 3 seconds. The device ERASES ONLY the PER-DEVICE tier (`bus.d.*`) from NVS, forces the compiled default — bypassing BOTH NVS tiers — for THAT BOOT ONLY, and announces `bus=compiled (NVS CLEARED BY BUTTON)`. The GLOBAL tier is left untouched; see [CXC-REPOINT-PRECEDENCE]'s button-clears-per-device-only rule and [DD-REPOINT-BUTTON-VS-GLOBAL] for the case this leaves open.
+- why-it-is-mandatory: there is NO OTA anywhere in this firmware — verified. Without this, the recovery procedure for a device pointing at nothing is "find it, unmount it, cable it, reflash it". With it, the recovery procedure is "hold a button". The mechanism costs a GPIO read at boot and it is the difference between a bad address being an inconvenience and being a truck roll.
+- feedback-is-required: the erase MUST be visible without a serial cable — the panel shows a full-screen `BUS CONFIG CLEARED` for 2 seconds before continuing to boot. ⛔ A silent erase is indistinguishable from a button that did nothing, and the operator's next action after an ambiguous button press is to hold it longer on a device that already worked.
+- per-board: the GPIO is a `board_profile.h` field. A board with no usable button declares the field absent, its answer to this case is honestly "reflash", and that fact is announced (`flags` bit 0, [CXC-REPOINT-ANNOUNCE]) so the fleet report says WHICH devices lack an escape hatch rather than implying all have one — [DEC-(a private host name, not published)-ESCAPE-HATCH-WHERE-GPIO-DECLARED], now ratified in the same shape this spec originally proposed.
+- guard: 3 seconds, not a tap. The BOOT button is also the download-mode strap; a short press at reset must retain its existing meaning.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-MDNS] `.local` Is Now LOAD-BEARING — The Rescue Floor Depends On It Resolving
+
+- the-claim-in-circulation: "mDNS was deliberately removed (`wifi.cpp:20`), so a device cannot resolve `COMPOSEIO_MQTT_BROKER`."
+- the-distinction-that-was-missed: ⚠ what was removed is the mDNS RESPONDER — the component that ADVERTISES `cyd.local`, absent from the ESP-IDF v5.x bundle. The RESOLVER is a separate facility living in lwIP, and `CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y` is present in `sdkconfig.cyd`, `sdkconfig.qualia_display`, `sdkconfig.hosyond_s3` and `sdkconfig.waveshare_c6` — all four WiFi boards. That symbol makes lwIP send one-shot multicast queries for `*.local` names through `getaddrinfo`, which is the path `esp_http_client` and `esp-mqtt` both take.
+- confidence: 0.5
+- evidence-grade: INFERRED FROM CONFIG, NOT MEASURED ON HARDWARE. This was previously an OPTIONAL experiment for the ordinary binding. [DEC-(a private host name, not published)-RESCUE-HOSTNAME-AND-CAPTIVE-PORTAL] makes it the RESOLUTION PATH FOR THE COMPILED FLOOR ITSELF — the answer of last resort now depends on the thing this node has never measured on real silicon. This is a PRE-INTEGRATION QUESTION per [DX-SPEC-CARRIES-ITS-EVIDENCE] and MUST be answered before the bench flash, not after.
+- the-cheap-experiment: on ONE board, set the per-device binding to `store=http://NODERED_HOST:8420` and publish. Confirmation either happens or the device reverts with reason `no-dns` within 120 seconds. ⭐ The commit-confirmed machinery makes this experiment FREE and SELF-CLEANING — that is a second-order payoff of the design worth noticing.
+- negative-control: the same board pointed at `http://definitely-not-a-host.local:8420` MUST revert with `no-dns`. If it reverts with `store-unreachable` instead, the resolver is returning something for a name that does not exist and the whole result is void.
+- rescue-boot-timeout: PROPOSED default — if `.local` resolution has not succeeded within 10 seconds of a compiled-floor boot, treat it as failed and raise the captive portal (on boards capable of it) rather than retrying indefinitely. This value is NOT bench-verified; flag it as tunable pending the hardware measurement above.
+- if-it-works: the ratified rescue design accepts the risk this node used to warn against — `compose-bus-rescue.local` IS the compiled default now. The captive-portal AP ([CXC-REPOINT-CAPTIVE-PORTAL]) exists specifically as the fallback for the case a name-based rescue floor cannot resolve with zero infrastructure.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-CAPTIVE-PORTAL] The WLED-Style Rescue: SoftAP + Manual Entry, Capability-Gated
+
+- trigger: raised ONLY when the compiled floor is reached (every NVS tier exhausted or unconfirmed) AND `compose-bus-rescue.local` fails to resolve within the rescue-boot-timeout ([CXC-REPOINT-MDNS]).
+- capability-gate: ONLY on a board whose `board_profile.h` declares the budget to vend a SoftAP (a new capability field, parallel to the escape-hatch GPIO field). A board that cannot (e.g. a CH32V003-class part, or any board without the flash/RAM budget for an HTTP server) does NOT attempt it and stops at the compiled default's un-resolved state — its honest answer is "reflash it", announced via a capability flag exactly like the escape-hatch flag — [DEC-(a private host name, not published)-RESCUE-HOSTNAME-AND-CAPTIVE-PORTAL].
+- ssid: `composebus-recovery-NNNNN`, the WLED convention. PROPOSED: `NNNNN` = the last 5 hex digits of the device's STA MAC, for fleet-wide SSID uniqueness without a registry. PRE-INTEGRATION QUESTION: confirm whether this codebase already has a canonical short-id derivation to reuse instead (in the `build_fingerprints.json` style) rather than inventing a second one.
+- portal-contract: the AP serves a captive webpage (DNS-hijack redirect, the standard captive-portal pattern) with a form for the new ComposeBus binding (`name`/`mqtt`/`store`/`docs`, the SAME record shape as [CXC-REPOINT-BINDING]) AND WiFi `ssid`/`password`. Submission validates each field with the SAME rules as [CXC-REPOINT-PAYLOAD] (URI shape, host present, size ceiling) — a malformed submission is REFUSED with a visible on-page error and NOTHING IS WRITTEN, the same fail-closed posture as every other write path in this spec.
+- on-submit: writes the WiFi credentials to wherever this firmware already persists them at initial provisioning — PRE-INTEGRATION QUESTION: this spec assumes such a path exists and does not invent a second WiFi-credential store; confirm before build — and writes the submitted binding directly to the PER-DEVICE tier as CONFIRMED, not trialled: a human just typed it in on THIS board over a link only this board can see, so there is no round trip left to prove; the physical presence IS the round trip. Then restarts.
+- exit-without-submission: PROPOSED — the AP has its own timeout (5 minutes, unverified) after which it drops back to attempting `compose-bus-rescue.local` on a cadence, rather than holding the AP open forever and leaving the device permanently off the bus it is trying to rescue itself onto.
+- census-visibility: ⛔ while the AP is up, the device is NOT on ComposeBus — it has no uplink, so it CANNOT publish `_device/<id>/bus` during this state. `composeio fleet`'s existing absence-is-the-fault-report behaviour ([CXC-REPOINT-AC-CENSUS]) already covers this correctly: a device in captive-portal rescue reports as ABSENT, not as a new announce state. Do not add a `state=softap` value to [CXC-REPOINT-ANNOUNCE] — there is no channel to carry it while it would be true.
+- evidence-slot: EMPTY — this entire node is UNBUILT and UNMEASURED. [DEC-(a private host name, not published)-RESCUE-HOSTNAME-AND-CAPTIVE-PORTAL] records this as its own accepted open risk. See [CXC-REPOINT-AC-CAPTIVE-PORTAL].
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## 6. Observability
+
+### [CXC-REPOINT-ANNOUNCE] `_device/<id>/bus` — A u32 Fingerprint, Because A Name Can Lie
+
+- requirement: a human must be able to ask "which bus is this device on?" and get an answer. Today nothing on the wire says.
+- namespace: `_device/<id>/bus`, joining the five in `announce_pack.h`, on the SAME periodic cadence. Periodic, never on-change — a MISSING publication is itself the fault report ([CXC-BOARD-HW] workstream 0.2).
+- encoding: a u32 published as 8 lowercase hex digits, exactly the `build` and `health` idiom already established (and for the same reason: `publish_number` destroys 32 bits on both the framed and the `%g` paths).
+- layout: bits 31..16 `fingerprint` = CRC-16 of the canonical binding string of the ACTIVE tier (`"<mqtt>|<store>|<docs>"`); bits 15..12 `state` (0 unknown, 1 confirmed, 2 trial, 3 fallback, 4 refused); bits 11..8 `source` (0 unknown, 1 compiled, 2 nvs-per-device, 3 nvs-global, 4 button-cleared, 5 n/a-framed); bits 7..4 `reverts` of the ACTIVE tier, saturating at 15; bits 3..0 `flags` (bit 0 = no escape-hatch button on this board, bit 1 = no captive-portal capability on this board, bits 2-3 reserved).
+- why-a-fingerprint-and-not-the-name: ⭐ two devices on the same bus show the SAME NUMBER, and a device that drifted shows a different one — WITHOUT anyone having to trust a label. A name is a claim the device makes about itself; a fingerprint of the actual addresses in use is derived from what it is actually doing. The migration plan's §6.6b hazard is precisely a stale literal that is no longer wrong but silently means "the other bus", and only a value derived from the real addresses catches that.
+- name-resolution-is-tooling: `composeio fleet` resolves fingerprint to name via a checked-in `cyd/bus_bindings.json`, the same fingerprint-map pattern `cyd/build_fingerprints.json` already uses for builds. The wire never carries the name.
+- census-answer: `composeio fleet` gains a `bus` column. A fleet on one bus shows one fingerprint repeated; a split fleet shows the split; a device in `trial`, `fallback`, or currently OFFLINE for captive-portal rescue (reported ABSENT, per [CXC-REPOINT-CAPTIVE-PORTAL]) is visibly so.
+- can-limitation-inherited: ⚠ 8 hex digits do not fit a classic CAN frame and `CanTransport::publish_state` refuses it — the SAME already-documented limitation `build` and `health` carry today, not a new one. A CAN device has no binding to report anyway and announces `source=5` (n/a).
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-TOOLING] `composeio fleet repoint` — The Name Lives In The TOOL, Not The Device
+
+- command: `composeio fleet repoint --to maker [--device <id> | --all] [--confirm 120] [--dry-run]`
+- name-expansion: the tool reads `cyd/bus_bindings.json` and expands `maker` to the full triple BEFORE publishing. ⛔ The wire always carries the addresses; a device cannot resolve a name and must never be asked to. Cheapest-node-owns-behaviour cuts the other way here — name resolution needs a registry, a registry needs storage, and storage is the thing the device is in the middle of losing.
+- dry-run-prints-the-payload: `--dry-run` prints the exact string that would go on the wire, so an operator reads the addresses before the fleet does.
+- all-needs-no-guard: `--all` publishes to the GLOBAL tier and needs no matching flag — population safety is now structural (precedence, not a value comparison); see the superseded [CXC-REPOINT-FROM-GUARD]. The tool still prints exactly what will change (`--dry-run`) because "structurally safe" is not the same as "obviously what you meant".
+- watches-the-outcome: after publishing, the tool subscribes on BOTH the old and the new bus and reports per device: confirmed, reverted (with reason), or silent. ⛔ Reporting only what appears on the NEW bus makes a revert indistinguishable from a device that was powered off — the two-bus watch is what tells them apart. For a `--all` publish, the tool additionally reports which devices did NOT move because they carry a per-device pin, since a global publish is expected to skip pinned boards rather than being treated as an error.
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## 7. Per Participant Class — The Mechanism Differs, The ANNOUNCE Does Not
+
+### [CXC-REPOINT-CLASS-ESP32] ESP32 Firmware — 8 Devices, The Full Mechanism
+
+- population: 8 physical WiFi devices (bounded by 8 provisioned `displays/` ids; 5 `device.yaml` profiles; 20 PlatformIO envs are build targets, not devices).
+- gets: everything in sections 2 through 6, including BOTH NVS tiers and the two-stage rescue floor. This is the only class that needs commit-confirmed, because it is the only class with no second channel.
+- one-time-cost: USB access per board, once.
+- files: new `bus_binding.cpp` / `.h` modelled on `config_source.cpp`, now carrying two tiers; `config_fetch.cpp:69`, `capture_server.cpp:78` and `bus_mqtt.cpp:392` read the ACTIVE tier's accessor instead of the macro; `announce.cpp` gains one field; `main.cpp` arms the timer before `wifi_init()`; a NEW `bus_rescue_portal.cpp` / `.h` (SoftAP + captive HTTP, capability-gated) for the boards that carry it.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-CLASS-CAN-BRIDGE] rpi5 CAN-MQTT Bridge — Repo-Sourced, And That Is A CONSTRAINT Not A Bug
+
+- binding: `MQTT_BROKER=COMPOSEIO_FW_DOCUMENT_STORE_URL` in `deploy/can_mqtt_bridge/composeio-can-bridge.env:19`.
+- the-constraint: ⛔ that file's own header states THE REPO IS THE SOURCE OF TRUTH — edits made on the host are overwritten by the next deploy. So a repoint is a REPO EDIT plus a redeploy, and the two-tier NVS binding system in this spec must never write it. Do not give this class a runtime repoint; it would create a value that the next deploy silently reverts, which is a worse failure than not having the feature.
+- repoint-action: `MQTT_BROKER=${COMPOSEIO_MQTT_BROKER:(a private host name, not published)}` is NOT available — systemd `EnvironmentFile` does no shell expansion (the file says so). So the repo edit is the mechanism, and the requirement on this class is only that it ANNOUNCE.
+- announce: publish `_bridge/<id>/bus` with the SAME u32 layout, on the existing `CAN_BRIDGE_STATUS_S` cadence beside `_bridge/<id>/forwarding`. `source` = 1 (compiled/file).
+- confirm: the bridge's own `_bridge/<id>/forwarding` appearing on the NEW broker within one `CAN_BRIDGE_STATUS_S` period. Negative control: stop the unit and verify the publication STOPS — a periodic publication whose absence is not checked is a heartbeat nobody takes.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-CLASS-KIOSK] rpi5 Carousel Kiosk — And The Trap Is The LAUNCHER, Not The Address
+
+- binding: `kiosk.py --broker NODERED_HOST` in `~/.config/wayfire.ini:68` — already a NAME, so a DNS or `/etc/hosts` change repoints it with no edit at all.
+- repoint-action: edit the line, or repoint the name. Add the `_device/carousel/bus` announce.
+- the-real-hazard: ⛔ the kiosk launches from a `wayfire.ini` autostart line, not a systemd unit. Restarting the process by hand PROVES the new command works and DOES NOT PROVE wayfire will launch it that way at login. Only a reboot tests the line that was actually edited. The same shape applies to `can0.service` (`Type=oneshot` / `RemainAfterExit=yes`).
+- so: the acceptance gate for this class is a COLD BOOT, and a pre-reboot check that passes is not evidence.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-CLASS-CONSOLE] Intelligence Console — Env, Plus One Announce
+
+- binding: env, via `services/service_hub/hub.py:700` and `:705`, both defaulting to `NODERED_HOST` — a name.
+- repoint-action: set `COMPOSEIO_MQTT_BROKER`. No code edit for the address itself.
+- add: the console publishes `_app/console/bus` with the same u32 layout, so the console appears in the same census as the devices. ⛔ Without it the console is the one participant that can be on the wrong bus while displaying a fleet report about the right one — the observer omitted from its own observation.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-CLASS-PYTHON] The Python/MCP Tier — STORAGE Is Solved, The BROKER Is NOT
+
+- storage: SOLVED, and better than "env-overridable". `python/composeio/resolve.py:22-23` defaults to a NAME (`http://NODERED_HOST:8420` / `:8421`) and every `bus://` and `doc://` reference in the tier resolves through it. A DNS change moves the whole tier with no code edit.
+- broker: ⛔ NOT solved, and this is a finding. `python/composeio/app.py:705` and `python/composeio/transport_registry.py:141` both default to `broker="localhost"` — not `NODERED_HOST`, not an env var. `fleet.py:112` does read `COMPOSEIO_MQTT_BROKER`, but `ComposeApp` does not.
+- consequence-already-being-paid: ⭐ this IS the documented "dead bridge on default launch" hazard. Composer must be launched with `COMPOSEUX_MQTT_BROKER=NODERED_HOST` because ConnectionModule defaults to `localhost`, and every session's driving instructions carry that workaround. It has been read as a Composer quirk; it is a two-line default in the shared tier.
+- repoint-action: `app.py:705` and `transport_registry.py:141` default to `fleet.DEFAULT_BROKER` (which is already `os.environ.get("COMPOSEIO_MQTT_BROKER", "NODERED_HOST")`). One import, two lines.
+- what-that-fixes-beyond-this-spec: the dead-bridge hazard disappears fleet-wide, and the Python tier gains the SAME repoint mechanism as the storage tier — one env var, no code edit, forever.
+- five-hardcoded-literals-remain: `DEFAULT_MQTT = "mqtt://COMPOSEIO_FW_DOCUMENT_STORE_URL:1883"` in `beepout_review.py:89`, `dsd_review.py:61`, `hookup_review.py:175`, `mcp_server.py:217` and `:292`. Same treatment, same line count.
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## 8. What This Amends
+
+### [CXC-REPOINT-AMEND-RESTART] Amends [CXC-ER-RESTART-BUS] — The Message Type
+
+- change: the firmware's control-plane sieve accepts `CONFIG_PUSH` in addition to `State` on control namespaces, and publishers move restart to `CONFIG_PUSH`.
+- context-for-change: `[CXC-ER-RESTART-BUS]` retained-boot-loop-guard REQUIRES a non-retained restart. `transport_mqtt.py:61` retains every `state` message and `bus_mqtt.cpp:167-168` accepts only `State` and `Heartbeat`, so the requirement is currently unsatisfiable by the sanctioned CLI. A live retained truthy restart on `_device/(a device id, not published)/restart` is the measured consequence.
+- invalidating_assumption: that the retain policy and the firmware's accepted-type set were independent choices. They are one constraint, and neither node states the other.
+- scope: this AMENDS a ratified node and is NOT applied by this spec — and, as of this revision, is no longer applied even indirectly: [CXC-REPOINT-RETAINED-STATE] means repoint itself never needed CONFIG_PUSH. This amendment stands purely on restart's own live retained-restart defect, decoupled from the bus-binding build.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AMEND-CONFIG-BUS] Amends [SPEC:CXC-CONFIG-BUS] — Strategy And Address Are Peers
+
+- change: `config_source` selects HOW config is fetched (`bus` / `http` / `cached`); `bus_binding` selects WHERE from — whichever tier is active (per-device, else global, else compiled). Both are NVS-resident, both are settable over the current link, both take effect on the next boot, and `config_source == http` is meaningless without a binding.
+- context-for-change: `[CXC-CONFIG-BUS-STRATEGY]` moved the strategy to NVS on the argument that the strategy cannot arrive by the strategy. The address has the identical property and was left compiled in — the argument was made once and applied to one of its two subjects.
+- interaction-a-builder-must-honor: with `config_source == cached` or `bus`, the store URL is unused and a change touching only `store=` must still be accepted and stored (it is the binding for a future `http` boot), but confirmation cannot exercise the store plane. In that case confirmation is the broker echo ALONE, and the ack MUST say `confirmed (broker only, config_source=<x>)` so a half-exercised gate never reads as a full one.
+- invalidating_assumption: that `config_source` and the binding are genuinely orthogonal. If a future strategy resolves its own endpoint (a `bus`-sourced config that carries a store URL), the two stop being peers and the precedence between them has to be decided rather than assumed absent.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AMEND-ANNOUNCE] Amends [SPEC:CXC-BOARD-HW] Workstream 0.2 — A Sixth Namespace
+
+- change: `_device/<id>/bus` joins `heartbeat` / `build` / `transport` / `scene` / `health`.
+- context-for-change: the 2026-08-12 census of `composeio/#` found ZERO `_device/*` namespaces, and workstream 0.2 closed that for identity, firmware and substrate. It did not close it for the RENDEZVOUS ADDRESS, because at the time the address was a compile-time constant and there was nothing to report.
+- invalidating_assumption: that the announce set has room for a sixth field on every substrate. It does not on classic CAN, where 8 hex digits already exceed a frame — so this amendment is only complete for MQTT and UART, and workstream F's value-type tag is what would close it.
+- parity-obligation: `announce_pack.h` is the SECOND implementation of a table whose first is `python/composeio/device_announce.py`, and `[env:native_announce]` compares them field-for-field in both directions. The new field must land in BOTH or the parity test fails — which is the designed behaviour and the reason the table has two implementations at all ([BP-TYPE-CODES]).
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## 9. Acceptance — Every Criterion Carries Its Negative Control
+
+### [CXC-REPOINT-AC-HAPPY] A Targeted Change Completes And Is Visible
+
+- machine: publish `_device/<id>/bus` RETAINED with a valid triple for a second broker. Within 120 s: `_device/<id>/status` = `bus=<name> trial`, then the device appears on the NEW broker, `_device/<id>/bus` announces `state=confirmed source=nvs-per-device`, and NVS `bus.d.state` reads `confirmed`.
+- negative-control: ⛔ the SAME value with `mqtt=` pointing at a reachable host with NOTHING LISTENING on 1883. The device MUST revert within 120 s with reason `broker-no-connack` and re-appear on the OLD broker. If it confirms, the gate is measuring a write and not a round trip.
+- glass: the panel renders its scene from the new store. A confirmed binding whose device shows a blank panel means the store plane was not exercised.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AC-IMPOSTOR] Confirmation Rejects A Listener That Is Not The Bus
+
+- machine: run `nc -l 1883` on the target host. Publish a binding pointing at it. The device MUST revert with `broker-no-connack` or `broker-no-echo`.
+- why-this-is-the-load-bearing-test: ⛔ it is the only test that distinguishes "something accepted my TCP connection" from "I am on the right bus". A gate that passes this scenario would silently assign devices to any open port on the LAN, and every symptom of that would look like a network problem.
+- negative-control-for-the-control: run a REAL broker on the same host and port; the device MUST confirm. A revert in both cases proves only that the gate is stuck closed.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AC-BLANKET] A Global Publish Moves Only The Un-Pinned Population
+
+- machine: with device A carrying NO per-device tier (governed by whatever the global or compiled tier currently is) and device B carrying a CONFIRMED per-device pin to some other bus, publish a new value on `_device/broadcast/bus`. A trials and adopts it; B does not restart at all.
+- negative-control: ⛔ re-send the IDENTICAL retained value after A has adopted it. NOTHING must happen on A — no reboot, no trial, no ack. If A trials again, the value-compare rule ([CXC-REPOINT-RETAINED-STATE]) is not being evaluated.
+- second-negative-control: verify B's `bus.g.*` NVS slot WAS updated to the new global value even though B never trialled it (cross-tier-caching). Clear B's per-device pin via the button and reboot B WITHOUT any fresh publish — B must come up on the CACHED global value immediately, proving it was received and stored, not merely ignored.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AC-RETAIN] SUPERSEDED — Was: The Command Does Not Persist In The Broker
+
+- change: "This criterion tested the OPPOSITE of the current rule. See [CXC-REPOINT-AC-ABSORBING] for its replacement."
+- context_for_change:
+  - prior_state: "verified the repoint command was NOT retained (`--retained-only` returned nothing)."
+  - reasoning: "The binding is now deliberately retained; the correct test verifies retain IS present and that it is SAFE to be present (the value-compare/absorbing rule), not that it is absent."
+  - invalidating_assumption: "That the reversal in [CXC-REPOINT-NON-RETAINED] holds."
+  - implication: "See [CXC-REPOINT-AC-ABSORBING]."
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AC-ABSORBING] A Retained Binding Does Not Bounce On Reconnect
+
+- machine: after a successful change, `mosquitto_sub -h <broker> -t 'composeio/global/_device/#' --retained-only -W 10` DOES return the `bus` topic for both the per-device and global namespaces, carrying the CURRENT confirmed value.
+- negative-control-inverted: power-cycle the confirmed device TWICE with the retained value UNCHANGED. It must NOT trial, must NOT restart into a trial state, and `bus.d.reverts` / `bus.d.seq` must be UNCHANGED across both cycles — this is the literal "absorbing" claim in [DEC-BUS-BINDING-IS-STATE-NOT-A-COMMAND] and the direct disproof of the old bounce hazard.
+- positive-change-control: publish a GENUINELY DIFFERENT retained value. The device MUST trial exactly once, not once per reconnect — reconnecting mid-trial (e.g. a WiFi blip) must not re-arm a second trial on top of the first.
+- evidence-slot: EMPTY pending the bench session — the value-compare rule is unbuilt and unmeasured as of this spec revision.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AC-BUTTON] The Escape Hatch Recovers A Device With No Bus At All
+
+- machine: write a garbage binding directly to the per-device NVS slot (bypassing the write path, which would refuse it). Power cycle — the device must fail to reach anything. Hold BOOT for 3 s at reset. It must boot on the compiled default and announce `source=4` (button-cleared).
+- glass: the `BUS CONFIG CLEARED` message is on the panel. Required, because the whole point is a recovery a human can perform without a serial console — and a recovery whose only feedback is on a serial console is not that recovery.
+- negative-control: ⛔ a SHORT press at reset must NOT clear NVS, and must retain its existing download-mode meaning. If a tap clears the binding, every download-mode entry silently un-homes the board.
+- per-device-only-negative-control: before erasing, confirm the device to a GLOBAL binding (not a per-device one). Trigger the button. The device must STILL boot on the compiled default for this ONE boot (the button bypasses both tiers), but on the NEXT normal (non-button) boot it must come up on the GLOBAL binding, not on the compiled default — proving the erase touched only the per-device tier.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AC-CENSUS] The Fleet Report Answers "Which Bus?"
+
+- machine: `composeio fleet` shows a `bus` column with a fingerprint per device; devices on one bus share one value.
+- negative-control: ⛔ repoint ONE device and re-run. That device's fingerprint MUST differ from the rest. A column where every device always agrees is a column that could be a constant — a fleet report that cannot show a split cannot show the fault it exists to find.
+- second-negative-control: power off one device and re-run. It must be reported ABSENT, not stale-but-present. A periodic announce whose absence is not detected is not a liveness signal ([CXC-BOARD-HW] workstream 0.2).
+- third-negative-control: put a capable device into captive-portal rescue ([CXC-REPOINT-CAPTIVE-PORTAL]) and re-run. It must ALSO be reported ABSENT, never as a synthetic new state — there is no channel for it to say otherwise while it has no uplink.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AC-BOUNCE] Three Reverts Latch A Refusal
+
+- machine: change a target three times to a value that accepts TCP and never CONNACKs. On the fourth attempt the device REFUSES without rebooting and acks `REFUSED (3 reverts: broker-no-connack)`.
+- negative-control: ⛔ a change to a DIFFERENT, GOOD target on the same tier must still be accepted while the refusal is latched. A latch that blocks all further changes has converted a bounce guard into the stranding it was built to prevent.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AC-RESCUE-MDNS] The Rescue Floor's Name Actually Resolves On This Silicon
+
+- machine: on a board with NO NVS binding on either tier (post-button-erase, or freshly flashed), power on with `compose-bus-rescue.local` reachable on the network. The device must resolve it and confirm within the rescue-boot-timeout, announcing `source=1` (compiled).
+- negative-control: point DNS/mDNS such that `compose-bus-rescue.local` cannot resolve (or is simply absent from the network). The device must fail resolution within the rescue-boot-timeout and — on a capability-gated board — raise the captive-portal AP ([CXC-REPOINT-AC-CAPTIVE-PORTAL]); on a non-capable board, it must sit on the unresolved compiled floor and announce accordingly, never crash or silently retry forever without saying so.
+- evidence-slot: EMPTY — this is the PRE-INTEGRATION QUESTION [CXC-REPOINT-MDNS] flags as unmeasured on real hardware; run this BEFORE choosing to depend on it further.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [CXC-REPOINT-AC-CAPTIVE-PORTAL] The SoftAP Rescue Actually Rescues
+
+- machine: force the compiled-floor name-resolution failure (above) on a capability-flagged board. Verify the SSID `composebus-recovery-<idsuffix>` appears; connect to it; the captive webpage is reachable; submit a valid binding plus WiFi credentials; the device restarts and comes up CONFIRMED on the submitted per-device binding.
+- negative-control: submit a malformed value (bad URI, oversized field). The page must show a visible error and NVS MUST be unchanged — verify by power-cycling and confirming the device is still in AP mode, not confirmed on garbage.
+- capability-gate-control: on a board WITHOUT the capability flag, confirm the AP is never raised at all, and the board's `flags` bit 1 reads set (no captive-portal capability) in [CXC-REPOINT-ANNOUNCE].
+- glass: a human actually completes the join flow on a phone or laptop, exactly as the WLED precedent this design cites is normally operated. A machine-only pass here would not prove the actual rescue path a stranded operator will use.
+- evidence-slot: EMPTY — entirely unbuilt. This is the highest-uncertainty node in this spec; [DEC-(a private host name, not published)-RESCUE-HOSTNAME-AND-CAPTIVE-PORTAL] names it as an accepted open risk, not a settled mechanism.
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## 10. Decisions Left To David
+
+### [DD-REPOINT-CONFIRM-WINDOW] RESOLVED — The Default Confirm Window Is 120 Seconds
+
+- decision: RESOLVED — [DEC-(a private host name, not published)-COMMIT-CONFIRM-WINDOW-120S] — 120 seconds, clamped [30, 600]. A deliberate deviation from this spec's original 90-second recommendation, carried directly into [CXC-REPOINT-REVERT].
+- lifecycle-position: decided
+- status: decided
+- rationale: measured boot-over-bus is 1,630 ms; 120 s is ~74x headroom, and the asymmetry favours generosity — a false revert costs a bounce, a false confirm costs a truck roll.
+- alternatives: (a) 30 s — rejected, it is inside the plausible range of a slow DHCP/AP-roam and would revert working changes; (b) 300 s — rejected, it triples the window in which a mis-aimed fleet is unreachable, for no measured benefit; (c) no timer, confirm-only-by-command — rejected, it is the footgun this whole section exists to remove.
+- invalidating_assumption: that WiFi association plus DHCP plus DNS plus config fetch plus broker connect stays inside a few seconds on this fleet. A board added on a congested AP, or a WPA-Enterprise network, could push the real path past 120 s and every change would then revert. Re-measure before adding a board on different infrastructure.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [DD-REPOINT-RESCUE-ADDRESS] RESOLVED — Overruled: The Rescue Floor Is A Name, Plus A Captive-Portal Fallback
+
+- decision: RESOLVED — [DEC-(a private host name, not published)-RESCUE-HOSTNAME-AND-CAPTIVE-PORTAL] — `compose-bus-rescue.local` baked in as the compiled default, falling back to a WLED-style SoftAP captive portal for manual entry when the name fails to resolve. This OVERRULES this spec's original proposal below.
+- lifecycle-position: decided
+- status: decided
+- rationale: David overruled this spec's own recommendation (below) directly; the ruling stands on his verbatim reasoning, not this spec's — see `davids-ruling-verbatim`.
+- what-was-proposed-and-rejected: keep `COMPOSEIO_FW_DOCUMENT_STORE_URL` as the compiled default, AND commit the real values — either track the header, or generate it at build time from a tracked, secrets-free `bus_defaults.h` with only WiFi credentials remaining gitignored. Rationale at the time: the migration plan's Ruling 2 keeps NODERED_HOST at that address permanently, and the addresses are not secrets — they already appear on every scene YAML comment line in the repo.
+- davids-ruling-verbatim: "compose-bus-rescue.local baked in, if that fails to resolve, publish a wifi network 'composebus-recovery-NNNNN' that publishes a webpage that allows manual entry and saving of the new composebus IP addr and wifi SSID/PWD. This is the WLED model for joining a wifi network." (2026-08-18)
+- open-risk-carried-forward: the `.local` rescue-resolution path is UNMEASURED on this silicon — [CXC-REPOINT-MDNS] and [CXC-REPOINT-AC-RESCUE-MDNS] make this the load-bearing pre-integration question for the whole rescue floor. The captive portal itself is ALSO wholly unbuilt — [CXC-REPOINT-CAPTIVE-PORTAL]'s evidence slot is EMPTY.
+- new-build-surface: an mDNS/.local resolver path plus a SoftAP + captive HTTP server with an NVS-persisted credential/broker form — engineering fact, not a re-argument.
+- alternatives: (a) this spec's original proposal (`COMPOSEIO_FW_DOCUMENT_STORE_URL` compiled, committed real values) — REJECTED by David's ruling above; (b) a hostname with no captive-portal fallback — not chosen, it would leave a device with no recovery at all if the name failed to resolve; (c) the ratified two-stage design — ADOPTED.
+- invalidating_assumption: that a baked-in `.local` name resolves reliably enough on this silicon to serve as a rescue floor, and that a SoftAP + captive portal can be built within this fleet's flash/RAM budget on every board that claims the capability flag. Both are unverified; see the two EMPTY evidence slots above.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [DD-REPOINT-BUTTON-SCOPE] RESOLVED — Escape Hatch Wherever `board_profile.h` Declares A GPIO
+
+- decision: RESOLVED — [DEC-(a private host name, not published)-ESCAPE-HATCH-WHERE-GPIO-DECLARED] — matches this spec's original proposal essentially verbatim: implement wherever a GPIO is declared in `board_profile.h`, and announce its absence via `flags` bit 0.
+- lifecycle-position: decided
+- status: decided
+- rationale: an honestly-reported gap is better than a delayed capability, and the flag turns a board audit into a query. Blocking the build on a full audit first delays a capability in order to remove an uncertainty the flag already reports.
+- alternatives: (a) block the build on a full board audit — rejected; (b) skip the escape hatch entirely — rejected, it is the only recovery that needs no bus and there is no OTA; (c) a serial-console command instead — rejected, it requires the cable whose absence is the point.
+- invalidating_assumption: that the BOOT/GPIO0 button is free at reset on the boards that have one. A board whose GPIO0 carries a peripheral, or whose enclosure covers the button, silently has no escape hatch, and the flag would be wrong rather than absent. Verify per board before claiming the flag is accurate.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [DD-REPOINT-CONFIG-PUSH-WIDENING] NO LONGER A REPOINT BLOCKER — Still Open, Independently, For Restart
+
+- decision: DISCHARGED as a prerequisite for this spec. [CXC-REPOINT-RETAINED-STATE] means repoint ships on the existing `State` message type, which the firmware already accepts and the CLI already retains — no control-plane sieve change is needed for this build.
+- rationale: this node originally gated the repoint bench session under the command-plane design, because that design needed a non-retained envelope and `State` was the only accepted-but-retained type. The state-model reversal ([CXC-REPOINT-NON-RETAINED]) removed the need for a non-retained envelope entirely, so the widening this node proposed is no longer load-bearing for repoint.
+- still-open-for: `_device/*/restart`'s own live retained-restart defect ([CXC-REPOINT-AMEND-RESTART]), which is real, unfixed, and entirely separate from this build. That amendment is NOT applied by this spec and does NOT block it.
+- lifecycle-position: raised
+- status: raised — not a repoint blocker; scope narrowed to restart only
+- blocks: nothing in this spec; still relevant to a future restart-defect fix
+- alternatives: (a) keep the command on `State` and accept retain — this is, in effect, what the state-model reversal chose, but for principled reasons rather than as a fallback; (b) set `RETAIN_BY_TYPE[STATE] = False` — rejected, it would break the ratified retain semantics of every genuine state namespace; (c) mint a new MessageType — rejected, it forks the wire-code table ([BP-TYPE-CODES]).
+- invalidating_assumption: that `_device/*/restart`'s retained-restart defect stays unrelated to repoint. If a future spec unifies restart and binding delivery onto one control-plane mechanism, this node and [CXC-REPOINT-AMEND-RESTART] would need to be resolved together.
+- historical-note: the bullets above describing "this was believed to gate the bench session" are this node's own prior framing under the superseded command-plane design; kept for the record rather than deleted, per [MODEL-CHANGE]'s discipline of not silently erasing prior reasoning.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [DD-REPOINT-MIGRATION-DOC] What Becomes Of The 2,200-Line Cutover Plan
+
+- open-question: `docs/architecture/MIGRATION-bus-master-to-(a private host name, not published).md` (draft 7) choreographs a migration around the constant this spec removes.
+- decision: PROPOSED — split it: extract the measured sections into `MEASUREMENTS-bus-master-2026-08.md` and mark the remainder superseded by [SPEC:CXC-REPOINT].
+- rationale: keep it for its MEASUREMENTS — the 71-topic retained census with its positive control, the 216-occurrence tracked-file inventory, the two-host service comparison, the CAN bridge findings — and retire its PROCESS. The measurements were expensive and are cited throughout this spec; the choreography is what becomes unnecessary.
+- lifecycle-position: raised
+- status: raised
+- alternatives: (a) delete it — rejected, the measurements are expensive, cited throughout this spec, and not reproducible without re-running against a live broker; (b) keep it whole and let it read as the plan of record — rejected, it choreographs around a constant this spec removes, and two live plans is how a stale one gets executed.
+- invalidating_assumption: that this spec is actually built. Until the firmware ships, the compile-time address is still real and the cutover plan is still the only way to move the bus master. Do not supersede it before [CXC-REPOINT-CLASS-ESP32] is flashed and [CXC-REPOINT-AC-HAPPY] passes.
+- part-of: [SPEC:CXC-REPOINT]
+
+### [DD-REPOINT-BUTTON-VS-GLOBAL] Does The Escape Hatch Also Need To Beat A Bad GLOBAL Binding?
+
+- open-question: this spec's default ([CXC-REPOINT-PRECEDENCE]'s button-clears-per-device-only rule — the button erases ONLY the per-device tier, forces the compiled default for one boot, then RESUMES normal precedence, which may re-adopt a bad GLOBAL binding on the very next normal boot) is a spec-writer default, not part of [DEC-BUS-BINDING-IS-STATE-NOT-A-COMMAND]. If a bad GLOBAL value is what stranded the fleet in the first place, this button does not durably rescue any single board from it — every affected board would need the button held on every boot until the global value is fixed elsewhere.
+- decision: DECIDED 2026-08-20 (architect) — adopt alternative (b): a TWO-STAGE escape hatch. Short hold (~3 s) clears the per-device tier only (accidental-bump-safe personal reset, cannot desync from fleet policy); long hold (~10 s) clears BOTH per-device AND global NVS tiers and boots the compiled default (the deliberate full rescue that beats a bad GLOBAL binding; re-adopts fresh policy from the bus on reconnect, never stale NVS). A rescue that cannot beat a bad global is incomplete; a 3 s action that can silently desync is a footgun — two durations resolve both. See [DEC-REPOINT-ESCAPE-HATCH-IS-TWO-STAGE]. Durations are tunable board constants.
+- rationale: a 3-second physical action is deliberately cheap and easy to trigger by accident (a board that reboots with the button pinned during transport, for instance); giving it the power to silently desynchronize one board from fleet-wide policy trades a rare, hard-to-diagnose failure (bad global binding stranding several boards) for a common, easy one (one board quietly drifting from the fleet every time its button is bumped). The narrower per-device-only erase is the safer default until a real incident argues otherwise.
+- lifecycle-position: raised
+- status: raised
+- alternatives: (a) the button also clears/ignores the GLOBAL tier permanently until a new fact arrives — rejected here, because it lets ONE board's button silently desync from fleet policy with no visible flag for it; (b) a longer hold (e.g. 10 s) as a SEPARATE "ignore global too" tier — plausible, not adopted here, flagged for the architect; (c) leave it exactly as proposed above.
+- invalidating_assumption: that a bad GLOBAL binding is a rare enough event that "hold the button every boot until it's fixed elsewhere" is an acceptable interim posture. If global-tier mistakes turn out to be common in practice, alternative (b) should be revisited.
+- part-of: [SPEC:CXC-REPOINT]
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-REPOINT] EXTENDS [SPEC:CXC-CONFIG-BUS]
+[SPEC:CXC-REPOINT] EXTENDS [SPEC:CXC-BOARD-HW]
+[SPEC:CXC-REPOINT] RELATED_TO [SPEC:CXC-EMBED-REACTIVE]
+[SPEC:CXC-REPOINT] EXEMPLIFIES [DP-CIO-6]
+[SPEC:CXC-REPOINT] EXEMPLIFIES [DP-CIO-7]
+[SPEC:CXC-REPOINT] EXEMPLIFIES [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER]
+[SPEC:CXC-REPOINT] EXEMPLIFIES [DX-LEAF-OWNS-BEHAVIOR]
+[SPEC:CXC-REPOINT] UPHOLDS [DEC-BUS-BINDING-IS-STATE-NOT-A-COMMAND]
+[CXC-REPOINT-PARADOX] RELATED_TO [CXC-CONFIG-BUS-STRATEGY]
+[CXC-REPOINT-PRECEDENCE] RELATED_TO [CXC-BOARD-HW-UART-SLAVE]
+[CXC-REPOINT-PRECEDENCE] USES [CXC-CONFIG-BUS-STRATEGY]
+[CXC-REPOINT-PRECEDENCE] SUPERSEDES [CXC-REPOINT-FROM-GUARD]
+[CXC-REPOINT-BINDING] UPHOLDS [DP-CIO-6]
+[CXC-REPOINT-BINDING] UPHOLDS [DEC-BUS-BINDING-IS-STATE-NOT-A-COMMAND]
+[CXC-REPOINT-NAMESPACES] DEPENDS_ON [SPEC:CXC-PATSUB]
+[CXC-REPOINT-NAMESPACES] UPHOLDS [CXC-PS-GRANULARITY]
+[CXC-REPOINT-RETAINED-STATE] SUPERSEDES [CXC-REPOINT-NON-RETAINED]
+[CXC-REPOINT-RETAINED-STATE] REALIZES [DEC-IMPLEMENT-MQTT-RETAIN-WITH-AN-AGE-CONTRACT]
+[CXC-REPOINT-NON-RETAINED] DEPENDS_ON [CXC-ER-RESTART-BUS]
+[CXC-REPOINT-CONFIRM] UPHOLDS [CXC-VISION-EPISTEMICS]
+[CXC-REPOINT-ANNOUNCE] USES [CXC-R-BOOT-SEQUENCE]
+[CXC-REPOINT-FALLBACK] RELATED_TO [CXC-CONFIG-BUS-MEASURED]
+[CXC-REPOINT-CAPTIVE-PORTAL] DEPENDS_ON [CXC-REPOINT-MDNS]
+[CXC-REPOINT-AC-ABSORBING] SUPERSEDES [CXC-REPOINT-AC-RETAIN]
+[CXC-REPOINT-CLASS-ESP32] REALIZES [SPEC:CXC-REPOINT]
+[CXC-REPOINT-AMEND-RESTART] EXTENDS [CXC-ER-RESTART-BUS]
+[CXC-REPOINT-AMEND-CONFIG-BUS] EXTENDS [SPEC:CXC-CONFIG-BUS]
+[CXC-REPOINT-AMEND-ANNOUNCE] EXTENDS [SPEC:CXC-BOARD-HW]

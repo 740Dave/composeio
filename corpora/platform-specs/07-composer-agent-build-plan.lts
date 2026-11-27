@@ -1,0 +1,387 @@
+---
+scope: "Agent team structure, module assignments, build sequencing, and integration protocol for parallel implementation of the ComposeIO Composer by a team of Claude Code agents"
+audience: "Build orchestrator (human or agent), individual build agents"
+boundary: "Build-time agent coordination only; runtime Intelligence API in 06-composer-intelligence-api.lts; module contracts in 03-composer-modules.lts"
+not-this: "Not a general agent framework; not the runtime Intelligence protocol; not the ComposeIO bus spec"
+depends-on: ["01-composer-architecture.lts", "02-composer-internal-bus.lts", "03-composer-modules.lts", "04-composer-serialization.lts", "05-composer-preview-system.lts", "06-composer-intelligence-api.lts"]
+confidentiality: internal-only
+artifact-readiness: code-generation
+domain: plt.cux
+---
+# ComposeIO Composer Agent Build Plan [SPEC:CXC-BUILD-PLAN]
+
+> Parallel implementation plan for the ComposeIO Composer using a team of Claude Code agents. Each agent implements one or more modules against the bus namespace contract. Module isolation guarantees independent development — agents never need to see each other's code.
+
+---
+
+## 1. Build Principle [CXC-BUILD-PRINCIPLE]
+
+> The module isolation contract ([CXC-MOD-ISOLATION]) is the agent task boundary. Each agent receives the bus namespace spec and produces a module that publishes and subscribes to its declared namespaces. Integration is plugging modules into the same bus. If the contracts are correct, it works.
+
+- implication: Agents work in parallel on isolated worktrees. No merge conflicts because no shared files (except the base class and bus, which are written first by the skeleton agent).
+- implication: Integration testing is bus-driven. A test publishes messages and asserts responses. No mock objects, no module cross-references.
+- implication: An agent can be re-run to improve its module without affecting other modules.
+- analogy: This is [DP-CIO-2] applied to development. Agents are connected by shared namespace, not by shared code.
+
+---
+
+## 2. Build Phases [CXC-BUILD-PHASES]
+
+### [CXC-BUILD-PHASE-0] Phase 0: Skeleton (Sequential, Single Agent)
+
+Must complete before any parallel work begins.
+
+**Delivers:**
+- `src/composer/__init__.py` — Package init
+- `src/composer/app.py` — Top-level CTk application, dual-bus creation, module layout grid, module loading
+- `src/composer/buses.py` — Dual-bus factory (`create_internal_bus()`, `create_design_bus()`), connection management
+- `src/composer/design.py` — `DesignDocument` state model (modules, widgets, namespaces, bindings as dataclasses)
+- `src/composer/module_base.py` — `ComposerModule` base class with bus references, manifest declaration, lifecycle hooks
+- `src/composer/modules/__init__.py` — Module discovery and registration
+
+**Acceptance criteria:**
+- `python -m composer.app` opens a CTk window with empty grid panels.
+- Internal bus is operational: publishing to `composer/tool/mode` changes state.
+- `DesignDocument` can be created, serialized to dict, and round-tripped.
+- `ComposerModule` subclass can be instantiated with mock bus and receives messages.
+
+### [CXC-BUILD-PHASE-1] Phase 1: Parallel Module Implementation (8 Agents)
+
+All agents launch simultaneously after Phase 0 completes. Each agent works in an isolated worktree.
+
+### [CXC-BUILD-PHASE-2] Phase 2: Integration (Sequential, Single Agent)
+
+After all Phase 1 agents complete:
+1. Merge all worktrees into main branch.
+2. Load all modules into `app.py`.
+3. Run integration tests: publish message sequences, verify end-to-end behavior.
+4. Fix any contract mismatches.
+
+### [CXC-BUILD-PHASE-3] Phase 3: Spec-Gap Analysis
+
+Run spec-gap-analyzer against implementation to identify:
+- Specified namespaces not implemented.
+- Implemented behavior not in spec.
+- Missing validation rules.
+- Contract violations between modules.
+
+---
+
+## 3. Agent Assignments [CXC-BUILD-AGENTS]
+
+### [CXC-AGENT-A] Agent A: Palette + Widget Registry
+
+**Files:**
+- `src/composer/modules/palette.py`
+- `src/composer/widgets/__init__.py`
+- `src/composer/widgets/registry.py`
+- `src/composer/widgets/builtin.py`
+
+**Bus contract:**
+- subscribes: `composer/tool/mode`, `composer/palette/catalog_changed`
+- publishes: `composer/palette/selected`, `composer/palette/drag_start`, `composer/palette/drag_end`
+
+**Input specs:**
+- [CXC-MOD-PALETTE] from 03-composer-modules.lts
+- Widget type schema (`WidgetTypeInfo` dataclass)
+
+**Key deliverables:**
+- Widget registry with discovery from plugin directories.
+- Built-in widget type definitions for: ButtonWidget, GaugeWidget, RelayWidget, CoordinateEntryWidget, BusMonitorWidget.
+- Scrollable categorized palette UI (CTkScrollableFrame with category headers).
+- Click-to-select and drag-to-place behaviors.
+
+**Test:** Instantiate with mock bus. Click a widget type. Verify `composer/palette/selected` published with correct type name.
+
+---
+
+### [CXC-AGENT-B] Agent B: Canvas
+
+**Files:**
+- `src/composer/modules/canvas.py`
+- `src/composer/canvas/__init__.py`
+- `src/composer/canvas/items.py`
+- `src/composer/canvas/handles.py`
+- `src/composer/canvas/grid.py`
+- `src/composer/canvas/connections.py`
+
+**Bus contract:**
+- subscribes: `composer/palette/selected`, `composer/palette/drag_end`, `composer/tool/mode`, `composer/tool/snap_enabled`, `composer/tool/grid_size`, `composer/tool/show_bindings`, `composer/config/widget_changed`, `composer/config/module_changed`, `composer/binding/created`, `composer/binding/modified`, `composer/binding/removed`
+- publishes: `composer/selection/type`, `composer/selection/widget_id`, `composer/selection/module_id`, `composer/selection/multi`, `composer/selection/binding_id`, `composer/canvas/widget_added`, `composer/canvas/widget_removed`, `composer/canvas/widget_moved`, `composer/canvas/widget_resized`, `composer/canvas/module_added`, `composer/canvas/module_removed`, `composer/canvas/layout_changed`, `composer/canvas/viewport`, `composer/command/execute`
+
+**Input specs:**
+- [CXC-MOD-CANVAS] from 03-composer-modules.lts
+- [CXC-RENDER-CANVAS] from 01-composer-architecture.lts
+
+**Key deliverables:**
+- tk.Canvas-based layout surface with zoom and pan.
+- Widget slot rendering (rounded rectangles with icon, type, namespace label).
+- Module frame rendering (container with header bar).
+- Selection (click, shift-click multi, drag-select).
+- Move (drag widget slots within module grid).
+- Resize (corner/edge handles).
+- Grid snapping when `snap_enabled`.
+- Binding arrow rendering (directed curves between widget slots).
+- Place mode: click canvas to place selected palette widget type.
+- Connect mode: drag from source widget to target to create binding.
+
+**Test:** Instantiate with mock bus. Publish `composer/palette/selected` then simulate click at (100, 100). Verify `composer/canvas/widget_added` published.
+
+---
+
+### [CXC-AGENT-C] Agent C: Property Editor
+
+**Files:**
+- `src/composer/modules/property_editor.py`
+- `src/composer/editors/__init__.py`
+- `src/composer/editors/text.py`
+- `src/composer/editors/dropdown.py`
+- `src/composer/editors/spinner.py`
+- `src/composer/editors/color.py`
+- `src/composer/editors/namespace_picker.py`
+- `src/composer/editors/state_engine_picker.py`
+- `src/composer/editors/transform_editor.py`
+- `src/composer/editors/condition_editor.py`
+
+**Bus contract:**
+- subscribes: `composer/selection/type`, `composer/selection/widget_id`, `composer/selection/module_id`, `composer/selection/binding_id`
+- publishes: `composer/config/widget_changed`, `composer/config/module_changed`, `composer/config/namespace_changed`, `composer/command/execute`
+
+**Input specs:**
+- [CXC-MOD-PROPERTY] from 03-composer-modules.lts
+- Property types from ../spec/02-composeio-config-schema.smd (input types, state engines, LED behaviors, modal buttons, transforms)
+
+**Key deliverables:**
+- Dynamic property panel that reconfigures based on selection type (none/widget/module/binding/namespace).
+- Editor widgets for all property types: text, dropdown, spinner, color picker, namespace picker, state engine picker.
+- LED behavior editor (primitive dropdown + parameterized + state-mapped + named effects).
+- Modal button mode list editor with condition builder.
+- Validation with inline error display.
+- Publishes `composer/command/execute` with undo data on every property change.
+
+**Test:** Instantiate with mock bus. Publish `composer/selection/type = widget` and `composer/selection/widget_id = btn_001`. Verify property fields populated. Modify a field. Verify `composer/config/widget_changed` published with old and new values.
+
+---
+
+### [CXC-AGENT-D] Agent D: Binding Editor
+
+**Files:**
+- `src/composer/modules/binding_editor.py`
+
+**Bus contract:**
+- subscribes: `composer/selection/type`, `composer/selection/widget_id`, `composer/selection/binding_id`, `composer/canvas/widget_added`, `composer/canvas/widget_removed`, `composer/config/namespace_changed`
+- publishes: `composer/binding/created`, `composer/binding/modified`, `composer/binding/removed`, `composer/command/execute`
+
+**Input specs:**
+- [CXC-MOD-BINDING] from 03-composer-modules.lts
+- Binding schemas from ../spec/02-composeio-config-schema.smd
+- Transform types: deadzone, threshold, scale, rate_limit, debounce, map, clamp, invert
+
+**Key deliverables:**
+- Binding list view (scrollable cards for all bindings).
+- Simple binding card (source → transform → target).
+- Compound binding card (output + requires + conditions).
+- Event-triggered binding card (trigger + output + side effects).
+- Transform chain builder (vertical stack with add/remove/reorder).
+- Condition editor for compound bindings.
+- "Add Binding" button with type selection.
+
+**Test:** Instantiate with mock bus. Click "Add Binding". Select simple type. Set source and target namespaces. Verify `composer/binding/created` published with correct config.
+
+---
+
+### [CXC-AGENT-E] Agent E: Preview (CTk + LVGL)
+
+**Files:**
+- `src/composer/modules/preview.py`
+- `src/composer/preview/__init__.py`
+- `src/composer/preview/ctk_renderer.py`
+- `src/composer/preview/lvgl_renderer.py`
+- `src/composer/preview/split_renderer.py`
+- `src/composer/preview/state_injector.py`
+
+**Bus contract:**
+- Subscribes (internal): `composer/canvas/widget_added`, `composer/canvas/widget_removed`, `composer/canvas/widget_moved`, `composer/canvas/widget_resized`, `composer/canvas/module_added`, `composer/canvas/module_removed`, `composer/canvas/layout_changed`, `composer/config/widget_changed`, `composer/config/module_changed`, `composer/binding/created`, `composer/binding/modified`, `composer/binding/removed`, `composer/connection/status`
+- Design bus: Full participant (subscribes + publishes via instantiated widgets)
+
+**Input specs:**
+- [SPEC:CXC-PREVIEW] (05-composer-preview-system.lts — entire document)
+- ComposeIO simulator widgets (ButtonWidget, GaugeWidget, RelayWidget, etc.)
+
+**Key deliverables:**
+- CTk preview renderer: instantiates real widgets on design bus.
+- LVGL preview renderer: pixel-accurate embedded preview via LVGLCanvas.
+- Split mode: side-by-side CTk + LVGL.
+- Incremental rebuild on canvas/config/binding changes.
+- Full rebuild on file load.
+- State Injector panel (namespace dropdown + value control + publish button).
+- Preview toolbar (renderer mode, run/pause/reset, inject, detach).
+- Design bus state preservation across rebuilds.
+
+
+**Test:** Instantiate with mock internal bus and real design bus. Publish `composer/canvas/module_added` and `composer/canvas/widget_added` for a ButtonWidget. Verify the preview panel contains a real ButtonWidget. Click it. Verify design bus receives state change.
+
+---
+
+### [CXC-AGENT-F] Agent F: History + Serialization
+
+**Files:**
+- `src/composer/modules/history.py`
+- `src/composer/serialization/__init__.py`
+- `src/composer/serialization/loader.py`
+- `src/composer/serialization/saver.py`
+- `src/composer/serialization/exporter.py`
+- `src/composer/serialization/validator.py`
+
+**Bus contract (History):**
+- subscribes: `composer/command/execute`, `composer/command/undo`, `composer/command/redo`, `composer/file/loaded`, `composer/file/saved`
+- publishes: `composer/history/stack_changed`, `composer/file/dirty`
+
+**Input specs:**
+- [CXC-MOD-HISTORY] from 03-composer-modules.lts
+- [SPEC:CXC-SERIAL] (04-composer-serialization.lts — entire document)
+- Round-trip fidelity rules (ruamel.yaml)
+- Export pipeline: .compose.yaml → deployment ComposeIO YAML
+- 30 validation rules from ../spec/02-composeio-config-schema.smd
+
+**Key deliverables:**
+- Command stack (100 depth, batch-aware).
+- Undo: pop, publish reverse command, push to redo stack.
+- Redo: pop redo, publish forward command, push to undo stack.
+- Dirty tracking (publishes `composer/file/dirty`).
+- `.compose.yaml` loader (ruamel.yaml round-trip mode).
+- `.compose.yaml` saver (preserves comments, ordering, quoting).
+- ComposeIO YAML exporter (one file per module + bindings file).
+- Design validator (all 30 rules, returns errors + warnings).
+- Round-trip test: load → save → byte-compare.
+
+**Test:** Publish 5 `composer/command/execute` events. Verify `composer/history/stack_changed` reports `can_undo: true`. Publish `composer/command/undo` x5. Verify all reverse commands published. Verify `can_undo: false, can_redo: true`.
+
+---
+
+### [CXC-AGENT-G] Agent G: Connection + Bus Monitor
+
+**Files:**
+- `src/composer/modules/connection.py`
+- `src/composer/modules/bus_monitor.py`
+
+**Bus contract (Connection):**
+- subscribes: (none on internal bus)
+- publishes: `composer/connection/status`, `composer/connection/transport_added`, `composer/connection/transport_removed`, `composer/connection/discovery`
+- Design bus: manages transport lifecycle
+
+**Bus contract (Bus Monitor):**
+- Subscribes (internal): `composer/connection/status`
+- Design bus: subscribes to all messages via `bus.on_message()`
+
+**Input specs:**
+- [CXC-MOD-CONNECTION] and [CXC-MOD-BUSMON] from 03-composer-modules.lts
+- ComposeIO transport classes (LocalTransport, MQTTTransport, UARTTransport)
+- Existing BusMonitorWidget from simulator for reference
+
+**Key deliverables:**
+- Connection panel: transport list (in-process always on, MQTT/UART/CAN configurable).
+- Connect/disconnect buttons per transport.
+- Auto-reconnect on failure (5s interval).
+- Discovery message forwarding to internal bus.
+- Bus Monitor: live message stream with color-coded types.
+- Message filter toggles (state, event, binding, heartbeat, discovery).
+- Namespace filter dropdown.
+- Pop-out to separate CTkToplevel window.
+- 150-line scrollback.
+
+**Test:** Instantiate Connection with mock internal bus and real design bus. Verify `composer/connection/status = offline` published. Add in-process transport with simulated module. Verify `composer/connection/discovery` published with module info.
+
+---
+
+### [CXC-AGENT-H] Agent H: Namespace Inspector + Toolbar
+
+**Files:**
+- `src/composer/modules/namespace_inspector.py`
+- `src/composer/modules/toolbar.py`
+
+**Bus contract (Namespace Inspector):**
+- Subscribes (internal): `composer/canvas/widget_added`, `composer/canvas/widget_removed`, `composer/config/namespace_changed`, `composer/binding/created`, `composer/binding/modified`, `composer/binding/removed`, `composer/connection/discovery`
+- publishes: `composer/selection/type`, `composer/selection/binding_id`, `composer/config/namespace_changed`
+- Design bus: subscribes to all namespaces for live values
+
+**Bus contract (Toolbar):**
+- subscribes: `composer/history/stack_changed`, `composer/file/dirty`, `composer/file/path`, `composer/connection/status`
+- publishes: `composer/tool/mode`, `composer/tool/snap_enabled`, `composer/tool/grid_size`, `composer/tool/show_bindings`, `composer/command/undo`, `composer/command/redo`, `composer/file/loaded`, `composer/file/saved`, `composer/file/path`
+
+**Input specs:**
+- [CXC-MOD-NAMESPACE] and [CXC-MOD-TOOLBAR] from 03-composer-modules.lts
+
+**Key deliverables:**
+- Namespace table: name, engine, live value, publishers, subscribers.
+- Hardware-discovered namespaces marked with icon.
+- Click namespace row to select (publishes selection).
+- "New Namespace" button.
+- Toolbar: File buttons (New, Open, Save, Export), Mode buttons (Select, Place, Connect, Pan), Undo/Redo, Grid toggle, Bindings toggle, Connection status indicator.
+- Keyboard shortcut handler (Cmd+Z, Cmd+S, V, P, C, G, Delete, Space for pan).
+- Undo/Redo button enable/disable from `composer/history/stack_changed`.
+
+**Test:** Instantiate Namespace Inspector with mock buses. Publish `composer/canvas/widget_added` with namespace. Verify namespace appears in table. Publish state on design bus for that namespace. Verify live value column updates.
+
+---
+
+## 4. Shared Inputs (All Agents Receive)
+
+Every Phase 1 agent receives:
+1. `src/composer/module_base.py` — ComposerModule base class (from Phase 0).
+2. `src/composer/buses.py` — Dual-bus factory (from Phase 0).
+3. `src/composer/design.py` — DesignDocument state model (from Phase 0).
+4. `02-composer-internal-bus.lts` — The bus namespace contract.
+5. `03-composer-modules.lts` — Their specific module contract section.
+6. Access to the ComposeIO Python library at `../python/composeio/`.
+8. Access to the ComposeIO simulator at `../simulator/` (for widget reference implementations).
+
+---
+
+## 5. Integration Protocol [CXC-BUILD-INTEGRATION]
+
+### [CXC-BUILD-MERGE] Merge Sequence
+
+1. Verify each agent's worktree has no import of another module's classes.
+2. Merge Agent A (palette + registry) — no dependencies.
+3. Merge Agent H (toolbar + namespace inspector) — no dependencies.
+4. Merge Agent F (history + serialization) — no dependencies.
+5. Merge Agent G (connection + bus monitor) — no dependencies.
+6. Merge Agent C (property editor) — depends on widget registry types from Agent A.
+7. Merge Agent D (binding editor) — depends on namespace types from design.py.
+8. Merge Agent B (canvas) — subscribes to most namespaces; merge after publishers exist.
+9. Merge Agent E (preview) — needs all other modules' events to trigger rebuilds.
+
+### [CXC-BUILD-INTEGRATION-TEST] Integration Test Sequence
+
+After all merges:
+
+1. **Smoke test:** `python -m composer.app` opens with all panels visible.
+2. **Palette → Canvas:** Click widget in palette. Click canvas. Widget slot appears.
+3. **Canvas → Property Editor:** Click widget slot. Property editor populates.
+4. **Property Editor → Preview:** Change a property. Preview widget updates.
+5. **Binding Editor → Preview:** Create a binding. Preview widgets respond to state changes.
+6. **Connection → Bus Monitor:** Connect MQTT. Hardware messages appear in monitor.
+7. **Undo → All:** Perform 5 operations. Undo 5 times. Canvas returns to empty state.
+8. **Save → Load:** Save design. Close. Reopen. Load design. Canvas matches saved state.
+9. **Export:** Export to ComposeIO YAML. Validate against [SPEC:CIO-CONFIG-SCHEMA].
+10. **Round-trip:** Load exported YAML into ComposeIO runtime. Verify widget behavior matches preview.
+
+---
+
+## 6. Agent Communication Protocol [CXC-BUILD-COMMS]
+
+Agents do NOT communicate with each other during Phase 1. This is enforced by worktree isolation.
+
+If an agent encounters an ambiguity in the bus contract:
+1. Check 02-composer-internal-bus.lts for the namespace definition.
+2. Check 03-composer-modules.lts for the module behavior.
+3. If still ambiguous: make a reasonable choice, document the assumption in a comment, and flag it as `# BUILD-ASSUMPTION: <description>` for review during integration.
+
+The integration agent (Phase 2) searches for `BUILD-ASSUMPTION` comments and resolves discrepancies.
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-28
+**Status**: Draft

@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComposeUX — Default Widget Primitives (pre-vis v1)</title>
+</head>
+<body>
+<style>
+  :root {
+    --bg: #eef1f5; --card: #ffffff; --inset: #e3e8ef; --inset-2: #d6dce4;
+    --ink: #1a222c; --muted: #5a6572; --line: #d3dae2;
+    --accent: #159aa8; --accent-ink: #0b6b76; --accent-soft: #d5eef1;
+    --good: #3f9d6f; --warn: #c07f1c; --crit: #cc4b43;
+    --shadow: 0 1px 2px rgba(20,30,45,.06), 0 6px 20px rgba(20,30,45,.06);
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --r: 4px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --card: #161c24; --inset: #1e2732; --inset-2: #2a3542;
+      --ink: #e6ecf3; --muted: #808c9b; --line: #283340;
+      --accent: #34c3d0; --accent-ink: #7fe0e8; --accent-soft: #10333a;
+      --good: #4bb07d; --warn: #d99a34; --crit: #dd5b52;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #eef1f5; --card: #ffffff; --inset: #e3e8ef; --inset-2: #d6dce4;
+    --ink: #1a222c; --muted: #5a6572; --line: #d3dae2;
+    --accent: #159aa8; --accent-ink: #0b6b76; --accent-soft: #d5eef1;
+    --good: #3f9d6f; --warn: #c07f1c; --crit: #cc4b43;
+    --shadow: 0 1px 2px rgba(20,30,45,.06), 0 6px 20px rgba(20,30,45,.06);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --card: #161c24; --inset: #1e2732; --inset-2: #2a3542;
+    --ink: #e6ecf3; --muted: #808c9b; --line: #283340;
+    --accent: #34c3d0; --accent-ink: #7fe0e8; --accent-soft: #10333a;
+    --good: #4bb07d; --warn: #d99a34; --crit: #dd5b52;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 24px 72px; }
+
+  /* ---- Header ---- */
+  header { border-bottom: 1px solid var(--line); padding-bottom: 24px; margin-bottom: 32px; }
+  .kicker {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent-ink); font-weight: 600;
+  }
+  h1 {
+    font-size: clamp(26px, 4vw, 38px); line-height: 1.1; margin: 10px 0 6px;
+    letter-spacing: -.02em; text-wrap: balance; font-weight: 680;
+  }
+  .lede { color: var(--muted); max-width: 60ch; margin: 0; font-size: 15.5px; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  /* ---- Token legend ---- */
+  .tokens {
+    margin-top: 22px; display: flex; flex-wrap: wrap; gap: 20px 28px;
+    align-items: flex-start;
+  }
+  .tokgroup { display: flex; flex-direction: column; gap: 8px; }
+  .tokgroup > .tlabel {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .swatches { display: flex; gap: 6px; }
+  .sw { width: 30px; height: 30px; border-radius: var(--r); border: 1px solid var(--line); position: relative; }
+  .sw::after {
+    content: attr(data-h); position: absolute; top: calc(100% + 4px); left: 0;
+    font-family: var(--mono); font-size: 9px; color: var(--muted); white-space: nowrap;
+  }
+  .conv { font-family: var(--mono); font-size: 11.5px; color: var(--muted); display: grid; gap: 3px; }
+  .conv b { color: var(--ink); font-weight: 600; }
+
+  .theme-toggle {
+    float: right; font-family: var(--mono); font-size: 12px; cursor: pointer;
+    background: var(--inset); color: var(--ink); border: 1px solid var(--line);
+    border-radius: var(--r); padding: 6px 12px;
+  }
+  .theme-toggle:hover { border-color: var(--accent); }
+
+  /* ---- Grid ---- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 16px;
+  }
+  .card.wide { grid-column: 1 / -1; }
+  @media (min-width: 760px) { .card.span2 { grid-column: span 2; } }
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .cname { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--ink); }
+  .cname .use { color: var(--muted); font-weight: 400; }
+  .chip {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--accent-ink); background: var(--accent-soft); border: 1px solid var(--line);
+    padding: 3px 7px; border-radius: 20px; white-space: nowrap;
+  }
+  .desc { color: var(--muted); font-size: 13.5px; margin: -4px 0 0; }
+
+  /* stage: where the live widget sits */
+  .stage {
+    background: var(--inset); border: 1px solid var(--line); border-radius: 8px;
+    padding: 20px; display: flex; flex-direction: column; gap: 16px; align-items: stretch;
+  }
+  .stage .staterow { display: flex; align-items: center; gap: 12px; }
+  .stage .stag {
+    font-family: var(--mono); font-size: 10px; color: var(--muted); min-width: 46px;
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+
+  /* spec block */
+  .spec { font-family: var(--mono); font-size: 11.5px; color: var(--muted); display: grid; gap: 5px; }
+  .spec .row { display: grid; grid-template-columns: 68px 1fr; gap: 8px; }
+  .spec .k { color: var(--accent-ink); }
+  .spec .v { color: var(--ink); word-break: break-word; }
+  .spec .v em { color: var(--muted); font-style: normal; }
+
+  /* =========================================================
+     THE WIDGET PRIMITIVES (HTML/CSS analog of the composites)
+     ========================================================= */
+
+  /* progress */
+  .pb { display: flex; align-items: center; gap: 10px; flex: 1; }
+  .pb-track { flex: 1; height: 10px; background: var(--inset-2); border-radius: 3px; overflow: hidden; }
+  .pb-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .5s cubic-bezier(.4,0,.2,1); }
+  .pb-fill.warn { background: var(--warn); }
+  .pb-fill.crit { background: var(--crit); }
+  .pb-val { font-family: var(--mono); font-size: 12px; color: var(--ink); min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+  .pb-track.indet { position: relative; }
+  .pb-track.indet .pb-fill { width: 35% !important; position: absolute; animation: indet 1.4s ease-in-out infinite; }
+  @keyframes indet { 0% { left: -35%; } 100% { left: 100%; } }
+
+  /* slider */
+  .sld { flex: 1; height: 26px; position: relative; display: flex; align-items: center; touch-action: none; }
+  .sld-track { position: absolute; left: 0; right: 0; height: 6px; background: var(--inset-2); border-radius: 3px; }
+  .sld-fill { position: absolute; left: 0; height: 6px; background: var(--accent); border-radius: 3px; }
+  .sld-thumb {
+    position: absolute; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--card); border: 2px solid var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.25);
+    transform: translateX(-50%); cursor: grab; top: 4px;
+  }
+  .sld-thumb:active { cursor: grabbing; }
+  .sld:focus-visible { outline: none; }
+  .sld:focus-visible .sld-thumb { box-shadow: 0 0 0 4px var(--accent-soft); }
+
+  /* switch */
+  .sw-toggle {
+    width: 46px; height: 26px; border-radius: 999px; background: var(--inset-2);
+    border: 1px solid var(--line); position: relative; cursor: pointer; transition: background .18s; flex: none;
+  }
+  .sw-toggle .knob {
+    position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: left .18s cubic-bezier(.4,0,.2,1);
+  }
+  .sw-toggle[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+  .sw-toggle[aria-checked="true"] .knob { left: 22px; }
+  .sw-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .sw-state { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+
+  /* dropdown */
+  .dd { position: relative; width: 190px; }
+  .dd-field {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+    padding: 8px 10px; font-size: 13px; cursor: pointer; color: var(--ink);
+  }
+  .dd-field:hover, .dd.open .dd-field { border-color: var(--accent); }
+  .dd-field .chev { color: var(--muted); transition: transform .18s; font-family: var(--mono); }
+  .dd.open .dd-field .chev { transform: rotate(180deg); }
+  .dd-list {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 5;
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+    box-shadow: var(--shadow); overflow: hidden; display: none;
+  }
+  .dd.open .dd-list { display: block; }
+  .dd-item { padding: 8px 10px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; }
+  .dd-item:hover { background: var(--inset); }
+  .dd-item.sel { color: var(--accent-ink); }
+  .dd-item.sel::after { content: "✓"; }
+
+  /* keys (shared by keyboard + numpad) */
+  .key {
+    font-family: var(--mono); font-size: 13px; color: var(--ink);
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+    min-width: 30px; height: 34px; display: flex; align-items: center; justify-content: center;
+    cursor: pointer; user-select: none; padding: 0 6px;
+  }
+  .key:hover { border-color: var(--accent); }
+  .key:active, .key.down { background: var(--accent); color: #fff; border-color: var(--accent); transform: translateY(1px); }
+  .key.wide { flex: 1; }
+  .key.accent { color: var(--accent-ink); }
+  .kbd { display: flex; flex-direction: column; gap: 6px; }
+  .kbd-row { display: flex; gap: 6px; justify-content: center; }
+  .kbd-row .key { flex: 1; }
+  .numpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; max-width: 180px; }
+  .numpad .key { height: 40px; font-size: 15px; }
+  .field-preview {
+    font-family: var(--mono); font-size: 13px; color: var(--ink); background: var(--inset-2);
+    border: 1px solid var(--line); border-radius: var(--r); padding: 7px 10px; min-height: 32px;
+    display: flex; align-items: center; gap: 2px;
+  }
+  .caret { width: 1px; height: 15px; background: var(--accent); animation: blink 1s steps(2) infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+  @keyframes blink { 0%,50% { opacity: 1; } 51%,100% { opacity: 0; } }
+
+  footer { margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; font-family: var(--mono); }
+  footer .lead { color: var(--ink); }
+  a { color: var(--accent-ink); }
+</style>
+
+<div class="wrap">
+  <header>
+    <button class="theme-toggle" id="themeBtn" type="button">◐ theme</button>
+    <div class="kicker">ComposeUX · Widget Catalog</div>
+    <h1>Default Widget Primitives</h1>
+    <p class="lede">Six missing UI primitives, built <strong>as ComposeUX composites</strong> — reusable <code style="font-family:var(--mono)">components</code> you fork, not code widgets that lock the look. This is the reference aesthetic and the build spec: each is a stack of existing primitives wired with bindings + the expression DSL. Restyle by cloning the <code style="font-family:var(--mono)">.compose.yaml</code>.</p>
+
+    <div class="tokens">
+      <div class="tokgroup">
+        <span class="tlabel">Surfaces</span>
+        <div class="swatches">
+          <span class="sw" style="background:var(--bg)" data-h="bg"></span>
+          <span class="sw" style="background:var(--card)" data-h="card"></span>
+          <span class="sw" style="background:var(--inset)" data-h="inset"></span>
+          <span class="sw" style="background:var(--inset-2)" data-h="track"></span>
+        </div>
+      </div>
+      <div class="tokgroup">
+        <span class="tlabel">Accent · Active</span>
+        <div class="swatches">
+          <span class="sw" style="background:var(--accent)" data-h="accent"></span>
+          <span class="sw" style="background:var(--accent-soft)" data-h="soft"></span>
+        </div>
+      </div>
+      <div class="tokgroup">
+        <span class="tlabel">Semantic</span>
+        <div class="swatches">
+          <span class="sw" style="background:var(--good)" data-h="good"></span>
+          <span class="sw" style="background:var(--warn)" data-h="warn"></span>
+          <span class="sw" style="background:var(--crit)" data-h="crit"></span>
+        </div>
+      </div>
+      <div class="tokgroup">
+        <span class="tlabel">Conventions</span>
+        <div class="conv">
+          <span>radius <b>4px</b> · thumbs <b>pill</b></span>
+          <span>track <b>6–10px</b> · accent = interactive</span>
+          <span>labels <b>mono</b> · semantic ≠ accent</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- PROGRESS BAR -->
+    <div class="card">
+      <div class="card-head">
+        <span class="cname">progress_bar <span class="use">{use}</span></span>
+        <span class="chip">Sonnet · pure composite</span>
+      </div>
+      <p class="desc">Determinate fill driven by a bound value. Semantic color is a threshold binding, not a new widget.</p>
+      <div class="stage">
+        <div class="staterow"><span class="stag">0%</span><div class="pb"><div class="pb-track"><div class="pb-fill" style="width:0"></div></div><span class="pb-val">0%</span></div></div>
+        <div class="staterow"><span class="stag">62%</span><div class="pb"><div class="pb-track"><div class="pb-fill" style="width:62%"></div></div><span class="pb-val">62%</span></div></div>
+        <div class="staterow"><span class="stag">warn</span><div class="pb"><div class="pb-track"><div class="pb-fill warn" style="width:84%"></div></div><span class="pb-val">84%</span></div></div>
+        <div class="staterow"><span class="stag">indet</span><div class="pb"><div class="pb-track indet"><div class="pb-fill"></div></div></div></div>
+      </div>
+      <div class="spec">
+        <div class="row"><span class="k">stack</span><span class="v">track rect + fill rect (+ optional label)</span></div>
+        <div class="row"><span class="k">binds</span><span class="v">value → <em>fill.width = expr(clamp(v,0,1)*W)</em></span></div>
+        <div class="row"><span class="k">params</span><span class="v">height, radius, color, warn_at, show_label</span></div>
+      </div>
+    </div>
+
+    <!-- SLIDER -->
+    <div class="card">
+      <div class="card-head">
+        <span class="cname">slider <span class="use">{use}</span></span>
+        <span class="chip">Opus · +drag glue</span>
+      </div>
+      <p class="desc">Drag the thumb — it publishes a normalized value on the bus via <code style="font-family:var(--mono)">on_pan</code>. Try it.</p>
+      <div class="stage">
+        <div class="staterow"><span class="stag" id="sldTag">0.42</span>
+          <div class="sld" id="sld" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0.42">
+            <div class="sld-track"></div><div class="sld-fill" id="sldFill" style="width:42%"></div>
+            <div class="sld-thumb" id="sldThumb" style="left:42%"></div>
+          </div>
+        </div>
+        <div class="staterow"><span class="stag">min</span><div class="sld"><div class="sld-track"></div><div class="sld-fill" style="width:0"></div><div class="sld-thumb" style="left:0"></div></div></div>
+        <div class="staterow"><span class="stag">max</span><div class="sld"><div class="sld-track"></div><div class="sld-fill" style="width:100%"></div><div class="sld-thumb" style="left:100%"></div></div></div>
+      </div>
+      <div class="spec">
+        <div class="row"><span class="k">stack</span><span class="v">track + fill + thumb (thumb.x = expr(v*W))</span></div>
+        <div class="row"><span class="k">binds</span><span class="v">value ⇄ <em>on_pan → publish normalized</em></span></div>
+        <div class="row"><span class="k">params</span><span class="v">min, max, step, orient, live/on_release</span></div>
+      </div>
+    </div>
+
+    <!-- SWITCH -->
+    <div class="card">
+      <div class="card-head">
+        <span class="cname">switch <span class="use">{use}</span></span>
+        <span class="chip">Sonnet · pure composite</span>
+      </div>
+      <p class="desc">Tap toggles a binary namespace; the knob position is a bound expression on that state. Try it.</p>
+      <div class="stage">
+        <div class="staterow" style="gap:16px">
+          <div class="sw-toggle" id="sw" role="switch" aria-checked="true" tabindex="0"><div class="knob"></div></div>
+          <span class="sw-state" id="swState">jump_drive/armed = <b style="color:var(--accent-ink)">on</b></span>
+        </div>
+        <div class="staterow" style="gap:16px">
+          <div class="sw-toggle" aria-checked="false" tabindex="-1"><div class="knob"></div></div>
+          <span class="sw-state">off state</span>
+        </div>
+      </div>
+      <div class="spec">
+        <div class="row"><span class="k">stack</span><span class="v">bg pill + knob (knob.x = expr(state?on:off))</span></div>
+        <div class="row"><span class="k">binds</span><span class="v">state (binary) ⇄ <em>tap → toggle</em></span></div>
+        <div class="row"><span class="k">params</span><span class="v">on_color, labels, momentary?</span></div>
+      </div>
+    </div>
+
+    <!-- DROPDOWN -->
+    <div class="card">
+      <div class="card-head">
+        <span class="cname">dropdown <span class="use">{use}</span></span>
+        <span class="chip">Opus · +popup list</span>
+      </div>
+      <p class="desc">Select from a list in a transient overlay (same popup mechanics as the Command/BusMonitor dialogs). Click to open.</p>
+      <div class="stage" style="min-height:150px">
+        <div class="dd" id="dd">
+          <div class="dd-field" id="ddField"><span id="ddVal">Colonial One</span><span class="chev">▾</span></div>
+          <div class="dd-list" id="ddList">
+            <div class="dd-item sel" data-v="Colonial One">Colonial One</div>
+            <div class="dd-item" data-v="Galactica">Galactica</div>
+            <div class="dd-item" data-v="Pegasus">Pegasus</div>
+            <div class="dd-item" data-v="Raptor 312">Raptor 312</div>
+          </div>
+        </div>
+      </div>
+      <div class="spec">
+        <div class="row"><span class="k">stack</span><span class="v">field (label+chevron) + popup item list</span></div>
+        <div class="row"><span class="k">binds</span><span class="v">selected ⇄ <em>item tap → publish + dismiss</em></span></div>
+        <div class="row"><span class="k">params</span><span class="v">options[], placeholder, max_visible</span></div>
+      </div>
+    </div>
+
+    <!-- NUMBER PAD -->
+    <div class="card">
+      <div class="card-head">
+        <span class="cname">numpad <span class="use">{use}</span></span>
+        <span class="chip">Sonnet · pure composite</span>
+      </div>
+      <p class="desc">A 3-wide grid of Button components, each publishing a digit to a target namespace. Press keys.</p>
+      <div class="stage">
+        <div class="field-preview" id="npField"><span id="npVal"></span><span class="caret"></span></div>
+        <div class="numpad" id="numpad">
+          <div class="key" data-k="1">1</div><div class="key" data-k="2">2</div><div class="key" data-k="3">3</div>
+          <div class="key" data-k="4">4</div><div class="key" data-k="5">5</div><div class="key" data-k="6">6</div>
+          <div class="key" data-k="7">7</div><div class="key" data-k="8">8</div><div class="key" data-k="9">9</div>
+          <div class="key accent" data-k="clear">CLR</div><div class="key" data-k="0">0</div><div class="key accent" data-k="enter">↵</div>
+        </div>
+      </div>
+      <div class="spec">
+        <div class="row"><span class="k">stack</span><span class="v">grid-layout of button {use} components</span></div>
+        <div class="row"><span class="k">binds</span><span class="v">each key → <em>publish char to target text ns</em></span></div>
+        <div class="row"><span class="k">params</span><span class="v">target, allow_decimal, on_enter</span></div>
+      </div>
+    </div>
+
+    <!-- KEYBOARD -->
+    <div class="card span2">
+      <div class="card-head">
+        <span class="cname">keyboard <span class="use">{use}</span></span>
+        <span class="chip">Sonnet · pure composite</span>
+      </div>
+      <p class="desc">A QWERTY grid of Button components editing a text namespace — the same one a <code style="font-family:var(--mono)">text_input</code> consumes. Type on it.</p>
+      <div class="stage">
+        <div class="field-preview" id="kbField"><span id="kbVal">jump coordinates: </span><span class="caret"></span></div>
+        <div class="kbd" id="kbd">
+          <div class="kbd-row" data-row="q w e r t y u i o p"></div>
+          <div class="kbd-row" data-row="a s d f g h j k l"></div>
+          <div class="kbd-row" data-row="⇧ z x c v b n m ⌫"></div>
+          <div class="kbd-row" data-row="space"></div>
+        </div>
+      </div>
+      <div class="spec">
+        <div class="row"><span class="k">stack</span><span class="v">grid-layout of button {use} components; shift/backspace/space are param keys</span></div>
+        <div class="row"><span class="k">binds</span><span class="v">each key → <em>edit target text ns</em> (text_input renders/consumes it)</span></div>
+        <div class="row"><span class="k">params</span><span class="v">layout (qwerty/azerty), target, shift_mode, keycaps</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <span class="lead">Every primitive is a <code>component</code></span> — the default is a starting point, not a lock. Fork the composition, keep the tokens above for a consistent family, restyle the rest. · <span style="color:var(--accent-ink)">Sonnet</span>: progress_bar · numpad · keyboard · switch &nbsp;|&nbsp; <span style="color:var(--accent-ink)">Opus</span>: slider · dropdown &nbsp;|&nbsp; Fable: not needed.
+  </footer>
+</div>
+
+<script>
+  (function () {
+    // theme toggle
+    var root = document.documentElement, btn = document.getElementById('themeBtn');
+    btn.addEventListener('click', function () {
+      var cur = root.getAttribute('data-theme');
+      var next = cur === 'dark' ? 'light' : cur === 'light' ? 'dark'
+        : (matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark');
+      root.setAttribute('data-theme', next);
+    });
+
+    // slider drag
+    var sld = document.getElementById('sld'), fill = document.getElementById('sldFill'),
+        thumb = document.getElementById('sldThumb'), tag = document.getElementById('sldTag');
+    function setSld(clientX) {
+      var r = sld.getBoundingClientRect();
+      var v = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+      fill.style.width = (v * 100) + '%'; thumb.style.left = (v * 100) + '%';
+      tag.textContent = v.toFixed(2); sld.setAttribute('aria-valuenow', v.toFixed(2));
+    }
+    var dragging = false;
+    sld.addEventListener('pointerdown', function (e) { dragging = true; sld.setPointerCapture(e.pointerId); setSld(e.clientX); });
+    sld.addEventListener('pointermove', function (e) { if (dragging) setSld(e.clientX); });
+    sld.addEventListener('pointerup', function () { dragging = false; });
+    sld.addEventListener('keydown', function (e) {
+      var v = parseFloat(sld.getAttribute('aria-valuenow'));
+      if (e.key === 'ArrowRight') v = Math.min(1, v + 0.05);
+      else if (e.key === 'ArrowLeft') v = Math.max(0, v - 0.05); else return;
+      e.preventDefault();
+      fill.style.width = (v * 100) + '%'; thumb.style.left = (v * 100) + '%';
+      tag.textContent = v.toFixed(2); sld.setAttribute('aria-valuenow', v.toFixed(2));
+    });
+
+    // switch
+    var sw = document.getElementById('sw'), swState = document.getElementById('swState');
+    function toggleSw() {
+      var on = sw.getAttribute('aria-checked') === 'true';
+      sw.setAttribute('aria-checked', String(!on));
+      swState.innerHTML = 'jump_drive/armed = <b style="color:var(--accent-ink)">' + (!on ? 'on' : 'off') + '</b>';
+    }
+    sw.addEventListener('click', toggleSw);
+    sw.addEventListener('keydown', function (e) { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleSw(); } });
+
+    // dropdown
+    var dd = document.getElementById('dd'), ddVal = document.getElementById('ddVal'), ddList = document.getElementById('ddList');
+    document.getElementById('ddField').addEventListener('click', function (e) { e.stopPropagation(); dd.classList.toggle('open'); });
+    ddList.addEventListener('click', function (e) {
+      var it = e.target.closest('.dd-item'); if (!it) return;
+      ddList.querySelectorAll('.dd-item').forEach(function (n) { n.classList.remove('sel'); });
+      it.classList.add('sel'); ddVal.textContent = it.dataset.v; dd.classList.remove('open');
+    });
+    document.addEventListener('click', function () { dd.classList.remove('open'); });
+
+    // numpad
+    var npVal = document.getElementById('npVal');
+    document.getElementById('numpad').addEventListener('click', function (e) {
+      var k = e.target.closest('.key'); if (!k) return;
+      var v = k.dataset.k;
+      if (v === 'clear') npVal.textContent = '';
+      else if (v === 'enter') { /* commit */ }
+      else npVal.textContent += v;
+    });
+
+    // keyboard build + type
+    var kbVal = document.getElementById('kbVal');
+    document.querySelectorAll('#kbd .kbd-row').forEach(function (row) {
+      row.dataset.row.split(' ').forEach(function (c) {
+        var k = document.createElement('div');
+        k.className = 'key' + (c === 'space' ? ' wide' : '') + (c === '⇧' || c === '⌫' ? ' accent' : '');
+        k.textContent = c === 'space' ? '' : c; k.dataset.c = c;
+        row.appendChild(k);
+      });
+    });
+    document.getElementById('kbd').addEventListener('click', function (e) {
+      var k = e.target.closest('.key'); if (!k) return;
+      var c = k.dataset.c;
+      if (c === '⌫') kbVal.textContent = kbVal.textContent.slice(0, -1);
+      else if (c === 'space') kbVal.textContent += ' ';
+      else if (c === '⇧') { /* shift toggle in real impl */ }
+      else kbVal.textContent += c;
+    });
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,733 @@
+---
+scope: "Routing the Intelligence Console's 20 in-process data sources off raw `paho` and through `ComposeIOBus`, so WHICH SUBSTRATE carries a message becomes the bus's business and not the app's. Covers the bus-handle seam, EXPLICIT scope declaration (never auto-resolve), the externality classification per namespace, the `run()`-must-block invariant that keeps the supervisor's reclaim loop from mis-firing, the slice order, and the on-the-wire acceptance bar."
+audience: "The builder converting the console data sources; the composeux-architect ratifying the open calls; anyone who later adds a data source and must know how a source reaches the bus."
+boundary: "IN: how an in-process source acquires a bus handle (injected in-process, self-created standalone); the explicit-scope declaration rule + its conflict-is-loud discipline; the per-source namespace/scope inventory; the wire deltas the routing change legitimately introduces; the `run()`-blocks invariant + its enforcing test; the two-stage sequencing (route first, flip scope second) and the slice order; the acceptance bar. OUT: the ComposeBus protocol itself ([plt.cio:SPEC:CIO-BUS-PROTOCOL] — consumed, never changed); the widgets' binding layer ([SPEC:CXC-BIND]); `intelligence/launcher/launcher.py` (deliberately exempt, [CXC-SOB-EXEMPT]); the standalone out-of-process peers `app_launcher` / `decisions_curator` / `console_supervisor` (they explain WHY `_app/*` is external, they are not converted here); the eventual fold of `bus_envelope`/`bus_client` into `transport_mqtt` (stated as the end-state in [CXC-SOB-ENDSTATE], executed in a later slice)."
+not-this: "Not a protocol change — no namespace is renamed, no payload reshaped, no topic moved ([CXC-SOB-CONTRACT-FROZEN]). Not a new uplink-policy layer — `scope` already IS the uplink control and a parallel mechanism was already built and RETRACTED once ([CXC-SOB-NO-POLICY-LAYER]). Not a performance optimization — the connection collapse is a by-product; the goal is substrate independence."
+depends-on: [34-composeux-intelligence-console.lts, 21-composebus-pattern-subscription.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+created: 2026-08-08
+---
+# Console Data Sources on the Bus [SPEC:CXC-SOURCES-ON-BUS]
+
+> The console's 20 in-process data sources publish with raw `paho` to hand-built
+> `composeio/{scope}/{ns}` topics. A source that writes `client.publish(f"composeio/global/{ns}", ...)`
+> has hardcoded MQTT; on a CAN-only device it publishes into the void. This spec routes every source
+> through `ComposeIOBus` so the app declares a NAMESPACE and a SCOPE and stops naming a substrate — and
+> it implements [DEC-INTERNAL-BUS-SELECTIVE-UPLINK], `decided` since 2026-07-22 and unbuilt because the
+> bus API used to reject the sources' payloads. That blocker was fixed on 2026-08-08; the bypass has no
+> remaining justification.
+
+---
+
+## 1. The thesis and the frozen contract
+
+### [CXC-SOB-THESIS] The app publishes to ComposeBus; the bus decides the substrate
+
+- premise: David, 2026-08-08 — "ComposeBus might for some devices be instantiated as MQTT, and for some
+  it might ride on CANBUS. But in both cases the ComposeIO/UX app shouldn't have to care how ComposeBus
+  is instantiated — it should just listen to / publish to ComposeBus. The ComposeBus API should be an
+  abstraction layer that makes MQTT calls, pushes onto CANBUS, or ties a message to a carrier pigeon."
+- requirement: after this work, NO file under `intelligence/publisher/` or `intelligence/tools/` that is
+  registered as a console data source MAY import `paho`, construct an `mqtt.Client()`, or compose a
+  `composeio/...` topic string. Every publish is `bus.publish_state(ns, value, source=...)`; every
+  subscribe is `bus.subscribe(ns, cb)` / `bus.subscribe_pattern(pattern, cb)`. The substrate is chosen
+  once, by `composeio.transport_registry`, from a `type:` declaration.
+- verify-machine: a grep guard test (`python/tests/render/test_sources_have_no_paho.py`) over the
+  registered source modules FAILS on any of: `import paho`, `mqtt.Client(`, the literal `composeio/`,
+  `loop_forever(`, `loop_start(`. Exemptions are an explicit allow-list in the test naming
+  [CXC-SOB-EXEMPT] and NOTHING else — an unnamed exemption is a red test. This is a CLASS guard in the
+  shape [SBR-PATHS-SINGLE-SOURCE] uses: reorg-proofing is a red test, not a convention.
+- verify-human: none required — this node is mechanical.
+- rationale: the seam already exists and was already proved reachable (`transport_registry`, 2026-08-08,
+  after `runtime._build_bus` was found to silently drop `type: can`). The sources are the last consumers
+  below the waist that reach past it.
+- relates-to: [CXC-SOB-HANDLE], [CXC-SOB-ENDSTATE]
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-CONTRACT-FROZEN] The bus contract does not move — this is transport routing, not protocol
+
+- invariant: for every namespace in [CXC-SOB-INVENTORY], the following are UNCHANGED by this work:
+  the namespace STRING; the payload VALUE shape; the envelope field set and order
+  (`ns,type,src,ts,scope,seq,val` — pinned by `bus_envelope._selftest` and produced by the canonical
+  `BusMessage.to_json()`); the `src` string each source stamps; and, in Stage A, the resolved SCOPE and
+  therefore the MQTT topic. A consumer outside the process MUST be unable to tell the conversion
+  happened, except for the deltas enumerated in [CXC-SOB-WIRE-DELTAS].
+- invariant: each source keeps its importable `main(argv)` entry point and stays runnable standalone as
+  a script with IDENTICAL argv. [DEC-INPROCESS-SOURCES] depends on a source being runnable both as a
+  console thread and as a script; a conversion that only works in-process breaks the per-source
+  testability that decision bought.
+- invariant: the per-`<id>` singleton `flock` behaviour ([CXC-IC-SINGLETON], `singleton.py`) is
+  untouched. `acquire_singleton` still runs at the TOP of `run()`, before the bus handle is acquired,
+  so a yielding instance never opens a transport it is about to abandon.
+- verify-machine: [CXC-SOB-ACCEPT] SOB-C2 (capture-diff) and SOB-C6 (argv parity).
+- relates-to: [CXC-SOB-WIRE-DELTAS], [CXC-SOB-TWO-STAGE]
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-EXEMPT] What is deliberately NOT converted, and why
+
+- definition: four exemption classes. Each is named here so the [CXC-SOB-THESIS] grep guard has an
+  explicit, reviewable allow-list rather than a silent skip.
+  1. **`intelligence/launcher/launcher.py` — permanently exempt.** It hand-frames to keep a paho-only,
+     `composeio`-import-free startup footprint. That is a real constraint, not an oversight; do not
+     "fix" it. Its `publish_state` already carries a pointer to the envelope seam.
+  2. **Out-of-process peers — out of scope, not exempt in principle.** `intelligence/tools/app_launcher.py`,
+     `intelligence/tools/decisions_curator.py`, `intelligence/console/console_supervisor.py`,
+     `intelligence/host/poc_driver.py`, `intelligence/console/chat.py`. They are separate OS processes,
+     not console data sources. They matter here ONLY as evidence of consumer locality
+     ([CXC-SOB-EXTERNALITY]) — several of them are the reason `_app/*` is EXTERNAL.
+  3. **`intelligence/channel/channel.mjs` — a different runtime.** The Node channel server is the
+     Intelligence's harness-side leg; it speaks raw MQTT by construction and is outside this corpus.
+  4. **Spawned viewer windows.** Each is its own `RenderApp` process and already reaches the bus through
+     `runtime._build_bus`; they need no conversion.
+- constraint: an exemption is a LISTED exemption. Adding a source module to the exemption list requires
+  a one-line rationale in the test's allow-list; an unexplained entry is a review reject.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+---
+
+## 2. Why the bypass existed, and why the reason is gone
+
+### [CXC-SOB-BYPASS-EXPIRED] The binary auto-register that forced raw paho is FIXED
+
+- prior-defect: `ComposeIOBus.publish_state` auto-registered an unknown namespace with a **binary**
+  state engine, which then rejected the real payload — `publish_state("self/context", 0.203)` raised
+  `ValueError: Invalid value '0.203' for binary engine. Valid: ['off','on']`. That single line is why
+  the sources bypassed the bus API and hand-rolled raw paho ([DEC-BUS-ENVELOPE-RAW-PAHO], 2026-07-19).
+- change: "The create-on-demand path (`ComposeIOBus.ensure_namespace`) now defaults to the `json`
+  engine, and validation is OPT-IN via explicit declaration (commit `de04af3`, 2026-08-08). Explicit
+  `register_namespace()` keeps its own `binary` default, and every already-DECLARED namespace is
+  unaffected — verified by test. The bypass therefore has no remaining justification."
+- context_for_change:
+  - prior_state: "A namespace nobody declared was auto-created BINARY, so the first float/dict/string
+    publish raised. 17 of 18 sources routed around the bus entirely rather than declare 30+ namespaces."
+  - reasoning: "Auto-create fires exactly when nobody stated an intent to enforce; a 2-value engine is
+    the wrong guess for an undeclared namespace in every case, not merely an unlucky one. The principle:
+    validation is opt-in via DECLARATION."
+  - rejected_alternative: "Infer the engine from the first value — rejected: `ContinuousEngine` clamps
+    to 0-255, so a namespace whose first value was `42` would silently start REJECTING a later token
+    count of `475000`. That converts a loud startup error into an unpredictable mid-run one."
+  - counter_argument: "Raw paho works today, is proven on the glass, and has no state engine in the
+    path at all — converting risks the console going dark for zero user-visible gain."
+  - counter_response: "The gain is not user-visible and is not meant to be: it is substrate
+    independence ([CXC-SOB-THESIS]) plus the removal of a per-source reconnect-storm surface. The
+    dark-risk is real and is answered structurally by [CXC-SOB-TWO-STAGE] (route at unchanged scope
+    first), the capture-diff bar (SOB-C2), and the slice order (SOB [CXC-SOB-SLICES])."
+  - invalidating_assumption: "That `ensure_namespace`'s auto-create default stays permissive (`json`)
+    and that DECLARED namespaces keep their declared engine. If auto-create is ever tightened back
+    toward a validating default, every source that relies on declare-then-publish must be re-audited —
+    and the bypass argument becomes live again."
+  - implication: "A source may now publish a float, a dict, or a multi-kilobyte list through
+    `bus.publish_state` without declaring anything. It MUST still declare — see [CXC-SOB-DECLARE] —
+    but for SCOPE, not for the engine."
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+---
+
+## 3. The mechanism — how a source reaches the bus
+
+### [CXC-SOB-HANDLE] The bus handle is INJECTED in-process and self-created standalone
+
+- requirement: every converted source's `run(...)` and `main(argv, ...)` gain exactly two optional
+  keyword parameters, with these EXACT names and defaults:
+  - `bus: ComposeIOBus | None = None` — the bus to publish/subscribe on.
+  - `stop: threading.Event | None = None` — the parking signal ([CXC-SOB-RUN-BLOCKS]).
+  Positional `argv` stays first and unchanged. No other signature change is permitted, because
+  `DataSourceSupervisor` binds `functools.partial(main, argv, ...)` and the standalone `__main__` path
+  must keep passing argv alone.
+- requirement: `bus=None` MUST self-create, never fail. The self-created bus is built through the
+  substrate registry, NOT by constructing `MQTTTransport` directly:
+  `ComposeIOBus(bus_id=<source-label>, global_transport=composeio.transport_registry.build(spec, app_id=<source-label>))`,
+  where `spec` defaults to `{"type": "mqtt", "broker": <host from --mqtt>, "port": <port>}`. Going
+  through the registry is what makes a standalone source substrate-independent too; hardcoding
+  `MQTTTransport` here would reintroduce [CXC-SOB-THESIS]'s defect one level down.
+- requirement: the wiring is ONE seam, not 20 copies. A shared helper module
+  `python/composeio/source_bus.py` exposes `acquire_bus(...)`, `declare(...)` ([CXC-SOB-DECLARE]) and
+  `park(...)` ([CXC-SOB-RUN-BLOCKS]); every source calls it BY REFERENCE. A per-source copy of this
+  logic is the fork-divergence class ([DX-NARROW-WAIST]) and is a review reject.
+- requirement: `intelligence/console/data_sources.py` `build_console_sources(...)` gains a
+  `bus: ComposeIOBus | None = None` parameter and threads it into every `_src(...)` partial;
+  `start_console_data_layer(...)` gains the same and `runtime._maybe_start_inprocess_sources` passes
+  `app.bus`. When `bus is None` at the supervisor level (a headless `python3 data_sources.py` run),
+  each source self-creates as above — behaviour identical to today except for the transport class.
+- default: `bus_id` for a self-created bus is the source's existing paho client-id string
+  (e.g. `lts-engine-status`), so broker-side identification is unchanged.
+- verify-machine: `test_source_bus_seam.py` — (a) `main(argv)` with no kwargs self-creates a bus whose
+  `global_transport` came from the registry (assert via an injected fake factory, no network);
+  (b) `main(argv, bus=fake)` publishes ONLY on `fake` and constructs no transport;
+  (c) `build_console_sources(bus=fake)` binds the SAME `fake` into all N partials.
+- relates-to: [CXC-SOB-STANDALONE], [DD-SOB-HANDLE-SEAM]
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-STANDALONE] Standalone runnability is a first-class acceptance criterion, not a side effect
+
+- requirement: for EVERY converted source, `python3 <module>.py <the exact argv data_sources.py passes>`
+  MUST produce the same wire traffic as the in-process thread. `--selftest` (where a module has one)
+  MUST stay green and MUST NOT require a broker.
+- rationale: [DEC-INPROCESS-SOURCES] made the sources threads; it explicitly did NOT make them
+  thread-only. The standalone path is the debugging surface and the headless fallback
+  (`COMPOSEIO_INPROCESS_SOURCES=0`), and it is the only way to bisect a source in isolation when the
+  console goes dark.
+- verify-machine: SOB-C6 — a test that runs each converted module's `--selftest` in a subprocess with
+  no broker reachable and asserts exit 0.
+- verify-human: for the slice containing `channel_bridge`, David runs it standalone against the live
+  broker and confirms a round trip before the in-process conversion lands ([CXC-SOB-CHANNEL-LAST]).
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-DECLARE] Scope is declared EXPLICITLY at the top of `run()`; auto-resolve is forbidden
+
+- requirement: before its first publish, every converted source MUST declare each namespace it will
+  publish, with an EXPLICIT scope, through the one helper:
+  `source_bus.declare(bus, ns, scope=Scope.GLOBAL, engine="json", label=...)`. `Scope.AUTO` is
+  FORBIDDEN for any namespace in [CXC-SOB-INVENTORY]. Declaration is co-located with the publisher —
+  there is deliberately NO central scope table module ([CXC-SOB-NO-POLICY-LAYER]); the inventory in
+  this spec is the audit reference, not a runtime artifact.
+- requirement (conflict is LOUD): `bus.ensure_namespace` only upgrades an `AUTO` namespace and
+  otherwise leaves an existing explicit scope untouched — so a scene-declared `scope: global` in
+  `console.compose.yaml` would SILENTLY win over a source's `Scope.LOCAL`. `source_bus.declare` MUST
+  therefore read `bus.get_namespace(ns)` first and, if an explicit scope already exists that DIFFERS
+  from the requested one, RAISE at startup with both values named. A scope disagreement between the
+  scene and the source is a real defect; resolving it silently is the failure class this whole arc is
+  removing.
+- requirement (the startup manifest): each source MUST emit, once, at startup, a single stderr line
+  naming every namespace it declared with its resolved scope, e.g.
+  `[lts_engine_status] declared: self/lts_engine/status scope=global`. This is acceptance criterion
+  SOB-C3's mechanism: "no namespace silently goes dark" is checkable by reading one boot log.
+- rationale: `_resolve_scope` falls back to "local if local subscribers exist, global otherwise". That
+  heuristic already caused a real defect — [DEC-COMPOSER-SEND-GLOBAL-SCOPE], where a composer
+  self-subscribed its own outbound namespace, auto-resolved to LOCAL, and the message died in-process
+  LOOKING SENT. The console is full of self-subscribing widgets; leaving scope to the heuristic here
+  would reproduce that defect across 30+ namespaces at once.
+- verify-machine: `test_sources_declare_explicit_scope.py` — drive every source in
+  `build_console_sources(bus=recording_bus)` and assert (a) every namespace it publishes was declared
+  BEFORE the first publish, and (b) no declared namespace resolves through `Scope.AUTO`. A namespace
+  published without a prior explicit declaration FAILS. This is the class guard; it needs no table and
+  cannot drift from the code.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-NO-POLICY-LAYER] `scope` IS the uplink control — do not build a second one
+
+- constraint: `bus._send_message` ALWAYS delivers locally and forwards to the global transport ONLY
+  when scope is `global`/`auto`. A namespace registered `Scope.LOCAL` never reaches MQTT. This was
+  proven directly on 2026-08-08. Selective uplink shipped long ago and is called `scope`.
+- constraint: an earlier attempt at a separate `uplink_policy` module (plus 45 tests) was RETRACTED for
+  exactly this reason ([DEC-RETRACT-UPLINK-POLICY-AND-DELETE-BROWSER-CONSOLE-ASSET]) — a parallel
+  mechanism for something the bus already does, i.e. the fork-divergence class, committed inside the
+  session spent fixing it. This spec MUST NOT reintroduce it under any name: no allow-list module, no
+  policy table, no `uplink.yaml`. If a future need genuinely cannot be expressed as a namespace's
+  `scope`, that is a bus-protocol change and belongs in [plt.cio:SPEC:CIO-BUS-PROTOCOL], not here.
+- why-it-looked-real: the sources BYPASS the bus, so `scope` is inert for them — nothing consults it
+  because nothing goes through `publish_state`. The symptom ("everything uplinks unconditionally") was
+  genuine; the cause was a BYPASSED policy, not a MISSING one. This spec fixes the bypass, which is
+  what makes `scope` live.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-WIRE-DELTAS] The four wire deltas that ARE permitted, enumerated so the capture-diff can normalize
+
+- definition: routing through the bus legitimately changes four things. Anything NOT on this list that
+  the capture-diff surfaces is a DEFECT, not an expected delta. The diff tool MUST normalize exactly
+  these fields and no others.
+  1. **`seq`** — today each source keeps its OWN per-source counter; the bus assigns one
+     process-global monotonic `_next_seq()` (uint16 rollover) across all namespaces. Values change;
+     monotonicity per-namespace is NOT preserved. `BusMessage.from_json` defaults `seq` to 0 and no
+     console consumer reads it. **Normalize: drop `seq` from the diff.** See [DD-SOB-SEQ-SEMANTICS].
+  2. **`ts`** — wall clock; already differs run to run. **Normalize: drop `ts`.**
+  3. **`qos`** — `_QOS_MAP[STATE] = 1`, so sources currently publishing at qos 0
+     (`lts_engine_status`; the `_app/console/bbox` reads) move 0 -> 1. qos is a delivery guarantee, not
+     payload; an upgrade cannot lose a message. **Normalize: qos is out of the payload diff; record it
+     separately and assert it only ever increases.**
+  4. **Self-echo** — a source's own `global` publish returns to the same process via the transport's
+     incoming dispatch. `_dispatch_incoming` calls `ns.publish_state` (NOT `bus.publish_state`), so
+     there is no re-send and no loop; and `Namespace.publish_state` notifies local subscribers only
+     when `new != old`, so an echoed identical value is absorbed. **Requirement: every converted
+     source publishes `MessageType.STATE`. A source that needs EVENT semantics must handle its own
+     echo explicitly and say so in its module docstring** — an EVENT echo is NOT deduplicated and would
+     double-fire every in-process handler.
+- constraint: `src` MUST be preserved byte-for-byte. `bus.publish_state(ns, value, source=...)` — the
+  `source=` argument MUST be the exact string the source stamps today (`"self"`, `"transcript"`,
+  `"deliverable-monitor"`, `"lts_engine_status"`, ...). A changed `src` is a wire change, and the
+  chat/thread widgets key voices off it.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-THREAD-SAFETY] One bus, 20 publisher threads — prove it before the fan-out lands
+
+- requirement: the console bus is published to concurrently from ~20 daemon threads. Before slice 2
+  lands, a stress test MUST prove the seam is safe: N=20 threads x M=500 `bus.publish_state` calls each
+  against a recording transport; assert (a) no exception, (b) exactly N*M messages reached the
+  transport, (c) no interleaved-envelope corruption (each captured payload parses and its `ns` matches
+  the publishing thread's namespace).
+- known-hazard: `ComposeIOBus._next_seq` is not locked, and `_message_log` is rebound by slicing under
+  concurrent append. Neither is fatal (`seq` is advisory per [CXC-SOB-WIRE-DELTAS]; a lost log entry is
+  cosmetic), but both MUST be confirmed non-fatal by the test rather than assumed. If the test finds a
+  real corruption, the fix belongs in `bus.py` under a lock — NOT in a per-source workaround.
+- rationale: paho `publish()` from multiple threads against one `loop_start()` client is documented
+  thread-safe; the strategy that motivated this work explicitly said it should be PROVEN under the real
+  fan-out rather than trusted from the doc.
+- verify-machine: `python/tests/test_bus_concurrent_publish.py`.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-LOG-NOISE] The 256-byte guideline must not turn the console log into a warning storm
+
+- known-hazard: `MQTTTransport._send_now` logs a WARNING for any payload over 256 bytes (DP-CIO-18).
+  The console's payloads are routinely KILOBYTES — transcript narration, the deliverable ledger, the
+  agents/skills arrays, the defect roll-up, the projects report. Routing 20 sources through the bus
+  will emit hundreds of such warnings per minute where today there are none.
+- requirement: the size check is THREE-TIERED on `MQTTTransport._send_now`, and each tier is fixed, not configurable. (a) at or below `GUIDELINE_PAYLOAD_BYTES` (256): SILENT. (b) above it and at or below `LARGE_PAYLOAD_WARN_BYTES`: `logger.debug`, naming DP-CIO-18 — the console's normal case. (c) above `LARGE_PAYLOAD_WARN_BYTES`: `logger.warning`, ONCE PER NAMESPACE PER PROCESS, never once per send. Both thresholds are CLASS CONSTANTS on `MQTTTransport`, not per-call arguments and not runtime-configurable — an earlier draft of this clause said "configurable ... (default: ...)" while its own next sentence said "module constant", and the code implemented the constant; the word `configurable` was the error. `LARGE_PAYLOAD_WARN_BYTES` MUST sit above every payload in [CXC-SOB-INVENTORY], MEASURED from the real projection function, never estimated from a multiple of one sampled source. Amended by [CXC-SOB-LOG-NOISE-CALIBRATION].
+- rationale: a warning that fires hundreds of times a minute is a warning nobody reads, and it will
+  bury the LOUD failures ([CXC-SOB-DECLARE] conflicts, transport-unavailable degradation) that this
+  arc depends on being visible. Preserving a guideline by making the log useless is a net loss. This
+  clause is not a prediction — it is what HAPPENED, to this very change: see
+  [CXC-SOB-LOG-NOISE-CALIBRATION].
+- verify-machine: `python/tests/render/test_mqtt_log_noise.py`. The probes MUST include the REAL payload, built by calling `intelligence/publisher/deliverable_publisher.compute_payload` over the checked-in ~180-node fixture `python/tests/render/fixtures/deliverable_ledger_178.lts` and asserting ZERO WARNING records; plus N oversize sends on ONE namespace asserting EXACTLY 1 warning; plus two distinct oversize namespaces asserting 2. The superseded version prescribed 4 KiB and 128 KiB synthetic probes — neither is a real console payload, and every actual one (16 KB to 110 KB) fell in the untested gap between them, which is how this suite stayed green while defending a live defect. A synthetic probe MAY bracket a tier; it may never be the ONLY evidence for a threshold.
+- verify-human: `grep -c "runaway threshold" console.log` against `wc -l console.log` on a multi-hour session. The clause is a RATIO, so the check is a ratio: runaway warnings must be a rounding error in the log, not a share of it. The measurement that opened this amendment was 27,009 in 58,589 lines (46%); the passing shape is single digits. No machine test can assert this — it needs a real log from a real session — which is exactly why it is stated separately from `verify-machine` rather than assumed to fall out of it.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-LOG-NOISE-CALIBRATION] The runaway threshold shipped ALREADY-VIOLATED — raise it AND report once per namespace
+
+- change: `MQTTTransport.LARGE_PAYLOAD_WARN_BYTES` 64 KiB -> 256 KiB, AND the WARNING is now emitted ONCE PER NAMESPACE PER PROCESS (`MQTTTransport._large_payload_warned`, a set of namespaces already reported). Both halves, not either. The warning text also drops the clause "this is very likely a bug, not a large payload".
+- context_for_change: [CXC-SOB-LOG-NOISE] was authored to PREVENT a warning storm and PRODUCED one, on the day it shipped. 64 KiB was calibrated to `self/projects` (16,465 B measured, x4 ~= 65,536) — while this node's own `known-hazard` list names the deliverable ledger FIRST. On the authoring commit `9c29e3c` the `self/deliverables` payload was already 70,333 bytes on the wire: over on day one. Five days later the live console log carried 27,009 runaway warnings in 58,589 lines — 46% of the file — which is verbatim the failure its `rationale` clause forbids.
+- invalidating_assumption: that ONE sampled payload times a round multiple bounds the whole enumerated set. It does not, and the sample was not even the largest member — the spec's own hazard list named a bigger one two lines above the number. Calibrating a threshold against a sample instead of against the ENUMERATION is the defect; the arithmetic was never the problem.
+- measurement: `self/deliverables` wire size, measured through `deliverable_publisher.compute_payload` + `BusMessage.to_json`: 70,333 B at authoring (104 ledger nodes) -> ~110,100 B on 2026-08-13 (178 nodes). The payload is CORRECT and fully BOUNDED at both points — 178 rows <-> 178 ledger nodes, zero duplicates, every declared cap functioning. The THRESHOLD was the defect, never the payload.
+- decision: raise AND deduplicate. Raising alone only resets the clock: `all` is an unbounded projection of a corpus that grew 104 -> 178 nodes in five days, so any absolute value is a countdown. Once-per-namespace is the structural half — it makes the absolute value NON-CRITICAL, because a re-crossing costs ONE line instead of a storm.
+- alternatives: (a) raise only — REJECTED, resets the clock without removing the failure mode. (b) a growth-RATE or relative detector — REJECTED: it needs a rate and a window, both calibrated against payloads its author has in hand, which is the identical disease one level up. Prefer the change that REMOVES the failure mode over the change that makes the detector cleverer. (c) suppress the warning for named namespaces — REJECTED, an allowlist is a per-call opt-out wearing a hat, and [DX-NARROW-WAIST] forbids it.
+- correction: this node's superseded text claimed the guideline was "still LOGGED at DEBUG, where a substrate-portability audit can find every oversized payload". MEASURED FALSE: `grep -c DEBUG console.log` = 0 across 58,589 lines / ~30 h, against a working control. The DEBUG tier is not enabled and never has been, so it has written NOTHING and the audit it promised has never been possible. The claim is RETRACTED rather than the tier enabled — see `key-insight`.
+- key-insight: once the warning is once-per-namespace, the WARNING LINE IS THE AUDIT RECORD: exactly one line per oversized namespace per process, at a level that is actually enabled. The capability the DEBUG tier was claimed to provide is delivered by the deduplication instead — which is why enabling DEBUG (thousands of lines of the same noise one level quieter) would have been the wrong repair.
+- consequence: the test suite was GREEN while actively defending this defect: `test_mqtt_log_noise.py` asserted `LARGE_PAYLOAD_WARN_BYTES == 64 * 1024` and probed the tiers at 4 KiB and 128 KiB — neither a real console payload, with every actual one (16 KB to 110 KB) in the untested gap between them. A magic-number pin can be satisfied without a payload ever being measured. It is replaced by the INVARIANT (`threshold > the largest enumerated payload, measured`) and by a regression built from the real `compute_payload` over a checked-in fixture.
+- out: `deliverable_publisher` republishing the ENTIRE ledger every 4 s regardless of change (~2.9 GB per 30 h session at QoS 1). Real, separately filed, and deliberately NOT fixed here: folding it in would produce exactly the over-broad root cause this diagnosis avoided. It is a bandwidth defect; this one is a calibration defect, and they share only a namespace.
+- status: operational
+- decided-in-session: 2026-08-13
+- see-also: [CXC-SOB-LOG-NOISE]
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+---
+
+## 4. The classification — which namespaces are external
+
+### [CXC-SOB-EXTERNALITY] Externality is a fact about CONSUMER LOCALITY, not about the namespace's name
+
+- definition: a namespace is EXTERNAL if any of its publishers OR consumers lives in a different OS
+  process from the console. It is INTRA-APP only if EVERY publisher and EVERY consumer is inside the
+  console process. The test is a census of running processes, never an intuition about the prefix.
+- constraint: a namespace family is classified WHOLE, never by a narrower glob. An earlier pass used
+  `_app/*/open` and missed `_app/dsd/answered` and `_app/decisions/anchor`, which are published BY
+  spawned viewer windows. A per-leaf classification is one forgotten leaf away from a dark surface;
+  declare the family.
+- constraint: a namespace whose locality is UNPROVEN is EXTERNAL. Default-deny is the quiet-bus stance,
+  but "forgotten goes dark" is this system's worst failure mode and its failures are silent. Uplinking
+  a namespace nobody consumes costs bandwidth; withholding one somebody does costs a dark surface with
+  no error. The asymmetry decides it.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-FUN-IS-EXTERNAL] `fun/nightwatch/*` is EXTERNAL — it feeds a SPAWNED WINDOW, not an in-process widget
+
+- correction: the working classification carried into this spec listed `fun/*` as intra-app. It is not.
+  `intelligence/tools/away_watch_publisher.py` publishes `fun/nightwatch/{title,started,ended,decisions,
+  tokens,elapsed,gitstate,tasks,artifacts,tab,greeting,message,sessions}` AND spawns
+  `intelligence/console/nightwatch.compose.yaml` as a SEPARATE process
+  (`subprocess.Popen([... nightwatch.compose.yaml, "--transports"])`). That window's `RenderApp` builds
+  its OWN bus and receives those namespaces over MQTT. Declaring `fun/*` local would black out the
+  entire Away Watch window with no error — the exact silent-dark failure this arc exists to remove.
+- evidence: `away_watch_publisher.py` (`_spawn`/`relaunch`, scene path
+  `intelligence/console/nightwatch.compose.yaml`) and `nightwatch.compose.yaml` `namespaces:` block.
+- implication: `fun/nightwatch/*` is EXTERNAL by exactly the same construction as `_app/*` — a spawned
+  viewer window is a separate OS process. It is `scope: global` in Stage A AND in Stage B.
+- generalization: this is the second time a "spawned window" consumer was missed by a name-based
+  classification. [CXC-SOB-EXTERNALITY]'s family rule and [CXC-SOB-CENSUS]'s process census exist to
+  make the third time impossible.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-INVENTORY] The per-source namespace and scope inventory
+
+- definition: the authoritative enumeration for acceptance criterion SOB-C3. The SOURCE COUNT is
+  whatever `build_console_sources` returns (20 with a pinned session, 17 without — asserted by
+  `data_sources._selftest` check 17); this table enumerates by NAME so a newly registered source that
+  is missing here is a review reject rather than a silent gap.
+- reading the table: **Stage A** is the scope declared when the source is routed through the bus, chosen
+  to keep the wire IDENTICAL ([CXC-SOB-TWO-STAGE]). **Stage B** is the candidate scope after a passed
+  census ([CXC-SOB-CENSUS]) — a candidate, never an authorization.
+
+| # | Source | Direction | Namespaces | Consumers outside the process? | Stage A | Stage B candidate |
+|---|--------|-----------|------------|--------------------------------|---------|-------------------|
+| 1 | `self_publisher` | pub | `self/<id>/*` (context_level, context_pct, registered, rate_limit, ...) | UNPROVEN — `host/poc_driver` subscribes `composeio/global/self/#`; a fleet view subscribes `self/+/context_pct` | global | census-gated |
+| 2 | `transcript_publisher` | pub | `thread/<id>/narration`, `self/<id>/activity`, `self/<id>/subagents`, `self/<id>/avatar/expression` | UNPROVEN — same fleet/host surface | global | census-gated |
+| 3 | `deliverable_monitor` | pub+sub | `deliverable/new`, `deliverable/modified` | UNPROVEN | global | census-gated |
+| 4 | `channel_bridge` | pub+sub | `intelligence/<id>/{in,out,channel/alive}`, `intelligence/<id>/compose` | YES — the MCP channel server (`channel.mjs`), the launcher harness, David | global | **global (never local)** |
+| 5 | `deliverable_publisher` | pub | `self/deliverables` | UNPROVEN | global | census-gated |
+| 6 | `deliverable_opener` | sub | `_app/deliverable/open`, `_app/fs/open` | YES — `_app/*` family | global | global |
+| 7 | `deliverable_watcher` | pub | `deliverable/new`, `deliverable/modified` | UNPROVEN | global | census-gated |
+| 8 | `memory_monitor` | pub | `self/memory` | UNPROVEN | global | census-gated |
+| 9 | `away_watch_publisher` | pub+sub | `self/away_watches`, `fun/nightwatch/*`, `_app/away_watch/open`, `_app/console/bbox` | YES — the spawned Night Watch window ([CXC-SOB-FUN-IS-EXTERNAL]) | global | **global** |
+| 10 | `defect_metrics_publisher` | pub | `self/<id>/defects` | UNPROVEN | global | census-gated |
+| 11 | `project_validator` | pub | `self/projects` | UNPROVEN | global | census-gated |
+| 12 | `doc_viewer_launcher` | sub | `_app/doc/open`, `_app/console/bbox` | YES — `_app/*` family | global | global |
+| 13 | `decisions_viewer_launcher` | sub | `_app/graph/open`, `_app/decisions/anchor`, `_app/console/bbox` | YES — published BY spawned windows | global | global |
+| 14 | `dsd_viewer_launcher` | sub | `_app/dsd/open`, `_app/dsd/answered`, `_app/console/bbox` | YES — `_app/dsd/answered` is published BY the spawned DSD window | global | global |
+| 15 | `lts_engine_status` | pub | `self/lts_engine/status` | UNPROVEN | global | census-gated |
+| 16 | `config_persister` | pub+sub | `intelligence/<id>/config/{retention,heartbeat}`, `intelligence/<id>/config/console/*` | YES — originates outside the process (the channel server, the launcher harness, David) | global | **global** |
+| 17 | `agents_skills_publisher` | pub | `self/<id>/agents`, `self/<id>/skills` | UNPROVEN | global | census-gated |
+| 18 | `memory_publisher` | pub | `self/<id>/memories` | UNPROVEN | global | census-gated |
+| 19 | `meta_publisher` | pub | `self/meta` | UNPROVEN | global | census-gated |
+| 20 | `daemon_watch` | pub | `self/daemons` | UNPROVEN | global | census-gated |
+
+- family rules, stated once so a new leaf inherits them:
+  - `_app/*` — EXTERNAL, WHOLE FAMILY, permanently `global`. Cross-process by construction: the
+    standalone `app_launcher`, the standalone `decisions_curator`, `console_supervisor`
+    (`_app/console/<id>/{lifecycle,state}`), and every spawned viewer window both publish and consume
+    here.
+  - `intelligence/<id>/*` — EXTERNAL, permanently `global`. It originates outside the process.
+  - `fun/*` — EXTERNAL, permanently `global` ([CXC-SOB-FUN-IS-EXTERNAL]).
+  - `self/*`, `thread/*`, `deliverable/*` — intra-app CANDIDATES. Census-gated, not assumed.
+- verify-machine: SOB-C3 — a test asserts every namespace observed on a full `build_console_sources`
+  drive appears in this table's name set (fixture-mirrored), and vice versa. A source added without a
+  table row is a red test.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+---
+
+## 5. The hazard — a converted source must still BLOCK
+
+### [CXC-SOB-RUN-BLOCKS] A converted source's `run()` MUST park for the lifetime of the source
+
+- invariant: `run()` MUST NOT return while the source is meant to be alive. Two sources —
+  `intelligence/publisher/channel_bridge.py` and `intelligence/publisher/deliverable_opener.py` — call
+  `client.loop_forever()`, and that blocking call is HOW THEIR SOURCE THREAD STAYS ALIVE. Once they
+  publish/subscribe through the bus there is no `loop_forever` to block on, and a source that simply
+  returns is MIS-READ.
+- why it is mis-read: `DataSourceSupervisor._guarded` treats a CLEAN RETURN from `run()` as "this source
+  yielded its host singleton" and RE-INVOKES it after `reclaim_poll_s` — the reclaim-on-release behaviour
+  from [CXC-IC-SINGLETON] / IC-C27, generalized to the source class after
+  [DEFECT-IN-PROCESS-SINGLETON-SOURCE-YIELDS]. A converted source that returns therefore enters a
+  RECLAIM RETRY LOOP that re-subscribes every 5 seconds forever, and reports NO error. The failure is a
+  slow leak of duplicate routes plus a log the operator learns to ignore — not a crash.
+- requirement: every converted source parks through the ONE helper,
+  `source_bus.park(stop, poll_s=...)`, which blocks on the injected `stop` Event (creating a private one
+  when `stop is None`, the standalone case) and returns ONLY when it is set. `loop_forever()` and
+  `loop_start()` are both banned by the [CXC-SOB-THESIS] grep guard; the shared client already runs its
+  own loop and a second one conflicts.
+- requirement: `DataSourceSupervisor` owns the stop events. `DataSource` gains
+  `stop: threading.Event | None`; `build_console_sources` creates one per source and binds it into the
+  partial; `DataSourceSupervisor.stop()` sets EVERY source's event BEFORE joining, so `stop()` joins the
+  real sources cleanly instead of relying on daemon-thread death. This makes the existing "test doubles
+  that honour a stop signal join cleanly" path the REAL path.
+- verify-machine (this is the enforcing test the invariant requires, and it closes the CLASS, not the
+  instance): `python/tests/render/test_sources_run_blocks.py` parametrizes over EVERY source returned by
+  `build_console_sources(bus=<fake>, ...)` and, for each:
+  1. runs `run()` on a thread with `stop` unset; asserts the thread is STILL ALIVE after 250 ms;
+  2. asserts the supervisor logged NO `yielded its singleton` line in that window;
+  3. sets `stop`; asserts the thread joins within 2 s.
+  A source that returns early fails leg 1; a source that ignores `stop` fails leg 3. Both legs are
+  required — a source that blocks forever and cannot be stopped is the other half of the same defect.
+- constraint: the singleton `flock` YIELD path is the ONE legitimate early return and MUST be preserved
+  — `acquire_singleton` returning None still returns from `run()` so the supervisor's reclaim loop can
+  do its job. The test therefore drives sources with the singleton ACQUIRED (a temp lock dir), so leg 1
+  measures the parking behaviour and not the yield behaviour.
+- relates-to: [CXC-SOB-SUBSCRIBE], [CXC-IC-SINGLETON]
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-SUBSCRIBE] Subscribing through the bus — pattern vs exact, and the callback contract
+
+- requirement: a source that today calls `client.subscribe("composeio/+/<ns>")` converts to
+  `bus.subscribe(ns, cb)`; one that subscribes an MQTT wildcard (`composeio/global/_app/+/open`)
+  converts to `bus.subscribe_pattern("_app/*", cb)` and filters in the callback. The bus's own
+  `MQTTTransport.subscribe` already issues `composeio/+/<ns>`, so scope-agnostic reception is preserved
+  without the source naming a topic.
+- requirement: the bus callback signature is `(namespace, new_value, old_value)` for
+  `bus.subscribe` — NOT paho's `(client, userdata, msg)`, and NOT a `BusMessage`. Every converted
+  handler MUST be rewritten to that signature and MUST NOT parse JSON: the value arrives decoded. A
+  handler that still calls `json.loads(msg.payload)` will raise on every message.
+- known-hazard: `Namespace.publish_state` notifies subscribers ONLY when `new != old`. A source that
+  needs to act on every REPEAT of an identical value (an idempotent "open this path again" intent) will
+  MISS the repeat. Two `_app/*` intents are of this shape (`_app/doc/open`, `_app/deliverable/open`:
+  tapping the same row twice). Each converted subscriber MUST state in its docstring whether it needs
+  repeat delivery; if it does, its publisher side MUST carry a nonce/timestamp in the payload so
+  consecutive values differ. This is a REAL behaviour change and is the most likely source of a
+  "sometimes the window doesn't open" report.
+- verify-machine: a per-subscriber test publishing the SAME value twice and asserting the expected
+  handler-invocation count (1 for dedup-tolerant, 2 for repeat-required after the nonce fix).
+- verify-human: David taps the same deliverable row twice in a row on the glass and the viewer opens
+  both times.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+---
+
+## 6. Sequencing
+
+### [CXC-SOB-TWO-STAGE] Route first at UNCHANGED scope; flip scope only after a census
+
+- requirement: the work is TWO stages and they MUST NOT be bundled.
+  - **Stage A — routing.** Every source publishes/subscribes through `ComposeIOBus`, every namespace
+    declared `Scope.GLOBAL` (its CURRENT effective scope). The wire is byte-identical modulo
+    [CXC-SOB-WIRE-DELTAS]. The capture-diff must be CLEAN. This stage delivers the whole of
+    [CXC-SOB-THESIS] and the whole connection collapse, and it can go dark in exactly one way (a source
+    that fails to publish), which the diff catches.
+  - **Stage B — selective uplink.** Census-gated per namespace family; flips a candidate to
+    `Scope.LOCAL`. The capture-diff for a flipped namespace INTENTIONALLY shows it disappearing from the
+    wire; the acceptance question becomes "did any consumer notice", which is a different, human
+    question.
+- rationale: the frozen-contract invariant ([CXC-SOB-CONTRACT-FROZEN]) and the selective-uplink goal
+  ([DEC-INTERNAL-BUS-SELECTIVE-UPLINK]) are in direct tension: one says the wire must not change, the
+  other's entire point is that intra-app traffic stops appearing on it. Splitting the stages resolves
+  the tension honestly instead of letting a reviewer discover it mid-slice. It also keeps the rollback
+  points meaningful: Stage A reverts as a transport change, Stage B as a one-line scope edit.
+- constraint: Stage A is DONE and MEASURED before any Stage-B flip is proposed. Bundling a scope flip
+  into a routing slice makes a dark surface indistinguishable from a routing bug.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-CENSUS] What a namespace family must pass before it may go LOCAL
+
+- requirement: a family may flip to `Scope.LOCAL` only after ALL FOUR pass, recorded in the slice's PR:
+  1. **Broker-side subscriber census.** With the console running and every spawned window open, capture
+     `mosquitto_sub -h <broker> -t '$SYS/broker/subscriptions/#'` (or, where unavailable, the
+     per-process `lsof`/connection inventory plus each peer's declared `namespaces:` block) and show no
+     consumer outside the console process for the family.
+  2. **Static reachability sweep.** Grep every `*.compose.yaml`, every `intelligence/**/*.py`, and every
+     out-of-process peer in [CXC-SOB-EXEMPT] class 2 for the family; show every hit is in-process.
+  3. **Dry-run soak.** Ship the family still `global`, with a startup line naming it as
+     CANDIDATE-LOCAL, and run one full session (>= 8 h, including at least one `/bounce-console` and one
+     spawned-window open of every kind). No new dark-surface report.
+  4. **Named owner.** A human — David — signs off that no external consumer he knows of exists. The
+     census can only prove what is running; the owner covers what is merely paused.
+- constraint: the dry-run is a LOG LINE, not a shadow policy engine. It states intent and withholds
+  nothing. Any implementation that builds a table of would-be-local namespaces is
+  [CXC-SOB-NO-POLICY-LAYER]'s retracted `uplink_policy` wearing a hat.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-SLICES] The slice order — smallest risk first, `channel_bridge` last of all
+
+- definition: each slice is independently landable, independently revertable, and ends with the
+  acceptance run in [CXC-SOB-ACCEPT]. Slices 1-7 are Stage A; slice 8 is Stage B; slice 9 is the
+  end-state fold.
+
+| Slice | Content | Sources | Why here | Revert |
+|-------|---------|---------|----------|--------|
+| 1 | The seam only — `source_bus.py` (`acquire_bus` / `declare` / `park`), the `bus`/`stop` kwargs threaded through `data_sources.py`, the [CXC-SOB-THREAD-SAFETY] stress test, the [CXC-SOB-LOG-NOISE] demotion. ZERO sources converted. | none | Pure addition; no runtime behaviour changes at all. Everything after it is a small diff. | delete the module |
+| 2 | The REFERENCE conversion — one source, end to end, with its capture-diff. | `lts_engine_status` | Single namespace, 10 s cadence, publish-only, no subscriber, and nothing catastrophic if it blips. It is also the qos 0 -> 1 case, so the delta is exercised on the least important namespace. | one file |
+| 3 | Publish-only, session-INDEPENDENT sources, converted BY REFERENCE to slice 2. | `meta_publisher`, `memory_publisher`, `memory_monitor`, `agents_skills_publisher`, `deliverable_publisher`, `deliverable_watcher`, `defect_metrics_publisher`, `project_validator`, `daemon_watch` | Nine mechanical repetitions of a proven pattern; none is a subscriber; none needs the transcript. This is where the connection count drops hardest. | per file |
+| 4 | Publish-only, TRANSCRIPT-based sources. | `self_publisher`, `transcript_publisher` | Highest volume and they drive the visible gauges, so they get their own slice and their own glass check — but they are still publish-only, which is the easy half. | per file |
+| 5 | SUBSCRIBING sources that already use `loop_start` (they need the [CXC-SOB-SUBSCRIBE] callback rewrite but NOT the parking change). | `doc_viewer_launcher`, `decisions_viewer_launcher`, `dsd_viewer_launcher`, `away_watch_publisher`, `config_persister`, `deliverable_monitor` | First slice with the callback-signature and dedup hazards; sequenced after the publish-only pattern is proven so a failure here is unambiguously a subscribe failure. | per file |
+| 6 | The FIRST `loop_forever` source. | `deliverable_opener` | Exercises [CXC-SOB-RUN-BLOCKS] for real on the lower-stakes of the two blocking sources. If parking is wrong, we learn it on "the file didn't open", not on "David can't talk to the Intelligence". | one file |
+| 7 | The SECOND `loop_forever` source, ALONE. | `channel_bridge` | [CXC-SOB-CHANNEL-LAST]. | one file |
+| 8 | Stage B — the census-gated scope flips, one FAMILY per commit. | (declarations only) | [CXC-SOB-TWO-STAGE], [CXC-SOB-CENSUS]. | one line per family |
+| 9 | The end-state fold. | (module moves) | [CXC-SOB-ENDSTATE]. | git revert |
+
+- constraint: a slice does not land red and does not land unmeasured. The connection count
+  (SOB-C1) is recorded BEFORE slice 1 as the baseline and after EVERY slice; a slice that does not move
+  it or that moves it UP is investigated before the next slice starts.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [CXC-SOB-CHANNEL-LAST] `channel_bridge` is converted last, alone, and verified independently first
+
+- premise: `channel_bridge` is THE HUMAN'S CHANNEL to the Intelligence — it relays
+  `intelligence/<id>/{in,out}` and unwraps the composer's `/compose`. If it breaks, David loses the
+  ability to talk to the running Intelligence, and the failure mode is SILENCE, not an error. There is
+  no gauge that goes grey; the messages simply stop arriving.
+- requirement: its conversion is its OWN slice, its own commit, and its own revert point. It shares a
+  slice with nothing.
+- requirement (independent verification BEFORE the in-process conversion lands, in this order):
+  1. The converted `channel_bridge` runs STANDALONE against the live broker
+     (`python3 channel_bridge.py --id architect --mqtt mqtt://<broker>:1883`) with the in-process one
+     DISABLED, and a round trip is confirmed: David sends a message from the composer, the Intelligence
+     receives it once (not twice — the doubling defect [CXC-IC-SINGLETON] closed), the reply renders in
+     the thread.
+  2. A capture-diff on `intelligence/<id>/{in,out,channel/alive}` specifically, before and after.
+  3. A fallback is REHEARSED, not assumed: confirm the revert command and confirm that reverting
+     restores the channel within one console bounce.
+  4. ONLY THEN does the in-process conversion land, followed immediately by a real bounce and a live
+     round trip on the glass.
+- verify-human: David personally confirms a send-and-reply round trip after the bounce. This one is NOT
+  delegable to a machine signal: the failure mode is silence, and silence is exactly what a passing
+  test looks like from the outside.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+---
+
+## 7. Acceptance
+
+### [CXC-SOB-ACCEPT] The acceptance criteria — machine signal AND, where the surface is human-perceptible, a glass gate
+
+- definition: every slice in [CXC-SOB-SLICES] runs the criteria below that apply to it. Two-tier by
+  construction: a machine signal is necessary and, for any surface a human perceives, never sufficient.
+
+| ID | Criterion | when / then | Machine signal | Human gate |
+|----|-----------|-------------|----------------|------------|
+| SOB-C1 | Connection collapse | WHEN the console has been up 60 s THEN its TCP connections to the broker are at or below the previous slice's count, and after slice 7 EXACTLY 1 | `lsof -nP -p $(pgrep -f console.compose.yaml) \| grep -c ':1883'`, cross-checked against the peer address so a coincidental local port cannot inflate it. Baseline recorded BEFORE slice 1; terminal value MUST be 1 (the render runtime's one `MQTTTransport`). Secondary, recorded not gated: thread count via `ps -M`. | — |
+| SOB-C2 | Wire compatibility by CAPTURE-DIFF | WHEN each namespace's traffic is captured off the broker for 120 s before and after a slice THEN the normalized payload sets are IDENTICAL | `mosquitto_sub -h <broker> -t 'composeio/#' -v` to a file, before and after; normalize by dropping `ts` and `seq` and sorting by `(topic, src, ns)` per [CXC-SOB-WIRE-DELTAS]; `diff` is EMPTY. qos recorded separately and asserted non-decreasing. A namespace that appears in the BEFORE capture and not the AFTER is a slice blocker. | — |
+| SOB-C3 | No namespace silently goes dark | WHEN the console starts THEN every namespace in [CXC-SOB-INVENTORY] is named in the boot log with its declared scope | the per-source startup manifest line ([CXC-SOB-DECLARE]) plus the inventory-parity test; a source with no manifest line fails | David greps one boot log and sees every expected namespace |
+| SOB-C4 | Suites stay green | WHEN a slice lands THEN no test regresses | `pytest intelligence/` and the render suite BOTH green, with NO new failures AND no reduction in COLLECTED count except by a deletion explicitly recorded in the slice. Baselines at spec time: 173 and 2585 — recorded as the starting point, with the RULE (no unexplained drop) as the durable gate, because the counts grow every week. | — |
+| SOB-C5 | `run()` still blocks | WHEN a converted source is started with `stop` unset THEN its thread is alive after 250 ms and the supervisor logs no reclaim | `test_sources_run_blocks.py`, all three legs, parametrized over every source ([CXC-SOB-RUN-BLOCKS]) | — |
+| SOB-C6 | Standalone parity | WHEN a converted module is run as a script with the console's argv THEN it produces the same traffic; and its `--selftest` passes with no broker | subprocess test, exit 0, no network ([CXC-SOB-STANDALONE]) | — |
+| SOB-C7 | No substrate names below the waist | WHEN the guard test runs THEN no registered source imports paho, builds a client, composes a `composeio/` topic, or calls `loop_*` | `test_sources_have_no_paho.py` with the [CXC-SOB-EXEMPT] allow-list | — |
+| SOB-C8 | Concurrency is proven, not assumed | WHEN 20 threads publish 500 messages each THEN all 10 000 arrive intact | `test_bus_concurrent_publish.py` ([CXC-SOB-THREAD-SAFETY]) | — |
+| SOB-C9 | Repeat-delivery hazard closed | WHEN an idempotent intent is published twice with the same value THEN its handler fires the documented number of times | per-subscriber dedup test ([CXC-SOB-SUBSCRIBE]) | David taps the same row twice; the window opens twice |
+| SOB-C10 | The glass, after a REAL bounce | WHEN the console is bounced for real THEN every gauge is live | — (there is no machine signal for "the console looks right") | David runs `/bounce-console` and confirms live context gauge, live thread, live deliverables, live projects, live defects, and an open-then-close of every spawned window kind |
+| SOB-C11 | The channel round trip | WHEN slice 7 has landed and the console bounced THEN David sends a message and gets a reply | the channel-bridge capture-diff | **David personally confirms send-and-reply.** Mandatory, non-delegable ([CXC-SOB-CHANNEL-LAST]) |
+| SOB-C12 | Away Watch survives | WHEN the Night Watch window is opened after any slice THEN it renders live data, not its static defaults | `fun/nightwatch/*` present in the AFTER capture | David opens the Away Watch window and sees real values ([CXC-SOB-FUN-IS-EXTERNAL]) |
+
+- constraint: SOB-C10 and SOB-C11 CANNOT be waived by a green machine run. The console's failure mode is
+  that the UX renders perfectly while the data is stale or absent — a glass check is the only instrument
+  that sees it.
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+---
+
+## 8. The end state
+
+### [CXC-SOB-ENDSTATE] Once the sources are on the bus, `bus_envelope` and `bus_client` become INTERNAL to `transport_mqtt`
+
+- definition: `composeio/bus_envelope.py` (the one STATE-envelope framer) and `composeio/bus_client.py`
+  (the shared paho connection + the topic-dispatch router) exist as APP-FACING helpers only because the
+  app currently speaks MQTT. Once no source imports them, both are MQTT implementation detail and belong
+  BEHIND the transport: moved to `composeio/transport_mqtt/` (or made private module members of it),
+  with no importer outside that module.
+- rationale: MQTT knowledge belongs in the MQTT transport. Leaving an app-facing `bus_client` in place
+  after the conversion leaves a live, documented, tempting path back around the bus — and the next
+  source someone adds will take it, exactly as 17 sources took the last one.
+- requirement: this is a LATER SLICE (slice 9), not part of Stage A, and it is gated on the
+  [CXC-SOB-THESIS] grep guard being green with an empty non-exempt set. Its acceptance is a pure import
+  check: `grep -rn "bus_client\|bus_envelope" --include=*.py` returns hits ONLY inside
+  `python/composeio/transport_mqtt*` and their own tests.
+- constraint: `intelligence/launcher/launcher.py` keeps its hand-framing ([CXC-SOB-EXEMPT]); the fold
+  MUST NOT create an import from the launcher into `composeio`, which is the exact footprint that
+  exemption protects.
+- relates-to: [CXC-SOB-THESIS]
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+---
+
+## 9. Open decisions — flagged for the architect's ratify, NOT resolved here
+
+### [DD-SOB-HANDLE-SEAM] How a source obtains its bus: injected kwarg vs a process-wide accessor
+
+- decision: PROPOSED — the injected `bus=None` kwarg on `run()`/`main(argv, ...)`, self-creating when
+  absent ([CXC-SOB-HANDLE]). Specified normatively so the builder is not blocked; flagged here because
+  it is a real fork in the road and the architect owns it.
+- rationale: it matches the prior recommendation in the 2026-08-08 connection-collapse strategy
+  ("add an optional injected bus/client that defaults to self-created"), it preserves the
+  [DEC-INPROCESS-SOURCES] standalone contract exactly, it keeps every dependency EXPLICIT and therefore
+  testable with a fake, and it needs no process-global mutable state.
+- alternatives: (a) a process-wide accessor `source_bus.current()` mirroring `bus_client.acquire()` —
+  fewer signature changes, but it is ambient global state, it makes a test's bus leak between test
+  cases, and it hides which sources touch the bus; (b) constructing the bus inside
+  `build_console_sources` and passing it positionally — breaks argv parity and the standalone path.
+- status: proposed — awaiting ratify
+- invalidating_assumption: "That a source needs at most ONE bus. If a source ever has to bridge TWO
+  buses (e.g. an MQTT leg and a CAN leg simultaneously — the `can_mqtt_bridge` shape), a single `bus=`
+  kwarg is the wrong signature and this reopens as `buses: Mapping[str, ComposeIOBus]`."
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [DD-SOB-LOCAL-FLIP] Which namespace families actually flip to LOCAL in Stage B
+
+- decision: DEFERRED to Stage B, per family, gated by [CXC-SOB-CENSUS]. This spec deliberately declares
+  EVERY namespace `global` in Stage A and does NOT pick the Stage-B set.
+- rationale: the classification carried into this spec was wrong about `fun/*` ([CXC-SOB-FUN-IS-EXTERNAL]),
+  and `self/*` has at least two candidate out-of-process consumers (`host/poc_driver`'s
+  `composeio/global/self/#` subscription and the fleet `self/+/context_pct` view described in
+  `self_publisher`). A classification that has already been wrong once, about a family that would black
+  out a whole window, has not earned a same-slice flip.
+- alternatives: (a) flip `self/*` + `thread/*` + `deliverable/*` in Stage A on the strength of the
+  existing classification — rejected: it bundles a design decision into a mechanical win and makes a
+  dark surface indistinguishable from a routing bug; (b) never flip, keep everything global — rejected:
+  it abandons [DEC-INTERNAL-BUS-SELECTIVE-UPLINK] and keeps the bus noisy, and the routing change alone
+  does not deliver the decided end-state.
+- status: proposed — awaiting ratify
+- invalidating_assumption: "That the Intelligence Host spawner keeps spawning builder consoles as
+  SEPARATE processes that share one broker. If builders ever become threads in one host process, most
+  of the `self/*` and `thread/*` families become genuinely intra-app and the census result flips."
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+### [DD-SOB-SEQ-SEMANTICS] `seq` becomes bus-global rather than per-source — is that acceptable forever?
+
+- decision: PROPOSED — accept it, and normalize `seq` out of the capture-diff ([CXC-SOB-WIRE-DELTAS]).
+- rationale: no console consumer reads `seq`; `BusMessage.from_json` defaults it to 0; and the bus's
+  own counter is the canonical behaviour for anything that publishes through the bus, so preserving
+  per-source counters would mean re-introducing a per-source shadow of a bus concern.
+- alternatives: (a) thread a per-source sequence through `publish_state` — rejected: it widens the bus
+  API for a field nobody reads; (b) declare `seq` deprecated on the wire — a bigger change than this
+  slice, belongs in [plt.cio:SPEC:CIO-BUS-PROTOCOL].
+- status: proposed — awaiting ratify
+- invalidating_assumption: "That no consumer uses `seq` for gap detection or replay ordering. The
+  capture-replay surface ([plt.cio:SPEC:CIO-BUS-PROTOCOL] CR-*) is the one place that might; if replay
+  ordering depends on a per-source monotonic `seq`, this reopens."
+- part-of: [SPEC:CXC-SOURCES-ON-BUS]
+
+---
+
+## 10. Relationships
+
+### Semantic
+
+- [SPEC:CXC-SOURCES-ON-BUS] DEPENDS_ON [SPEC:CXC-INTELLIGENCE-CONSOLE]
+- [SPEC:CXC-SOURCES-ON-BUS] REALIZES [DEC-INTERNAL-BUS-SELECTIVE-UPLINK]
+- [SPEC:CXC-SOURCES-ON-BUS] RELATED_TO [SPEC:CXC-DVL]
+- [SPEC:CXC-SOURCES-ON-BUS] RELATED_TO [SPEC:CXC-DSDV]
+- [CXC-SOB-THESIS] EXEMPLIFIES [plt.cio:SPEC:DP-CIO-2]
+- [CXC-SOB-THESIS] UPHOLDS [DX-NARROW-WAIST]
+- [CXC-SOB-CONTRACT-FROZEN] UPHOLDS [DEC-INPROCESS-SOURCES]
+- [CXC-SOB-CONTRACT-FROZEN] RELATED_TO [CXC-IC-SINGLETON]
+- [CXC-SOB-BYPASS-EXPIRED] SUPERSEDES [DEC-BUS-ENVELOPE-RAW-PAHO]
+- [CXC-SOB-HANDLE] USES [CXC-SOB-STANDALONE]
+- [CXC-SOB-HANDLE] UPHOLDS [DX-NARROW-WAIST]
+- [CXC-SOB-STANDALONE] UPHOLDS [DEC-INPROCESS-SOURCES]
+- [CXC-SOB-DECLARE] EXEMPLIFIES [DEC-COMPOSER-SEND-GLOBAL-SCOPE]
+- [CXC-SOB-DECLARE] USES [CXC-SOB-INVENTORY]
+- [CXC-SOB-NO-POLICY-LAYER] DOCUMENTS [DEC-RETRACT-UPLINK-POLICY-AND-DELETE-BROWSER-CONSOLE-ASSET]
+- [CXC-SOB-WIRE-DELTAS] DEPENDS_ON [CXC-SOB-CONTRACT-FROZEN]
+- [CXC-SOB-THREAD-SAFETY] DEPENDS_ON [CXC-SOB-HANDLE]
+- [CXC-SOB-LOG-NOISE] RELATED_TO [CXC-SOB-HANDLE]
+- [CXC-SOB-INVENTORY] USES [CXC-SOB-EXTERNALITY]
+- [CXC-SOB-FUN-IS-EXTERNAL] EXEMPLIFIES [CXC-SOB-EXTERNALITY]
+- [CXC-SOB-RUN-BLOCKS] DEPENDS_ON [CXC-IC-SINGLETON]
+- [CXC-SOB-RUN-BLOCKS] RELATED_TO [DEFECT-IN-PROCESS-SINGLETON-SOURCE-YIELDS]
+- [CXC-SOB-SUBSCRIBE] RELATED_TO [CXC-SOB-RUN-BLOCKS]
+- [CXC-SOB-TWO-STAGE] UPHOLDS [CXC-SOB-CONTRACT-FROZEN]
+- [CXC-SOB-CENSUS] DEPENDS_ON [CXC-SOB-EXTERNALITY]
+- [CXC-SOB-SLICES] USES [CXC-SOB-TWO-STAGE]
+- [CXC-SOB-CHANNEL-LAST] DEPENDS_ON [CXC-SOB-SLICES]
+- [CXC-SOB-ACCEPT] DEPENDS_ON [CXC-SOB-WIRE-DELTAS]
+- [CXC-SOB-ACCEPT] UPHOLDS [SBR-TRUST]
+- [CXC-SOB-ENDSTATE] DEPENDS_ON [CXC-SOB-THESIS]
+- [DD-SOB-HANDLE-SEAM] DOCUMENTS [CXC-SOB-HANDLE]
+- [DD-SOB-LOCAL-FLIP] DOCUMENTS [CXC-SOB-TWO-STAGE]
+- [DD-SOB-SEQ-SEMANTICS] DOCUMENTS [CXC-SOB-WIRE-DELTAS]
+
+### Entity
+
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-THESIS]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-CONTRACT-FROZEN]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-EXEMPT]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-BYPASS-EXPIRED]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-HANDLE]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-STANDALONE]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-DECLARE]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-NO-POLICY-LAYER]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-WIRE-DELTAS]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-THREAD-SAFETY]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-LOG-NOISE]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-LOG-NOISE-CALIBRATION]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-EXTERNALITY]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-FUN-IS-EXTERNAL]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-INVENTORY]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-RUN-BLOCKS]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-SUBSCRIBE]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-TWO-STAGE]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-CENSUS]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-SLICES]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-CHANNEL-LAST]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-ACCEPT]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [CXC-SOB-ENDSTATE]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [DD-SOB-HANDLE-SEAM]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [DD-SOB-LOCAL-FLIP]
+- [SPEC:CXC-SOURCES-ON-BUS] CONTAINS [DD-SOB-SEQ-SEMANTICS]
+
+### Temporal
+
+- [CXC-SOB-TWO-STAGE] BEFORE [CXC-SOB-CENSUS]
+- [CXC-SOB-SLICES] BEFORE [CXC-SOB-CHANNEL-LAST]
+- [CXC-SOB-CHANNEL-LAST] BEFORE [CXC-SOB-ENDSTATE]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-08-08
+**Status**: Draft — awaiting the architect's ratify on [DD-SOB-HANDLE-SEAM], [DD-SOB-LOCAL-FLIP], [DD-SOB-SEQ-SEMANTICS]

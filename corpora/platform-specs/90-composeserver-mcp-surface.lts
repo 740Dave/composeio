@@ -1,0 +1,813 @@
+---
+scope: "The ComposeServer MCP umbrella surface — the agent-facing sibling of the WS endpoint ([SPEC:CXC-WS]): ONE aggregating MCP connector per ComposeServer that enumerates every loaded plugin's declared tools and exposes them per-plugin-namespaced (`fingerprint.enroll`), so an Intelligence connecting over MCP becomes a co-equal tenant-bus peer exactly as a browser does over WS. This is a design-review spec, one notch short of [SPEC:CXC-WS]'s full build-spec precision on session mechanics, but FULL build-spec precision on the load-bearing deliverable: the plugin tool-DECLARATION contract (§6) that a fan-out of per-service plugin adaptations will each implement against."
+audience: "David (architect) — for ratify of every non-`decided` claim below, and specifically the `[DD-MCP-*]` open forks; composeio-expert, who implements the connector directly against [CXC-MCP-CONNECTOR-INTERFACE] and whose future per-plugin adaptations implement tools directly against [CXC-MCP-TOOL-DECLARATION]; the audit that diffs this document against David's verbatim session turns and against the landed connector once built."
+not-this: "Not a full build spec on session mechanics the way [SPEC:CXC-WS] is — the umbrella endpoint's connect/select/bound lifecycle is stated as a MUST-mirror-WS requirement rather than independently re-derived line by line, because re-deriving it would either silently diverge from WS's own settled mechanics or duplicate them; where this spec narrows or extends [SPEC:CXC-WS], the node says so explicitly. It IS a full build spec on [CXC-MCP-TOOL-DECLARATION] (§6) — the load-bearing deliverable a fan-out of future plugin adaptations depends on gets full MUST/SHOULD + verify-machine/verify-human precision. Not an assertion that every claim below is David's stated word — each node carries an explicit `provenance:` property per [DX-INTERPRETATION-IS-AN-INFERENCE]: exactly one node ([CXC-MCP-UMBRELLA-RATIFIED]) is `david-ratified-by-concurrence`, quoting David's actual words ('I endorse your MCP approach') where the provenance string quotes him; every other node is `architect-recommendation`, per the dispatch's own explicit instruction that David delegated the mechanism ('you don't need me to fully spec it out'). Not a claim that this has been built or run — every POST-integration evidence property at [CXC-MCP-EVIDENCE] is the `EMPTY` sentinel per [DX-SPEC-CARRIES-ITS-EVIDENCE] until a real build fills it in."
+depends-on: [84-composebus-kernel.lts, 85-composeserver-plugin-contract.lts, 86-composebus-request-response.lts, 88-composebus-ws-endpoint.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: draft
+created: 2026-08-25
+updated: 2026-08-25
+---
+# ComposeServer MCP Surface — agent-facing sibling of the WS endpoint; PLACEMENT UNRATIFIED [SPEC:CXC-MCP]
+
+> The MCP surface is the AGENT-FACING sibling of [SPEC:CXC-WS]: where a browser tab becomes a live bus
+> peer over WS carrying raw namespace traffic, an Intelligence becomes a live bus peer over MCP carrying
+> TOOL CALLS. Transport is an implementation detail ([plt.cio:SPEC:DP-CIO-6]) — the wire underneath MCP's
+> JSON-RPC (stdio, SSE, streamable-HTTP) is swappable connector config, never a fork in the contract. ONE
+> aggregating router per ComposeServer enumerates every loaded plugin's DECLARED tools — one typed
+> pydantic manifest, the same one that already derives a plugin's config form and announce
+> ([CXC-CS-PLUGIN-CONTRACT]), now ALSO derives its MCP tool schema — and exposes them
+> per-plugin-namespaced (`fingerprint.enroll`, `time.set_zone`). A tool call ENCODES to a bus publish,
+> table-driven from the tool's own declared schema; a read/subscription tool DECODES bus state back to
+> the agent, either directly (a retained value) or via [SPEC:CXC-BUS-QUERY]'s round-trip idiom. The
+> umbrella NEVER derives a new semantic fact from what it forwards — [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS]
+> applies here exactly as it does to every other connector — so ComposeServer stays supervisor, never
+> mediator. A plugin whose surface is inherently separate MAY declare its own endpoint; that is the
+> knowing exception, never the default.
+
+---
+
+## 1. Placement
+
+### [CXC-MCP-PLACEMENT] Placement is UNRATIFIED, and filename 90 was verified unused
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because its nearest relatives
+  (`84-composebus-kernel.lts`, `85-composeserver-plugin-contract.lts`, `86-composebus-request-response.lts`,
+  `87-composeserver-plugin-loader.lts`, `88-composebus-ws-endpoint.lts`, `89-composeux-dom-render-backend.lts`)
+  already sit there — convention, not a ruling. See [CXC-VISION-PLACEMENT] for the standing note on this
+  directory's unratified filename numbering and its two live filename-number collisions (neither of which
+  this file touches).
+- filename-number-check: `90` was verified unused across `corpora/platform-specs/` before this file was
+  written — the directory listing's highest prior numeric prefix was `89`
+  (`89-composeux-dom-render-backend.lts`); `99` remains the reserved conventions-document number
+  (`99-composeio-conventions.smd`).
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-VISION-PLACEMENT], [CXC-CS-PLACEMENT], [CXC-CBK-PLACEMENT], [CXC-WS-PLACEMENT]
+
+---
+
+## 2. The umbrella, ratified — one aggregating surface, not per-plugin endpoints by default
+
+### [CXC-MCP-UMBRELLA-RATIFIED] MUST aggregate every loaded plugin's declared tools behind ONE MCP surface per ComposeServer; a per-plugin endpoint is the exception, never the default
+
+- requirement: (MUST, testable) ComposeServer MUST expose plugin capabilities to an MCP client through ONE
+  aggregating router, not one MCP endpoint per plugin. A tool declared by plugin `fingerprint` and a tool
+  declared by plugin `time` MUST both be reachable over the SAME MCP session, namespaced by their
+  declaring plugin (`fingerprint.enroll`, `time.set_zone`), never requiring the client to know or dial a
+  different endpoint per capability.
+- why: mirrors [CXC-CS-MICROKERNEL]'s own test applied one layer up — any capability that CAN share the
+  umbrella MUST, and the residue after the true exceptions ([CXC-MCP-FORK-EXCEPTION]) defines the
+  legitimate default. An MCP client that had to dial N endpoints for N plugins would be re-deriving the
+  per-service self-connect sprawl [CXC-CBK-MQTT-INDEPENDENT] already collapsed at the transport layer,
+  one abstraction level higher.
+- verify-machine: a test ComposeServer with >=2 loaded plugins, each declaring >=1 tool, exposes ALL
+  declared tools over ONE MCP session's tool-list response; no plugin's tools require a second connection.
+- verify-human: none required — this node's failure surface is fully machine-observable.
+- status: proposed
+- provenance: david-ratified-by-concurrence — David's actual word (2026-08-25): "I endorse your MCP
+  approach." This is the whole of David's ratification; it was given in response to the umbrella-over-
+  per-plugin-endpoints design as proposed in the dispatch that produced this spec. The elaboration in
+  this node's `requirement` and `why` properties is the author's framing of the agreed ruling, not a
+  tenant-scoping, the tool-declaration schema shape, the thin-router mechanics, the fork-exception — is
+  `architect-recommendation` (David explicitly delegated: "you don't need me to fully spec it out"), and
+  each such node below carries that tag distinctly rather than borrowing this one's ratified weight.
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-MCP-ROUTER-MECHANICS], [CXC-MCP-FORK-EXCEPTION], [CXC-CS-MICROKERNEL]
+
+---
+
+## 3. The MCP surface is a connector, not a plugin — and it never transforms
+
+### [CXC-MCP-CONNECTOR-NOT-PLUGIN] MUST be registered as a `transport_registry.py` connector, `type: mcp`; MUST NOT be a `ComposePlugin`; MUST inherit SCOPE + ENCODE/DECODE, never derive
+
+- requirement: (MUST, testable) the MCP surface MUST be implemented as a new factory registered under
+  `type: mcp` in the SAME `_FACTORIES` registry `transport_registry.py` already uses for
+  `mqtt`/`can`/`uart`/`synthetic`/`replay`/`ws` (`register("mcp", _mcp)`), and MUST NOT be a
+  `ComposePlugin` subclass under [CXC-CS-PLUGIN-CONTRACT] — exactly the same connector-vs-plugin split
+  [CXC-WS-CONNECTOR-NOT-PLUGIN] states for the WS endpoint, applied to its agent-facing sibling. A
+  declared `type: mcp` that the registry cannot build MUST raise `UnknownTransportError` exactly as an
+  unknown `type:` does today.
+- inherits: the connector contract — SCOPE (does this cross the tenant membrane, [CXC-VISION-SCOPE-MEMBRANE])
+  and ENCODE/DECODE (the wire format and the tool-call/bus-publish mapping) only, never a third role.
+  [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS]'s membrane-not-mediator rule applies exactly as it does to WS; the
+  MCP surface does not derive a new fact from what it forwards.
+- the-derive-boundary-a-builder-must-not-miss: (architect-recommendation, elaborating the stress-tested
+  connector-transform boundary — [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25] — for this connector's
+  own shape, not David's word) a tool call carries STRUCTURED semantic-looking arguments
+  (`enroll(user_id=5)`), which is a sharper temptation to "just interpret it here" than WS's raw-frame
+  pass-through ever was. The rule holds unchanged: ENCODE is table-driven from the TOOL'S OWN DECLARED
+  SCHEMA ([CXC-MCP-TOOL-DECLARATION]) and never derives a value from ANOTHER piece of bus state
+  ([CXC-MCP-INVOKE-WRITE]); DECODE recovers the published/queried fact and stops there
+  ([CXC-MCP-INVOKE-READ]). A tool whose meaning requires combining `user_id` with some OTHER namespace's
+  current value before publishing is not encoding — that combination belongs in the plugin's own handler
+  or a state_manager peer, never in this router.
+- socket-scope: the MCP listen surface (however its underlying wire is realized, [DD-MCP-TRANSPORT-CHOICE])
+  is opened ONCE at the ComposeServer/kernel level ([CXC-CS-MICROKERNEL]), never once per tenant — exactly
+  [CXC-WS-CONNECTOR-NOT-PLUGIN]'s `socket-scope` property, restated here because it is the same
+  invariant, not a new one.
+- negative-control: an unrecognized `type: mcp2` (or any other unregistered name) still raises
+  `UnknownTransportError` naming `known_types()`, and `known_types()` after this connector registers MUST
+  include `"mcp"` alongside the existing entries (including `"ws"`).
+- verify-machine: `transport_registry.known_types()` includes `"mcp"`; `transport_registry.build({"type": "mcp", ...})`
+  returns an MCP connector object, never `None` and never silently falls through to local-only, on a spec
+  with a valid wire config; `transport_registry.build({"type": "mcp"})` with no wire config either applies
+  a documented default or raises naming the missing field.
+- verify-human: none required — this node's failure surface is fully machine-observable.
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-CBK-CONNECTOR-CONTRACT], [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS], [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS], [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25], [CXC-WS-CONNECTOR-NOT-PLUGIN]
+
+---
+
+## 4. Endpoint topology — one umbrella endpoint per ComposeServer, tenant-scoped per session
+
+### [CXC-MCP-ENDPOINT-TOPOLOGY] MUST run ONE MCP connector instance per ComposeServer; a session selects its tenant post-connect, mirroring [CXC-WS-LIFECYCLE]'s PRE-BINDING -> select -> BOUND shape — DECIDED for v1
+
+- requirement: (MUST, testable) a ComposeServer instance MUST stand up exactly ONE MCP connector,
+  spanning every tenant it hosts, rather than one MCP connector per tenant. A newly connected MCP session
+  starts unbound (no tenant selected) and MUST select a tenant before any tool that touches a tenant bus
+  is reachable — the same PRE-BINDING/BOUND shape [CXC-WS-LIFECYCLE] already specifies for the WS
+  connector, reused here rather than re-derived, because inventing a second binding state machine for the
+  same underlying [CXC-CS-MULTI-TENANCY] boundary would be exactly the "designed too specifically"
+  failure [CXC-VISION-ANNOUNCE-BIND]'s `design-check` warns against.
+- resolved-2026-08-25: this was the architect's LEAN against a genuinely defensible alternative (one MCP
+  endpoint per tenant, [DD-MCP-ENDPOINT-PER-TENANT]) recorded rather than silently foreclosed. Per
+  [DEC-MCP-DD-RESOLVED-2026-08-25], the fork is now DECIDED: umbrella-per-ComposeServer, tenant-scoped
+  per session — maximal reuse of [CXC-WS-LIFECYCLE]'s already-settled binding lifecycle and
+  [CXC-CS-LOADER-PUBLISHES-ANNOUNCE]'s derived-announce spine, over forking a divergent per-tenant model.
+  The per-tenant-endpoint alternative is REJECTED for v1 (RE-LITIGABLE per [DD-MCP-ENDPOINT-PER-TENANT]'s
+  own invalidating_assumption). The requirement accordingly moves SHOULD -> MUST.
+- tenant-selection-surface: the CONCRETE SHAPE of the tenant-selection tool (a dedicated control-plane
+  tool such as `_server.select_tenant`, an MCP-native "resource" listing, or a connection-time parameter
+  analogous to WS's deep-link) remains an implementation detail this spec does not fix — but the
+  endpoint-topology fork it used to be bundled with is no longer open: see [DD-MCP-ENDPOINT-PER-TENANT]
+  (rejected for v1) and [DD-MCP-TRANSPORT-CHOICE] (streamable-HTTP chosen for v1). This node specifies
+  only that SOME selection step MUST exist and MUST precede any tenant-scoped tool call, not its concrete
+  shape.
+- verify-machine: a fresh MCP session's tool-list (or tool-invoke) surface exposes NO tenant-scoped tool
+  until a tenant-selection step completes; after selection, exactly that tenant's aggregated tool set
+  becomes reachable.
+- verify-human: an operator connects a fresh MCP client against a ComposeServer hosting >=2 tenants and
+  confirms no tenant's tools are invokable before an explicit selection, and that selecting tenant A never
+  exposes or invokes tenant B's plugin instances.
+- status: decided
+- status-detail: decided — the v1 topology per [DEC-MCP-DD-RESOLVED-2026-08-25]; re-litigable only per
+  [DD-MCP-ENDPOINT-PER-TENANT]'s own invalidating_assumption (real multi-tenant use showing agents hold
+  one long-lived tenant binding).
+- provenance: architect-recommendation — per the dispatch's explicit delegation; ratified as the decided
+  v1 topology by [DEC-MCP-DD-RESOLVED-2026-08-25] (David delegated the mechanism ratify: "you don't need
+  me to fully spec it out").
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-WS-LIFECYCLE], [CXC-MCP-TENANT-BOUNDARY], [DD-MCP-ENDPOINT-PER-TENANT], [CXC-CS-MULTI-TENANCY], [DEC-MCP-DD-RESOLVED-2026-08-25]
+
+---
+
+## 5. Session peer model — singleton persistent peer per MCP session
+
+### [CXC-MCP-SESSION-PEER] MUST treat each MCP session as one singleton persistent peer; MUST support the multi-peer accept-loop model as primary, with a single-process (stdio) session as its degenerate peer-count-1 case
+
+- requirement: (MUST, testable) each MCP session — however its underlying wire is realized
+  ([DD-MCP-TRANSPORT-CHOICE]) — MUST be represented by exactly ONE long-lived peer object for the
+  lifetime of that session: never re-created per tool call, never pooled. The peer object owns the
+  session's tenant binding ([CXC-MCP-TENANT-BOUNDARY]), its derived tool registry
+  ([CXC-MCP-ROUTER-MECHANICS]), and any in-flight query correlation state ([CXC-MCP-INVOKE-READ]) for as
+  long as the session is open. This is [CXC-WS-SINGLETON-PEER] applied to this connector's own unit of
+  connection.
+- multi-peer-is-primary: a network-transported MCP surface (SSE, streamable-HTTP) accepts MANY concurrent
+  sessions over one listening connector, structurally identical to WS's many-tabs-one-transport shape
+  ([CXC-WS-SINGLETON-PEER]'s `claim-many-tabs-is-not-a-new-shape`) — many Intelligences are many
+  independent peers, not a new concept.
+- stdio-is-degenerate-not-different: a LOCAL stdio-transported MCP session (one server process spawned
+  per client, the common desktop-MCP-client shape) is the SAME peer model with peer count fixed at
+  exactly one by the transport's own nature — it MUST NOT be implemented as a structurally different peer
+  class; the connector's peer-object shape is identical, only the transport's own cardinality differs.
+- negative-control: TWO simultaneous MCP sessions (whether two network connections or a network session
+  plus a stdio session) MUST produce TWO independent peer objects with independent tenant bindings and
+  independent in-flight query state — never one shared mutable peer object silently serving both.
+- verify-machine: opening two MCP sessions against a test server (where the transport supports
+  concurrency) asserts two distinct peer identities, each with independent tenant binding; closing one
+  MUST NOT affect the other's state.
+- verify-human: an operator connects two separate MCP clients against a real ComposeServer, binds each to
+  a different tenant, and confirms independent tool surfaces and independent in-flight calls.
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-WS-SINGLETON-PEER], [CXC-CBK-PERIPHERAL-PLUGIN-MODEL]
+
+---
+
+## 6. The plugin tool-declaration contract — the load-bearing deliverable
+
+### [CXC-MCP-TOOL-DECLARATION] MUST extend the plugin's typed pydantic manifest with an `mcp_tools` declaration; ONE typed declaration derives the tool's MCP schema too — the author writes none of it by hand
+
+- requirement: (MUST, testable) a plugin declares its MCP surface as a list of tool declarations on the
+  SAME typed pydantic model [CXC-CS-PLUGIN-CONTRACT] already uses to derive the plugin's config form and
+  announce payload — `mcp_tools: list[McpToolDecl]` (or equivalent), never a second, hand-authored
+  registration path. This is [CXC-CS-PLUGIN-CONTRACT]'s own rule — "the author never hand-writes the
+  form, announce, or registry entry" — extended with a FOURTH derived artifact: the tool's MCP schema.
+  Reuse-by-reference, not a fork: [DX-NARROW-WAIST] applied to the manifest itself.
+- schema: each `McpToolDecl` MUST carry, at minimum:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `name` | `str` | plugin-LOCAL tool name (unqualified — e.g. `enroll`, not `fingerprint.enroll`) |
+| `description` | `str` | human/agent-readable purpose, surfaced verbatim in the MCP tool-list response |
+| `input_model` | a pydantic model | the tool's typed arguments; the JSON-schema an MCP client sees is DERIVED from this model, never hand-written separately |
+| `direction` | enum: `write` \| `read` \| `read-write` \| `command` | which invocation path this tool uses — [CXC-MCP-INVOKE-WRITE] for `write`, [CXC-MCP-INVOKE-READ] for `read`; `read-write` composes both as an UNCORRELATED publish-then-separate-read (fire-and-forget write, then a separate read); `command` is a MUTATING request whose SINGLE CORRELATED reply carries the authoritative outcome — see `command-direction` below |
+| `namespace_mapping` | `{publishes: list[str], subscribes: list[str]}` | the bus namespace(s) a `write` tool call publishes to, and/or the namespace(s) a `read` tool call resolves from — table-driven, per [CXC-MCP-INVOKE-WRITE]/[CXC-MCP-INVOKE-READ]; a `command` tool's SAME `namespace_mapping` shape drives its [SPEC:CXC-BUS-QUERY] round-trip |
+| `read_mode` | enum: `retained` \| `query`, required when `direction` includes `read`, and MUST be `query` when `direction` is `command` | `retained` = return the namespace's current value directly (no round-trip, [CXC-MCP-INVOKE-READ]'s direct path); `query` = issue a [SPEC:CXC-BUS-QUERY] round-trip and return its result — the ONLY legal value for `command` (`retained` is invalid for `command` and MUST be rejected at declaration time) |
+| `idempotent` | `bool`, default `false` | whether re-invoking with identical args is safe to retry; informational to the client, not enforced by the router |
+
+- command-direction: (MUST, testable) `direction: command` declares a MUTATING request whose SINGLE
+  CORRELATED reply carries the authoritative outcome — realized over the [SPEC:CXC-BUS-QUERY] round-trip
+  idiom exactly ([CXC-BUS-QUERY-ORDERING]'s subscribe-before-publish rule, [CXC-BUS-QUERY-IDIOM]'s correlate-
+  by-`request_id`), so ONE client invocation both MUTATES bus state and RETURNS the authoritative result in
+  the same call. This is DISTINCT from `read-write`, which composes an UNCORRELATED publish-then-separate-
+  read (fire-and-forget write, then a separate read) and therefore CANNOT carry a single authoritative
+  correlated outcome — a `command` tool is never a relabel of convenience for `read-write`, it is a different
+  invocation shape. `direction: command` MUST set `read_mode: query`; a declaration pairing `command` with
+  `read_mode: retained` (or omitting `read_mode`) MUST be rejected at declaration/load time, never silently
+  coerced. G1-CONSISTENT: the connector still only FORWARDS the command request and DECODES the correlated
+  reply per [CXC-MCP-INVOKE-READ]'s query path — the MUTATION and the response happen in the plugin's own
+  handler, never in this router ([CXC-CBK-CONNECTOR-NEVER-TRANSFORMS], [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]).
+  A policy/audit/read-only-tenant gate keyed on `direction` MUST classify `command` as a WRITE (`is_write=true`)
+  — this is the entire point of the distinction: it closes the hole where a mutating tool mislabeled `read` or
+  `read-write` slips past such a gate as non-mutating. Two tools relabel to `command` when their Wave-2b legs
+  reconcile: `document_store.store` and `fingerprint_template_store.delete`.
+- verify-machine-command: a tool declared `direction: command` produces, for ONE client invocation, exactly
+  one subscribe-before-publish/correlate-by-`request_id` round-trip per [CXC-BUS-QUERY-IDIOM] whose single
+  reply both confirms the mutation occurred and carries its authoritative result value — never two separate
+  calls and never an uncorrelated read; a direction-keyed policy/audit fixture classifying tools by `is_write`
+  MUST classify every `command`-declared tool `is_write=true`; a fixture declaring `command` with
+  `read_mode: retained` (or no `read_mode`) is rejected at load time, never silently accepted.
+- provenance-command-direction: architect-recommendation, implementing [DEC-MCP-COMMAND-DIRECTION-2026-08-25]
+  (David authorized the Wave-2b reconcile-and-land including this fix, HANDOVER §1B).
+
+- naming: (MUST, testable) the tool name an MCP client actually sees MUST be
+  `{plugin_name}.{tool.name}` — dot-namespaced by the DECLARING PLUGIN's own registered name, mirroring
+  [CXC-NSID]'s namespace-identifier discipline one layer up (a semantic string, never a bare unqualified
+  tool name that could collide across plugins). Two plugins MAY each declare a tool literally named
+  `enroll`; the router's exposed names (`fingerprint.enroll`, `access_card.enroll`) never collide because
+  the plugin-name prefix is structural, not a convention a plugin author must remember to apply by hand.
+- versioning: (MUST, testable) tool names are UNVERSIONED in v1, exactly as [CXC-CS-REQUIRES-FLOOR]'s
+  capability strings are — a tool rename or a breaking input-schema change is a NEW tool name, and the
+  loader's collision/park behaviour (below) is the only guard v1 ships with.
+- duplicate-name-parks-loudly: (MUST, testable) if two plugins are ever loaded such that their DERIVED
+  exposed names collide (only possible if a plugin's own registered NAME collides — [CXC-CSL-PER-TENANT]'s
+  loader already treats that as an error elsewhere), the collision MUST be reported at load/announce time,
+  never silently resolved by "first one wins." This mirrors [MODEL-ID]'s "a duplicate id is an error, not
+  a merge" discipline extended to this router's own namespace.
+- input-schema-is-the-single-derivation-source: (MUST, testable) the JSON-schema an MCP client receives
+  for a tool's arguments MUST be generated from `input_model` at announce/list time, never hand-maintained
+  separately — the same "form and announce can never drift out of sync with each other" property
+  [CXC-CS-PLUGIN-CONTRACT] already states for config, extended to this fourth derived artifact.
+- reuse-by-reference: (what a plugin author does NOT write) the MCP JSON-RPC tool-list/tool-call wire
+  format itself (owned by the connector, [CXC-MCP-CONNECTOR-INTERFACE]); the publish/query mechanics
+  ([CXC-MCP-INVOKE-WRITE]/[CXC-MCP-INVOKE-READ], owned by the router); the announce/re-announce cadence
+  ([CXC-CS-DYNAMIC-SURFACE], already built). A plugin author's ENTIRE net-new surface for one tool is:
+  one `McpToolDecl` entry naming an `input_model` and a `namespace_mapping`.
+- scenario:
+  - when: the `fingerprint` plugin declares `McpToolDecl(name="enroll", input_model=EnrollArgs, direction="write", namespace_mapping={"publishes": ["fingerprint/enroll"]})` where `EnrollArgs` is a pydantic model with one field `user_id: int`
+  - then: an MCP client sees a tool named `fingerprint.enroll` with a JSON-schema requiring an integer
+    `user_id`; invoking it publishes `{"user_id": 5}` to `fingerprint/enroll` on the session's bound
+    tenant bus, table-driven from `EnrollArgs`, with no interpretation beyond that mapping
+- verify-machine: a plugin declaring one `write` tool and one `read`(`retained`) tool and one
+  `read`(`query`) tool, loaded into a test ComposeServer, produces an MCP tool-list carrying exactly those
+  three tools under `{plugin}.{name}`, each with a JSON-schema matching its `input_model` field-for-field;
+  a duplicate-name fixture produces a loud park/error, never a silent overwrite.
+- verify-human: a builder implementing a NEW plugin's MCP surface for the first time (the fan-out this
+  contract exists to serve) can do so by writing ONLY the `McpToolDecl` list plus its `input_model`
+  classes, confirmed by review against this table with no additional question needing to be asked of the
+  architect.
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-CS-PLUGIN-CONTRACT], [CXC-CS-DYNAMIC-SURFACE], [CXC-CS-REQUIRES-FLOOR], [DX-NARROW-WAIST], [MODEL-ID], [CXC-MCP-INVOKE-WRITE], [CXC-MCP-INVOKE-READ], [DEC-MCP-COMMAND-DIRECTION-2026-08-25], [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25], [CXC-BUS-QUERY-IDIOM]
+- naming-for-intelligence: (MUST, david-ruling) a tool's NAME, its parameter names, and its description are named for an INTELLIGENCE consumer: they MUST make the tool's purpose UNAMBIGUOUS to an agent reading the umbrella's tool list, favoring self-describing verbosity over human-API terseness — a longer fully-self-describing name is BETTER, not worse, because the consumer is a Claude instance reading the tool list as its UI, not a human developer with docs and habits. Prefer `enroll_fingerprint_template_for_identity` (+ a description naming what it does and what it publishes) over a bare `enroll`. David 2026-08-25: "all API surfaces need to be named such that their purpose is clear to an Intelligence, even if much longer than a normal human-oriented API surface would be." Full record: [DEC-MCP-SURFACES-NAMED-FOR-INTELLIGENCE-2026-08-25]. The diamond's static leg enforces this on every per-service plugin adaptation.
+
+---
+
+## 7. Tool invocation — encode: a write-tool call is a table-driven publish, never a derive
+
+### [CXC-MCP-INVOKE-WRITE] MUST encode a `write` tool call as a publish onto the tool's declared `namespace_mapping.publishes`, table-driven from `input_model`; MUST NOT derive a value from OTHER bus state
+
+- requirement: (MUST, testable) invoking a `write` tool MUST produce exactly one `BusMessage` publish per
+  namespace in `namespace_mapping.publishes`, whose `val` is the tool call's own validated arguments
+  (per `input_model`), on the session's currently-bound tenant bus. The router performs NO transformation
+  of the argument values beyond what `input_model`'s own pydantic validation/coercion already does
+  (type coercion, default-filling) — this is [CXC-MCP-CONNECTOR-NOT-PLUGIN]'s `the-derive-boundary`
+  property made concrete: ENCODE is table-driven from the tool's OWN schema, never a lookup or
+  computation against ANOTHER namespace's current value.
+- boundary: (MUST, testable) if a tool's semantics require combining its own arguments with some OTHER
+  namespace's current state before publishing (e.g. "enroll relative to whichever door group is
+  currently active"), that combination MUST happen INSIDE the plugin's own handler (subscribing and
+  computing on its own bus side) or a `state_manager` peer — never inside this router. A router
+  implementation that reads a second namespace to decide what to publish for a `write` tool call is a
+  defect against this node, exactly the class [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]'s T1
+  temptation ("just parse the frame into meaning right there") names for connectors generally.
+- validation-failure: (MUST, testable) arguments that fail `input_model`'s own pydantic validation MUST
+  be rejected with a structured MCP tool-call error naming the failing field(s), and MUST NOT be published
+  in any partially-coerced form — a validation failure produces zero bus traffic, never a best-effort
+  publish.
+- verify-machine: invoking a declared `write` tool with valid arguments produces exactly one publish
+  matching `input_model`'s validated output on the declared namespace; invoking it with arguments that
+  fail validation produces zero bus traffic and a structured error naming the offending field; a
+  fixture router that attempts to read a second namespace while encoding a `write` tool fails a
+  static/behavioural check asserting single-namespace-touch for that call.
+- verify-human: none required beyond the fixture check above — this node's failure surface is
+  machine-observable by construction (a `write` tool touching more than its own declared namespace is a
+  detectable event, not a judgment call).
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-MCP-TOOL-DECLARATION], [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS], [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]
+
+### [CXC-MCP-INVOKE-READ] MUST decode a `read` tool call from a retained namespace value directly, OR via the [SPEC:CXC-BUS-QUERY] round-trip when `read_mode: query`
+
+- requirement: (MUST, testable) a `read` tool declared `read_mode: retained` MUST resolve by reading the
+  CURRENT value of its declared `namespace_mapping.subscribes` entry/entries directly from the bound
+  tenant bus's live state (`bus.namespaces`, the same source [CXC-WS-RETAINED-REPLAY] reads for WS's
+  replay-on-subscribe) and returning it as the tool's result — NO publish, no round-trip, no responder
+  involved. A namespace with no retained value yet MUST return an explicit "no value yet" result, never a
+  fabricated default.
+- requirement: (MUST, testable) a `read` tool declared `read_mode: query` MUST invoke [SPEC:CXC-BUS-QUERY]'s
+  idiom exactly: subscribe to its own per-session result namespace BEFORE publishing the query
+  ([CXC-BUS-QUERY-ORDERING]'s subscribe-before-publish rule), correlate by `request_id`
+  ([CXC-BUS-QUERY-IDIOM]), and decode the responder's result `val` VERBATIM into the MCP tool response —
+  no re-interpretation of the responder's answer beyond unwrapping the envelope. The MCP session OWNS its
+  own timeout ([CXC-BUS-QUERY-ORDERING]'s "timeout/retry is the requester's job"): a query tool call that
+  times out MUST surface a structured "no answer" error to the MCP client, never hang the session
+  indefinitely.
+- boundary: (MUST, testable) decoding MUST NOT summarize, aggregate, or reformat the responder's `val`
+  beyond what is needed to fit the MCP tool-result envelope — this is [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]'s
+  clarification (2), "decode... recovers the original fact and stops at wire-bytes; interpreting the
+  bytes' meaning is a derive," applied to a structured bus answer rather than raw wire bytes.
+- verify-machine: a `retained` read tool against a namespace with a known current value returns that
+  value byte-identical (modulo envelope unwrapping); against an unset namespace it returns the explicit
+  "no value yet" result, never a default. A `query` read tool against a live responder returns the
+  responder's `val` verbatim, correlated correctly under >=2 concurrent in-flight calls on the same
+  session; against a responder that never answers, the call times out with a named "no answer" error
+  rather than hanging.
+- verify-human: an operator invokes a `retained` read tool for a namespace they can independently observe
+  on the bus (e.g. via a monitor) and confirms the MCP result matches; invokes a `query` read tool against
+  a real responder and confirms a timely, correct answer.
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-MCP-TOOL-DECLARATION], [CXC-BUS-QUERY-IDIOM], [CXC-BUS-QUERY-ORDERING], [CXC-BUS-QUERY-VALIDATION], [CXC-WS-RETAINED-REPLAY], [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]
+
+---
+
+## 8. The thin aggregating router — membrane, not mediator
+
+### [CXC-MCP-ROUTER-MECHANICS] MUST derive its aggregated tool list from the loader's existing derived-announce path; MUST re-derive on plugin re-announce; MUST NEVER cache the tool list as static
+
+- requirement: (MUST, testable) the router's aggregated MCP tool-list MUST be derived from the SAME
+  derived-announce payload [CXC-CS-LOADER-PUBLISHES-ANNOUNCE] already publishes to
+  `_server/plugins/<name>/announce` on each tenant bus — reading each plugin's `mcp_tools` declaration off
+  that existing announce, never standing up a second, parallel announce mechanism just for MCP. This is
+  reuse-by-reference ([DX-NARROW-WAIST]) applied to the announce spine, not a new spine.
+- requirement: (MUST, testable) on any plugin re-announce (surface change, [CXC-CS-DYNAMIC-SURFACE]), the
+  router MUST refresh its aggregated tool list for every currently-BOUND session on that tenant — the
+  same on-change discipline [CXC-VISION-ANNOUNCE-BIND] requires generally, applied to this router's own
+  cached view. A session's tool-list response MUST NEVER be served from a snapshot taken at bind time and
+  never refreshed.
+- park-excludes: (MUST, testable) a plugin currently PARKED under [CXC-CS-REQUIRES-FLOOR]'s unmet-floor
+  behaviour MUST NOT contribute any tool to the aggregated list while parked — a parked plugin's tools are
+  absent, not present-but-erroring, so an agent's tool-list reflects only what is actually reachable. When
+  the plugin unparks (the binder's continuous re-evaluation, [CXC-CS-REQUIRES-FLOOR]'s
+  `dynamic-rebinding`), its tools reappear on the NEXT re-announce-triggered refresh, with no session
+  restart required.
+- verify-machine: a plugin loaded then re-announced with an ADDED tool causes an already-BOUND session's
+  next tool-list call to include the new tool with no reconnect; a plugin PARKED after load contributes
+  zero tools to the list; unparking it restores its tools without a session restart.
+- verify-human: an operator watches a live MCP client's tool list update after a plugin's config change
+  triggers a re-announce, with no client-side reconnect performed.
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-CS-LOADER-PUBLISHES-ANNOUNCE], [CXC-CS-DYNAMIC-SURFACE], [CXC-CS-REQUIRES-FLOOR], [CXC-VISION-ANNOUNCE-BIND]
+
+---
+
+## 9. Multi-tenancy — reused, not respecified
+
+### [CXC-MCP-TENANT-BOUNDARY] MUST bind an MCP session to exactly ONE tenant at a time; MUST NEVER let a session's tool calls reach another tenant's plugin instances
+
+- requirement: (MUST, testable) at every instant a session is BOUND, its aggregated tool list and every
+  tool invocation resolve against ONLY its currently-selected tenant's plugin instances and bus — this is
+  [CXC-CS-MULTI-TENANCY]'s LOCKED-PERMANENTLY "plugins are ALWAYS per-tenant; NO shared instances"
+  invariant, applied at this connector's own binding step, exactly as [CXC-WS-TENANT-BOUNDARY] applies it
+  at the WS connector's and [CXC-CSL-PER-TENANT] applies it at the plugin loader's.
+- negative-control: a session BOUND to tenant A invoking a tool name that exists only on tenant B (a
+  plugin loaded on B but not A) MUST receive a "tool not found" error — never a cross-tenant dispatch,
+  never a silent no-op that could be mistaken for "not implemented yet."
+- verify-machine: two tenants each load a plugin registered under the SAME name with different config; a
+  session bound to tenant A invoking that plugin's tool touches ONLY A's instance's bus traffic, never
+  B's, for the duration it is bound to A.
+- verify-human: an operator inspects two tenants' plugin state side by side and confirms an MCP session
+  bound to one never surfaces or affects the other's tools or bus traffic.
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-CS-MULTI-TENANCY], [CXC-WS-TENANT-BOUNDARY], [CXC-CSL-PER-TENANT]
+
+---
+
+## 10. The fork-exception — a plugin MAY declare its own MCP endpoint, knowingly
+
+### [CXC-MCP-FORK-EXCEPTION] A plugin whose surface is INHERENTLY separate MAY declare `mcp_endpoint: own`, opting out of the umbrella — a knowing declaration of reduced integration, never the default
+
+- requirement: (MUST, testable) a plugin MAY set `mcp_endpoint: own` on its manifest when its surface is
+  genuinely a separate unit — a distinct auth domain, a different tenant boundary than
+  [CXC-CS-MULTI-TENANCY] models, or a service that is not itself a ComposeServer plugin at all. Declaring
+  `own` MUST cause that plugin's tools to be EXCLUDED from the umbrella's aggregated list — never both
+  reachable through the umbrella AND through a separate endpoint, which would let an agent discover the
+  same capability two ways with no way to know they are the same capability.
+- the-principled-exception: (architect-recommendation, analogous to [DX-REALIZATION-DECLARES-ENVELOPE]'s
+  "the realization backend a widget uses IS a declaration of its cross-tier envelope" — the SAME shape of
+  rule, not David's word on THIS surface) `mcp_endpoint: own` is a KNOWING declaration that this plugin's
+  integration is intentionally reduced, appropriate IFF the plugin is inherently non-aggregable — never a
+  convenience escape for a plugin that COULD have joined the umbrella but its author found the umbrella's
+  discipline inconvenient. Every umbrella-joinable plugin added shrinks the legitimate use of this
+  exception (self-limiting), the same consequence [DX-REALIZATION-DECLARES-ENVELOPE] names for its own
+  per-widget escape hatch.
+- tell: (MUST NOT, the forbidden case named explicitly) a plugin reaching for `mcp_endpoint: own` because
+  its tool-declaration schema ([CXC-MCP-TOOL-DECLARATION]) felt awkward to fit, rather than because its
+  surface is structurally separate — that is the forbidden fork this exception does not cover.
+- default: the ABSENCE of `mcp_endpoint: own` is the default and IS the umbrella path
+  ([CXC-MCP-UMBRELLA-RATIFIED]) — a plugin author does nothing extra to join.
+- verify-machine: a plugin declaring `mcp_endpoint: own` never appears in the umbrella's aggregated tool
+  list under any tenant; a plugin with no such declaration always does (subject to
+  [CXC-MCP-ROUTER-MECHANICS]'s park-exclusion).
+- verify-human: an architect reviewing a NEW plugin's `mcp_endpoint: own` declaration confirms, by reading
+  its manifest, that the plugin is genuinely a separate auth/tenant/service boundary and not merely
+  avoiding the umbrella's discipline — a structural/architectural review, not a machine-checkable claim.
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-MCP-UMBRELLA-RATIFIED], [DX-REALIZATION-DECLARES-ENVELOPE], [DX-NARROW-WAIST]
+
+---
+
+## 11. The connector interface — what composeio-expert builds
+
+### [CXC-MCP-CONNECTOR-INTERFACE] The concrete module, factory signature, and session-peer object shape
+
+- module: a NEW module, `composeio/transport_mcp.py` — sibling to `transport_ws.py`/`transport_mqtt.py`/
+  `transport_can.py`/`transport_uart.py`, registered into `transport_registry.py`'s existing `_FACTORIES`
+  exactly as they are (`register("mcp", _mcp)`), imported LAZILY per the registry's own stated discipline
+  (a missing optional MCP-server dependency must never break the other registered factories).
+- factory-signature: `_mcp(spec: dict, app_id: str) -> MCPConnector`, mirroring `_ws`'s shape
+  ([CXC-WS-CONNECTOR-INTERFACE]) — `spec` carries the underlying wire choice and its own config (`stdio`
+  needs none beyond process framing; `sse`/`streamable-http` need `host`/`port`/TLS config, per
+  [DD-MCP-TRANSPORT-CHOICE]).
+- mcp-connector-class: `MCPConnector` — owns the underlying wire's accept surface (however realized) and
+  a collection of session-peer objects, one per MCP session ([CXC-MCP-SESSION-PEER]); owns the
+  aggregated-tool-list DERIVATION from each tenant's plugin loader announce
+  ([CXC-MCP-ROUTER-MECHANICS]). Its public surface: `sessions` (enumerating live peers, for status/debug
+  surfaces, mirroring [CXC-CSL-STATUS-SURFACE]'s pattern), and a `tool_registry(tenant_id)` accessor a
+  session peer's tool-list call resolves against.
+- mcp-peer-class: `MCPPeer` (or equivalent) — one instance per session, owning: `state`
+  (`PRE-BINDING` | `BOUND`, [CXC-MCP-ENDPOINT-TOPOLOGY]); `bound_tenant: str | None`; in-flight
+  `request_id -> pending call` correlation state for `read`(`query`) tools
+  ([CXC-MCP-INVOKE-READ]/[CXC-BUS-QUERY-IDIOM]). It exposes `select_tenant(tenant_id)`,
+  `list_tools()`, `invoke(tool_qualified_name, args)`, and `close()`.
+- reuse-by-reference: (what this module does NOT reimplement) [CXC-CS-PLUGIN-CONTRACT]'s pydantic
+  form/announce/registry derivation, extended in-place for `mcp_tools` rather than forked
+  ([CXC-MCP-TOOL-DECLARATION]); [SPEC:CXC-BUS-QUERY]'s request/response idiom, verbatim
+  (`CXC-BUS-QUERY-IDIOM`/`-ORDERING`/`-VALIDATION`); `bus.namespaces`/`Namespace.value` for
+  `retained`-mode reads, the same accessor [CXC-WS-RETAINED-REPLAY] uses; per-tenant bus resolution
+  (`ComposeServer`'s existing multi-tenant orchestration, [CXC-CS-MULTI-TENANCY]). This module's entire
+  net-new surface is: the session accept/spawn path for whichever wire [DD-MCP-TRANSPORT-CHOICE] settles,
+  per-session peer state and tenant-selection transitions, the encode/decode dispatch of
+  [CXC-MCP-INVOKE-WRITE]/[CXC-MCP-INVOKE-READ], and the tool-list aggregation of
+  [CXC-MCP-ROUTER-MECHANICS].
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-WS-CONNECTOR-INTERFACE], [CXC-MCP-TOOL-DECLARATION], [CXC-BUS-QUERY-IDIOM], [CXC-CS-MULTI-TENANCY]
+
+---
+
+## 12. Explicit out-of-scope — cited, not specified
+
+### [CXC-MCP-OUT-OF-SCOPE] The units this spec deliberately does not design
+
+- the-underlying-wire: the concrete stdio/SSE/streamable-HTTP transport realization underneath the MCP
+  protocol layer is [DD-MCP-TRANSPORT-CHOICE], OPEN — this spec specifies only that it is swappable
+  connector config, per [plt.cio:SPEC:DP-CIO-6].
+- the-mcp-action-widget-binding: [SPEC:CIO-UX-MCPACTION] (the ComposeUX `mcp_action` binding type) is a
+  STRUCTURALLY DIFFERENT concern — a ComposeUX WIDGET invoking SOME MCP server's tool and rendering its
+  result. This spec is the PRODUCER side (ComposeServer exposing plugin tools as an MCP server); that spec
+  is a potential CONSUMER of some MCP server's tools, this umbrella included, but the two are not the same
+  surface and this spec does not respecify or extend it. Cited only so the two `MCP`-named surfaces are
+  never conflated.
+- the-per-service-adaptations: the concrete `McpToolDecl` lists each future plugin (fingerprint, time,
+  access control, etc.) will declare are the fan-out this spec exists to make POSSIBLE, not to enumerate —
+  each is its own dispatch against [CXC-MCP-TOOL-DECLARATION].
+- status: proposed
+- provenance: architect-recommendation, restating the dispatch's explicit scope split as a queryable node
+  rather than leaving it only in frontmatter prose.
+- part-of: [SPEC:CXC-MCP]
+- see-also: [SPEC:CIO-UX-MCPACTION], [DD-MCP-TRANSPORT-CHOICE], [DD-MCP-AUTH-GATE]
+
+---
+
+## 13. Error and boundary matrix
+
+### [CXC-MCP-BOUNDARIES] Every condition a builder would otherwise have to invent an answer for
+
+| # | Condition | Required behaviour |
+|---|-----------|--------------------|
+| 1 | Unknown `type:` (not `mcp`) reaches this connector's registration path | N/A to this connector — `transport_registry.build()` already raises `UnknownTransportError` naming `known_types()` ([CXC-MCP-CONNECTOR-NOT-PLUGIN]) |
+| 2 | A tool call arrives while the session is `PRE-BINDING` (no tenant selected) | rejected with a named error requiring tenant selection first; never dispatched against a default tenant ([CXC-MCP-ENDPOINT-TOPOLOGY]) |
+| 3 | A tool-qualified name (`plugin.tool`) does not exist on the bound tenant | "tool not found" error; never a cross-tenant lookup even if the name exists elsewhere ([CXC-MCP-TENANT-BOUNDARY]) |
+| 4 | Arguments fail `input_model` validation | structured error naming the failing field(s); zero bus traffic produced ([CXC-MCP-INVOKE-WRITE]) |
+| 5 | A `write` tool's declared plugin is currently PARKED (unmet `requires:` floor) | the tool is already absent from the tool list ([CXC-MCP-ROUTER-MECHANICS]); an invocation of a stale cached name from before the park returns a "tool not found" error, never a silent no-op |
+| 6 | A `query`-mode read tool's responder never answers | the call times out with a named "no answer" error, on the SESSION's own timeout — the router never hangs indefinitely ([CXC-MCP-INVOKE-READ], reusing [CXC-BUS-QUERY-ORDERING]'s requester-owns-timeout rule) |
+| 7 | A `retained`-mode read tool's namespace has never been published | explicit "no value yet" result, never a fabricated default ([CXC-MCP-INVOKE-READ]) |
+| 8 | Two plugins' derived exposed tool names collide | loud load/announce-time error, never silent first-wins ([CXC-MCP-TOOL-DECLARATION]) |
+| 9 | A plugin declares `mcp_endpoint: own` | excluded entirely from the umbrella's aggregated list on every tenant ([CXC-MCP-FORK-EXCEPTION]) |
+| 10 | A plugin re-announces mid-session with an added/removed tool | already-BOUND sessions' NEXT tool-list call reflects the change; no reconnect required ([CXC-MCP-ROUTER-MECHANICS]) |
+| 11 | An untrusted network can reach the MCP listen surface (network-transported mode, [DD-MCP-TRANSPORT-CHOICE]: DECIDED streamable-HTTP for v1) | MUST bind the trusted LAN only — never `0.0.0.0`/`::`/empty/world-facing. This is OUTSIDE this spec's v1 access-control surface entirely — [DD-MCP-AUTH-GATE]'s invalidating_assumption fires the moment the surface is network-reachable, and with no auth in v1 the LAN-only bind is the ONLY thing standing between the listen surface and an untrusted network. Enforced in code by `UnsafeBindError`, refusing any of `""`/`"0.0.0.0"`/`"::"`/`"*"` at bind time, never a silent fallback to a world-facing default. The deferred auth gate must still land before any exposure beyond the trusted LAN ships. Per [DEC-MCP-DD-RESOLVED-2026-08-25]. |
+| 12 | Two concurrent `query`-mode read calls are in flight on the SAME session | correlated independently by `request_id` per [CXC-BUS-QUERY-IDIOM]; neither call's result is ever delivered to the other's caller |
+
+- lan-bind-is-a-must-not-a-should: (added 2026-08-25, [DEC-MCP-DD-RESOLVED-2026-08-25]) row 11 is stated as
+  a MUST, not a SHOULD or an aspiration — the streamable-HTTP wire decision at [DD-MCP-TRANSPORT-CHOICE]
+  made this guard load-bearing rather than a hypothetical future concern, because v1 ships with NO auth
+  ([DD-MCP-AUTH-GATE]). This mirrors the current broker/WS flat-subnet posture
+  ([DEC-(a private host name, not published)-STAYS-ON-LOCAL-SUBNET]).
+- part-of: [SPEC:CXC-MCP]
+
+---
+
+## 14. Acceptance — machine signal + glass gate
+
+### [CXC-MCP-ACCEPTANCE] The umbrella's two-tier verdict — a machine signal AND, for every failure class human eyes can catch that a narrow test cannot, an explicit human/glass gate
+
+- definition: per [DX-SPEC-CARRIES-ITS-EVIDENCE] and the WS-spec precedent ([CXC-WS-ACCEPTANCE]),
+  machine-green alone never accepts this connector — a cross-tenant tool leak or a tool that silently
+  derives instead of encoding are exactly the failure classes a narrow unit test can pass while the real
+  agent experience is broken. [CXC-VISION-EPISTEMICS] applies throughout this table.
+
+| ID | Requirement | verify-machine | verify-human (glass) |
+|----|-------------|-----------------|------------------------|
+| MCP-V1 | Registered as `type: mcp` connector, never a plugin ([CXC-MCP-CONNECTOR-NOT-PLUGIN]) | `known_types()` includes `mcp`; `build({"type":"mcp",...})` returns a connector, never silently `None` on a valid spec | none required |
+| MCP-V2 | ONE umbrella aggregates every loaded plugin's tools ([CXC-MCP-UMBRELLA-RATIFIED]) | >=2 plugins' tools all reachable over ONE session, no second connection needed | none required |
+| MCP-V3 | Tenant-scoped per session, PRE-BINDING until selection ([CXC-MCP-ENDPOINT-TOPOLOGY]) | no tenant-scoped tool reachable pre-selection; tools resolve to the selected tenant only | operator confirms no tool from an unselected tenant is ever offered or invokable |
+| MCP-V4 | One tenant at a time, no cross-tenant tool dispatch ([CXC-MCP-TENANT-BOUNDARY]) | same-named tool on two tenants never cross-dispatches for a bound session | operator inspects two tenants side by side and confirms no leak |
+| MCP-V5 | Tool schema is DERIVED from `input_model`, never hand-duplicated ([CXC-MCP-TOOL-DECLARATION]) | tool-list JSON-schema matches `input_model` field-for-field for a fixture plugin | a builder implementing a new plugin's tools needs no question answered outside this table |
+| MCP-V6 | `write` tool call is table-driven encode, never a derive from other state ([CXC-MCP-INVOKE-WRITE]) | fixture asserting single-namespace-touch per `write` call; validation failure produces zero bus traffic | none required — machine-observable by construction |
+| MCP-V7 | `read` tool call resolves retained-direct or via [SPEC:CXC-BUS-QUERY], decoded verbatim ([CXC-MCP-INVOKE-READ]) | retained read matches known current value byte-identical; query read round-trips correctly under >=2 concurrent in-flight calls; unanswered query times out named, never hangs | operator confirms a query-mode tool against real infrastructure returns a timely, correct answer |
+| MCP-V8 | Router refreshes on re-announce, never serves a static snapshot ([CXC-MCP-ROUTER-MECHANICS]) | added/removed tool reflected on next tool-list call with no reconnect; parked plugin contributes zero tools | operator watches a live client's tool list update after a config-driven re-announce |
+| MCP-V9 | Fork-exception excludes an `own`-declared plugin from the umbrella entirely ([CXC-MCP-FORK-EXCEPTION]) | such a plugin never appears in the aggregated list on any tenant | architect review confirms the declaration is a genuine structural boundary, not convenience |
+| MCP-V10 | v1 ships with no auth, position reserved not foreclosed ([DD-MCP-AUTH-GATE]); MUST bind the trusted LAN only, never `0.0.0.0`/world-facing, until the deferred gate lands ([CXC-MCP-BOUNDARIES] row 11, [DEC-MCP-DD-RESOLVED-2026-08-25]) | no login/account code path exists; the tenant-selection seam is the one a gate would attach to; a bind attempt with host in `{"", "0.0.0.0", "::", "*"}` raises `UnsafeBindError` and never silently starts listening | operator confirms the deployed MCP listen surface is bound to a specific trusted-LAN interface (COMPOSEIO_MQTT_BROKER's (a private address, not published) subnet), never `0.0.0.0` or any world-reachable address |
+| MCP-V11 | Placement recorded, not silent ([CXC-MCP-PLACEMENT]) | the spec carries the `[PLACEMENT UNRATIFIED]` node + the filename-check property | n/a — structural |
+
+- requirement: MCP-V4 (the cross-tenant boundary) is the gate for [CXC-MCP-TENANT-BOUNDARY] — a bound
+  session reaching another tenant's plugin instance AT ANY INSTANT is UNSAFE and MUST NOT ship, because
+  [CXC-CS-MULTI-TENANCY] is LOCKED PERMANENTLY, mirroring [CXC-WS-ACCEPTANCE]'s WS-V4 gate discipline
+  exactly.
+- part-of: [SPEC:CXC-MCP]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-VISION-EPISTEMICS], [CXC-WS-ACCEPTANCE]
+
+---
+
+## 15. Evidence — pre-integration questions answered, post-integration slots EMPTY until a real build
+
+### [CXC-MCP-EVIDENCE] Pre-integration questions (answered by this design pass) and post-integration evidence (EMPTY — never run)
+
+- pre-integration questions answered by this spec: (1) plugin-vs-connector -> connector, new
+  `transport_registry.py` factory, [CXC-MCP-CONNECTOR-NOT-PLUGIN]; (2) umbrella-vs-per-plugin -> ONE
+  aggregating umbrella, ratified by David's concurrence, [CXC-MCP-UMBRELLA-RATIFIED]; (3) endpoint
+  topology -> one per ComposeServer, tenant-scoped per session (architect's lean, alternative recorded),
+  [CXC-MCP-ENDPOINT-TOPOLOGY]; (4) session peer model -> singleton persistent peer, multi-peer primary,
+  stdio degenerate, [CXC-MCP-SESSION-PEER]; (5) tool declaration shape -> a fourth derived artifact on
+  the existing pydantic plugin manifest, [CXC-MCP-TOOL-DECLARATION]; (6) write-tool mechanics -> table-driven
+  publish, never derive, [CXC-MCP-INVOKE-WRITE]; (7) read-tool mechanics -> direct retained read OR
+  [SPEC:CXC-BUS-QUERY] round-trip, decoded verbatim, [CXC-MCP-INVOKE-READ]; (8) router mechanics -> reuse
+  the loader's existing derived-announce, never a second spine, [CXC-MCP-ROUTER-MECHANICS]; (9) tenant
+  boundary -> reused verbatim from [CXC-CS-MULTI-TENANCY]/[CXC-WS-TENANT-BOUNDARY], [CXC-MCP-TENANT-BOUNDARY];
+  (10) fork-exception -> `mcp_endpoint: own`, knowing and exclusive, [CXC-MCP-FORK-EXCEPTION].
+- pre-integration questions LEFT open, flagged for David/architect ratify before or during build (not
+  silently resolved): the endpoint-topology alternative ([DD-MCP-ENDPOINT-PER-TENANT]); the underlying
+  wire transport ([DD-MCP-TRANSPORT-CHOICE]); the auth gate's own concrete mechanism
+  ([DD-MCP-AUTH-GATE], deferred by design).
+- evidence-connector-module: EMPTY — `composeio/transport_mcp.py` does not exist on `origin/main` as of
+  this spec's authoring (2026-08-25); this is a design-review spec, not a report of landed code.
+- evidence-tool-declaration-real-plugin: EMPTY — no real plugin has declared `mcp_tools` against
+  [CXC-MCP-TOOL-DECLARATION]; the fingerprint/enroll example in that node's `scenario` property is
+  illustrative, not evidenced.
+- evidence-multi-tenant-real-infra: EMPTY — no two-tenant deployment has been observed to confirm
+  MCP-V4's no-cross-tenant-dispatch human gate.
+- evidence-query-round-trip-real-load: EMPTY — no real MCP client has exercised a `query`-mode read tool
+  against a live [SPEC:CXC-BUS-QUERY] responder over real infrastructure.
+- evidence-router-refresh-real-reload: EMPTY — no real plugin re-announce has been observed to refresh a
+  live MCP client's tool list without a reconnect.
+- why-empty-matters: per [DX-SPEC-CARRIES-ITS-EVIDENCE], "never run at all" must be a QUERYABLE PROPERTY,
+  not something a reader has to already know — every slot above is `EMPTY` explicitly rather than simply
+  absent, so a future query against this node can distinguish "not yet built" from "nobody thought to
+  record it."
+- status: draft
+- status-detail: draft — every evidence slot EMPTY by construction; this spec has not been implemented
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-MCP]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-MCP-ACCEPTANCE]
+
+---
+
+## 16. Open forks — flagged for the architect's / David's ratify
+
+### [DD-MCP-ENDPOINT-PER-TENANT] DECIDED — rejected for v1; umbrella-per-server chosen
+
+- question: [CXC-MCP-ENDPOINT-TOPOLOGY] leans toward ONE MCP connector per ComposeServer with
+  post-connect tenant selection. The defensible alternative: one MCP endpoint PER TENANT (a distinct
+  listen surface, or a distinct stdio spawn target, per tenant), skipping the selection step entirely
+  because the endpoint itself IS the tenant boundary.
+- why-left-open: this was the "genuinely defensible alternative" the dispatch explicitly asked to be
+  surfaced rather than silently decided. Both shapes satisfy [CXC-CS-MULTI-TENANCY]'s LOCKED boundary;
+  they differ in WHERE the tenant boundary is enforced (a connection-time selection step vs. the
+  endpoint's own identity) and in operational shape (one thing to stand up and monitor vs. N). Now
+  resolved — see `decision` below.
+- candidates: (a) umbrella-per-ComposeServer, tenant selected post-connect (CHOSEN for v1) — fewer
+  moving parts to deploy/monitor, matches [CXC-WS-LIFECYCLE]'s already-settled shape, but a session must
+  complete a selection step before doing anything tenant-scoped; (b) endpoint-per-tenant (REJECTED for
+  v1) — an MCP client configured for tenant A can never accidentally reach for tenant B (the boundary is
+  structural, not a runtime state to get wrong), but N tenants means N listen surfaces/spawn targets to
+  provision, and a cross-tenant operator view (already kernel-owned per [CXC-CS-MULTI-TENANCY]) would need
+  its own aggregation across those N endpoints rather than one session's tenant-switch.
+- decision: DECIDED — rejected for v1; umbrella-per-server chosen (max reuse of WS lifecycle + loader
+  announce spine). RE-LITIGABLE per this node's own invalidating_assumption if real multi-tenant use shows
+  agents hold one long-lived binding. Per [DEC-MCP-DD-RESOLVED-2026-08-25]: candidate (a) wins on maximal
+  reuse — it reuses [CXC-WS-LIFECYCLE]'s already-settled binding lifecycle, the loader's derived-announce
+  spine ([CXC-CS-LOADER-PUBLISHES-ANNOUNCE]), and one kernel-level socket
+  ([CXC-MCP-CONNECTOR-NOT-PLUGIN] socket-scope), rather than forking a divergent per-tenant model that
+  would also need its own cross-tenant aggregation; cross-tenant isolation is enforced structurally by
+  [CXC-MCP-TENANT-BOUNDARY] + the MCP-V4 acceptance gate; and it degenerates cleanly to the single-tenant
+  dev bus deployed first.
+- rationale: see `why-left-open` and `candidates` above.
+- alternatives: see `candidates` above.
+- invalidating_assumption: once real multi-tenant MCP deployments exist and it becomes clear whether
+  agents typically hold ONE long-lived tenant binding (favoring (b)) or SWITCH tenants within a session
+  (favoring (a), matching how an operator console switches WS focal buses), this fork should resolve from
+  observed use rather than from the abstract trade-off alone. This is the RE-LITIGATION TRIGGER for the
+  DECIDED choice above, not merely historical color.
+- status: decided
+- status-detail: decided — rejected for v1 per [DEC-MCP-DD-RESOLVED-2026-08-25]; re-litigable per
+  `invalidating_assumption` above, not indefinitely closed.
+- provenance: architect-proposed — the fork was named explicitly per the dispatch's own instruction to
+  surface a defensible alternative rather than silently choose; the candidate trade-off analysis was this
+  spec-writer's own addition. Resolved as ARCHITECT-RECOMMENDATION per [DEC-MCP-DD-RESOLVED-2026-08-25]
+  (David delegated the mechanism ratify).
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-MCP-ENDPOINT-TOPOLOGY], [CXC-CS-MULTI-TENANCY], [DEC-MCP-DD-RESOLVED-2026-08-25]
+
+### [DD-MCP-TRANSPORT-CHOICE] DECIDED — streamable-HTTP for v1
+
+- question: [CXC-MCP-CONNECTOR-NOT-PLUGIN] states the wire underneath MCP's JSON-RPC is swappable
+  connector config — it does not pick one. Common MCP wire realizations: stdio (one process per client,
+  local-only), SSE, or streamable-HTTP (both network-capable, multi-session).
+- why-left-open: `MCPPeer`'s public surface ([CXC-MCP-CONNECTOR-INTERFACE]) does not require the wire to
+  be decided to be implementable and testable — the peer model, tool dispatch, and tenant boundary are
+  all wire-agnostic by construction ([CXC-MCP-SESSION-PEER]'s stdio-is-degenerate-not-different property
+  exists precisely so this fork did not block the rest of the spec). Now resolved — see `decision` below.
+- candidates: (a) stdio only — simplest, matches the most common desktop-MCP-client integration today,
+  but local-only (no remote agent, no multi-session accept loop, [CXC-MCP-SESSION-PEER]'s multi-peer case
+  never exercised); (b) streamable-HTTP (CHOSEN for v1) — network-capable, multi-session natively, closest
+  in shape to [SPEC:CXC-WS]'s own accept-loop model, reuses the most WS-connector mechanics; (c) both,
+  chosen per deployment via `spec` config — most flexible, most surface to build and test; not needed for
+  v1 since the wire stays swappable connector config.
+- decision: DECIDED — streamable-HTTP for v1 (networked hosted service serving remote Intelligences);
+  stdio is the degenerate-supported case; wire stays swappable per [plt.cio:SPEC:DP-CIO-6]. Per
+  [DEC-MCP-DD-RESOLVED-2026-08-25]: ComposeServer is a networked, long-running hosted service serving
+  REMOTE/hosted Intelligences (this deployment's own hosted-child pattern), not local desktop MCP clients;
+  streamable-HTTP is network-capable, multi-session-native, and closest in shape to [SPEC:CXC-WS]'s own
+  accept-loop, reusing the most WS-connector mechanics. stdio remains the degenerate-supported local case
+  ([CXC-MCP-SESSION-PEER]'s `stdio-is-degenerate-not-different`) but is NOT the v1 build target.
+- rationale: see `why-left-open` above.
+- alternatives: see `candidates` above.
+- invalidating_assumption: once it is clear whether the primary MCP clients this surface serves are
+  local desktop agents (favoring stdio) or remote/hosted Intelligences (favoring streamable-HTTP, and
+  matching this deployment's own hosted-child pattern, [66-hosted-child-quiescence.lts]), the choice
+  should follow that usage — this is why streamable-HTTP was chosen for v1, not decided in the abstract.
+- status: decided
+- status-detail: decided — streamable-HTTP for v1 per [DEC-MCP-DD-RESOLVED-2026-08-25]; also the guard
+  that makes the LAN-only-bind requirement load-bearing — see [DD-MCP-AUTH-GATE] and
+  [CXC-MCP-BOUNDARIES] row 11.
+- provenance: architect-proposed — the fork was named explicitly because this spec's own frontmatter
+  scope commits only to "transport is an implementation detail," not to a specific wire. Resolved as
+  ARCHITECT-RECOMMENDATION per [DEC-MCP-DD-RESOLVED-2026-08-25] (David delegated the mechanism ratify).
+- part-of: [SPEC:CXC-MCP]
+- see-also: [CXC-MCP-CONNECTOR-INTERFACE], [CXC-MCP-SESSION-PEER], [DD-MCP-AUTH-GATE], [DEC-MCP-DD-RESOLVED-2026-08-25]
+
+### [DD-MCP-AUTH-GATE] DEFERRED — auth is OUT of v1; the position is reserved, not designed
+
+- question: what identity/authorization mechanism gates an MCP session before it can select a tenant or
+  invoke a tool.
+- why-left-open: mirrors [DD-WS-AUTH-GATE] exactly — v1 ships with no auth, and the seam a future gate
+  would attach to (the tenant-selection step, [CXC-MCP-ENDPOINT-TOPOLOGY]) is named so a later gate does
+  not have to be retrofitted into a structure that never anticipated it.
+- candidates: not enumerated here — belongs to the auth gate's own future design pass, exactly as
+  [DD-WS-AUTH-GATE] leaves its own candidates unenumerated.
+- decision: DEFERRED — out of v1 by design, not an open lean awaiting a choice.
+- rationale: see `why-left-open` above.
+- alternatives: not enumerated here.
+- invalidating_assumption: the moment this surface is reachable over an untrusted network (network-
+  transported mode under [DD-MCP-TRANSPORT-CHOICE]), the deferred gate must be resolved before that
+  exposure ships — see [CXC-MCP-BOUNDARIES] row 11.
+- streamable-http-makes-the-guard-load-bearing: [DD-MCP-TRANSPORT-CHOICE] is now DECIDED — v1 ships
+  streamable-HTTP, a network-transported wire, not stdio. Per [DEC-MCP-DD-RESOLVED-2026-08-25], that
+  choice makes this node's `invalidating_assumption` immediately live rather than a hypothetical future
+  case: with no auth in v1, the ONLY thing standing between this surface and an untrusted network is the
+  LAN-only-bind guard now named explicitly at [CXC-MCP-BOUNDARIES] row 11 and MCP-V10
+  ([CXC-MCP-ACCEPTANCE]) — the MCP listen surface MUST bind the trusted LAN only (never `0.0.0.0`/
+  world-facing), enforced in code by `UnsafeBindError`, until this deferred gate lands. This mirrors the
+  current broker/WS flat-subnet posture ([DEC-(a private host name, not published)-STAYS-ON-LOCAL-SUBNET]).
+- status: deferred
+- status-detail: settled-deferred, not an open fork awaiting a lean — matches [DD-WS-AUTH-GATE]'s own
+  status-detail exactly; CONFIRMED deferred for v1 by [DEC-MCP-DD-RESOLVED-2026-08-25], WITH the
+  LAN-only-bind guard above now load-bearing rather than aspirational.
+- provenance: architect-recommendation — no equivalent David ruling exists for THIS surface specifically;
+  the deferral posture is carried over from [DD-WS-AUTH-GATE]'s settled shape by analogy, flagged as such
+  rather than presented as a fresh David ruling on MCP. Confirmed deferred (with the LAN-bind guard) per
+  [DEC-MCP-DD-RESOLVED-2026-08-25].
+- part-of: [SPEC:CXC-MCP]
+- see-also: [DD-WS-AUTH-GATE], [CXC-MCP-ENDPOINT-TOPOLOGY], [CXC-MCP-BOUNDARIES], [DD-MCP-TRANSPORT-CHOICE], [DEC-MCP-DD-RESOLVED-2026-08-25]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-MCP-PLACEMENT] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-UMBRELLA-RATIFIED] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-CONNECTOR-NOT-PLUGIN] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-ENDPOINT-TOPOLOGY] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-SESSION-PEER] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-TOOL-DECLARATION] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-INVOKE-WRITE] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-INVOKE-READ] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-ROUTER-MECHANICS] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-TENANT-BOUNDARY] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-FORK-EXCEPTION] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-CONNECTOR-INTERFACE] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-OUT-OF-SCOPE] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-BOUNDARIES] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-ACCEPTANCE] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-EVIDENCE] PART_OF [SPEC:CXC-MCP]
+- [DD-MCP-ENDPOINT-PER-TENANT] PART_OF [SPEC:CXC-MCP]
+- [DD-MCP-TRANSPORT-CHOICE] PART_OF [SPEC:CXC-MCP]
+- [DD-MCP-AUTH-GATE] PART_OF [SPEC:CXC-MCP]
+- [CXC-MCP-CONNECTOR-NOT-PLUGIN] REALIZES [CXC-CBK-CONNECTOR-CONTRACT]
+- [CXC-MCP-CONNECTOR-NOT-PLUGIN] REALIZES [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS]
+- [CXC-MCP-INVOKE-WRITE] REALIZES [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS]
+- [CXC-MCP-INVOKE-READ] REALIZES [DX-CONNECTOR-FORWARDS-NEVER-TRANSFORMS]
+- [CXC-MCP-INVOKE-WRITE] REALIZES [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]
+- [CXC-MCP-INVOKE-READ] REALIZES [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]
+- [CXC-MCP-TOOL-DECLARATION] EXTENDS [CXC-CS-PLUGIN-CONTRACT]
+- [CXC-MCP-TOOL-DECLARATION] REALIZES [DX-NARROW-WAIST]
+- [CXC-MCP-INVOKE-READ] REALIZES [CXC-BUS-QUERY-IDIOM]
+- [CXC-MCP-ROUTER-MECHANICS] REALIZES [CXC-CS-LOADER-PUBLISHES-ANNOUNCE]
+- [CXC-MCP-ROUTER-MECHANICS] REALIZES [CXC-CS-DYNAMIC-SURFACE]
+- [CXC-MCP-TENANT-BOUNDARY] REALIZES [CXC-CS-MULTI-TENANCY]
+- [CXC-MCP-ENDPOINT-TOPOLOGY] RELATED_TO [CXC-WS-LIFECYCLE]
+- [CXC-MCP-SESSION-PEER] RELATED_TO [CXC-WS-SINGLETON-PEER]
+- [CXC-MCP-FORK-EXCEPTION] RELATED_TO [DX-REALIZATION-DECLARES-ENVELOPE]
+- [CXC-MCP-OUT-OF-SCOPE] RELATED_TO [SPEC:CIO-UX-MCPACTION]
+- [DD-MCP-AUTH-GATE] RELATED_TO [DD-WS-AUTH-GATE]
+- [DD-MCP-ENDPOINT-PER-TENANT] RELATED_TO [CXC-MCP-ENDPOINT-TOPOLOGY]
+- [DD-MCP-TRANSPORT-CHOICE] RELATED_TO [CXC-MCP-CONNECTOR-INTERFACE]
+
+---
+
+**Version**: 0.2 — 2026-08-25, corpus-hygiene revision reconciling this spec's text with
+[DEC-MCP-DD-RESOLVED-2026-08-25] (which ratified all three forks after the umbrella build landed).
+[CXC-MCP-ENDPOINT-TOPOLOGY] moves `proposed` -> `decided` (SHOULD -> MUST): umbrella-per-ComposeServer,
+tenant-scoped per session, per-tenant-endpoint alternative rejected. [DD-MCP-ENDPOINT-PER-TENANT] moves
+`open` -> `decided` (rejected for v1, re-litigable). [DD-MCP-TRANSPORT-CHOICE] moves `open` -> `decided`
+(streamable-HTTP for v1, stdio degenerate-supported). [DD-MCP-AUTH-GATE] stays `deferred` but now names
+the LAN-only-bind guard ([CXC-MCP-BOUNDARIES] row 11, MCP-V10) as load-bearing rather than aspirational,
+since v1's decided wire is network-transported. Previously version 0.1, 2026-08-25, initial authoring from
+the architect's dispatch. `[CXC-MCP-UMBRELLA-RATIFIED]` carries David's `david-ratified-by-concurrence`
+ruling ("I endorse your MCP approach"); every other node is `architect-recommendation` per the dispatch's
+explicit delegation. The load-bearing deliverable, [CXC-MCP-TOOL-DECLARATION], carries full build-spec
+MUST/SHOULD + verify-machine/verify-human precision so a fan-out of future per-plugin adaptations can
+implement against it without guessing; session-lifecycle mechanics are specified as a
+MUST-mirror-[SPEC:CXC-WS] requirement rather than independently re-derived.
+
+**Status**: Draft — the three forks named in v0.1 are now decided/confirmed per
+[DEC-MCP-DD-RESOLVED-2026-08-25]; still awaiting architect/David ratify on every remaining
+`architect-recommendation`-tagged node generally, per the dispatch's own instruction that only the
+umbrella-over-per-plugin choice itself carries David's concurrence. ⚠ [CXC-MCP-EVIDENCE]'s
+`evidence-connector-module` slot still reads EMPTY, claiming `composeio/transport_mcp.py` does not exist on
+`origin/main` as of this spec's authoring — that file now exists on `origin/main` (landed the same day,
+commit `d95aee1` and its ancestors); this corpus-hygiene pass did NOT update that evidence slot (out of
+scope for the three requested edits) and it is flagged here so it is not read as still true.
+
+*[SPEC:CXC-MCP] — the ComposeServer MCP umbrella surface. Agent-facing sibling of [SPEC:CXC-WS].*

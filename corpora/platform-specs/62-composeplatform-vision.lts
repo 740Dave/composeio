@@ -1,0 +1,179 @@
+---
+scope: "The five patterns that recur across ComposePlatform at more than one scale, synthesised 2026-08-13 from the 2026-08-12/13 hardware bring-up and bus session: announce-then-bind at four levels; `scope` as the membrane that makes bus topology recursive; one semantic value with many physical realizations; the compact-wire/registry split that classic CAN's eight bytes force; and the epistemics of a fleet whose machine signals routinely agree with the wrong answer. Plus the recovery query an agent re-hydrates this by."
+audience: "The ComposeUX architect; the two agent bootstraps that re-hydrate this at session start; any builder or Intelligence that needs the THROUGH-LINE rather than one spec's detail; David."
+boundary: "IN: the recurring patterns, the levels at which each recurs, the evidence for each, the honest limit of each, the recovery query, and this document's own unratified placement. OUT: every mechanism's actual specification — the config protocol is [SPEC:CXC-CONFIG-BUS], the HAL is [SPEC:CXC-HAL-DECLARE], the CAN identifier layout is [BP-CAN-ID], the board inventory is `60-board-hardware-inventory.lts`. Nothing here respecs any of them."
+not-this: "NOT A SPEC. Nothing here is implementable and no builder should build from it; a claim on this page that reads like a requirement is a defect in this page. Not a roadmap — it names what is unbuilt but sequences nothing. Not evidence in its own right: every measured figure is cited to the session document that measured it, and the synthesis rests on THREE DAYS of hardware work plus one outside teardown, which is a narrow base for a claim this general."
+depends-on: [61-config-over-bus.lts, 60-board-hardware-inventory.lts, 32-composeux-hal-declaration.lts, 57-substrate-agnostic-subscription-filtering.lts]
+confidentiality: internal-only
+artifact-readiness: concept-capture
+placement: UNRATIFIED — see [CXC-VISION-PLACEMENT]
+created: 2026-08-13
+---
+
+# ComposePlatform — the architectural spine [SPEC:CXC-VISION]
+
+> Five patterns recur across ComposePlatform at scales that were never designed together, and the recurrence is the
+> point. A node announces itself to the fleet, a namespace announces itself to a bridge, a daughtercard announces
+> itself to its host, a widget announces its channels to whatever realizes it — one mechanism, four levels, and a
+> design check that falls out of it: a mechanism built for level N must be reusable at N+1. `scope` is the membrane
+> that makes the topology recursive, so an internal CAN trunk is a LOCALITY rather than a second protocol. One
+> semantic value has many physical realizations, which generalises `DP-CIO-6` from transport to realization. Classic
+> CAN's eight data bytes force fingerprints on the wire and a registry off it — and force the registry to be
+> discoverable, or the wire problem becomes a configuration problem. And underneath all of it: machine signals in
+> this fleet do not merely go absent, they routinely AGREE WITH THE WRONG ANSWER, so the epistemics pillar is not a
+> postscript but the thing that decides whether any of the other four are known to work.
+
+- what-this-is: ComposePlatform's architectural spine — the through-line that individual specs each express at ONE level. It is NOT a spec: nothing here is implementable, no builder builds from it, and it adds no requirement to any document that cites it.
+- why-a-spine-and-not-a-coincidence: The value is the RECURRENCE. Announce-then-bind at four scales, scope as a membrane at two, one semantic value across three realizations — a pattern that holds at four levels is a spine; a pattern observed once is an anecdote. Each pillar below states its levels explicitly so the recurrence claim is checkable rather than asserted.
+- synthesised: 2026-08-13, from the 2026-08-12/13 hardware bring-up and bus session.
+- evidence-base: THREE sources, and the reader should weigh them differently: (1) one session of hardware bring-up (`docs/board-bringup/`, `docs/PLAN-fleet-baseline-and-bus-native.md`, `docs/HANDOFF-2026-08-12-bringup-and-transport.md`) — measured, on real parts; (2) a CAN specialist teardown (`docs/can-binding-teardown-brief.md`) — an outside read of the wire design; (3) the existing corpus. It is a SYNTHESIS of three days, not a decade of operation.
+- how-to-use-this: FETCH it, never copy it. The recovery query is [CXC-VISION-RECOVERY]; a static copy in an agent definition is the failure mode that node exists to prevent.
+- blast-radius: This document is re-hydrated into TWO agent bootstraps at every session start, so a wrong claim here propagates maximally and is repeated by agents that never read the evidence. Treat an edit here as an edit to both bootstraps.
+- placement: UNRATIFIED — see [CXC-VISION-PLACEMENT]. The file sits in `corpora/platform-specs/` because that is where its neighbours are, not because the placement was ruled.
+- see-also: [SPEC:CXC-HAL-DECLARE], [SPEC:CXC-CONFIG-BUS], [BP-CAN-ID], [PCB-BOARDS-OVERVIEW], [CXC-VISION-PLACEMENT], [CXC-VISION-RECOVERY]
+
+---
+
+## 1. The spine
+
+### [CXC-VISION-ANNOUNCE-BIND] Announce-then-bind — one mechanism at four scales, and the design check that falls out of it
+- claim: A participant ANNOUNCES what it is and what it carries; a counterpart BINDS to that announcement. Nothing hand-configures the pairing. The pattern recurs at FOUR levels of the platform, and the recurrence is what makes it a spine rather than four coincidences.
+- level-1-device-to-bus: A NODE announces to the FLEET. Mechanism: `_device/<id>/*` — `heartbeat` (u32 uptime, presence IS the liveness signal), `build` (u32 CRC-32 of env-name + __DATE__ + __TIME__), `transport` (u8 active substrate + whether it came from compiled default or NVS), `scene` (u16 content hash, 0 = none), `health` (u32 packed free-heap KB, reset reason, flags). Each field is its own namespace and fits ONE classic-CAN frame.
+- level-2-namespace-to-bridge: A NODE announces its namespace NAMES to the CAN<->MQTT bridge. Mechanism: a chunked name announcement via `config_chunk` over ONE well-known pre-registered root, `_device/announce`. The bridge learns `name->hash` in both directions. One hardcoded entry and everything else discovered — the DNS-root / DHCP-broadcast-address shape.
+- level-3-card-to-host: A DAUGHTERCARD announces a capability descriptor to its host MOTHERCARD over the internal link (I2C or UART). The payoff is that the parent speaks ONE protocol forever: a daughtercard needing bespoke parent firmware has bought nothing.
+- level-4-widget-to-backend: A WIDGET announces its named output CHANNELS to whatever realizes it. Developed at [CXC-VISION-SEMANTIC-REALIZATION].
+- design-check: A mechanism built for level N MUST be reusable at N+1. If it is not, it was designed too specifically. THREE instances is enough to generalise from and cheap to get wrong in three mutually incompatible ways — which is the actual cost being avoided, not elegance.
+- why-it-matters: Every hand-maintained list in this fleet produced a SILENT failure once it went stale. Announcement is the ALTERNATIVE to configuration, and configuration is where the silent failures live.
+- evidence-hand-typed-registry: `CAN_BRIDGE_REGISTER` in `deploy/can_mqtt_bridge/composeio-can-bridge.env` carries NINE hand-typed namespace entries for ONE device (`(a device id, not published)`). The bridge drops what it cannot name, and a missing entry reports only an irreversible hash — the diagnostic cannot name what it lost.
+- evidence-stale-inventory: THREE of five `device.yaml` records under `compose_projects/` carry `mac: "TBD"` (dual_throttle, office_fan, office_hepa).
+- evidence-uncountable-drop: The MQTT->CAN allowlist was enforced at SUBSCRIBE time, so its own drop counter was structurally incapable of incrementing. An instrument reporting zero because it could not reach the code path it was measuring — the epistemics failure and the configuration failure in one object ([CXC-VISION-EPISTEMICS]).
+- announcement-must-be-periodic: PERIODIC, not on-change. A MISSING publication is itself the fault report. Query cannot provide that: silence from a poll is ambiguous between "absent" and "did not hear." Same argument that made the bridge's table publication periodic at 5 s rather than on-change.
+- designed-cadence: Heartbeat every 5 s; the remaining fields every 60 s AND on change. `_device/broadcast/announce = 1` makes every device republish its full set immediately, identically on MQTT, UART and CAN. Ten devices is ~0.7 frames/s on a 500 kbit segment.
+- status-of-the-mechanism: DESIGNED, NOT BUILT — and this is the honest limit on the whole pillar. A 25 s census of `composeio/#` on 2026-08-12 found ZERO `_device/*` namespaces; type code 5 `DISCOVERY` is allocated in [BP-TYPE-CODES] and unused. Levels 1 and 2 are proposals with a task list, not running code. Level 3 has no hardware. Only level 4's widget side exists.
+- open-point: MQTT Last Will and Testament would give immediate death detection but is MQTT-only. It must be an OPTIMISATION over the missing-heartbeat rule, never the mechanism, or UART and CAN nodes get worse liveness semantics than MQTT ones for no designed reason.
+- part-of: [SPEC:CXC-VISION]
+- see-also: [CXC-VISION-SCOPE-MEMBRANE], [CXC-VISION-COMPACT-WIRE], [CXC-VISION-SEMANTIC-REALIZATION], [CXC-VISION-EPISTEMICS], [BP-TYPE-CODES], [CXC-CONFIG-BUS-ASBUILT]
+
+---
+
+### [CXC-VISION-SCOPE-MEMBRANE] Scope is the membrane that makes bus topology recursive — RESOLVED 2026-08-13 by BP-CAN-ID v2, verified in code 2026-09-03
+- claim: `scope` (local / global / remote / auto) is the membrane that makes bus topology RECURSIVE. A bus SEGMENT is a locality: `scope: local` stays inside it, `scope: global` crosses. The relay — and therefore the mothercard — IS the membrane.
+- ratified: 2026-08-10 by David: a CHILD device is INSIDE the host's locality, so a host and its children are ONE bus participant with internal structure. Locality is the PARTICIPANT, not the process. Recorded at [CXC-SUB-SCOPE].
+- ratified-consequence: A relay must respect scope on the PUBLISH path exactly as it does on the subscribe path, or a naive forward-everything relay leaks local chatter onto the shared bus. The relay is NOT the scope boundary; the host's UPSTREAM transport is.
+- recursion: An internal CAN trunk between a mothercard and its daughtercards is a LOCALITY, not a separate protocol. Same wire format at both levels, different segments. Nothing new is invented for the internal bus — which is the same economy [CXC-VISION-ANNOUNCE-BIND]'s design check demands.
+- current-defect: RESOLVED. `scope` was SILENTLY LOST on every CAN round trip under the v1 [BP-CAN-ID] layout (`ns_hash(16) | type(4) | source_hash(9)` — 29 bits, no scope field), so `message_from_can` reconstructed a default and inbound traffic was reported "global." BP-CAN-ID v2 (commit `dd7e049`, ratified by David 2026-08-13) added a dedicated 2-bit `scope` field: `prio(3) | type(4) | ns_id(16) | src(4) | scope(2) = 29` bits. Verified directly against the code 2026-09-03: `cyd/src/bus_can_id.h` (`bus_can_id_encode`/`bus_can_id_scope_bits`), `python/composeio/transport_can.py` (`encode_arbitration_id`/`decode_arbitration_id`, lines 171-207) and `services/can_mqtt_bridge/bridge.py` (lines 602-672, importing the codec from `transport_can` rather than reimplementing it) all implement this layout identically — scope now crosses the wire at every site, not just in the spec.
+- consequence-of-the-defect: Restoring scope to the wire WAS a PREREQUISITE for the mothercard architecture, not a tidiness fix — the one item on this page that BLOCKED a build rather than informing one. That prerequisite is now MET; see [CXC-DEVICE-BASELINE-SCOPE-PRECONDITION] / [CXC-DEVICE-BASELINE-PRE-SCOPE-WIRE-VERIFY] for the downstream verdict this resolution feeds.
+- defect-is-not-free-to-fix: RESOLVED, no longer entangled. [BP-CAN-ID]'s 29 bits had no spare room, and a second, incompatible layout existed in `python/composeio/transport_can.py` ([BP-CAN-ID-DIVERGENCE], `[4b type][2b scope][16b ns][7b seq]`). The open wire-format decision this required was David's to make, and BP-CAN-ID v2 (`dd7e049`) IS that decision: a redesigned 29-bit layout adopted by all three sites — `cyd/src/bus_can_id.h`, `python/composeio/transport_can.py`, `services/can_mqtt_bridge/bridge.py` — carrying both a `src` field (from the original spec layout) and a `scope` field (from the transport's divergent layout), plus a new `prio` field neither had. [BP-CAN-ID-DIVERGENCE] is CLOSED.
+- prior-art: `cyd/src/relay_main.cpp` is ALREADY a node holding two transports and forwarding between them (CAN upstream, UART downstream). A mothercard is that node with CAN on BOTH sides. The code SHAPE exists; scope enforcement and daughtercard self-description are what is missing. Host-proven only (`env:native_relay`, 40 checks) — it has never run on hardware.
+- duality: [CXC-VISION-ANNOUNCE-BIND] is how a thing becomes KNOWN; scope is how far that knowledge TRAVELS. They are duals, and neither is sufficient alone: announcement without scope floods the shared bus, scope without announcement gives a correctly-bounded segment nobody can enumerate.
+- still-unspecified: `remote`. [BP-CAN-DATA] byte 0 defines four scope values and `remote` presumably means cross-segment; whether a relay may ORIGINATE or forward it is unwritten.
+- part-of: [SPEC:CXC-VISION]
+- see-also: [CXC-VISION-ANNOUNCE-BIND], [CXC-SUB-SCOPE], [BP-CAN-ID], [BP-CAN-ID-DIVERGENCE], [BP-CAN-DATA], [CXC-CONFIG-BUS-RELAY]
+
+---
+
+## 2. The payoff and the constraint
+
+### [CXC-VISION-SEMANTIC-REALIZATION] One semantic value, many physical realizations — the widget is semantic, the backend is the realization
+- claim: ONE semantic value has MANY physical realizations. `throttle/left` drives an LED bar on a 480x320 ST7796S, a stepper needle on a gauge cluster, and a 7-segment numeral on a TM1637 — SIMULTANEOUSLY, with no device aware of any other. Each subscribes the same namespace; none coordinates.
+- the-seam: The WIDGET is SEMANTIC; the BACKEND is the REALIZATION. That is the whole move, and it is a seam the render engine already has.
+- abstraction-already-exists: `GaugeWidget` already supports `style: "dial"` — the default, a 270-degree needle dial (`python/composeio/render/widgets/gauge.py`, `python/composeio/render/engine/parser.py`). A stepper needle IS a dial gauge. The abstraction is not missing; only the BACKEND is.
+- generalises-dp-cio-6: [DP-CIO-6] says TRANSPORT is an implementation detail. The generalisation: REALIZATION is an implementation detail. Software Defined Hardware daughtercards are the same move at the PCB level — the parent binds NAMED CHANNELS and does not know whether they are steppers, 7-segments or LED strips.
+- channels-not-a-value: A widget maps to a SET OF NAMED CHANNELS, not a single value. This is the design point that must be settled first, because it is the one that is expensive later.
+- channels-evidence: `rack_triple_gauge` ([PCB-GAUGE3]) drives THREE 12V PWM backlight lines (3x 2N2222) alongside three x27.168 stepper needles (MCP23017 -> 3x L293D). Per-gauge ILLUMINATION is an actuator belonging to a SPECIFIC widget with NO raster counterpart — on a screen, brightness is just pixel colour, so a single-value widget contract has nowhere to put it.
+- decide-before-first-backend: Settle the channel-set shape BEFORE the first non-raster backend ships. Retrofitting a second channel means touching every backend, and there is currently exactly one.
+- corroboration: (a local path, not published) ([PCB-BOARDS-OVERVIEW], 2026-07-18) derived the SAME two gaps from the PCB side, four weeks earlier and from the opposite direction: stress S3 wants compound peripherals (`gauge = {needle + backlight}` as ONE object) and stress S4 wants a position actuator (`motor/position`, absent from the nine HAL kinds, which list only `motor/{speed,direction}`).
+- corroboration-honest-limit: What is independent is the DIRECTION of derivation — widget-side versus board-side — not the observer. Both derivations are this project's own; neither is an outside confirmation. Stated so the corroboration is not read as stronger than it is.
+- what-is-not-built: No non-raster backend exists. The claim that `throttle/left` drives three surfaces simultaneously is a DESIGN INTENT with one of the three surfaces implemented; nothing here has been demonstrated end to end.
+- part-of: [SPEC:CXC-VISION]
+- see-also: [DP-CIO-6], [PCB-BOARDS-OVERVIEW], [PCB-GAUGE3], [PCB-HAL-STRESS], [SPEC:CXC-HAL-DECLARE], [CXC-VISION-ANNOUNCE-BIND]
+
+---
+
+### [CXC-VISION-COMPACT-WIRE] The wire carries fingerprints, the registry resolves them — forced by eight bytes, and it does not add bits
+- claim: The wire carries FINGERPRINTS; a registry resolves them into names. This is not a preference — it is forced by classic CAN's EIGHT data bytes, and it then shapes every other design on this page.
+- forcing-constraint: Every CAN controller in the fleet is classic CAN 2.0B — MCP2515, TJA1050, SN65HVD230, the Waveshare 2-channel HAT, the ESP32 TWAI peripheral, the CH32V203 bxCAN. NONE supports CAN-FD, and the limit is the CONTROLLER, not the transceiver, so re-buying transceivers changes nothing ([CXC-CONFIG-BUS-BUDGET], verified 2026-08-12).
+- instance-namespace: A 16-bit CRC-16/CCITT namespace hash on the wire rather than a name.
+- instance-build: A u32 CRC-32 build fingerprint rather than a build string. The build system emits a fingerprint->string map, so tooling prints `Aug 12 2026 21:41:02` without the wire ever carrying it — and a reflash campaign becomes machine-checkable: flash, poll, assert the fingerprint CHANGED.
+- instance-announcement: Compact PER-FIELD device announcement — five namespaces, each one frame — rather than one status blob.
+- discipline-this-buys: ONE encoding on every substrate, with NO transport-specific variant. That is exactly the leak [DP-CIO-6] exists to prevent: a message that works on one transport must produce identical behaviour on every other.
+- corollary-and-trap: The registry MUST be DISCOVERABLE, or you have traded a wire problem for a CONFIGURATION problem. That trade is precisely the hand-typed `CAN_BRIDGE_REGISTER` failure, so this pillar is not independent of [CXC-VISION-ANNOUNCE-BIND] — it CREATES the need for it.
+- honest-limit: Compaction does not add bits. A 16-bit hash has a 2.32% collision probability at the 56 namespaces measured on the production bus, 7.28% at 100 and 39.27% at 256 (exact birthday computation, not the exponential approximation).
+- collision-is-not-a-drop: A collision is a receiver CONFIDENTLY DECODING THE WRONG NAMESPACE. There is no checksum on the arbitration id, so nothing catches it — the failure mode is a corrupted control surface, not a missing message.
+- what-adaptivity-buys: An announced / adaptive registry converts collisions from SILENT-AND-WRONG into VISIBLE-AND-REFUSED. That is the difference between a corrupted control surface and an alarm. It buys NO headroom whatsoever.
+- endpoint: Stop hashing and ALLOCATE ids from a registrar over the same announcement channel. Wire ids need only be unique among namespaces crossing THIS segment, so a registrar can assign them and distribute the mapping — collisions impossible BY CONSTRUCTION rather than merely detectable. The trade is a STATEFUL segment: a node that misses the broadcast cannot decode until the next one, bounded by the publication interval. Not now; recorded so no layout decision forecloses it.
+- part-of: [SPEC:CXC-VISION]
+- see-also: [CXC-VISION-ANNOUNCE-BIND], [DP-CIO-6], [CXC-CONFIG-BUS-BUDGET], [CXC-CONFIG-BUS-ASBUILT], [BP-CAN-ID]
+
+---
+
+## 3. How we know
+
+### [CXC-VISION-EPISTEMICS] How we know any of it works — machine signals routinely AGREE WITH THE WRONG ANSWER
+- claim: Machine signals in this fleet do not merely go ABSENT — they routinely AGREE WITH THE WRONG ANSWER. That distinction is the whole pillar: an absent signal prompts investigation, an agreeing one closes it. At least six instances in one session, 2026-08-11/12.
+- instance-capture-bmp: `capture.bmp` rendered PERFECTLY over a byte-swapped panel — it decodes the same buffer with the same endian assumption that WROTE it. Waveshare C6; resolved by `RAMCTRL` 0xE8 -> 0xE0. The image was well-formed, correct layout, correct-LOOKING palette.
+- instance-spi-overclock: Raising SPI from 11.43 MHz to 40 MHz improved EVERY timing number while the display got WORSE — whole transactions were dropped, and the ABSENCE of tearing was the diagnosis. ~15 MHz is the datasheet ceiling. The results table reads like a success and is kept precisely for that reason.
+- instance-mcp2515-init: `MCP2515 successfully initialized` with the interrupt line on the wrong GPIO. Init exercises SPI ONLY; the INT line is what delivers RX. A true statement about the wrong subsystem.
+- instance-drop-counter: An allowlist drop counter reporting 0 because enforcement happened at SUBSCRIBE time, so the counter could not increment. Structurally pinned at zero.
+- instance-bitrate-sweep: A listen-only bitrate sweep that read IDENTICALLY for "wrong bitrate" and "receive pin not connected" — an instrument whose output does not distinguish the two hypotheses it was run to distinguish.
+- instance-twai-selftest: A TWAI loopback self-test that returned PASS and FAIL for the SAME binary on the SAME board. An unrepeatable test is not a measurement, and a board was declared good on the strength of one PASS.
+- rule-self-verification: Any property read back THROUGH THE SAME ASSUMPTION THAT WROTE IT cannot be self-verified. This is the generator of the capture.bmp class, not a special case of it.
+- rule-negative-control: An instrument that can only report SUCCESS is not an instrument. It needs a NEGATIVE CONTROL — a deliberate fault injector that makes it fail — proving its zero means something. The drop counter had none and its zero meant nothing.
+- rule-needs-eyes: Colour order, endianness, GRAM offset, brightness and latched external state need EYES, always. No machine channel on these boards is independent of the assumption under test.
+- rule-ask-specific-colours: When asking a human, ask about SPECIFIC colours. "Blue shows green, green shows red" is arithmetically a BYTE swap: RGB565 0x001F byte-swaps to 0x1F00 (G=56/63, green-dominant) and 0x07E0 to 0xE007 (R=28/31, red-dominant). A CHANNEL swap instead shows blue as RED. That one distinction turned an open-ended colour hunt into a one-bit fix, and it only works if the question names colours rather than asking whether it "looks right".
+- rule-power-then-substrate-then-protocol: Prove POWER AT THE PART, then the SUBSTRATE, then the PROTOCOL. On 2026-08-12, three rounds of protocol diagnostics ran against a transceiver that had no supply.
+- rule-port-paths-are-not-identities: Port paths changed FIVE times in one session. Match the full USB serial; never `esptool chip-id`, which resets the board — the reset is the exact harm the identity check was being run to avoid.
+- rule-loopback-proves-nothing-about-peers: One node talking to itself proves the software and the adapter, and NOTHING about interoperation. A closed world cannot detect a layout disagreement with a different implementation, which is how [BP-CAN-ID-DIVERGENCE] stayed invisible.
+- scope-of-this-pillar: These rules are drawn from EMBEDDED bring-up. They generalise to any place where the instrument shares an assumption with the thing measured — including this corpus's own tooling — but the six instances are all hardware, and that is the evidence base being claimed.
+- decomposition-note: This node carries a catalogue of six instances AND eight rules. If either half starts being cited on its own, split it: the rules are the referenceable part and the instances are their evidence.
+- part-of: [SPEC:CXC-VISION]
+- see-also: [CXC-VISION-ANNOUNCE-BIND], [BP-CAN-ID-DIVERGENCE], [CXC-CONFIG-BUS-VERIFIED], [CXC-BOARD-HW-SELF-CONFIRMING]
+
+---
+
+## 4. Recovery and placement
+
+### [CXC-VISION-RECOVERY] How an agent re-hydrates this — carry the QUERY, never the snapshot
+- claim: This document exists to be FETCHED, not copied. An agent bootstrap must carry a QUERY, so the vision evolves in the corpus and every re-hydration picks up current state.
+- failure-mode-this-prevents: A static copy inside an agent definition goes stale SILENTLY. It is the same disease as `CAN_BRIDGE_REGISTER`: a hand-maintained list that no longer matches the thing it describes and says nothing when it diverges. An agent quoting a superseded claim is INDISTINGUISHABLE from one quoting a current one.
+- recovery-query-step-1: `lts_node(corpus="intelligence-console", node_id="CXC-VISION")` — the root, its 8 properties and its per-layer forward/reverse edges (edge_total 20).
+- recovery-query-step-2: `lts_traverse(corpus="intelligence-console", start_node="CXC-VISION", max_depth=1, layers=["semantic"], direction="both")` — returns 10 nodes and 11 edges: this root, all seven pillars (which reach it by `PART_OF`), plus the two document roots the root cites.
+- recovery-query-fallback: `lts_find(corpus="intelligence-console", text="CXC-VISION")` — total_matched 8, the whole family. Use this if a pillar id is ever renamed.
+- parameter-names-are-load-bearing: ⛔ `start_node` and `max_depth`, NOT `start` and `depth`. The first draft of this node recorded the latter; the call raised `TypeError` and returned nothing. A bootstrap carrying that line would have re-hydrated silence and read it as an empty vision.
+- token-budget-caveat: `lts_traverse` truncates against `token_budget` (default 32,768). At a small explicit budget the same call returns ONE node with `truncated: true` — which is indistinguishable from a vision with no pillars unless the caller reads the flag. Do not pass a small budget on the recovery path.
+- corpus-id-is-not-the-directory-name: ⛔ The corpus id is `intelligence-console`, NOT `platform-specs`. There is no `platform-specs` entry in the corpus registry — `corpora/platform-specs` is registered as the `specs` AREA of the `intelligence-console` corpus, and `intelligence-console` has THREE live roots (so `lts_preview` refuses that corpus id as ambiguous and wants a directory path instead). A query naming `platform-specs` resolves to nothing and looks exactly like a corpus with no matching nodes.
+- verified: All three calls were RUN against the live engine on 2026-08-13, after this file landed, and each returned the counts quoted above. Re-verify whenever a node id on this page changes.
+- verify-before-recording: A recovery query that does not resolve is WORSE than none, because it LOOKS like coverage. Never record a query you have not executed — this node's own first draft named a corpus that does not exist AND two parameters that do not exist, and both were caught only by running them.
+- consumers: Two agent bootstraps, re-hydrated at every session start.
+- part-of: [SPEC:CXC-VISION]
+- see-also: [CXC-VISION-ANNOUNCE-BIND], [CXC-VISION-PLACEMENT]
+
+---
+
+### [CXC-VISION-PLACEMENT] Placement is UNRATIFIED — and this directory has two live filename-number collisions
+- placement-status: UNRATIFIED. This document was written into `corpora/platform-specs/` because that is where its neighbours are, NOT because the placement was ruled. It is a synthesis across specs rather than a spec, so it may belong in a different corpus entirely.
+- neighbours-also-unratified: `60-board-hardware-inventory.lts` and `61-config-over-bus.lts` are both already flagged `[PLACEMENT UNRATIFIED]`. Three consecutive files now carry the same flag, which is itself the signal that the placement question is overdue rather than pending.
+- corpus-defect-61: RESOLVED 2026-08-17 — `61-fleet-console.lts` was renamed to `76-fleet-console.lts` (75 was already claimed by the worktrunk-cutover spec). All 40 `[CXC-FC-*]` node ids are unchanged, and every reference to the old filename was a DESCRIPTION of this collision rather than a citation, so nothing rotted. `61-config-over-bus.lts` keeps 61. ⚠ TWO collisions remain: `00-composer-design-principles.lts`/`00-composer-overview.lts` and `46-console-sources-on-the-bus.lts`/`46-handover-process.lts` — both left alone deliberately, because unlike 61 their filenames are REAL citations (17/25 and 8/10 referring files) and renaming would rot live pointers.
+- corpus-defect-46: The same collision already exists at 46: `46-console-sources-on-the-bus.lts` AND `46-handover-process.lts`. Found while checking 61, and it is the older instance — so this is a recurring convention failure with no guard, not a one-off.
+- why-git-will-never-flag-it: The FILENAMES differ, so there is no merge conflict, no duplicate path, and no VCS signal of any kind. The collision is in the CONVENTION, not in the filesystem — which is exactly the shape of failure the rest of this document is about: a hand-maintained ordering with no instrument watching it.
+- also-present: `60-board-hardware-inventory.lts.bak` sits in the same directory. It is not a `.lts` file so the parser never reads it, but it is a second copy of a live document with no marker saying which is authoritative.
+- do-not-renumber-unilaterally: The numeric prefix appears in sibling frontmatter `depends-on:` file lists and in prose citations across the corpus, so a rename is a corpus-wide edit rather than a `git mv`. The resolution is the architect's.
+- suggested-guard: Whatever is decided, the durable fix is an instrument: a lint that fails when two `.lts` files in one corpus root share a numeric prefix. A convention nothing checks will collide again — it already has, twice.
+- part-of: [SPEC:CXC-VISION]
+- see-also: [CXC-VISION-ANNOUNCE-BIND], [SPEC:CXC-CONFIG-BUS]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-VISION-SEMANTIC-REALIZATION] GENERALIZES [DP-CIO-6]
+- [CXC-VISION-ANNOUNCE-BIND] CONTRAST_WITH [CXC-VISION-SCOPE-MEMBRANE]
+- [CXC-VISION-SCOPE-MEMBRANE] CONTRAST_WITH [CXC-VISION-ANNOUNCE-BIND]
+
+### Causal
+
+- [CXC-CONFIG-BUS-BUDGET] CAUSES [CXC-VISION-COMPACT-WIRE]
+- [CXC-VISION-COMPACT-WIRE] PRECONDITION_FOR [CXC-VISION-ANNOUNCE-BIND]
+- [BP-CAN-ID] ENABLES [CXC-VISION-SCOPE-MEMBRANE]

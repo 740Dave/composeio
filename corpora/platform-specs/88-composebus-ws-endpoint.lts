@@ -1,0 +1,1046 @@
+---
+scope: "The ComposeBus WS endpoint — the connector that makes a browser (or any WS client) a live bus peer, per [DEC-COMPOSEIO-EXTENSIONS-ROADMAP-2026-08] item 6 (\"the real home for the WebSocket idea\"). This is a BUILD spec: the WS transport-family connector (a new `transport_registry.py`-idiom factory, LISTEN-role rather than dial-role), the singleton-persistent-peer model for one socket, the full connection lifecycle (connect -> pre-binding -> select -> bound -> switch), the per-tenant peer relationship inside [CXC-CS-MULTI-TENANCY]'s LOCKED boundary, the subscription filter reusing [SPEC:CXC-SUBFILTER], the connector-layer retained-state-replay generalization, the faithful `BusMessage` wire envelope, and the peer-identity provisioning policy — every claim below as a MUST/SHOULD predicate with a `verify-machine`/`verify-human` acceptance tier, so composeio-expert can implement it without guessing."
+audience: "David (architect) — for ratify of every non-`decided` claim below, and specifically the three `[DD-WS-*]` open forks; composeio-expert, who implements this connector directly against [CXC-WS-CONNECTOR-INTERFACE]; the audit that diffs this document against David's verbatim session turns and against the landed connector once built."
+boundary: "IN: the WS transport + connector (a new `transport_registry.py` factory, LISTEN-role); the full connection lifecycle (connect -> pre-binding -> select-tenant-bus -> bound -> switch); the per-tenant peer relationship inside [CXC-CS-MULTI-TENANCY]'s LOCKED cross-tenant boundary; the subscription filter (explicit + default-deny, reusing [CXC-SUB-DECLARE]); retained-state replay on subscribe, generalized to the CONNECTOR layer so UART/CAN inherit the same obligation; the wire format (the faithful `BusMessage.to_json()`/`from_json()` envelope, encode/decode only); the peer-identity provisioning policy (localStorage <-> NVS). OUT (referenced, not specified — their own units): the cross-tenant OPERATOR CONSOLE (bus-registry content + selection UX + the reserved auth gate, [DD-WS-AUTH-GATE]/[DD-WS-SWITCH-UX] only name the seam this spec must not foreclose); the ComposeUX HTML/DOM render backend (render-engineer's domain, [DEC-COMPOSEIO-EXTENSIONS-ROADMAP-2026-08] item 9's `bus_views`); scene-bundle serving (the config-over-bus / `bus_storage` seam, [SPEC:CXC-CONFIG-BUS], only cited)."
+not-this: "Not a design capture — every requirement below carries a MUST/SHOULD predicate, a testable acceptance criterion, and a `verify-machine`/`verify-human` tier per [CXC-WS-ACCEPTANCE], mirroring [SPEC:CXC-CS-LOADER]'s build-spec convention rather than [SPEC:CXC-COMPOSEBUS-KERNEL]'s design-capture convention. Not an assertion that every claim is David's stated word — each node carries an explicit `provenance:` property per [DX-INTERPRETATION-IS-AN-INFERENCE]; the six numbered `david-ruling` claims and the four numbered `architect-synthesis` claims in the dispatch that produced this spec are tagged as such, verbatim where quoted. Not a claim that this has been built or run — every POST-integration evidence property at [CXC-WS-EVIDENCE] is the `EMPTY` sentinel per [DX-SPEC-CARRIES-ITS-EVIDENCE] until a real build fills it in. Not a respecification of [CXC-CBK-CONNECTOR-CONTRACT], [CXC-CS-MULTI-TENANCY], or [SPEC:CXC-SUBFILTER] — this document cites and reuses them; where it narrows or extends one, the node says so explicitly rather than silently restating a weaker version."
+depends-on: [57-substrate-agnostic-subscription-filtering.lts, 62-composeplatform-vision.lts, 84-composebus-kernel.lts, 85-composeserver-plugin-contract.lts, 87-composeserver-plugin-loader.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: draft
+created: 2026-08-24
+updated: 2026-08-25
+---
+# ComposeBus WS Endpoint — browser-as-live-peer connector; PLACEMENT UNRATIFIED [SPEC:CXC-WS]
+
+> The WS endpoint is a CONNECTOR in the transport family — a new `transport_registry.py`-idiom
+> factory, `type: ws` — not a ComposeServer plugin. Where MQTT/CAN/UART DIAL out to an existing
+> fabric, WS LISTENS: there is no broker between the kernel and a browser tab, so the kernel's own
+> accept socket is the rendezvous point, and that inversion is the one place this connector family's
+> surface symmetry breaks. Each accepted connection is a SINGLETON PERSISTENT PEER following the
+> peripheral-attach lifecycle — many browser tabs are many independent peers over one listening
+> transport, the same shape as MQTT-with-N-devices, not a new concept. One socket carries a fixed
+> lifecycle: connect, PRE-BINDING (no focal bus), select a tenant bus, BOUND, optionally SWITCH
+> (config-over-bus REPOINT, one tenant at a time — [CXC-CS-MULTI-TENANCY]'s LOCKED boundary is never
+> crossed). Auth is explicitly OUT of v1 and reserved as a named fork. This is a build spec: every
+> MUST below carries a machine-checkable acceptance criterion and, where the failure class needs
+> eyes, a `verify-human` gate.
+
+---
+
+## 1. Placement
+
+### [CXC-WS-PLACEMENT] Placement is UNRATIFIED, and filename 88 was verified unused
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because its nearest relatives
+  (`84-composebus-kernel.lts`, `85-composeserver-plugin-contract.lts`, `87-composeserver-plugin-loader.lts`)
+  already sit there — convention, not a ruling. See [CXC-VISION-PLACEMENT] for the standing note on
+  this directory's unratified filename numbering and its two live filename-number collisions
+  (neither of which this file touches).
+- filename-number-check: `88` was verified unused across `corpora/platform-specs/` before this file
+  was written — the directory listing's highest prior numeric prefix was `87`
+  (`87-composeserver-plugin-loader.lts`); `99` remains the reserved conventions-document number
+  (`99-composeio-conventions.smd`).
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-VISION-PLACEMENT], [CXC-CS-PLACEMENT], [CXC-CBK-PLACEMENT], [CXC-CSL-PLACEMENT]
+
+---
+
+## 2. The WS endpoint is a connector, not a plugin — and it LISTENS where its siblings DIAL
+
+### [CXC-WS-CONNECTOR-NOT-PLUGIN] MUST be registered as a `transport_registry.py` connector, `type: ws`; MUST NOT be a `ComposePlugin`
+
+- requirement: (MUST, testable) the WS endpoint MUST be implemented as a new factory registered under
+  `type: ws` in the SAME `_FACTORIES` registry `transport_registry.py` already uses for
+  `mqtt`/`can`/`uart`/`synthetic`/`replay` (`register("ws", _ws)`), and MUST NOT be a `ComposePlugin`
+  subclass under [CXC-CS-PLUGIN-CONTRACT]. A declared `type: ws` that the registry cannot build MUST
+  raise `UnknownTransportError` exactly as an unknown `type:` does today — no silent local-only
+  degradation.
+- inherits: the connector contract — SCOPE (does this cross the membrane, [CXC-VISION-SCOPE-MEMBRANE])
+  and ENCODE (the wire format, [CXC-WS-WIRE-FORMAT]) only, never a third role. [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS]'s
+  membrane-not-mediator rule applies to this connector exactly as it does to every other one; the WS
+  endpoint does not derive a new fact from what it forwards.
+- the-inversion-a-builder-must-not-miss: (architect-synthesis, not David's word — an implementation
+  consequence of the ruling, named explicitly so it is not silently discovered mid-build) every other
+  registered factory DIALS a fabric that already exists independently of the kernel (an MQTT broker,
+  a CAN interface, a serial port). The WS connector has no such fabric to dial — there is no broker
+  between a browser tab and the kernel — so its factory instead OPENS A LISTEN SOCKET and each
+  accepted connection becomes one peer ([CXC-WS-SINGLETON-PEER]). The declared-config idiom
+  (`type: ws`, a `spec` dict, a built object handed back to the caller) is unchanged; only the socket's
+  DIRECTION inverts. A builder assuming "connect like MQTT" would build a client dialing nothing and
+  ship a connector that never accepts a browser.
+- socket-scope: the listen socket is opened ONCE at the ComposeServer/kernel level ([CXC-CS-MICROKERNEL]),
+  never once per tenant — [CXC-WS-TENANT-BOUNDARY] specifies why.
+- negative-control: an unrecognized `type: ws2` (or any other unregistered name) still raises
+  `UnknownTransportError` naming `known_types()`, and `known_types()` after this connector registers
+  MUST include `"ws"` alongside the five existing entries.
+- verify-machine: `transport_registry.known_types()` includes `"ws"`; `transport_registry.build({"type": "ws", ...})`
+  returns a WS connector object, never `None` and never silently falls through to local-only, on a
+  spec with a valid listen `host`/`port`; `transport_registry.build({"type": "ws"})` with no host/port
+  either applies a documented default or raises naming the missing field — never silently binds to an
+  unintended interface.
+- verify-human: none required — this node's failure surface is fully machine-observable.
+- status: proposed
+- provenance: david-ruling — David's actual word (line 25906): "I agree it's a connector." That is the
+  whole of David's connector ruling. The elaboration that follows in this node's title and requirement
+  — "CONNECTOR in the transport family, NOT a plugin — a new `transport_registry.py` factory. It
+  inherits the connector contract: scope + encode, never transform." — is the author's framing of the
+  (`docs/composeserver/AUDIT-ws-endpoint.md`, finding C3) and [DEC-WS-AUDIT-RESOLVED-2026-08-24]. The
+  `the-inversion-a-builder-must-not-miss` property is architect-synthesis, flagged as such and not
+  attributed to David.
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-CBK-CONNECTOR-CONTRACT], [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS], [CXC-CS-MICROKERNEL]
+
+---
+
+## 3. A WS client is a singleton persistent peer — not an ephemeral factory
+
+### [CXC-WS-SINGLETON-PEER] MUST treat each accepted connection as one singleton persistent peer following the peripheral-attach lifecycle
+
+- requirement: (MUST, testable) each accepted WS connection MUST be represented by exactly ONE
+  long-lived peer object for the lifetime of that socket — never re-created per message, never pooled,
+  never treated as a stateless request/response handler. The peer object owns the connection's
+  lifecycle state ([CXC-WS-LIFECYCLE]), its declared subscription set ([CXC-WS-SUBSCRIPTION]), and its
+  identity ([CXC-WS-IDENTITY-POLICY]) for as long as the socket is open.
+- claim-many-tabs-is-not-a-new-shape: (architect-synthesis, elaborating David's own line-25950 question
+  into a ruling — David's actual words were a question, not this elaboration; see `provenance` below)
+  many browser tabs connecting to the same ComposeServer are many INDEPENDENT singleton peers over ONE
+  listening transport — structurally the same shape as MQTT serving N devices, not a new concept the WS
+  connector must invent. An ESP32 also joins and leaves a bus; a tab joining and leaving is the
+  identical multiplicity pattern realized in a browser instead of firmware. The peripheral-attach
+  lifecycle ([CXC-CBK-PERIPHERAL-PLUGIN-MODEL]'s pub+sub-for-control case — a WS peer publishes AND
+  subscribes, so it is the control shape, not the pure-realization subscribe-only shape) governs a WS
+  peer exactly as it governs any other peripheral.
+- negative-control: TWO simultaneous connections from the SAME browser (two tabs) MUST produce TWO
+  independent peer objects with independent lifecycle state, independent subscriptions, and (per
+  [CXC-WS-IDENTITY-POLICY]) independent or shared identity per that node's policy — never one shared
+  mutable peer object silently serving both sockets.
+- verify-machine: opening two WS connections against a test server asserts two distinct peer object
+  identities, each with its own subscription state; closing one MUST NOT affect the other's lifecycle
+  state or subscriptions.
+- verify-human: a maker opens two browser tabs against a real ComposeServer, subscribes each to a
+  different namespace family, and confirms (via `_server/status` or equivalent) two independent peer
+  entries — closing one tab leaves the other's subscriptions and bound tenant untouched.
+- status: proposed
+- provenance: david-ruling — David raised the singleton-peer idea himself, as a question (line 25950):
+  "Actually, isn't each tab in a browser a singleton persistent peer, essentially a separate ESP32 w/SPI
+  display, pointing to a different ComposeBus?" The node's title, the "NOT an 'ephemeral factory'"
+  framing, and the `claim-many-tabs-is-not-a-new-shape` elaboration above (the MQTT-with-N-devices
+  multiplicity argument) are the author's framing answering David's question in the affirmative, not
+  (`docs/composeserver/AUDIT-ws-endpoint.md`, finding C3) and [DEC-WS-AUDIT-RESOLVED-2026-08-24]. David's
+  Q1 answer (2026-08-24, same decision) confirms each such peer binds to a bus THIS server itself
+  instantiates and manages — never "a different ComposeServer entirely," which was the architect's
+  over-reach in raising the question's own follow-on framing, not David's word.
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-CBK-PERIPHERAL-PLUGIN-MODEL], [CXC-WS-LIFECYCLE]
+
+---
+
+## 4. Connection lifecycle — connect, pre-binding, select, bound, switch
+
+### [CXC-WS-LIFECYCLE] MUST implement the fixed four-state lifecycle on one socket: PRE-BINDING, BOUND, and the SWITCH transition between two BOUND states
+
+- requirement: (MUST, testable) a peer's lifecycle state MUST be exactly one of: `PRE-BINDING`
+  (connected, no focal tenant bus selected — the peer cannot publish or subscribe to any tenant
+  namespace yet); `BOUND` (a focal tenant bus is selected; the peer is a peer of THAT bus per
+  [CXC-WS-TENANT-BOUNDARY]). A `SWITCH` is a transition FROM `BOUND` (tenant A) THROUGH an explicit
+  leave-A step TO `BOUND` (tenant B) — never a direct A-to-B splice that skips the leave. There is no
+  fifth state; a peer that disconnects is simply gone, not parked in a state.
+- requirement: (MUST, testable) while `PRE-BINDING`, the peer MUST NOT receive ANY tenant-namespace
+  traffic and MUST NOT be able to publish to any tenant namespace — the only traffic legal in this
+  state is the bus-selection exchange itself (the operator list, [CXC-WS-ENTRY-OPERATOR], or a
+  deep-link's pre-selection, [CXC-WS-ENTRY-DEEPLINK]). This is [CXC-SUB-DECLARE]'s empty-declared-set
+  default-deny applied at the CONNECTION level, before any subscription has even been declared.
+- requirement: (MUST, testable) entering `BOUND` for tenant T MUST perform, IN ORDER: (1) resolve T
+  to a live `ComposeIOBus` via the SAME per-tenant lookup [CXC-CS-MULTI-TENANCY] already provides
+  (`ComposeServer.tenant_bus(T)` or equivalent, reused unchanged — this spec does not reimplement
+  tenant resolution); (2) apply the peer's declared subscription set against T
+  ([CXC-WS-SUBSCRIPTION]); (3) perform retained-state replay for every namespace the declared set
+  matches ([CXC-WS-RETAINED-REPLAY]). Replay MUST happen only AFTER the subscription is applied, never
+  before — replaying against an unset subscription would either leak (replay everything) or drop
+  (replay nothing), and both are the exact silent-wrong-answer class [CXC-VISION-EPISTEMICS] warns
+  against.
+- requirement: (MUST, testable) a `SWITCH` from tenant A to tenant B MUST: (1) unsubscribe the peer's
+  entire declared set from A's bus (a clean leave — no residual callback fires after this step);
+  (2) transition the peer's lifecycle state to `PRE-BINDING` momentarily (never directly A-BOUND to
+  B-BOUND with no intermediate state a test can observe); (3) re-run the `BOUND`-entry sequence above
+  against B. The peer's declared subscription SET (the namespace patterns, not the bus) is carried
+  across the switch unchanged, UNLESS the operator UX ([DD-WS-SWITCH-UX], out of scope here) offers a
+  re-declare step — this carry-forward default is (architect-synthesis, NOT part of the david-ruling;
+  David left the switch mechanism unspecified, see `q2-settled-scope` below) a choice this spec makes
+  for the open [DD-WS-SWITCH-UX] fork, revisitable when that fork resolves.
+- q2-settled-scope: (david-ruling, 2026-08-24 Q2 answer, [DEC-WS-AUDIT-RESOLVED-2026-08-24]) David's "a
+  mechanism we have yet to specify" (line 25961) was NARROW — it named only the operator-facing web-page
+  UX TRIGGER for a switch ([DD-WS-SWITCH-UX]), not this node's connector-side leave-A/pre-binding/join-B
+  ORDERING, which therefore stays SETTLED and david-endorsed. It does not overrule or reopen the
+  ordering requirements above; only [DD-WS-SWITCH-UX] (the UI trigger, and whether it re-declares
+  subscriptions) remains deferred.
+- conceptual-precedent-named-not-reused: the SWITCH is the same CATEGORY of move as device repoint
+  ([SPEC:CXC-REPOINT], config-over-bus) — a live re-pointing operation, not a firmware change — but it
+  is NOT a literal reuse of that spec's retained-binding/commit-confirmed/trial-timer machinery, which
+  solves a DIFFERENT problem (which MQTT BROKER a device dials). This spec's switch is tenant
+  RESELECTION within one already-open kernel socket; conflating the two would import commit-confirmed
+  ceremony this lightweight, in-session UX move does not need. [DD-WS-SWITCH-UX] is the fork for the
+  switch's own concrete UX mechanism.
+- scenario:
+  - when: a peer connects, receives the operator bus list, selects tenant `haven`, then later selects
+    tenant `bsg` via the switch mechanism
+  - then: the peer is `PRE-BINDING` immediately after connect; `BOUND(haven)` after selection, with
+    retained replay for its declared set against `haven`'s current namespace values; briefly
+    `PRE-BINDING` again during the switch (observable in a test via an intermediate-state assertion,
+    mirroring [CXC-SUB-SUPERSET]'s "reconfiguration passes through a wider/named intermediate state,
+    never an ambiguous one" discipline); `BOUND(bsg)` after the switch completes, with retained replay
+    re-run against `bsg`
+- verify-machine: a test peer asserts `PRE-BINDING` immediately post-connect; asserts NO tenant
+  namespace callback fires before a bus is selected; asserts `BOUND(T)` triggers exactly one replay
+  pass over the declared set against T's current values; asserts a switch A->B unsubscribes every A
+  callback (a spy asserts zero further A-tenant callbacks post-switch) before any B callback fires.
+- verify-human: David or composeio-first-bringup opens a real browser tab against a real
+  multi-tenant ComposeServer, selects a tenant from the operator list, observes namespace values
+  populate immediately (not after the next publish — the replay gate), switches tenants, and confirms
+  the view goes to the NEW tenant's current state with no residual OLD-tenant value lingering on
+  screen.
+- status: proposed
+- provenance: david-ruling — David's actual words (line 25961), in his own plain language, not the
+  state names below: "if I connect to ComposeServer, it seems like the natural first thing to do (after
+  some login ceremony that we have yet to define) would be to present a list of ComposeBusses. Then I'd
+  choose which one I want to manage ... that'd be the default for that tab until I close the tab or
+  explicitly change the focal ComposeBus (through a mechanism we have yet to specify)." The state names
+  PRE-BINDING/BOUND/SWITCH and the "config-over-bus REPOINT" mapping are the author's framing of the
+  agreed ruling, not David's own vocabulary; retagged 2026-08-24 per the audit
+  (`docs/composeserver/AUDIT-ws-endpoint.md`, finding C3) and [DEC-WS-AUDIT-RESOLVED-2026-08-24]. David's
+  Q2 answer (same decision) clarifies that "a mechanism we have yet to specify" named only the UI
+  trigger ([DD-WS-SWITCH-UX]) — see `q2-settled-scope` above; the connector-side leave/join ordering
+  itself is settled. The ORDERING requirement inside `BOUND`-entry (subscribe-before-replay) and the
+  intermediate-state requirement inside `SWITCH` are architect-synthesis, derived from
+  [CXC-SUB-SUPERSET]'s reconfiguration discipline, not David's stated word — as is the carry-forward
+  subscription default flagged inline above (audit finding C4).
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-WS-TENANT-BOUNDARY], [CXC-WS-SUBSCRIPTION], [CXC-WS-RETAINED-REPLAY], [SPEC:CXC-REPOINT], [DD-WS-SWITCH-UX]
+
+---
+
+## 5. Multi-tenancy — one tenant at a time, the kernel is the sole cross-tenant surface
+
+### [CXC-WS-TENANT-BOUNDARY] MUST bind a connection to exactly ONE tenant at a time; MUST NEVER let a peer see another tenant's traffic
+
+- requirement: (MUST, testable) at every instant a peer is `BOUND`, it is bound to EXACTLY ONE
+  tenant's `ComposeIOBus`. The WS connector's LISTEN SOCKET spans tenants (one accept loop serves
+  every tenant, per `the-inversion` property at [CXC-WS-CONNECTOR-NOT-PLUGIN]), but a BOUND peer's
+  subscription and publish surface MUST resolve against ONLY its currently-selected tenant bus — this
+  is [CXC-CS-MULTI-TENANCY]'s LOCKED-PERMANENTLY "plugins are ALWAYS per-tenant; NO shared instances"
+  invariant, applied at the connector's own binding step, exactly as [CXC-CSL-PER-TENANT] applies it
+  at the plugin loader's.
+- requirement: (MUST, testable) the CROSS-TENANT bus list (which tenants exist, for the operator entry
+  mode, [CXC-WS-ENTRY-OPERATOR]) MUST be served by the KERNEL/ComposeServer, never assembled or
+  cached by a bound peer's own connection state. A peer's PRE-BINDING view of "what tenants exist" and
+  its BOUND view of "what this tenant's namespaces say" are two structurally different surfaces, and
+  [CXC-CS-MULTI-TENANCY]'s "cross-tenant views live in the kernel or an external tool, NEVER a plugin"
+  rule extends here: never a per-tenant plugin, and — this connector's own addition — never a
+  per-connection cache either, because a stale cached list is the exact hand-maintained-list failure
+  [CXC-VISION-ANNOUNCE-BIND] catalogs.
+- negative-control: a peer `BOUND` to tenant A that declares a subscription pattern matching a
+  namespace that ONLY exists on tenant B's bus MUST receive nothing for that pattern — no cross-tenant
+  leak, no error, simply no match, because tenant B's namespace registry is never consulted while
+  bound to A.
+- verify-machine: two tenants each publish to a namespace of the SAME NAME (e.g. `_server/status`) with
+  different values; a peer bound to tenant A and subscribed to that namespace receives ONLY A's value,
+  never B's, for the duration it is bound to A; after a switch to B it receives ONLY B's value.
+- verify-human: an operator inspects two tenants' `_server/status` side by side on real infrastructure
+  and confirms a WS peer bound to one never surfaces the other's data, including during a switch
+  (no frame of overlap where both are visible).
+- q1-scope-confirmed: (david-ruling, 2026-08-24 Q1 answer, [DEC-WS-AUDIT-RESOLVED-2026-08-24]) each
+  ComposeBus a peer selects from is a tenant bus INSTANTIATED AND MANAGED BY THIS ComposeServer — an
+  intra-server, N-tenant model. The architect's earlier "a different ComposeServer entirely" framing
+  (raised mid-session, never David's own word) was over-reach and is retracted; this node's
+  kernel-served cross-tenant registry is the confirmed home for the selection list, not a
+  cross-deployment/federated one.
+- invalidating_assumption: "David's own words (line 25921): 'yes, routing to one and only one tenant
+  bus, subject to further analysis and re-litigation once we dive into actual multi-tenancy
+  deployments.' This node's MUST is FIRM for one-bus-per-connection-AT-AN-INSTANT — a peer is bound to
+  exactly one tenant at any given moment, and that binding is switchable ([CXC-WS-LIFECYCLE]) — and that
+  part does not re-open. What David flagged as re-litigable is the LARGER claim that this
+  one-tenant-per-connection MODEL survives real multi-tenancy deployment unchanged; once actual
+  multi-tenancy deployments are underway, this node's binding MODEL itself is subject to re-analysis,
+  not merely its implementation. See [CXC-WS-ACCEPTANCE]'s WS-V4 for how the gate is scoped to the firm
+  part only."
+- status: proposed
+- provenance: david-ruling — "a connection is only ever a peer of ONE tenant at a time; the cross-tenant
+  bus list is the KERNEL's sole-cross-tenant surface ([CXC-CS-MULTI-TENANCY] LOCKED) — the WS
+  transport spans tenants at the socket level (kernel-owned), binding is per-tenant, NO plugin/tenant
+  sees another." (session ruling #4, explicitly agreed by David.) The re-litigable caveat restored
+  2026-08-24 per the audit (`docs/composeserver/AUDIT-ws-endpoint.md`, finding C1) and
+  [DEC-WS-AUDIT-RESOLVED-2026-08-24] — see `invalidating_assumption` above.
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-CS-MULTI-TENANCY], [CXC-CSL-PER-TENANT], [CXC-WS-ENTRY-OPERATOR]
+
+---
+
+## 6. Entry modes — operator list and deep-link
+
+### [CXC-WS-ENTRY-OPERATOR] MUST offer an operator entry mode: connect, then present the cross-tenant bus list, then select
+
+- requirement: (MUST, testable) in the absence of a deep-link path ([CXC-WS-ENTRY-DEEPLINK]), a newly
+  connected `PRE-BINDING` peer MUST be served the cross-tenant bus list ([CXC-WS-TENANT-BOUNDARY]'s
+  kernel-served surface) and MUST remain `PRE-BINDING` until it explicitly selects one entry from that
+  list. There is no implicit default tenant.
+- out-of-scope-named: the bus list's CONTENT (what metadata each tenant entry carries), its selection
+  UX, and any reserved auth gate in front of it are the cross-tenant OPERATOR CONSOLE's own unit — this
+  spec specifies only that the WS connector MUST serve SOME such list over the same socket in
+  `PRE-BINDING` state and MUST honor a selection from it; it does not design the console.
+- verify-machine: a peer connecting with no deep-link path receives a non-empty tenant list (against
+  a test server with >=2 tenants) before any bus-selection message, and stays `PRE-BINDING` until it
+  sends a valid selection.
+- verify-human: an operator connects a fresh browser tab with no path/query hint and visually confirms
+  a tenant picker appears before any live data, matching the tenants actually configured on the
+  server.
+- status: proposed
+- provenance: david-ruling — David's actual words (line 25961): "if I connect to ComposeServer, it
+  seems like the natural first thing to do (after some login ceremony that we have yet to define) would
+  be to present a list of ComposeBusses. Then I'd choose which one I want to manage." This is the ONLY
+  entry mode David described. The "two entry modes: (a) operator / (b) deep-link" taxonomy and the
+  "(a)"/"(b)" labeling are the author's framing, not David's; retagged 2026-08-24 per the audit
+  (`docs/composeserver/AUDIT-ws-endpoint.md`, finding C3) and [DEC-WS-AUDIT-RESOLVED-2026-08-24] — see
+  [CXC-WS-ENTRY-DEEPLINK]'s provenance for the correction on the second entry mode.
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-WS-TENANT-BOUNDARY], [CXC-WS-LIFECYCLE]
+
+### [CXC-WS-ENTRY-DEEPLINK] MUST offer a deep-link entry mode: a URL-path pre-selects the focal bus, skipping the list
+
+- requirement: (MUST, testable) when a connection carries a recognized deep-link designator (the exact
+  URL-path shape is [DD-WS-DEEPLINK-URL], OPEN), the peer MUST transition directly from connect to
+  `BOUND` against the designated tenant, WITHOUT the operator list ever being served — both entry
+  modes MUST converge on the same `BOUND`-entry sequence ([CXC-WS-LIFECYCLE]), so a deep-linked peer
+  and an operator-selected peer are indistinguishable once bound.
+- requirement: (MUST, testable) a deep-link designator naming a tenant that does not exist MUST fail
+  loudly (an explicit error state, connection refused or an in-band error message naming the unknown
+  tenant) — never silently fall through to the operator list and never silently bind to a wrong/default
+  tenant.
+- boundary: the deep-link is the SECONDARY entry, not the primary router — [DD-WS-DEEPLINK-URL]'s
+  question is the URL SHAPE only; that a deep-link exists and must converge on the same bound state as
+  the operator path is decided here, not open.
+- verify-machine: a peer connecting with a valid deep-link designator reaches `BOUND(T)` with no
+  operator-list message ever sent to it; one with an unrecognized designator receives an explicit
+  named error, never a silent fallback.
+- verify-human: a maker follows a real deep-link URL in a browser and lands directly on the named
+  tenant's live view with no picker screen shown.
+- status: proposed
+- provenance: architect-synthesis — the deep-link entry mode (a URL-path pre-selecting the focal bus,
+  skipping the operator list) is the author's addition to the entry-mode taxonomy; David never proposed
+  or agreed to a second entry mode. His only nearby agreement (line 25976, "Agree on ii.") was to the
+  transport-vs-console SCOPE SPLIT, not to a deep-link mechanism — he described only the operator flow
+  (see [CXC-WS-ENTRY-OPERATOR]). That both entry modes must converge on the same BOUND sequence
+  ([CXC-WS-LIFECYCLE]) is a design requirement this spec imposes for consistency, not something David
+  ruled on. Re-tagged from `david-ruling` 2026-08-24 per the audit
+  (`docs/composeserver/AUDIT-ws-endpoint.md`, finding C2) and [DEC-WS-AUDIT-RESOLVED-2026-08-24].
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-WS-ENTRY-OPERATOR], [CXC-WS-LIFECYCLE], [DD-WS-DEEPLINK-URL]
+
+---
+
+## 7. Auth — reserved, explicitly OUT of v1
+
+### [DD-WS-AUTH-GATE] DEFERRED — auth is OUT of v1; the position is reserved, not designed
+
+- decision: (david-ruling, verbatim) auth is explicitly OUT of v1. David: a login ceremony, multiple
+  accounts, per-account namespace-locking are "way way overkill for right now." v1 is local/trusted,
+  the cross-tenant bus list is UNFILTERED, no accounts, no permissions.
+- what-is-reserved: a future login gate would sit AHEAD of [CXC-WS-ENTRY-OPERATOR]'s bus list — it
+  would FILTER which tenants a given peer's list even shows, a server-level gate, not a per-namespace
+  permission system layered onto [CXC-WS-SUBSCRIPTION]. This spec's requirements MUST NOT be built in
+  a way that FORECLOSES inserting such a gate later — concretely, [CXC-WS-TENANT-BOUNDARY]'s
+  kernel-served bus list is already the single seam a filter would attach to, so no redesign is implied
+  by adding one.
+- v1-scope: no login, no account model, no per-account namespace lock, unfiltered tenant list to any
+  connecting peer that can reach the socket. Network-level trust (who can reach the listen port at all)
+  is the ENTIRE v1 access-control surface, and it is explicitly OUTSIDE this spec (a deployment/ops
+  concern, not a connector concern).
+- rationale: David's explicit ruling — a login ceremony, multiple accounts, and per-account
+  namespace-locking are overkill for the current stage, and building them now would spend effort on a
+  surface nothing yet depends on. Reserving the SEAM (the kernel-served bus list,
+  [CXC-WS-TENANT-BOUNDARY]) rather than designing the gate costs this spec nothing and forecloses
+  nothing later.
+- alternatives: (a) design and build a full login/account gate in v1 — rejected, verbatim overkill for
+  now; (b) design the gate's SHAPE without building it — not chosen either, because the gate's shape
+  depends on decisions (which identity provider, which account model) this session did not make and
+  designing it prematurely risks constraining a later, better-informed choice; (c) reserve the position
+  only, naming the seam it would attach to — CHOSEN, see `what-is-reserved` above.
+- invalidating_assumption: "That the deployment is local/trusted. The moment this WS endpoint is
+  exposed to an untrusted network, the v1 no-auth position inverts and [DD-WS-AUTH-GATE] must be
+  resolved before that exposure, not after."
+- status: open
+- status-detail: deferred — reserved position, not designed; David's ruling fixes v1 scope, the GATE
+  ITSELF is not designed here
+- provenance: david-ruling — "Auth is OUT of v1 (David, verbatim: a login ceremony, multiple accounts,
+  per-account namespace-locking are 'way way overkill for right now'). RESERVE the position as a
+  named [DD-WS-AUTH-GATE] deferred fork (login = a server-level gate that filters the bus list); v1 is
+  local/trusted, unfiltered list, no auth, no accounts, no permissions." (session ruling #6.)
+- coupled-deferral: David's 2026-08-24 Q3 answer ([DEC-WS-AUDIT-RESOLVED-2026-08-24]) explicitly couples
+  [CXC-WS-IDENTITY-POLICY]'s `localStorage <-> NVS` identity persistence to THIS gate — persistence is
+  deferred until a login mechanism exists, not shipped ahead of it.
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-WS-ENTRY-OPERATOR], [CXC-WS-TENANT-BOUNDARY], [CXC-WS-IDENTITY-POLICY]
+
+---
+
+## 8. Wire format — the faithful BusMessage envelope
+
+### [CXC-WS-WIRE-FORMAT] MUST carry `BusMessage.to_json()`/`from_json()` verbatim; MUST NOT simplify, rename, or drop fields
+
+- requirement: (MUST, testable) every message the WS connector sends or receives MUST be exactly the
+  dict `BusMessage.to_json()` produces (`ns`, `type`, `src`, `ts`, `scope`, `seq`, and, when present,
+  `val`/`evt`/`data`), JSON-encoded, and MUST be decodable by `BusMessage.from_json()` unchanged. The
+  connector MUST NOT introduce a second envelope shape, MUST NOT rename a field for wire brevity, and
+  MUST NOT drop an optional field that `to_json()` would have included. This is [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS]'s
+  encode-never-derive rule made concrete for this substrate: encode/decode ONLY.
+- requirement: (MUST, testable) a value that `BusMessage.to_json()`'s own `_assert_json_serialisable`
+  check would reject (raw bytes, an opaque binary chunk) MUST be rejected identically over WS — the
+  connector MUST NOT invent a base64 or binary-frame escape hatch that other JSON substrates (MQTT
+  JSON payloads, in-process) do not have. Binary/blob content stays OFF the WS connector entirely, per
+  control-on-bus/bytes-off-bus; a `bus://` URL reference (DP-CIO-18) is the existing escape and it is
+  reused unchanged, not respecified here.
+- requirement: (SHOULD) namespaces carried over WS SHOULD be semantic namespaces only — the same
+  restriction the `_assert_json_serialisable` boundary already enforces structurally for any JSON
+  transport; this property states the intent explicitly so a reviewer does not have to infer it from
+  the byte-rejection behavior alone.
+- verify-machine: round-tripping every `BusMessage` field combination (with/without `val`, `evt`,
+  `data`) through the WS connector's send/receive path produces a `BusMessage` equal in every field to
+  the original; a raw-bytes value raises the SAME `UnserialisableValue` naming the same namespace and
+  field the in-process/MQTT paths already raise.
+- verify-human: none required — this node's behavior is fully machine-observable (byte-for-byte
+  envelope equality).
+- status: proposed
+- provenance: architect-synthesis — "Wire format: the faithful `BusMessage` envelope, JSON-encoded
+  (`ns`, `payload`, `type` STATE/EVENT, `scope`, `source`). Encode/decode ONLY — simplifying the
+  envelope is a forbidden transform." (session architect-synthesis #7.) The FIELD NAMES quoted here
+  (`val` rather than `payload`, `src` rather than `source`) are corrected against the LANDED
+  `BusMessage.to_json()`/`from_json()` implementation (`python/composeio/transport.py`) read while
+  authoring this spec, not against the dispatch's paraphrase — the dispatch named the FIELDS'
+  SEMANTIC roles correctly; this node grounds them in the actual wire keys so a builder does not
+  implement a `payload`/`source` envelope that the real deserializer would then reject.
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS], [CXC-WS-CONNECTOR-INTERFACE]
+
+---
+
+## 9. Subscription — explicit, default-deny, reusing the substrate-agnostic filter model
+
+### [CXC-WS-SUBSCRIPTION] MUST enforce default-deny subscription semantics via `bus.on_message()` + `pattern_matches()`; MUST NOT grant a tenant firehose; MUST NOT depend on `subscribe_pattern()`'s unlanded report extension
+
+- corrected-2026-08-25: (diamond-remediation) the ORIGINAL text of this node claimed the WS connector
+  reuses `subscribe_pattern()` itself as its subscription waist. That is structurally impossible:
+  `bus.py::subscribe_pattern()`'s callback signature is `(namespace: str, new_value, old_value)` and the
+  call itself returns `None` — neither carries `src`/`ts`/`scope`/`seq`, so neither can construct the
+  faithful `BusMessage` envelope [CXC-WS-WIRE-FORMAT] requires. Both WS diamond legs (gap-analyzer +
+  first-bringup) independently confirmed this and endorsed the actual path below. The requirements are
+  corrected to name it.
+- requirement: (MUST, testable) a WS peer's subscription is DECLARED via the SAME pattern language
+  [CXC-SUB-DECLARE] specifies for every substrate — an ordered list of trailing-glob patterns and exact
+  namespaces. An empty declared set means SUBSCRIBE NOTHING, exactly as [CXC-SUB-DECLARE]'s default
+  states; a peer that wants every namespace on its bound tenant declares `*` explicitly, it is never the
+  connector's default. This requirement is about the DECLARED SET's semantics, not the call the
+  connector makes to enforce it — see the next requirement for the corrected mechanism.
+- requirement: (MUST, testable) the connector's actual delivery path MUST be `bus.on_message()`
+  (registering ONE callback that receives every full `BusMessage` published on the bound tenant's bus)
+  filtered, per delivered message, through the SAME `pattern_matches()` helper (`bus.py::pattern_matches`)
+  `subscribe_pattern()` uses internally against the peer's own declared pattern list — NOT a call to
+  `subscribe_pattern()` itself. `on_message()`'s callback carries the full `BusMessage` object (`ns`,
+  `type`, `src`, `ts`, `scope`, `seq`, and any `val`/`evt`/`data`) — every field [CXC-WS-WIRE-FORMAT]'s
+  envelope requires — which is why this is the correct waist for THIS connector, not a workaround
+  chosen for convenience.
+- requirement: (MUST, testable) the WS connector's enforcement point, per [CXC-SUB-ENFORCE]'s table, is
+  `broker` (degenerate, in-process-equivalent) — the SAME namespace-matching machinery `bus.py`'s
+  in-process dispatch already uses via `pattern_matches()`, since a bound peer and its tenant bus share
+  one process's address space. The connector MUST NOT widen its OWN dispatch beyond the peer's declared
+  patterns to simplify its own code, mirroring [CXC-SUB-NO-INVERT]'s prohibition on inverting a precise
+  substrate into a filter-everything-client-side shape.
+- requirement: (MUST, testable) because this connector does not call `subscribe_pattern()`, it MUST
+  hand-build its own enforcement report at the point it applies `pattern_matches()` — same shape
+  [CXC-SUB-REPORT] specifies (`enforcement: "broker"` for this substrate), never silently omitted. NOTE:
+  [SPEC:CXC-SUBFILTER]'s own proposed extension — having `subscribe_pattern()` ITSELF return an
+  enforcement report — has NEVER LANDED (confirmed by both diamond legs, no such return value exists in
+  `bus.py` as authored); this spec MUST NOT be read as depending on that unlanded extension. This
+  connector's report is produced independently, by its own hand-built path, precisely because it never
+  calls `subscribe_pattern()` to begin with.
+- negative-control: a peer that declares `["ship_condition/*"]` and never declares `system/alert`
+  MUST NOT receive `system/alert` traffic even though both namespaces exist on its bound tenant — no
+  tenant-wide firehose regardless of how many OTHER peers on the same tenant have broader declarations.
+- verify-machine: a WS-specific negative-control test (declare `["ship_condition/*"]`, never declare
+  `system/alert`, publish both, assert only the declared one is delivered) exercises this connector's
+  own `on_message()` + `pattern_matches()` filter directly. [SPEC:CXC-SUBFILTER]'s SUB-C1
+  superset-invariant suite (`tests/subscription/test_superset_invariant.py`) does NOT exist on any
+  branch as of this correction ([CXC-WS-EVIDENCE]'s `evidence-subfilter-integration`,
+  [DEFECT-SPEC-88-CXC-WS-EVIDENCE-1C623F]) — once authored, this connector becomes one substrate row in
+  it, not a new test shape, but that authoring has not happened yet and this node MUST NOT be read as
+  claiming it has.
+- verify-human: none required — this reuses an already-specified, already-testable mechanism; the human
+  gate belongs to [SPEC:CXC-SUBFILTER]'s own acceptance table (SUB-C1) once that suite is authored, not
+  duplicated here.
+- status: proposed
+- provenance: architect-synthesis — "Subscription = explicit + default-deny, reusing
+  `subscribe_pattern`; no tenant firehose. Reconcile to spec 57." (session architect-synthesis #8.) The
+  ORIGINAL `subscribe_pattern()`-reuse mechanism was corrected 2026-08-25 (diamond-remediation) to the
+  `bus.on_message()` + `pattern_matches()` path actually endorsed by both WS diamond legs, per
+  [DEFECT-SPEC-88-CXC-WS-EVIDENCE-1C623F]; the default-deny SEMANTICS this node states remain the
+  architect-synthesis call quoted above — only the WIRE-LEVEL MECHANISM changed.
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-SUB-DECLARE], [CXC-SUB-ENFORCE], [CXC-SUB-REPORT], [CXC-SUB-NO-INVERT], [DEFECT-SPEC-88-CXC-WS-EVIDENCE-1C623F]
+
+---
+
+## 10. Retained-state replay — generalized to the connector layer
+
+### [CXC-WS-RETAINED-REPLAY] MUST replay current state on subscribe; states the requirement at the CONNECTOR layer so UART/CAN inherit it, not just WS
+
+- requirement: (MUST, testable) HARD requirement — when a WS peer's subscription (declared or widened
+  by a switch) newly matches a namespace that already carries a value on the bound tenant bus (i.e.
+  `bus.get_namespace(name).value is not None`, enumerable via the `bus.namespaces` property filtered
+  through the SAME `pattern_matches()` helper `subscribe_pattern()` itself uses), the connector MUST
+  synthesize and deliver ONE `BusMessage` per such namespace carrying its CURRENT value, marked
+  `retained: True` — the SAME receive-side annotation MQTT's native retained delivery already sets on
+  `BusMessage`, so a consumer widget cannot tell a WS-replayed value from an MQTT-retained one without
+  inspecting `retained` (which is the point: identical consumer-side handling regardless of substrate).
+- requirement: (MUST, testable) replay MUST occur exactly once per newly-matched namespace per
+  subscribe/switch event — never on every publish thereafter (that is ordinary live delivery, not
+  replay) and never re-sent for a namespace the peer was ALREADY subscribed to before this event.
+- generalizes-to-the-connector-layer: (architect-synthesis, the load-bearing framing of this node) MQTT
+  peers get current state for free via the broker's native retained-message mechanism; NO other
+  substrate in this platform has an equivalent broker-side feature — UART and CAN have no retained
+  concept at all. Without an explicit replay step, a non-broker peer's view renders BLANK until the
+  next publish, which on an [DD-SUB-SUPERSET]-honoring event-driven namespace (quiet-bus-by-construction,
+  per `Cadence.EVENT_DRIVEN`) may be minutes or hours. This requirement is therefore stated at the
+  CONNECTOR layer, not the WS-transport layer specifically: a future UART or CAN connector inherits the
+  SAME obligation from this node rather than each connector re-deriving it independently and some
+  silently omitting it.
+- negative-control-default-deny-still-holds: replay MUST NOT bypass [CXC-WS-SUBSCRIPTION]'s
+  default-deny — a namespace the peer has NOT declared interest in is never replayed, regardless of
+  whether it carries a current value. Replay widens WHEN a matched namespace is delivered (immediately,
+  rather than waiting for the next publish); it never widens WHAT is delivered.
+- negative-control-scope-still-honored: replay MUST honor `scope` on the replayed value exactly as a
+  live publish would — a `scope: local` namespace on the peer's bound tenant is never replayed to a
+  peer whose connection crosses a scope boundary the live publish path would also refuse, mirroring
+  [CXC-SUB-SCOPE]'s publish-path enforcement rather than treating replay as a scope-exempt shortcut.
+- verify-machine: a namespace is published on tenant T BEFORE a peer connects; the peer connects,
+  binds T, and declares a matching pattern; asserts exactly ONE message arrives for that namespace with
+  `retained == True` and the CURRENT value, with NO further publish having occurred; a second identical
+  subscribe-widen for the same already-covered pattern produces NO duplicate replay.
+- verify-human: David or composeio-first-bringup opens a real browser tab against a real tenant whose
+  namespaces were last published minutes earlier (before the tab opened) and confirms the view shows
+  CURRENT values immediately on load — never a blank/zero state that only populates on the next
+  incidental publish.
+- status: proposed
+- provenance: architect-synthesis — "Retained-state replay on subscribe, GENERALIZED to the connector
+  layer: MQTT peers get current state free via native retained; non-broker transports (WS, UART, CAN)
+  must replay it explicitly ... HARD requirement: without it a bus_view renders blank until the next
+  publish. Negative-control the default-deny (an unsubscribed namespace NEVER reaches the peer) and the
+  scope-honoring on publish (local tenant chatter does not leak)." (session architect-synthesis #9.)
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-WS-SUBSCRIPTION], [CXC-SUB-SCOPE], [CXC-VISION-ANNOUNCE-BIND]
+
+---
+
+## 11. Peer identity — provisioning policy, localStorage as the browser's NVS
+
+### [CXC-WS-IDENTITY-POLICY] DEFERRED for v1 — no identity persistence ships; the per-peer provisioning policy is described for when [DD-WS-AUTH-GATE] lands
+
+- requirement: (MUST, testable) v1 MUST NOT persist any peer identity across reconnects — no
+  `localStorage`/NVS-equivalent read or write on the connect path. Every WS peer, publish-capable or
+  not, connects anonymously in v1; a connector implementation MAY assign a per-connection identity for
+  logging/debug purposes only, and that identity MUST NOT be required to be stable across reconnects.
+  This mirrors [DD-WS-AUTH-GATE]'s v1 scope (no login, no accounts, no permissions) — identity
+  persistence is an authentication-adjacent concern and is deferred with it, not shipped ahead of it.
+- deferred-policy-description: (architect-synthesis, describing the policy for WHEN a login mechanism
+  exists — NOT a v1 requirement) once [DD-WS-AUTH-GATE] is resolved, the intended per-peer provisioning
+  policy is: a WS peer that PUBLISHES (control shape, [CXC-WS-SINGLETON-PEER]'s pub+sub case — the peer
+  must be addressable back, e.g. to correlate a request/response or to be named in a `src` field another
+  peer reacts to) persists a stable identity across reconnects, using the browser's `localStorage` (or
+  equivalent durable client-side store) in the SAME role an ESP32-class device's NVS plays for its own
+  stable id ([CXC-ER-DEVICE]'s config-fetch/device-identity model) — generate-once, persist, reuse on
+  every reconnect, never regenerate per session; a WS peer that is a PURE REALIZATION SURFACE
+  (subscribe-only, read-only view, [CXC-CBK-PERIPHERAL-PLUGIN-MODEL]'s subscribe-side case) MAY remain
+  anonymous even after the login mechanism lands, and the policy SHOULD be a property of the PEER's
+  role, not a global connector setting. This description is kept so the future gate has a concrete
+  starting shape; it binds nothing in v1.
+- why-coupled-to-auth-gate: (architect-synthesis) David's 2026-08-24 Q3 answer
+  ([DEC-WS-AUDIT-RESOLVED-2026-08-24]) deferred `localStorage <-> NVS` identity persistence until a
+  login mechanism exists — David's own hedge on the idea (line 25961): "We *could* use localStorage <->
+  NVS. But...if I connect to ComposeServer, it seems like the natural first thing to do... would be to
+  present a list of ComposeBusses." Without a login/account model, a persisted client-side identity has
+  nothing to authenticate against and no account to correlate to, so this node's obligation is
+  EXPLICITLY coupled to [DD-WS-AUTH-GATE] rather than standing alone.
+- negative-control: v1 never generates or reads a stored id on connect — a control-capable peer that
+  publishes on its FIRST-EVER connection is attributed by its ephemeral per-connection identity only
+  (if any), never a persisted one; two reconnects of the SAME browser tab MAY present two DIFFERENT
+  per-connection identities in v1, and this is correct v1 behavior, not a defect.
+- verify-machine: a v1 connector's connect path performs no `localStorage`/persistent-store read or
+  write; a simulated peer that reconnects twice is never required to present the same identity value
+  twice.
+- verify-human: none required for v1 — the deferred policy has no v1 human-observable behavior to gate;
+  [DD-WS-AUTH-GATE]'s own future acceptance table owns this once resolved.
+- status: deferred
+- status-detail: deferred — coupled to [DD-WS-AUTH-GATE]; v1 mandates NO identity persistence
+- provenance: architect-synthesis (original mechanics, session architect-synthesis #10: "Peer identity =
+  per-peer provisioning policy (localStorage <-> NVS): a peer that must be addressed back persists a
+  stable id; a pure realization surface (read-only view) may be anonymous — the same policy device
+  identity already uses.") + david-ruling (2026-08-24 Q3 answer downgrading this from a v1 MUST to
+  deferred, per [DEC-WS-AUDIT-RESOLVED-2026-08-24]). The specific citation to [CXC-ER-DEVICE] as the
+  existing device-identity policy this generalizes is this spec-writer's own addition, made while
+  grounding the dispatch's analogy in a real corpus node rather than an unnamed one.
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-ER-DEVICE], [CXC-CBK-PERIPHERAL-PLUGIN-MODEL], [DD-WS-AUTH-GATE]
+
+---
+
+## 12. The connector interface — what composeio-expert builds
+
+### [CXC-WS-CONNECTOR-INTERFACE] The concrete module, factory signature, and peer object shape
+
+- module: a NEW module, `composeio/transport_ws.py` — sibling to `transport_mqtt.py`/`transport_can.py`/
+  `transport_uart.py`, registered into `transport_registry.py`'s existing `_FACTORIES` exactly as they
+  are (`register("ws", _ws)`), imported LAZILY per the registry's own stated discipline (one missing
+  optional dependency — a WS server library — must never break the other four registered factories).
+- factory-signature: `_ws(spec: dict, app_id: str) -> WSConnector`, mirroring `_mqtt`/`_can`/`_uart`'s
+  existing shape exactly (`spec` carries `host`, `port`, and any TLS/listen-backlog config; `app_id` is
+  accepted for signature consistency with the other four factories even though a LISTEN-role connector
+  has less use for it than a DIAL-role one — noted so a reviewer does not read its presence as
+  unexplained).
+- ws-connector-class: `WSConnector` — NOT a `Transport` ABC subclass in the DIAL sense
+  `MQTTTransport`/`CANTransport`/`UARTTransport` are; it owns an accept loop and a collection of peer
+  objects, one per accepted connection ([CXC-WS-SINGLETON-PEER]). Its public surface: `connectors()`
+  (or equivalent enumeration a kernel `attach_connector()` call can register, per
+  [CXC-CBK-KERNEL-PRIMITIVES]'s existing primitive), and a `peers` property enumerating live peer
+  objects for status/debug surfaces (`_server/status`, mirroring [CXC-CSL-STATUS-SURFACE]'s
+  already-built pattern for the plugin loader).
+- ws-peer-class: `WSPeer` (or equivalent) — one instance per accepted connection, owning: `state`
+  (`PRE-BINDING` | `BOUND`, [CXC-WS-LIFECYCLE]); `bound_tenant: str | None`; `declared_patterns: list[str]`
+  (fed to `subscribe_pattern()` against the bound tenant's bus, [CXC-WS-SUBSCRIPTION]); `identity:
+  str | None` ([CXC-WS-IDENTITY-POLICY]). It exposes `bind(tenant_id)`, `switch(tenant_id)`, and
+  `close()`, each implementing [CXC-WS-LIFECYCLE]'s ordered steps.
+- reuse-by-reference: (what this module does NOT reimplement) `subscribe_pattern()`'s pattern matching
+  and enforcement-report machinery ([CXC-SUB-DECLARE]/[CXC-SUB-ENFORCE], `bus.py::is_pattern`/
+  `pattern_matches`/`validate_pattern`); `BusMessage.to_json()`/`from_json()` (`transport.py`, verbatim,
+  [CXC-WS-WIRE-FORMAT]); per-tenant bus resolution (`ComposeServer`'s existing `tenant_bus()`/
+  multi-tenant orchestration, [CXC-CS-MULTI-TENANCY]); the `bus.namespaces` property and each
+  `Namespace.value` accessor for retained-replay enumeration ([CXC-WS-RETAINED-REPLAY]). This module's
+  entire net-new surface is: the accept loop, per-connection peer state and lifecycle transitions, the
+  deep-link designator parse ([DD-WS-DEEPLINK-URL], open), and the replay-trigger wiring around an
+  otherwise-unmodified `subscribe_pattern()` call.
+- status: proposed
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-WS-WIRE-FORMAT], [CXC-WS-SUBSCRIPTION], [CXC-WS-LIFECYCLE], [CXC-CS-MULTI-TENANCY]
+
+---
+
+## 13. Explicit out-of-scope — cited, not specified
+
+### [CXC-WS-OUT-OF-SCOPE] The three units this spec deliberately does not design
+
+- the-operator-console: the cross-tenant OPERATOR CONSOLE — the bus-registry's CONTENT (what metadata
+  each tenant entry carries), its selection UX, and the reserved auth gate's concrete mechanism — is
+  its own kernel-scoped unit. This spec's obligation to it is narrow and explicit: serve SOME bus list
+  in `PRE-BINDING` ([CXC-WS-ENTRY-OPERATOR]) and leave the seam a future auth gate would attach to
+  unforeclosed ([DD-WS-AUTH-GATE]).
+- the-render-backend: the ComposeUX HTML/DOM render backend (render-engineer's domain,
+  [DEC-COMPOSEIO-EXTENSIONS-ROADMAP-2026-08] item 9's `bus_views`) consumes THIS connector's wire
+  format ([CXC-WS-WIRE-FORMAT]) but its own rendering, widget-binding, and control-publish mechanics
+  are entirely out of scope here.
+- scene-bundle-serving: how a `bus_views` scene bundle itself is fetched/served (the config-over-bus /
+  `bus_storage` seam, [SPEC:CXC-CONFIG-BUS]) is a separate, already-partially-specified concern; this
+  connector carries live namespace traffic once a scene is already running, not the scene's own
+  delivery.
+- status: proposed
+- provenance: architect-synthesis, restating the dispatch's explicit scope split (ratified (ii) this
+  session) as a queryable node rather than leaving it only in frontmatter prose.
+- part-of: [SPEC:CXC-WS]
+- see-also: [DEC-COMPOSEIO-EXTENSIONS-ROADMAP-2026-08], [SPEC:CXC-CONFIG-BUS]
+
+---
+
+## 14. Error and boundary matrix
+
+### [CXC-WS-BOUNDARIES] Every condition a builder would otherwise have to invent an answer for
+
+| # | Condition | Required behaviour |
+|---|-----------|--------------------|
+| 1 | Unknown `type:` (not `ws`) reaches this connector's registration path | N/A to this connector — `transport_registry.build()` already raises `UnknownTransportError` naming `known_types()` ([CXC-WS-CONNECTOR-NOT-PLUGIN]) |
+| 2 | `type: ws` declared but the WS server backend cannot bind (port in use, no permission) | CORRECTED 2026-08-25 (diamond-remediation, first-bringup finding): does NOT surface from the factory. `_ws()` only CONSTRUCTS the `WSConnector` object — no socket work happens there. The bind happens LATER, on a background thread, inside `start()`. `start()` MUST raise IMMEDIATELY, carrying the underlying `OSError`'s own text, the instant the accept-socket bind fails — never a 5s timeout, never a silent `None` return from the factory. WS is the ONE LISTEN-role connector in the registry; every other (DIAL-role) factory's "known type, unreachable backend -> return `None`" contract (`transport_registry.py`'s rule 2, [CXC-WS-BOUNDARIES] row 1's sibling rule) does not transfer to it unchanged, because a DIAL-role factory attempts its connection synchronously inside the factory call itself and this one does not — see [CXC-WS-CONNECTOR-INTERFACE] |
+| 3 | A message arrives while `PRE-BINDING` | ignored for tenant traffic purposes; only the bus-selection exchange is legal in this state ([CXC-WS-LIFECYCLE]) |
+| 4 | Empty declared subscription set | subscribe NOTHING; `*` must be explicit ([CXC-WS-SUBSCRIPTION], inherited from [CXC-SUB-DECLARE]) |
+| 5 | A declared pattern matches a namespace on a DIFFERENT tenant than the peer is bound to | never delivered — bound-tenant resolution happens before pattern matching, never across tenants ([CXC-WS-TENANT-BOUNDARY]) |
+| 6 | Deep-link designator names a nonexistent tenant | fail loudly, named error; never silent fallback to the operator list or a default tenant ([CXC-WS-ENTRY-DEEPLINK]) |
+| 7 | A switch is requested while already `PRE-BINDING` (no bound tenant to leave) | treated as a plain `bind`, not a `switch` — there is no A to leave ([CXC-WS-LIFECYCLE]) |
+| 8 | A value fails `BusMessage`'s JSON-serialisability check (raw bytes) | reject identically to every other JSON substrate — `UnserialisableValue`, never a base64 escape hatch ([CXC-WS-WIRE-FORMAT]) |
+| 9 | A namespace matched by a widened subscription already carries a value | replay it once, marked `retained: True`, before any further live traffic for that namespace ([CXC-WS-RETAINED-REPLAY]) |
+| 10 | The SAME namespace is matched by an already-existing subscription AND a newly-declared one (overlapping patterns) | replay exactly once, never duplicated per overlapping pattern ([CXC-WS-RETAINED-REPLAY]) |
+| 11 | A `scope: local` namespace on the bound tenant would be replayed to a peer the live-publish path would refuse | refuse the replay identically to the live-publish refusal — replay is not a scope-exempt shortcut ([CXC-WS-RETAINED-REPLAY]) |
+| 12 | A control-capable peer connects (v1 — identity persistence deferred) | v1 attributes the publish to an ephemeral per-connection identity only; no persisted id is generated or required ([CXC-WS-IDENTITY-POLICY], deferred to [DD-WS-AUTH-GATE]) |
+| 13 | Two tabs from the same browser (v1 — no persisted identity) | remain TWO independent peer objects regardless ([CXC-WS-SINGLETON-PEER]); v1 assigns no shared persisted identity between them — that correlation is deferred with [CXC-WS-IDENTITY-POLICY] to [DD-WS-AUTH-GATE] |
+| 14 | An untrusted network can reach the listen port | OUTSIDE this spec's v1 access-control surface entirely; [DD-WS-AUTH-GATE]'s invalidating_assumption fires and the deferred gate must be resolved before that exposure ships |
+
+- part-of: [SPEC:CXC-WS]
+
+---
+
+## 15. Acceptance — machine signal + glass gate
+
+### [CXC-WS-ACCEPTANCE] The connector's two-tier verdict — a machine signal AND, for every failure class human eyes can catch that a narrow test cannot, an explicit human/glass gate
+
+- definition: per [DX-SPEC-CARRIES-ITS-EVIDENCE] and the loader-spec precedent ([CXC-CSL-ACCEPTANCE]),
+  machine-green alone never accepts this connector — the failure classes that matter most here (a
+  cross-tenant leak, a blank-until-next-publish view, a stale-looking switch) are exactly the ones a
+  narrow unit test can pass while the real browser experience is broken. [CXC-VISION-EPISTEMICS]
+  applies throughout this table.
+
+| ID | Requirement | verify-machine | verify-human (glass) |
+|----|-------------|-----------------|------------------------|
+| WS-V1 | Registered as `type: ws` connector, never a plugin ([CXC-WS-CONNECTOR-NOT-PLUGIN]) | `known_types()` includes `ws`; `build({"type":"ws",...})` returns a connector, never silently `None` on a valid spec | none required |
+| WS-V2 | Each connection is one singleton persistent peer ([CXC-WS-SINGLETON-PEER]) | two simultaneous connections yield two independent peer identities/state | two real browser tabs behave independently; closing one leaves the other untouched |
+| WS-V3 | Lifecycle states are exactly PRE-BINDING/BOUND, ordered correctly ([CXC-WS-LIFECYCLE]) | no tenant traffic before bind; subscribe-then-replay ordering on bind; explicit leave-A before join-B on switch | a real switch shows the new tenant's current state with no old-tenant residue |
+| WS-V4 | One tenant at a time, kernel-served cross-tenant list ([CXC-WS-TENANT-BOUNDARY]) | same-named namespace on two tenants never cross-delivers to a bound peer | operator confirms no overlap frame during a real switch |
+| WS-V5 | Operator entry mode serves the list before any data ([CXC-WS-ENTRY-OPERATOR]) | non-empty list served pre-selection; peer stays PRE-BINDING until selection | a fresh tab shows a picker before live data |
+| WS-V6 | Deep-link entry mode converges on the same BOUND state ([CXC-WS-ENTRY-DEEPLINK]) | valid designator reaches BOUND with no list ever sent; invalid designator fails loudly, never falls through | a real deep-link URL lands directly on the named tenant |
+| WS-V7 | v1 ships with no auth, position reserved not foreclosed ([DD-WS-AUTH-GATE]) | no login/account code path exists; the bus-list seam [CXC-WS-TENANT-BOUNDARY] serves is the one a gate would attach to | n/a — structural / architectural review |
+| WS-V8 | Wire envelope is `BusMessage.to_json()`/`from_json()` verbatim ([CXC-WS-WIRE-FORMAT]) | round-trip equality on every field combination; raw-bytes value rejected identically to other JSON substrates | none required |
+| WS-V9 | Subscription is explicit, default-deny, no tenant firehose ([CXC-WS-SUBSCRIPTION]) | a WS-specific negative-control test now (`on_message()`+`pattern_matches()` filter); [SPEC:CXC-SUBFILTER]'s SUB-C1 suite does NOT exist yet — CORRECTED 2026-08-25, [DEFECT-SPEC-88-CXC-WS-EVIDENCE-1C623F] — once authored, WS becomes one substrate row in it | none required — covered by SUB-C1's own human gate once that suite exists |
+| WS-V10 | Retained state replays once on subscribe/switch, never leaks past default-deny/scope ([CXC-WS-RETAINED-REPLAY]) | pre-existing value replays exactly once marked `retained: True`; undeclared/local-scoped namespaces never replay | a real tab shows current state immediately on load, never blank-until-next-publish |
+| WS-V11 | Peer identity — v1 ships with NO persistence, deferred to [DD-WS-AUTH-GATE] ([CXC-WS-IDENTITY-POLICY]) | connect path performs no `localStorage`/persistent-store read or write | n/a for v1 — structural/architectural review only |
+| WS-V12 | Placement recorded, not silent ([CXC-WS-PLACEMENT]) | the spec carries the `[PLACEMENT UNRATIFIED]` node + the filename-check property | n/a — structural |
+
+- requirement: WS-V4 (the cross-tenant boundary) is the gate for the FIRM part of
+  [CXC-WS-TENANT-BOUNDARY] — a bound peer leaking another tenant's traffic AT ANY INSTANT is UNSAFE and
+  MUST NOT ship, because [CXC-CS-MULTI-TENANCY] is LOCKED PERMANENTLY and no build may cross it,
+  mirroring [SPEC:CXC-SUBFILTER]'s SUB-C1 gate discipline exactly. This gate does NOT extend to
+  foreclosing [CXC-WS-TENANT-BOUNDARY]'s own `invalidating_assumption`: David flagged the LARGER
+  one-tenant-per-connection MODEL as re-litigable once real multi-tenancy deployments exist (line
+  25921) — WS-V4 asserts only that a peer never sees a second tenant's traffic while this model is in
+  force, never that the model itself is permanently unrevisable.
+- part-of: [SPEC:CXC-WS]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-VISION-EPISTEMICS], [CXC-CSL-ACCEPTANCE]
+
+---
+
+## 16. Evidence — pre-integration questions answered, post-integration slots EMPTY until a real build
+
+### [CXC-WS-EVIDENCE] Pre-integration questions (answered by this design pass) and post-integration evidence (EMPTY — never run)
+
+- pre-integration questions answered by this spec: (1) plugin-vs-connector -> connector, new
+  `transport_registry.py` factory, [CXC-WS-CONNECTOR-NOT-PLUGIN]; (2) peer model -> singleton
+  persistent peer per connection, [CXC-WS-SINGLETON-PEER]; (3) lifecycle shape -> PRE-BINDING/BOUND
+  with an explicit-leave switch, [CXC-WS-LIFECYCLE]; (4) tenant boundary -> exactly one tenant per
+  bound peer, kernel-served cross-tenant list, [CXC-WS-TENANT-BOUNDARY]; (5) entry modes -> operator
+  list and deep-link, both converging on BOUND, [CXC-WS-ENTRY-OPERATOR]/[CXC-WS-ENTRY-DEEPLINK]; (6)
+  auth -> deferred, position reserved, [DD-WS-AUTH-GATE]; (7) wire format -> `BusMessage.to_json()`/
+  `from_json()` verbatim, [CXC-WS-WIRE-FORMAT]; (8) subscription -> reuse `subscribe_pattern()`
+  default-deny, [CXC-WS-SUBSCRIPTION]; (9) retained replay -> connector-layer requirement, not
+  WS-specific, [CXC-WS-RETAINED-REPLAY]; (10) identity -> DEFERRED to [DD-WS-AUTH-GATE] per David's
+  2026-08-24 Q3 answer ([DEC-WS-AUDIT-RESOLVED-2026-08-24]) — v1 ships with NO persistence; the
+  role-dependent persistence policy is described but not required, [CXC-WS-IDENTITY-POLICY].
+- pre-integration questions LEFT open, flagged for David/architect ratify before or during build (not
+  silently resolved): the auth gate's own concrete mechanism ([DD-WS-AUTH-GATE], deferred by design,
+  and with it [CXC-WS-IDENTITY-POLICY]'s deferred persistence policy); the deep-link URL shape
+  ([DD-WS-DEEPLINK-URL]); the focal-bus switch's concrete UX ([DD-WS-SWITCH-UX], referenced to the
+  operator-console unit — its connector-side ordering is settled per David's 2026-08-24 Q2 answer, only
+  the UI trigger is open).
+- evidence-connector-module: EMPTY — `composeio/transport_ws.py` does not exist on `origin/main` as of
+  this spec's authoring (2026-08-24); this is a build spec, not a report of landed code.
+- evidence-lifecycle-real-browser: EMPTY — no browser tab has exercised PRE-BINDING/BOUND/switch
+  against real infrastructure (WS-V3's human gate unrun).
+- evidence-tenant-boundary-real-infra: EMPTY — no two-tenant deployment has been observed to confirm
+  WS-V4's no-overlap-frame human gate.
+- evidence-retained-replay-real-load: EMPTY — no real tab-load has confirmed immediate current-state
+  population (WS-V10's human gate).
+- evidence-identity-real-reload: EMPTY — N/A for v1 (identity persistence deferred to
+  [DD-WS-AUTH-GATE] per David's 2026-08-24 Q3 answer); no real reload/private-window pair has been
+  observed and none is required until the deferred policy lands.
+- evidence-subfilter-integration: EMPTY/pending — CORRECTED 2026-08-25 (diamond-remediation,
+  [DEFECT-SPEC-88-CXC-WS-EVIDENCE-1C623F]). [SPEC:CXC-SUBFILTER]'s SUB-C1 superset-invariant test suite
+  (`tests/subscription/test_superset_invariant.py`) does NOT exist anywhere in this repo, on any branch,
+  for ANY substrate. The prior text of this slot claimed the suite was "landed and passing for the OTHER
+  substrates" — that claim was FALSE, confirmed independently by BOTH WS diamond legs (gap-analyzer +
+  first-bringup). [SPEC:CXC-SUBFILTER] itself correctly proposes SUB-C1 as a future test
+  (`artifact-readiness: system-design`); the fault was this spec's own evidence prose asserting
+  VERIFIED-voice over a dependency that has never landed — the false-"landed"-claim laundering shape the
+  defect names. This slot is EMPTY exactly like every other evidence slot below, not partially filled.
+- why-empty-matters: per [DX-SPEC-CARRIES-ITS-EVIDENCE], "never run at all" must be a QUERYABLE
+  PROPERTY, not something a reader has to already know — every slot above is `EMPTY` explicitly rather
+  than simply absent, so a future query against this node can distinguish "not yet built" from "nobody
+  thought to record it."
+- status: draft
+- status-detail: draft — every evidence slot EMPTY by construction; this spec has not been implemented
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-WS]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-WS-ACCEPTANCE]
+
+---
+
+## 17. Open forks — flagged for the architect's / David's ratify
+
+### [DD-WS-DEEPLINK-URL] OPEN — the deep-link URL shape is unspecified
+
+- question: [CXC-WS-ENTRY-DEEPLINK] specifies that a deep-link designator MUST exist and MUST converge
+  on the same `BOUND` sequence as the operator path — it does not specify the URL SHAPE itself (a path
+  segment, `/bus/<tenant_id>`? a query parameter, `?tenant=<id>`? a subdomain?).
+- why-left-open: `WSPeer.bind(tenant_id)` ([CXC-WS-CONNECTOR-INTERFACE]) takes an already-RESOLVED
+  `tenant_id` string — the function signature does not require the URL shape to be decided to be
+  implementable and testable; only the (unspecified) code path that PARSES a URL into that string
+  needs it.
+- candidates: (not a recommendation, offered so the fork is concrete) (a) a path segment,
+  `wss://host/bus/<tenant_id>`, cheapest to route at a reverse proxy; (b) a query parameter,
+  `wss://host/ws?tenant=<tenant_id>`, avoids proxy path-rewriting rules; (c) a subdomain,
+  `<tenant_id>.host`, gives each tenant a stable externally-visible identity at the cost of DNS/TLS
+  provisioning per tenant.
+- decision: OPEN — not yet decided.
+- rationale: see `why-left-open` above.
+- alternatives: see `candidates` above.
+- invalidating_assumption: once the operator console ([CXC-WS-OUT-OF-SCOPE]) needs to GENERATE
+  shareable deep-link URLs for an operator to hand out, the choice stops being deferrable — the
+  console's own UX depends on which shape was picked.
+- build-implemented-default: (diamond-remediation, 2026-08-25) the build implemented candidate (a) —
+  `/bus/<tenant_id>` — as a SWAPPABLE DEFAULT, not a ratify. It is wired through an INJECTED
+  `deeplink_parser` (dependency-injected, not hardcoded into the connector), so a future ratify of (b)
+  or (c) is a parser swap, not a connector rewrite — the fork stays open at the SPEC level even though
+  the build needed to pick something to ship against. This does not close the fork; it records what the
+  build is running today pending David's actual ratify.
+- status: open
+- status-detail: open — flagged for architect/David ratify; the build runs candidate (a) as a swappable
+  default meanwhile (see `build-implemented-default`)
+- provenance: architect-proposed — the fork is named explicitly in the dispatch that produced this
+  spec ("[DD-WS-DEEPLINK-URL] (the deep-link URL shape)"); the candidate list is this spec-writer's own
+  addition, offered to make the fork concrete, not a recommendation. The `build-implemented-default`
+  property is diamond-remediation, recording what the build actually shipped, not a new ratify.
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-WS-ENTRY-DEEPLINK], [CXC-WS-CONNECTOR-INTERFACE]
+
+### [DD-WS-SWITCH-UX] OPEN — the focal-bus switch mechanism, referenced to the operator-console unit
+
+- question: [CXC-WS-LIFECYCLE] specifies the SWITCH's required ORDERING (leave-A, intermediate state,
+  join-B) but not how an operator TRIGGERS a switch in the UI, nor whether the declared subscription
+  set is silently carried across (this spec's default) or offered as a re-declare step.
+- why-left-open: this is squarely the cross-tenant OPERATOR CONSOLE's own unit
+  ([CXC-WS-OUT-OF-SCOPE]) — its selection UX is out of scope here by the session's own ratified scope
+  split; this spec specifies only the CONNECTOR-side mechanics the console's UI would call into.
+- decision: OPEN — deferred to the operator-console unit, not decided here.
+- rationale: see `why-left-open` above.
+- alternatives: not enumerated here — belongs to the console unit's own design pass.
+- invalidating_assumption: if the connector-side default (carry the declared set unchanged across a
+  switch, [CXC-WS-LIFECYCLE]) proves wrong once real console UX is designed — e.g. if switching tenants
+  should ALWAYS prompt a fresh subscription choice — [CXC-WS-LIFECYCLE]'s switch requirement would need
+  a revisit, not just the console.
+- status: open
+- status-detail: open — flagged for architect/David ratify, deferred to the operator-console unit
+- provenance: architect-proposed — the fork is named explicitly in the dispatch ("[DD-WS-SWITCH-UX]
+  (the focal-bus switch mechanism — referenced to the operator-console unit)").
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-WS-LIFECYCLE], [CXC-WS-OUT-OF-SCOPE]
+
+### [DD-WS-CONTROL-FRAMES] DECIDED — the `ws`-discriminated control vocabulary shipped and landed on `origin/main`
+
+- question: (diamond-remediation, 2026-08-25) [CXC-WS-WIRE-FORMAT] freezes the `BusMessage` bus-DATA
+  envelope (`ns`, `type`, `src`, `ts`, `scope`, `seq`, `val`/`evt`/`data`) verbatim — it said nothing
+  about the CONTROL channel a WS peer also needs, distinct from bus-data traffic: the bus-selection
+  exchange ([CXC-WS-ENTRY-OPERATOR]/[CXC-WS-ENTRY-DEEPLINK]), the subscribe declaration itself
+  ([CXC-WS-SUBSCRIPTION]), the switch request ([CXC-WS-LIFECYCLE]'s SWITCH), and — once
+  [SPEC:CXC-DOM] rides this connector — the form-validation request/response
+  ([CXC-DOM-SERVER-VALIDATION]). Neither this spec nor any other named a concrete, discriminated frame
+  shape for any of these.
+- why-left-open: this spec's silence on the control vocabulary was not a deliberate deferral — it was
+  an unnoticed gap. Both the WS build and the [SPEC:CXC-DOM] build each invented their OWN control-frame
+  vocabulary independently, because neither had a shared one to converge on. That is exactly the
+  silent-drift shape [CXC-VISION-EPISTEMICS] warns against for bus-DATA traffic; this spec simply never
+  named the control-frame boundary as needing the same discipline, so nobody built to a shared contract.
+  Now resolved — see `decision` below.
+- correction-to-the-original-what-exists: the pre-integration `what-exists` slot on this node described
+  the control channel as `op`-discriminated (a `{op: ..., ...}` shape). That was superseded by the
+  landed integration: the SETTLED discriminator key is **`ws`**, not `op` — DOM did not invent a second
+  discriminator; it reused `transport_ws.py`'s own `ws` key end-to-end, layering `req_id`
+  request-correlation on top for its own multi-outstanding-request needs. This correction is itself the
+  point of resolving this node rather than leaving the stale `op` description in the corpus.
+- decision: DECIDED — the settled `ws`-discriminated control-frame vocabulary, verified against
+  `python/composeio/transport_ws.py` (`WSPeer.handle_frame`/`handle_bus_frame`, landed `origin/main`
+  commit `d95aee1` and its ancestors) and `python/composeio/render/dom/server.py` +
+  `python/composeio/render/dom/static/ws_client.js` (the DOM-layer extension riding the same channel):
+  - **discriminator**: the frame carries either a `ws` key (a control frame) or an `ns` key (a bus-data
+    `BusMessage` frame, per [CXC-WS-WIRE-FORMAT]) — never both, never a third shape
+    (`WSPeer.handle_frame`: `verb = wire.get("ws")`; `verb is None` routes to `handle_bus_frame`).
+  - **client -> server verbs** (all landed in `WSPeer.handle_frame`): `list` (request the operator
+    tenant list, [CXC-WS-ENTRY-OPERATOR]), `select` (bind to a tenant, [CXC-WS-LIFECYCLE]), `switch`
+    (leave-A/pre-binding/join-B, [CXC-WS-LIFECYCLE]'s SWITCH), `subscribe` (declare the subscription
+    set — **full-set-replace**, not incremental: `set_subscription()` replaces `self.declared_patterns`
+    wholesale each call, then replays only newly-matched namespaces against the PRIOR set,
+    [CXC-WS-RETAINED-REPLAY]).
+  - **server -> client verbs**: `tenants` (the operator list, `{ws:"tenants", tenants:[...]}`), `bound`
+    (`{ws:"bound", tenant:...}`), `prebinding` (the observable leave-A intermediate state during a
+    switch, `{ws:"prebinding"}`), `subscribed` (the enforcement report, `{ws:"subscribed",
+    patterns:[...], enforcement:"broker"}`, [CXC-SUB-REPORT]), `error` (`{ws:"error", code:...,
+    message:...}`) with codes `unknown_tenant` (an unknown/unselectable tenant, `UnknownTenantError`),
+    `not_bound` (`handle_bus_frame` called while `PRE-BINDING`), `bad_envelope` (a bus-data frame that
+    fails `BusMessage.from_json()`), `unknown_verb` (an unrecognized `ws` value — this is also the code a
+    DOM-only verb like `validate_config` receives from the production listener, see below),
+    `bad_request` (a `ValueError` from a control-verb handler, e.g. a malformed subscribe pattern),
+    `bad_frame` (the raw frame was not a JSON object at all).
+  - **bus frames**: faithful `BusMessage` `{ns, type, src, ts, scope, seq, val?/evt?/data?}`
+    ([CXC-WS-WIRE-FORMAT], unchanged by this node). ⛔ **`type` in `{state, event}` is FROZEN
+    vocabulary** — `composeio/transport.py`'s `MessageType` Enum has exactly two members
+    (`STATE = "state"`, `EVENT = "event"`), and `BusMessage.from_json()` raises
+    `UnknownMessageTypeName` on any other value; it is never silently coerced to `state`. Recording WHY
+    this matters here: a DOM/browser build that ever publishes a message with an unallocated `type`
+    (e.g. a `type: "state_change"` shaped after a DOM `state_changed`-style event name rather than the
+    frozen enum) is REFUSED at `handle_bus_frame` (`bad_envelope`) rather than silently downgraded —
+    every browser-to-bus publish using such a value is silently refused end-to-end unless the caller
+    checks for the `bad_envelope` error frame, which is exactly why this frozen-vocabulary boundary is
+    named explicitly here rather than left implicit. Retained values add `retained: true` to the
+    envelope (`BusMessage.retained: bool = False`, [CXC-WS-RETAINED-REPLAY]).
+  - **DOM-layer extension, NOT a transport verb**: `validate_config` -> `config_result` (server-side
+    ComposeServer config validation, [SPEC:CXC-DOM]) rides the SAME `{ws:..., req_id:...}` channel —
+    `python/composeio/render/dom/server.py` and `.../static/ws_client.js` both say so explicitly
+    ("`validate_config -> config_result` is a DOM-LAYER extension, NOT a `transport_ws.py` verb — the
+    production WS listener does not serve it, `unknown_verb` for it"). This node's own connector
+    ([SPEC:CXC-WS], `transport_ws.py`) legitimately rejects `validate_config` with `unknown_verb` — that
+    is CORRECT behavior, not a bug the two specs need to reconcile; [SPEC:CXC-DOM]'s own server owns
+    that verb, this spec's connector does not and should not.
+- rationale: verified directly against the landed `transport_ws.py` frame-handling code and the DOM
+  render backend's own seam-note comments (both cited above), not re-derived from memory or from either
+  diamond leg's prior report — per this spec's own [DX-SPEC-CARRIES-ITS-EVIDENCE] discipline, "the code
+  is the truth."
+- alternatives: not enumerated — this records what was actually built and landed, not a design choice
+  among unbuilt candidates.
+- invalidating_assumption: if a future change to `transport_ws.py` or `render/dom/server.py` adds,
+  renames, or removes a `ws`-verb or an error code, this node's vocabulary table goes stale the same way
+  the pre-integration `op`-description did — the next spec-writer pass touching either file MUST re-verify
+  this node against the code rather than trust it silently.
+- status: decided
+- status-detail: decided — the vocabulary is landed and verified against `origin/main`
+  (`python/composeio/transport_ws.py`, `python/composeio/render/dom/server.py`,
+  `python/composeio/render/dom/static/ws_client.js`); the WS<->DOM integration pass this node was waiting
+  on has reported.
+- provenance: architect-synthesis — diamond-remediation finding recorded this gap; this resolution is a
+  factlattice-editor corpus-hygiene pass verifying the actual landed code against the vocabulary summary
+  supplied for this edit and correcting the one place they disagreed (`op` -> `ws` discriminator).
+- part-of: [SPEC:CXC-WS]
+- see-also: [CXC-WS-WIRE-FORMAT], [CXC-WS-ENTRY-OPERATOR], [CXC-WS-LIFECYCLE], [CXC-WS-SUBSCRIPTION],
+  [CXC-WS-RETAINED-REPLAY], [SPEC:CXC-DOM]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-WS-PLACEMENT] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-CONNECTOR-NOT-PLUGIN] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-SINGLETON-PEER] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-LIFECYCLE] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-TENANT-BOUNDARY] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-ENTRY-OPERATOR] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-ENTRY-DEEPLINK] PART_OF [SPEC:CXC-WS]
+- [DD-WS-AUTH-GATE] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-WIRE-FORMAT] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-SUBSCRIPTION] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-RETAINED-REPLAY] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-IDENTITY-POLICY] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-CONNECTOR-INTERFACE] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-OUT-OF-SCOPE] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-BOUNDARIES] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-ACCEPTANCE] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-EVIDENCE] PART_OF [SPEC:CXC-WS]
+- [DD-WS-DEEPLINK-URL] PART_OF [SPEC:CXC-WS]
+- [DD-WS-SWITCH-UX] PART_OF [SPEC:CXC-WS]
+- [DD-WS-CONTROL-FRAMES] PART_OF [SPEC:CXC-WS]
+- [CXC-WS-CONNECTOR-NOT-PLUGIN] REALIZES [CXC-CBK-CONNECTOR-CONTRACT]
+- [CXC-WS-CONNECTOR-NOT-PLUGIN] REALIZES [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS]
+- [CXC-WS-SINGLETON-PEER] REALIZES [CXC-CBK-PERIPHERAL-PLUGIN-MODEL]
+- [CXC-WS-TENANT-BOUNDARY] REALIZES [CXC-CS-MULTI-TENANCY]
+- [CXC-WS-SUBSCRIPTION] REALIZES [CXC-SUB-DECLARE]
+- [CXC-WS-SUBSCRIPTION] REALIZES [CXC-SUB-ENFORCE]
+- [CXC-WS-RETAINED-REPLAY] EXTENDS [CXC-SUB-DECLARE]
+- [CXC-WS-WIRE-FORMAT] REALIZES [CXC-CBK-CONNECTOR-NEVER-TRANSFORMS]
+- [CXC-WS-IDENTITY-POLICY] RELATED_TO [CXC-ER-DEVICE]
+- [CXC-WS-IDENTITY-POLICY] RELATED_TO [DD-WS-AUTH-GATE]
+- [CXC-WS-LIFECYCLE] RELATED_TO [SPEC:CXC-REPOINT]
+- [CXC-WS-ENTRY-DEEPLINK] RELATED_TO [DD-WS-DEEPLINK-URL]
+- [CXC-WS-LIFECYCLE] RELATED_TO [DD-WS-SWITCH-UX]
+- [DD-WS-AUTH-GATE] RELATED_TO [CXC-WS-ENTRY-OPERATOR]
+- [DD-WS-CONTROL-FRAMES] RELATED_TO [CXC-WS-WIRE-FORMAT]
+- [DD-WS-CONTROL-FRAMES] RELATED_TO [SPEC:CXC-DOM]
+- [CXC-WS-CONNECTOR-INTERFACE] DEPENDS_ON [CXC-WS-WIRE-FORMAT]
+- [CXC-WS-CONNECTOR-INTERFACE] DEPENDS_ON [CXC-WS-SUBSCRIPTION]
+- [CXC-WS-CONNECTOR-INTERFACE] DEPENDS_ON [CXC-CS-MULTI-TENANCY]
+- [SPEC:CXC-WS] UPHOLDS [DX-SPEC-CARRIES-ITS-EVIDENCE]
+- [SPEC:CXC-WS] DEPENDS_ON [SPEC:CXC-COMPOSEBUS-KERNEL]
+- [SPEC:CXC-WS] DEPENDS_ON [SPEC:CXC-COMPOSESERVER]
+- [SPEC:CXC-WS] DEPENDS_ON [SPEC:CXC-SUBFILTER]
+
+---
+
+**Version**: 0.3 — 2026-08-25, diamond-remediation revision. Both WS diamond legs (gap-analyzer +
+first-bringup) independently confirmed six defects pre-land; this revision folds in the corrections:
+(1) [CXC-WS-EVIDENCE]'s `evidence-subfilter-integration` no longer claims [SPEC:CXC-SUBFILTER]'s SUB-C1
+suite is "landed and passing for the OTHER substrates" — it does not exist on any branch, for any
+substrate; marked EMPTY/pending, [DEFECT-SPEC-88-CXC-WS-EVIDENCE-1C623F]. (2) [CXC-WS-SUBSCRIPTION]'s
+reuse claim is corrected from `subscribe_pattern()` (whose callback cannot carry `src`/`ts`/`scope`/`seq`
+and cannot return an enforcement report) to the actual path both diamond legs endorsed:
+`bus.on_message()` + `pattern_matches()`, with a hand-built `enforcement: "broker"` report; this spec no
+longer depends on [SPEC:CXC-SUBFILTER]'s proposed `subscribe_pattern()`-returns-a-report extension,
+which has never landed. WS-V9's acceptance row is corrected to match. (3) [CXC-WS-BOUNDARIES] row 2 (the
+bind-failure row) is corrected for the LISTEN role: `_ws()` only constructs, never binds; the bind
+happens later on a background thread inside `start()`, which now raises IMMEDIATELY with the underlying
+`OSError` text — never a 5s timeout, never a factory-level `None`. The DIAL-role "return `None`"
+contract does not transfer unchanged to this one LISTEN-role connector. (4) a new node,
+[DD-WS-CONTROL-FRAMES], records that this spec froze only the `BusMessage` bus-DATA envelope, not the
+lifecycle/control op-frame vocabulary — the WS and DOM builds each invented their own; a control channel
+is named (selection exchange, subscribe, switch, form-validation request/response, `op`-discriminated)
+with its concrete vocabulary flagged OPEN, being finalized by the 2026-08-25 WS<->DOM integration pass.
+(5) [DD-WS-DEEPLINK-URL] now records that the build implemented candidate (a) `/bus/<tenant_id>` as a
+SWAPPABLE DEFAULT via an injected `deeplink_parser` — not a ratify; the fork stays open. Previously
+version 0.2, 2026-08-24, audit-resolved revision. Folds in the end-design-session audit
+(`docs/composeserver/AUDIT-ws-endpoint.md`, independent auditor, citations verified) and David's
+2026-08-24 answers to its three ambiguous questions, per [DEC-WS-AUDIT-RESOLVED-2026-08-24]:
+**Q1** (intra-server, confirmed) — each ComposeBus in the selection list is a tenant bus instantiated
+and managed by THIS ComposeServer; the "a different ComposeServer entirely" cross-deployment framing
+was the architect's over-reach and is retracted ([CXC-WS-TENANT-BOUNDARY], [CXC-WS-SINGLETON-PEER]).
+**Q2** (switch mechanism stays settled, only the UX defers) — David's "a mechanism we have yet to
+specify" named only the operator-facing UI TRIGGER for a switch ([DD-WS-SWITCH-UX]); the connector-side
+leave-A/pre-binding/join-B ordering in [CXC-WS-LIFECYCLE] remains SETTLED and david-endorsed.
+**Q3** (identity persistence deferred) — `localStorage <-> NVS` identity persistence is DEFERRED until
+a login mechanism exists, explicitly coupled to [DD-WS-AUTH-GATE]; [CXC-WS-IDENTITY-POLICY] is
+downgraded from a v1 MUST-persist to a deferred policy description, and v1 ships with NO identity
+persistence. Corrections C1-C4 from the audit are applied: **C1** [CXC-WS-TENANT-BOUNDARY] carries
+David's re-litigable caveat (line 25921) as an `invalidating_assumption`, distinguishing
+one-bus-per-connection-at-an-instant (firm) from the one-tenant-model-survives-real-multi-tenancy
+question (re-litigable), and [CXC-WS-ACCEPTANCE]'s WS-V4 gate language is scoped to the firm part only.
+**C2** [CXC-WS-ENTRY-DEEPLINK] is re-tagged `architect-synthesis` (the deep-link entry mode was the
+architect's synthesis; David described only the operator flow). **C3** the provenance strings on
+[CXC-WS-CONNECTOR-NOT-PLUGIN], [CXC-WS-SINGLETON-PEER], [CXC-WS-LIFECYCLE], and [CXC-WS-ENTRY-OPERATOR]
+now quote David's ACTUAL words, with the architect's elaboration explicitly marked as the author's
+set-across-a-switch default is flagged `architect-synthesis`, pointing at [DD-WS-SWITCH-UX] as the open
+fork it belongs to. Previously version 0.1, 2026-08-24, initial build spec, authored from the
+composeio-hardware-architect's dispatch (connector-not-plugin, singleton persistent peer, the
+connect/pre-binding/select/bound/switch lifecycle, per-tenant boundary inside [CXC-CS-MULTI-TENANCY]'s
+LOCKED contract, operator/deep-link entry modes, deferred auth, `BusMessage`-faithful wire format,
+connector-layer retained replay, and role-dependent peer identity) as MUST/SHOULD predicates with
+`verify-machine`/`verify-human` acceptance tiers, per [DX-SPEC-CARRIES-ITS-EVIDENCE], mirroring
+[SPEC:CXC-CS-LOADER]'s build-spec convention.
+**Version 0.4** — 2026-08-25, corpus-hygiene revision: [DD-WS-CONTROL-FRAMES] moves `open` -> `decided`.
+The control-frame vocabulary shipped and landed on `origin/main` (`transport_ws.py` commit `d95aee1` and
+its ancestors); this revision folds in the settled `ws`-discriminated vocabulary (verbs, error codes, the
+frozen `type in {state,event}` bus-data boundary, and the DOM-layer `validate_config`/`config_result`
+extension riding the same channel), verified directly against the landed code, and corrects the node's
+own pre-integration `op`-discriminator description to the actual `ws` key the build converged on.
+
+**Status**: Draft — awaiting architect/David ratify on TWO remaining open forks: [DD-WS-DEEPLINK-URL] (the
+deep-link URL shape — the build runs candidate (a) as a swappable default meanwhile) and [DD-WS-SWITCH-UX]
+(the focal-bus switch mechanism, referenced to the operator-console unit). [DD-WS-CONTROL-FRAMES] is now
+DECIDED (see Version 0.4 above — the control-frame vocabulary landed and is verified against the code).
+[DD-WS-AUTH-GATE] (auth position, deferred, david-ruled: out of v1, "way way overkill for right now")
+and [CXC-WS-IDENTITY-POLICY] (deferred with it, per Q3) are both settled-deferred, not open forks
+awaiting a lean.
+The `david-ruling`-tagged nodes now number SIX, matching the six numbered session rulings exactly (no
+double-count): [CXC-WS-CONNECTOR-NOT-PLUGIN], [CXC-WS-SINGLETON-PEER], [CXC-WS-LIFECYCLE],
+[CXC-WS-TENANT-BOUNDARY], [CXC-WS-ENTRY-OPERATOR], [DD-WS-AUTH-GATE] — each now quoting David's actual
+words where the provenance string quotes him, with any architect elaboration explicitly marked as
+framing. [CXC-WS-ENTRY-DEEPLINK] moved to `architect-synthesis` (C2). The `architect-synthesis`-tagged
+nodes ([CXC-WS-WIRE-FORMAT], [CXC-WS-SUBSCRIPTION], [CXC-WS-RETAINED-REPLAY],
+[CXC-WS-IDENTITY-POLICY], [CXC-WS-ENTRY-DEEPLINK]) carry the architect's mechanics falling out of that
+contract, each flagged as such rather than silently promoted to David's word.

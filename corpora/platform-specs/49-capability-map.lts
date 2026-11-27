@@ -1,0 +1,224 @@
+---
+scope: "The platform CAPABILITY MAP: the facet model that lets the platform self-describe what it CAN DO at the spec level, and a seed of that map. A capability node is a HEADLINE (kind: capability) carrying maturity + tier-coverage + a verification handle, linked to the implementing spec(s). An Intelligence QUERIES `lts_find(kind=capability)` to answer 'does the platform do X?' instead of re-deriving it from firmware/source. Home of the [CAP-MAP] traversal root and the seeded [CAP-*] capability set."
+audience: [composeux-architect, David, any booting Intelligence running the Slice-0.5 CAPABILITY-MAP query]
+boundary: "IN: the capability facet MODEL (what makes a node a capability, the maturity/tier-coverage/verified-by facets, the REALIZED_BY / SPEC'D_IN drill-in edges, and the bootstrap query contract), plus a first SEED of ~14 clear capabilities across the existing corpus. OUT: the implementing specs themselves (referenced, never forked — each capability drills into its spec node); the maturity/which-is-a-capability SEMANTIC calls (drafted + flagged here, RATIFIED by the architect); the bootstrap wake ritual ([SPEC:SESSION-BOOTSTRAP-READ], which CONSUMES this map)."
+not-this: "Not an inventory of parts (that is [REGISTRY:PROJECTS]); not a status board; not the code. A capability answers 'CAN the platform do X, how mature, on which surfaces, and where is that proven' — a queryable claim, not an implementation detail. A 'built' claim without a verified-by handle reads as 'spec'd, unverified' ([SBR-TRUST])."
+depends-on: [45-session-bootstrap-read.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-07-28
+---
+# Platform Capability Map [SPEC:CXC-CAPABILITY-MAP]
+
+> The failure this closes: an instance greps the C3 firmware, finds no config-fetch, and concludes "config-fetch-on-boot was never built" — when it WAS built, at the DISPLAY tier ([CXC-R-BOOT]), just not on the C3. The platform did not self-describe its capabilities, so the query became a code-archaeology dig that reached a wrong answer. This map makes "does the platform do X?" a TRAVERSAL, not a re-derivation: `lts_find(kind=capability)` returns the headline set; each headline carries its maturity + the surfaces it covers + where it is proven, and drills into the implementing spec. Authored by factlattice-editor; the which-is-a-capability + maturity/tier calls are DRAFTED and FLAGGED for the architect to RATIFY.
+
+---
+
+## 1. The capability facet model [CAP-MAP]
+
+- kind: capability-root
+- definition: the traversal root of the capability layer. Every capability headline is `part-of` this node, so `lts_find(kind=capability)` and a reverse-PART_OF walk from [CAP-MAP] return the same set. This node also carries a `see-also` roster of the whole layer so the model + capability nodes are reachable in one forward hop and none reads as an orphan.
+- query-contract: `lts_find(kind=capability)` → the capability headlines (facets elided-detail); then `lts_traverse` a chosen capability over the SEMANTIC layer to reach its implementing spec node (REALIZED_BY) and its spec document (SPEC'D_IN). This is the Slice-0.5 CAPABILITY-MAP read named in `bootstrap/session-bootstrap-read.md`.
+- see-also:
+  - [CAP-MODEL-KIND]
+  - [CAP-MODEL-FACETS]
+  - [CAP-MODEL-EDGES]
+  - [CAP-MODEL-QUERY]
+  - [CAP-CONFIG-FETCH-BOOT]
+  - [CAP-DEVICE-FUNGIBILITY]
+  - [CAP-COMPOSE-YAML-CONTRACT]
+  - [CAP-VISUAL-COMPOSITION]
+  - [CAP-LIVE-PREVIEW-REAL-BUS]
+  - [CAP-REACTIVE-EMBEDDED]
+  - [CAP-BUS-PATTERN-SUB]
+  - [CAP-BUS-NAMESPACE-SCOPE]
+  - [CAP-DECLARATIVE-BINDINGS]
+  - [CAP-PERIPHERAL-HAL]
+  - [CAP-INTELLIGENCE-BUS-PEER]
+  - [CAP-INTELLIGENCE-SELF-SENSOR]
+  - [CAP-DSD-HUMAN-REVIEW]
+  - [CAP-DELIVERABLE-SWEEP]
+
+### [CAP-MODEL-KIND] What makes a node a capability
+
+- kind: capability-schema
+- definition: a node is tagged `kind: capability` when it declares a thing the PLATFORM CAN DO — a user- or Intelligence-visible ability (fetch config on boot, react to a bus value on an MCU, deliver a DSD for human review), NOT an implementation detail (a class, a helper, a file layout). The test: could an Intelligence ask "does the platform do THIS?" and expect a yes/no plus provenance. If yes, it is a capability; if it is only "how a capability is built," it is spec detail the capability drills INTO.
+- headline-discipline: a capability node is a HEADLINE — one-line definition + facets + drill-in edges, detail deliberately elided. The detail lives in the implementing spec, reached by traversal. This keeps `lts_find(kind=capability)` a scannable index, not a wall of specs.
+- part-of: [CAP-MAP]
+
+### [CAP-MODEL-FACETS] The facets every capability carries
+
+- kind: capability-schema
+- maturity: one of `built` | `partial` | `planned`. `built` = the ability works and is exercised on a real surface; `partial` = some tiers/slices work, others are spec'd-not-built; `planned` = spec'd, not yet realized. Maturity is NEVER invented — where built-vs-partial cannot be verified from the corpus it is marked and FLAGGED for the architect.
+- tier-coverage: which surfaces / tiers the ability applies to — e.g. `display/CYD`, `headless/C3`, `Qualia-S3`, `MCU`, `Linux-node`, `console`, `bus`, `cloud/bus_storage`. Coverage is per-tier on purpose: config-fetch-on-boot is `display/CYD` and explicitly NOT `headless/C3` — the exact distinction whose absence produced the wrong grep-conclusion.
+- verified-by: a verification HANDLE for a `built` claim — a passing test id / file, an acceptance-run label, or a dated hardware-acceptance record. Per [SBR-TRUST], a `built` claim WITHOUT a verified-by handle reads as "spec'd, unverified," not as "done." Where the verifier is itself a corpus node, the capability SHOULD additionally carry a `tested-by` edge so verification is traversable; otherwise the handle is a descriptive string.
+- part-of: [CAP-MAP]
+
+### [CAP-MODEL-EDGES] REALIZED_BY / SPEC'D_IN — the drill-in vocabulary
+
+- kind: capability-schema
+- definition: two drill-in relationships take a capability headline to its detail. REALIZED_BY → the implementing spec NODE (the concrete mechanism); SPEC'D_IN → the spec DOCUMENT root (the governing spec).
+- encoding: REALIZED_BY is authored as a core `depends-on` edge (DEPENDS_ON, semantic) from the capability to its implementing node; SPEC'D_IN as a core `see-also` edge (RELATED_TO, semantic) to the spec document root. This is a deliberate encoding choice: the core FactLattice parser mints edges only from registered relationship-bearing properties and core/namespaced verbs — a bare `REALIZED_BY` verb in a Relationships block is preserved-but-NOT-minted, so it would not traverse. Encoding the two relationships on CORE properties keeps the drill-in edges real and walkable by `lts_traverse`. FLAGGED for the architect: ratify this encoding (or register `cap.REALIZED_BY` / `cap.SPEC_D_IN` as namespaced profile verbs to carry the literal names).
+- part-of: [CAP-MAP]
+
+### [CAP-MODEL-QUERY] The bootstrap query contract
+
+- kind: capability-schema
+- definition: `lts_find(kind=capability)` returns exactly the [CAP-*] headline set (the schema nodes carry `kind: capability-schema`/`capability-root` and are excluded). The booting Intelligence reads the headlines to answer "does the platform do X?"; a `built`/`partial` verdict with tier-coverage answers "on which surface?"; a traverse answers "where is it built and proven?".
+- contract: this map is the SCHEMA + SEED for Slice 0.5. Adding a capability = add a `### [CAP-*]` node with `kind: capability` + the three facets + `part-of: [CAP-MAP]` + the REALIZED_BY/SPEC'D_IN edges, and add it to [CAP-MAP]'s `see-also` roster.
+- part-of: [CAP-MAP]
+
+---
+
+## 2. Seeded capabilities
+
+> ~14 clear capabilities across the existing corpus. Maturity/tier-coverage are DRAFTS for the architect's ratify; items whose built-vs-partial state could not be verified from the corpus carry a `flag`.
+
+### [CAP-CONFIG-FETCH-BOOT] Config-fetch-on-boot — a device fetches its composition from the bus at wake
+
+- kind: capability
+- maturity: built
+- tier-coverage: display/CYD
+- not-covered: headless/C3 (the C3 firmware emits a hardcoded message; config-driven boot lives at the display tier only)
+- verified-by: hardware acceptance 2026-07-07 — C9 boot→rendered-frame 2.2–2.9s typical, C10 live 60s re-poll scene-swap captured in logs, C12 one binary rendered three configs (see [CXC-R-BOOT] change-block)
+- depends-on: [CXC-R-BOOT-SEQUENCE]
+- see-also: [SPEC:CXC-RENDER]
+- part-of: [CAP-MAP]
+
+### [CAP-DEVICE-FUNGIBILITY] Hardware fungibility — one generic binary, the `.compose.yaml` determines the device's function
+
+- kind: capability
+- maturity: built
+- tier-coverage: display/CYD
+- verified-by: C12 (2026-07-07) — one CYD binary rendered a gauge dashboard, a fleet-status board, and a dradis sprite scene by asset swap alone; replacing a dead unit is a bus_storage PUT, zero firmware change
+- depends-on: [CXC-R-BOOT-FUNGIBLE]
+- see-also: [SPEC:CXC-RENDER]
+- part-of: [CAP-MAP]
+
+### [CAP-COMPOSE-YAML-CONTRACT] The `.compose.yaml` narrow-waist composition contract — define-once, hand-authored ↔ tool-generated interchangeable
+
+- kind: capability
+- maturity: built
+- flag: "built" covers the FORMAT + its consumption across tiers (the CYD boot parses it on hardware); the Composer's VISUAL bidirectional round-trip ([DP-CXC-7]) is a separate, less-verified surface — ratify whether that half is built or partial
+- tier-coverage: display/CYD, headless, console, cloud/bus_storage
+- verified-by: [DP-CXC-7] round-trip fidelity — `diff original.yaml <(load | save)` must be empty for any valid config
+- depends-on: [DP-CXC-7]
+- see-also: [SPEC:CXC-SERIAL]
+- part-of: [CAP-MAP]
+
+### [CAP-VISUAL-COMPOSITION] Visual composition — drag widgets on a canvas to author a valid ComposeIO UX without writing code
+
+- kind: capability
+- maturity: partial
+- flag: maturity uncertain from the corpus — the Composer canvas exists as a design principle ([DP-CXC-2], 2026-03) and later WC editing work; which layout properties are fully manipulable visually vs. still YAML-only is not verifiable here. Ratify built-vs-partial.
+- tier-coverage: console/desktop (the Composer)
+- depends-on: [DP-CXC-2]
+- see-also: [SPEC:CXC-PRINCIPLES]
+- part-of: [CAP-MAP]
+
+### [CAP-LIVE-PREVIEW-REAL-BUS] Live preview on a real bus — the preview is a running ComposeIO system, not a static mockup
+
+- kind: capability
+- maturity: partial
+- flag: dual-renderer (CTk desktop + LVGL pixel-accurate) preview is specified ([DP-CXC-4]); the built extent of the LVGL side is not verifiable from the corpus. Ratify.
+- tier-coverage: console/desktop
+- depends-on: [DP-CXC-4]
+- see-also: [SPEC:CXC-PREVIEW]
+- part-of: [CAP-MAP]
+
+### [CAP-REACTIVE-EMBEDDED] Reactive embedded tier — an MCU is a LIVE bus node (on-device bus client + bindings/behaviors + on-chip DSL)
+
+- kind: capability
+- maturity: partial
+- flag: R1–R5 slices David-ratified 2026-07-10 as a PORT of the proven Python engine; the on-chip DSL is already proven on ESP32. WHICH R-slices are built vs. planned is not verifiable from the corpus — ratify per-slice maturity.
+- tier-coverage: headless/C3 (RISC-V), display/CYD, Qualia-S3
+- depends-on: [CXC-ER-CORE]
+- see-also: [SPEC:CXC-EMBED-REACTIVE]
+- part-of: [CAP-MAP]
+
+### [CAP-BUS-PATTERN-SUB] Filter-at-the-bus subscription — trailing-glob prefix subscription, native per transport
+
+- kind: capability
+- maturity: partial
+- flag: the MQTT-native prefix filter ([CXC-PS-PRIMITIVE]) is the working primitive; the CAN hardware-mask path ([CXC-PS-CAN]) is spec'd-not-built (per [SPEC:CXC-EMBED-REACTIVE] boundary). Ratify.
+- tier-coverage: bus (MQTT/native built; CAN planned)
+- depends-on: [CXC-PS-PRIMITIVE]
+- see-also: [SPEC:CXC-PATSUB]
+- part-of: [CAP-MAP]
+
+### [CAP-BUS-NAMESPACE-SCOPE] Bus namespace/scope model — in-process local scope vs. shared bus, with per-namespace ownership + bridge policy
+
+- kind: capability
+- maturity: built
+- flag: the local/global scope + ownership MODEL is foundational and runs today (the console and the Composer each run an in-process bus); the device-tier per-namespace bridge policy ([CXC-HAL-DEVICE]) is newer — ratify whether bridge-policy is built or partial
+- tier-coverage: console, display/CYD, MCU, bus
+- depends-on: [CXC-IBUS-OWNERSHIP]
+- see-also: [SPEC:CXC-INTERNAL-BUS]
+- part-of: [CAP-MAP]
+
+### [CAP-DECLARATIVE-BINDINGS] Declarative bindings & behaviors — "state on the bus, behavior in the widget" wires reality without code
+
+- kind: capability
+- maturity: built
+- flag: the Python binding/behavior engine is built and reused widely (render, SVG, Lottie, gestures, headless all DEPENDS_ON [SPEC:CXC-BIND]); its MCU C++ port rides [CAP-REACTIVE-EMBEDDED] (partial). Ratify tier split.
+- tier-coverage: display, headless, Linux-node (MCU via the reactive port, partial)
+- depends-on: [CXC-BIND-PRINCIPLE]
+- see-also: [SPEC:CXC-BIND]
+- part-of: [CAP-MAP]
+
+### [CAP-PERIPHERAL-HAL] Peripheral HAL — define-once sensor/actuator descriptor, "define once, actuate many" across tiers
+
+- kind: capability
+- maturity: partial
+- flag: grounded in 3 real boards (lego_dots, rack_triple_gauge — [CXC-HAL-ACTUATE], David 2026-07-10); the descriptor schema/home + driver registry remain open ([CXC-HAL-OPEN], concept-capture). Ratify.
+- tier-coverage: MCU, Linux-node, display
+- depends-on: [CXC-HAL-ACTUATE]
+- see-also: [SPEC:CXC-HAL]
+- part-of: [CAP-MAP]
+
+### [CAP-INTELLIGENCE-BUS-PEER] The Intelligence is a bus peer — the "ultimate HAL peripheral" with in/out channels, permission relay, and structured question relay
+
+- kind: capability
+- maturity: built
+- flag: the console is operational (this platform's sessions run on it); the built extent of each sub-affordance (permission relay, AUQ question widget) is drafted-built — ratify the "built" claim and, ideally, name a verifying test to upgrade verified-by to a `tested-by` edge
+- tier-coverage: console
+- depends-on: [CXC-IC-INTENT]
+- see-also: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+- part-of: [CAP-MAP]
+
+### [CAP-INTELLIGENCE-SELF-SENSOR] The `self/*` sensor — the Intelligence instruments its OWN transcript (context, quiescence): the blind spot, un-blinded
+
+- kind: capability
+- maturity: built
+- flag: referenced as operational (the context meter, quiescence heartbeat); ratify "built" and name a verifying test/acceptance for verified-by
+- tier-coverage: console
+- depends-on: [CXC-IC-SELF]
+- see-also: [SPEC:CXC-INTELLIGENCE-CONSOLE]
+- part-of: [CAP-MAP]
+
+### [CAP-DSD-HUMAN-REVIEW] `send_dsd_for_human_review` — the trusted primary path delivering a Decision-Support-Doc as an editable form, answers minted back to the decision graph
+
+- kind: capability
+- maturity: built
+- verified-by: tests/test_decision_ops_dsd.py — guards the tool's presence on the decision-ops `tools/list` AND its dispatch handler (per [CXC-DSDV-REGISTER])
+- depends-on: [CXC-DSDV-MCP]
+- see-also: [SPEC:CXC-DSDV]
+- part-of: [CAP-MAP]
+
+### [CAP-DELIVERABLE-SWEEP] Deliverable sweep — mechanical detection of non-code artifacts (new/modified/removed) into a ledger, handed to the Intelligence as a delta
+
+- kind: capability
+- maturity: planned
+- flag: [CXC-DS-INTENT] carries `status: planned`; a GENERIC base implementation exists upstream (factlattice-deployment `tools/deliverable_sweep/`, per [CXC-DS-PORTABILITY]) but the composeio integration is planned. Ratify built-vs-planned given the upstream tool.
+- tier-coverage: console/harness
+- depends-on: [CXC-DS-INTENT]
+- see-also: [SPEC:CXC-DS]
+- part-of: [CAP-MAP]
+
+---
+
+**Version**: 0.1
+**Status**: Draft — capability facet model + seed; maturity/tier calls awaiting architect ratify
+
+*CXC-CAPABILITY-MAP — the platform's self-description of what it CAN DO. Query it (`lts_find(kind=capability)`) before you grep the code.*

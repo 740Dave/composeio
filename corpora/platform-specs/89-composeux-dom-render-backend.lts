@@ -1,0 +1,1045 @@
+---
+title: "ComposeUX HTML/DOM render backend — native DOM form/control/layout realization, browser control->publish over WS, CanvasKit graphics deferred for web (mobile deferred entirely), pending verification"
+id: "SPEC:CXC-DOM"
+scope: "The browser-side realization of the Canvas/`.compose.yaml` contract as native DOM elements — a new `Canvas` ABC subclass mapping drawing primitives to DOM elements, a per-widget-class native-element realization for interactive controls (leveraging HTML's free accessibility/keyboard/i18n rather than redrawing controls on a raster canvas), the control->publish contract re-realized in the browser, the NEW form-buffered-atomic-submit publish mode and FORM primitive, server-side config validation reused from the ComposeServer plugin loader, and two-way value binding. Per [DEC-COMPOSEUX-DOM-BACKEND-DESIGN-2026-08-25]. This is a BUILD spec: every claim below is a MUST/SHOULD predicate with a `verify-machine`/`verify-human` acceptance tier, mirroring [SPEC:CXC-CS-LOADER] and [SPEC:CXC-WS]'s build-spec convention."
+audience: "David (architect) — for ratify of every non-`decided` claim below, and specifically the `[DD-DOM-*]` open forks; composeio-expert and the composeux-render-engineer, who build the pair (WS transport already specified at [SPEC:CXC-WS]; this spec's DOM Canvas subclass, control renderer registry, form primitive, and JS runtime) directly against [CXC-DOM-CANVAS-SUBCLASS]/[CXC-DOM-CONTROL-REGISTRY]/[CXC-DOM-FORM-PRIMITIVE]; the audit that diffs this document against the design session and against the landed backend once built."
+boundary: "IN: the DOM `Canvas` ABC subclass (primitives -> DOM elements, the fallback realization path for layout/chrome); the per-widget-class native-element realization for interactive controls (bypassing the raster draw path entirely, [CXC-DOM-REALIZATION-SPLIT]); the control->publish re-realization for every existing control widget type; the two publish modes (live-publish, form-buffered-atomic-submit); the NEW form primitive; server-side validation reuse over the WS wire ([CXC-CSL-CONFIG-VALIDATION]); two-way value binding; the v1 control-field vocabulary (text/number/checkbox/select/textarea/date-time/read-only-table/read-only-tree); the JS runtime that parses a scene, builds the DOM tree, binds, patches on bus events, and publishes on control events, conformance-matched to the Python binding-expression evaluator. OUT (referenced, not specified — their own units): CanvasKit rich-graphics backend (gauges/viz/colonial UX), deferred per [CXC-DOM-SCOPE-SPLIT]; the config-UI pydantic-schema-to-form generator, a CONSUMER of this spec's control vocabulary, not part of it ([CXC-DOM-CONFIG-UI-CONSUMER]); the WS connector transport itself, already fully specified at [SPEC:CXC-WS] and only cited here as this backend's wire; editable nested-collection controls (recursive/nested forms), deferred to [DD-DOM-EDITABLE-COLLECTIONS] with the ratified raw-mode DSL fallback ([CXC-CS-RULE-CONFIG-UX]) covering the gap meanwhile."
+not-this: "Not a design capture — every requirement below carries a MUST/SHOULD predicate, a testable acceptance criterion, and a `verify-machine`/`verify-human` tier per [CXC-DOM-ACCEPTANCE], mirroring [SPEC:CXC-CS-LOADER] and [SPEC:CXC-WS]'s build-spec convention rather than [SPEC:CXC-COMPOSEBUS-KERNEL]'s design-capture convention. Not an assertion that every claim is David's verbatim word — each node carries an explicit `provenance:` property per [DX-INTERPRETATION-IS-AN-INFERENCE], THREE-WAY per [DEC-DOM-AUDIT-RESOLVED-2026-08-25]: Fork A's scope-split ruling, [CXC-DOM-REALIZATION-SPLIT]'s per-widget-class ruling, [CXC-DOM-SERVER-VALIDATION]'s server-side-validation ruling, and [DD-DOM-EDITABLE-COLLECTIONS]'s deferral are tagged `david-ruling`; the CanvasKit-for-web/mobile-deferred-entirely selection inside the scope split is ALSO `david-ruling` (David's 2026-08-25 ruling resolving the original design session's open question), with the RN-Skia-as-per-widget-escape-hatch framing tagged `architect-recommendation`; the remaining five Fork B calls (control-publish reuse, two publish modes, the form primitive, two-way binding, the config-UI-is-a-consumer framing) plus the v1 control vocabulary are tagged `david-ratified-by-concurrence` — David's blanket \"I concur, proceed\" (line 26423), not a verbatim enumeration of each; the CYD-precedent reuse/reimplement mechanics of Fork C, and every implementation detail this spec had to invent to be implementable (the DOM Canvas subclass's element map, the style/transform-stack model, the control renderer registry shape), remain tagged `architect-synthesis`. Not a claim that this has been built or run — every POST-integration evidence property at [CXC-DOM-EVIDENCE] is the `EMPTY` sentinel per [DX-SPEC-CARRIES-ITS-EVIDENCE] until a real build fills it in. Not a respecification of [CXC-R-DRAW-CONTRACT], [SPEC:CXC-WS], [CXC-CSL-CONFIG-VALIDATION], or [CXC-CS-RULE-CONFIG-UX] — this document cites and reuses them; where it narrows or extends one, the node says so explicitly rather than silently restating a weaker version."
+depends-on: [88-composebus-ws-endpoint.lts, 87-composeserver-plugin-loader.lts, 85-composeserver-plugin-contract.lts, 12-composeux-render-engine.lts, 16-composeux-bindings-behaviors.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: draft
+created: 2026-08-25
+updated: 2026-08-25
+---
+# ComposeUX HTML/DOM render backend — form/control layer as native DOM, browser-as-live-peer control->publish; PLACEMENT UNRATIFIED [SPEC:CXC-DOM]
+
+> v1 renders the form/control/layout subset of a `.compose.yaml` scene as NATIVE DOM elements —
+> leveraging HTML for free accessibility, keyboard nav, and i18n, never redrawing an `<input>` or a
+> `<button>` as raster pixels on an HTML5 canvas. Rich graphics (gauges, data viz, the colonial UX) are
+> a SEPARATE, DEFERRED backend for the WEB — CanvasKit (Skia compiled to WASM), David-ruled 2026-08-25
+> pending the render-engineer's live-doc verification; MOBILE IS DEFERRED ENTIRELY, no RN-Skia
+> commitment. React Native Skia forks the imperative Canvas contract into a React paradigm and is NOT
+> the base graphics library, but it remains a legitimate PER-WIDGET escape hatch for a widget that is
+> inherently platform-bound ([DX-REALIZATION-DECLARES-ENVELOPE]) — never the default. A page composes
+> both: DOM chrome around canvas islands. The
+> control->publish contract already exists natively (`emit_button`/`text_input`/`radio_button_group`
+> publish via `RenderContext.publish()`); this backend RE-REALIZES it in the browser over the WS
+> connector ([SPEC:CXC-WS]), adds a NEW form-buffered-atomic-submit publish mode alongside the existing
+> live-publish one, and validates config submissions SERVER-SIDE by reusing the ComposeServer plugin
+> loader's real pydantic evaluator ([CXC-CSL-CONFIG-VALIDATION]) — never a client-side JS
+> reimplementation of validation logic that could drift from what actually runs. Reuse-by-reference:
+> the `Canvas` 30-ish-method ABC (canvas.py, measured 35 abstract + 2 concrete-default), the
+> `.compose.yaml` scene format, the binding-DSL grammar, the control-publish vocabulary. Reimplement:
+> the browser JS runtime — the third reactive tier after Python/Skia and C++/CYD — conformance-matched
+> to the Python golden reference exactly as CYD/Skia parity already is.
+
+---
+
+## 1. Placement
+
+### [CXC-DOM-PLACEMENT] Placement is UNRATIFIED, and filename 89 was verified unused
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because its nearest relatives
+  (`85-composeserver-plugin-contract.lts`, `87-composeserver-plugin-loader.lts`,
+  `88-composebus-ws-endpoint.lts`) already sit there — convention, not a ruling. See
+  [CXC-VISION-PLACEMENT] for the standing note on this directory's unratified filename numbering and
+  its two live filename-number collisions (neither of which this file touches).
+- filename-number-check: `89` was verified unused across `corpora/platform-specs/` before this file was
+  written — `ls` shows the highest prior numeric prefix as `88` (`88-composebus-ws-endpoint.lts`); `99`
+  remains the reserved conventions-document number (`99-composeio-conventions.smd`).
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-VISION-PLACEMENT], [CXC-WS-PLACEMENT], [CXC-CSL-PLACEMENT]
+
+---
+
+## 2. Scope split — DOM owns form/control/layout; CanvasKit owns rich graphics, deferred
+
+### [CXC-DOM-SCOPE-SPLIT] MUST realize form/control/layout as native DOM elements; MUST NOT redraw an interactive control on a raster `<canvas>` element; rich-graphics backend is a SEPARATE unit, deferred
+
+- requirement: (MUST, testable) every widget this backend classifies as a CONTROL — a widget whose
+  Python/Skia realization is interactive and whose semantics map onto a native HTML form control or an
+  accessible interactive element (button, text field, checkbox, select, textarea, date/time picker,
+  table, tree) — MUST be realized as a real DOM element of the matching semantic kind (`<button>`,
+  `<input>`, `<select>`, `<table>`, an ARIA `role="tree"` structure, etc.), never as pixels painted
+  inside an HTML5 `<canvas>` element. A build that renders a styled `<div>` pretending to be a button,
+  reachable only by mouse and invisible to a screen reader, fails this requirement even if it is
+  pixel-identical to the Skia rendering.
+- requirement: (MUST, testable) rich-graphics widgets (gauges, data visualizations, the colonial/BSG
+  UX) are OUT OF SCOPE for this backend and MUST NOT be attempted here. Their browser realization is a
+  SEPARATE backend built on CanvasKit — Skia compiled to WASM, the SAME rendering library the Python
+  Skia backend already uses, so pixel behavior can stay close to the reference tier — scoped to the WEB
+  path only, and explicitly DEFERRED, not designed by this spec. MOBILE rich-graphics realization is
+  DEFERRED ENTIRELY: no RN-Skia (or any other mobile graphics backend) commitment exists at this time.
+- canvaskit-verification-caveat: (david-ruling, 2026-08-25, restored per the DOM-backend audit's Q1,
+  [DEC-DOM-AUDIT-RESOLVED-2026-08-25]) CanvasKit is the CHOSEN, NOT YET VERIFIED, deferred web graphics
+  backend — pending the render-engineer's live-doc verification of current RN-Skia-web maturity and
+  CanvasKit build options before the deferred unit is actually built. This spec MUST NOT be read as
+  claiming that verification has happened; the deferred unit remains unbuilt and unverified.
+- why-not-react-native-skia-as-the-base: (architect-recommendation — the flavor choice, framed by
+  David's 2026-08-25 realization-declares-envelope ruling, [DX-REALIZATION-DECLARES-ENVELOPE]) React
+  Native Skia is CanvasKit PLUS a React component/state paradigm layered on top; adopting it AS THE BASE
+  graphics library would fork this platform's own imperative `Canvas`-contract paradigm
+  ([CXC-R-DRAW-CONTRACT]) into a second, incompatible one for one backend only, and — per the
+  realization-declares-envelope principle — would silently declare every widget built against it
+  platform-bound even where it never needed to be. Plain CanvasKit (when that unit is eventually built)
+  keeps the imperative draw-call contract intact and portable across every backend, ESP32 included.
+  RN-Skia is NOT rejected outright: it remains a legitimate PER-WIDGET escape hatch for a widget that is
+  INHERENTLY platform-bound (a fullscreen complex-graphics widget an ESP32-S3 could never run regardless)
+  — never the default and never the base library.
+- why-not-redraw-controls: David's own framing (the Flutter-scale trap): a raster-only browser UI
+  reinvents keyboard navigation, screen-reader semantics, IME/i18n text input, and platform form
+  affordances that the browser already provides for free — the exact tax Flutter/Skia-everywhere UIs
+  pay on the web. Leveraging real `<input>`/`<button>`/`<select>` elements is not a shortcut; it is the
+  only way this backend does not have to re-implement accessibility from scratch.
+- verify-machine: an automated accessibility audit (axe-core or equivalent) run against a rendered DOM
+  scene containing every v1 control type ([CXC-DOM-CONTROL-SET-V1]) reports zero missing
+  name/role/value violations on those elements; a DOM snapshot of a scene containing a gauge widget
+  contains NO gauge-specific markup from this backend (the gauge is either absent from a DOM-only scene
+  or rendered by the separate, not-yet-built CanvasKit backend — never faked in DOM).
+- verify-human: a screen-reader pass (VoiceOver or NVDA) over a rendered config form confirms every
+  control is reachable by Tab, announces its label and current value, and can be operated without a
+  mouse — the concrete proof that "leverage HTML" bought what it was chosen for.
+- status: proposed
+- provenance: david-ruling — THREE-WAY calibrated per [DEC-DOM-AUDIT-RESOLVED-2026-08-25] (the audit
+  that found this node's original single `david-ruling` tag over-attributed the CanvasKit flavor choice
+  to David's verbatim word — see `docs/composeserver/AUDIT-dom-backend.md` finding INVENTED-1). (1)
+  david-ruling — the DOM-vs-canvas SCOPE SPLIT itself, the node's primary assertion: Fork A of
+  [DEC-COMPOSEUX-DOM-BACKEND-DESIGN-2026-08-25], "v1 DOM backend renders the form/control/layout subset
+  as NATIVE DOM elements (leverage HTML — free accessibility/keyboard/i18n; do NOT redraw controls in
+  canvas)... rich graphics... = a SEPARATE canvas-in-browser backend, DEFERRED," ratified by David's
+  "Good resolution for A" (line 26396). The `why-not-redraw-controls` framing restates David's own
+  Flutter-scale-trap reasoning as recorded in the
+  ratified decision. (2) david-ruling — the CANVASKIT SELECTION for the deferred WEB path, mobile
+  deferred entirely: David's own 2026-08-25 ruling ([DEC-DOM-AUDIT-RESOLVED-2026-08-25], resolving the
+  audit's Q1). In the ORIGINAL 2026-08-24 design session David only ASKED "RN-Skia or CanvasKit?" (line
+  26374) and this node wrongly presented the architect's recommended answer as David's own word; David
+  has now RULED it directly, restoring the architect's original "pending live-doc verification" caveat
+  (line 26382) rather than presenting CanvasKit as a verified commitment. (3) architect-recommendation —
+  the RN-Skia-as-per-widget-escape-hatch framing in `why-not-react-native-skia-as-the-base`: grounded in
+  David's 2026-08-25 [DX-REALIZATION-DECLARES-ENVELOPE] principle, but the specific application to
+  RN-Skia's role here is the architect's synthesis, not David's verbatim word.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-R-DRAW-CONTRACT], [DX-NARROW-WAIST], [CXC-VISION-SEMANTIC-REALIZATION], [DX-REALIZATION-DECLARES-ENVELOPE]
+
+---
+
+## 3. Hybrid composition — one page, two backends, no coordination between them
+
+### [CXC-DOM-HYBRID-COMPOSITION] MUST allow a single scene to compose DOM chrome and canvas islands; neither backend needs to be aware of the other
+
+- requirement: (MUST, testable) a `.compose.yaml` scene MAY declare widgets realized by this DOM
+  backend alongside widgets realized by the (deferred, future) CanvasKit backend in the same document.
+  This backend's own realization scope is bounded to the widget classes it declares support for
+  ([CXC-DOM-CONTROL-SET-V1] plus the generic primitive-mapped layout/chrome path,
+  [CXC-DOM-CANVAS-SUBCLASS]); any widget outside that scope MUST NOT be silently dropped — it is either
+  realized by a canvas island mounted at the widget's declared rect (once that backend exists) or, on a
+  DOM-only build with no CanvasKit island available yet, rendered as a NAMED placeholder (the widget id
+  and type, visibly marked "not yet realized on this backend") rather than left blank with no signal.
+- why-no-coordination-needed: each backend independently subscribes exactly the namespaces its own
+  widgets bind ([CXC-DOM-TWO-WAY-BINDING]) and independently publishes on its own controls' events
+  ([CXC-DOM-CONTROL-PUBLISH-REUSE]) — the semantic namespace is the ONLY contract between them
+  ([CXC-VISION-SEMANTIC-REALIZATION]), so composing the two backends on one page requires no shared
+  runtime state, no shared event bus beyond the ComposeBus connection itself, and no negotiation.
+- negative-control: a scene containing ONLY DOM-realizable widgets renders with zero references to
+  CanvasKit/WASM anywhere in the page's network requests — this backend never pulls in the graphics
+  backend's payload for a page that does not need it.
+- verify-machine: a mixed-scene fixture (once CanvasKit exists) renders both a DOM control and a canvas
+  island with the DOM control's publish and the canvas island's redraw both independently observable in
+  a test harness; a DOM-only fixture's network trace contains no CanvasKit/WASM asset request.
+- verify-human: none required — this node's failure surface (a missing widget rendering as a named
+  placeholder rather than silent blank space) is machine-observable via a DOM query for the placeholder
+  marker.
+- status: proposed
+- provenance: architect-synthesis, realizing Fork A's "a page COMPOSES both (hybrid DOM chrome + canvas
+  islands)" as a queryable node.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-SCOPE-SPLIT], [CXC-VISION-SEMANTIC-REALIZATION]
+
+---
+
+## 4. Realization is per-widget-class; a control's canvas realization is built lazily
+
+### [CXC-DOM-REALIZATION-SPLIT] MUST dispatch each widget type to exactly one of two realization paths: a bespoke native-element renderer (controls) or the generic primitive-mapped `Canvas` subclass (layout/chrome); MUST NOT build a Skia/CanvasKit realization for an admin control that never needs it
+
+- requirement: (MUST, testable) this backend MUST maintain a CONTROL RENDERER REGISTRY — a mapping from
+  widget `type` string to a dedicated JS function that constructs the semantic native DOM element(s) for
+  that widget type directly (never through `fill_rect`/`draw_text`/etc.) — covering every widget type in
+  [CXC-DOM-CONTROL-SET-V1] plus every existing interactive widget type this backend re-realizes
+  ([CXC-DOM-CONTROL-PUBLISH-REUSE]: `emit_button`, `text_input`, `radio_button_group`, `theme_toggle`,
+  and any other widget whose Python/Skia counterpart is interactive).
+- requirement: (MUST, testable) any widget type NOT present in the control renderer registry — pure
+  layout containers, static backgrounds, decorative shapes, non-interactive labels — MUST fall through
+  to the generic DOM `Canvas` ABC subclass ([CXC-DOM-CANVAS-SUBCLASS]), which renders it exactly as the
+  widget's own `draw()` method already draws it on every other backend (Skia, SVG), via the SAME
+  Canvas-contract draw calls, translated to DOM elements. This is what keeps [DX-NARROW-WAIST] honored:
+  a widget that has not been given a bespoke DOM realization still renders correctly, just without the
+  native-accessibility upgrade a control gets.
+- requirement: (MUST, testable) a widget's CanvasKit (Skia-in-browser) realization MUST NOT be built,
+  loaded, or referenced by this backend for any widget type that is fully served by the control renderer
+  registry or the generic Canvas-primitive path. An admin/config control (the primary v1 target,
+  [CXC-DOM-CONTROL-SET-V1]) never needs the canvas/embedded tier and therefore never triggers it — the
+  laziness is structural (the registry dispatch never reaches for it), not merely a performance choice
+  deferred to runtime profiling.
+- negative-control: rendering a scene composed entirely of [CXC-DOM-CONTROL-SET-V1] widgets produces
+  zero CanvasKit/WASM network requests and zero calls into any Skia-in-browser code path — a test
+  asserts the absence, not merely that the result "looks right".
+- verify-machine: a widget type present in the control renderer registry dispatches to its registered
+  function (spy-asserted call), never falls through to the generic Canvas-primitive path; a widget type
+  absent from the registry dispatches to the generic path and produces DOM elements matching its
+  `draw()` calls' primitive sequence; no CanvasKit asset is requested for a control-only scene.
+- verify-human: none required — this node's failure surface (wrong dispatch path, or an unwanted lazy-
+  load firing) is fully machine-observable via network trace and call-spy assertions.
+- status: proposed
+- provenance: david-ruling — Fork A: "realization is per-widget-class... a control's Skia realization is
+  built LAZILY only if it ever needs the canvas/embedded tier (admin controls won't)." The registry
+  mechanism and the "structural, not merely deferred" framing are architect-synthesis, the implementation
+  answer this spec had to invent to make the ruling testable.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-CANVAS-SUBCLASS], [CXC-DOM-CONTROL-PUBLISH-REUSE], [DX-NARROW-WAIST]
+
+---
+
+## 5. The DOM `Canvas` subclass — primitives to elements (greenfield)
+
+### [CXC-DOM-CANVAS-SUBCLASS] MUST implement every abstract method of the `Canvas` ABC as a DOM-element-producing operation, backed by an explicit style/transform stack (not a painted raster)
+
+- requirement: (MUST, testable) a new `Canvas` subclass — the fallback realization for layout/chrome
+  widgets ([CXC-DOM-REALIZATION-SPLIT]) — MUST implement all 35 `@abstractmethod` members of
+  `python/composeio/render/canvas.py`'s `Canvas` ABC (measured 2026-08-25: `fill_rect`, `stroke_rect`,
+  `fill_round_rect`, `stroke_round_rect`, `fill_circle`, `stroke_circle`, `fill_arc`, `stroke_arc`,
+  `draw_line`, `draw_path`, `fill_path`, `set_fill_color`, `set_stroke_color`, `set_stroke_width`,
+  `set_linear_gradient`, `set_radial_gradient`, `set_shadow`, `clear_shadow`, `set_opacity`, `save`,
+  `restore`, `translate`, `rotate`, `scale`, `clip_rect`, `clip_round_rect`, `set_font`, `draw_text`,
+  `measure_text`, `draw_image`, `load_image`, `decode_image`, `create_surface`, `present`,
+  `get_surface_size`) plus MAY override the two concrete-default methods (`set_font_scale`,
+  `present_partial`) exactly as any other backend may. This is the SAME contract the Skia and SVG
+  backends already implement — no widget author needs to know a DOM backend exists.
+- requirement: (MUST, testable) BECAUSE a DOM tree is a set of discrete, addressable elements rather
+  than a single painted raster surface, this subclass MUST maintain an explicit STYLE/TRANSFORM STACK
+  context object — `{fillColor, strokeColor, strokeWidth, opacity, shadow, transformMatrix, clipStack}`
+  — pushed by `save()` and popped by `restore()`. Every subsequent geometry/text/image call MUST create
+  its DOM element(s) styled and positioned from the CURRENT top-of-stack state at call time, never from
+  a later or earlier state. `translate`/`rotate`/`scale` compose into the current transform matrix
+  (never overwrite it); `clip_rect`/`clip_round_rect` push a CSS `overflow: hidden` / `clip-path`
+  boundary that every element created before its matching `restore()` (or before a nested clip narrows
+  further) MUST respect.
+- element-map: (architect-synthesis — the primitive-to-DOM mapping this backend had to invent; no
+  existing reference for it, unlike the SVG-element-to-primitive map `canvas_renderer.py` already
+  documents in the OTHER direction) `fill_rect`/`fill_round_rect` -> a positioned `div`
+  (`background-color`, `border-radius` for the rounded form); `stroke_rect`/`stroke_round_rect` -> a
+  positioned `div` with `border` and no fill; `fill_circle`/`stroke_circle` -> a positioned `div` with
+  `border-radius: 50%`; `fill_arc`/`stroke_arc`/`draw_path`/`fill_path` -> an inline SVG `<path>`
+  (arbitrary beziers and arc sectors have no pure-CSS primitive; an inline `<svg>` fragment is the DOM-
+  native escape hatch, exactly as `canvas_renderer.py` already uses SVG `path` data as its own
+  interchange shape); `draw_line` -> an inline SVG `<line>` (a rotated 1px `div` cannot represent a
+  non-integer-angle line without subpixel seams); `draw_text` -> a positioned `span`/`div` with `font`,
+  `color`, and CSS text-alignment matching the `align` parameter; `draw_image` -> an `<img>` or a `div`
+  with `background-image`, sized to the destination rect; `set_shadow`/`clear_shadow` -> CSS
+  `box-shadow`/`filter: drop-shadow(...)`; `set_opacity` -> CSS `opacity` on the element's own style
+  (composed with any inherited opacity from an ancestor, never overwriting it).
+- measure-text-decision: (architect-synthesis, an implementation decision this spec makes explicit
+  rather than leaving for the builder to invent) `measure_text` MUST be implemented via a synchronous
+  DOM measurement against a hidden, off-screen probe element carrying the SAME `set_font` state
+  (`getBoundingClientRect()` or `Range.getBoundingClientRect()` on a text node inside it) — never via an
+  async API and never via a hardcoded metrics table, because the whole point of `measure_text` on every
+  other backend is that it reflects the ACTUAL rendering font, and only a real DOM measurement does that
+  in a browser.
+- present-decision: `create_surface` MUST create the scene ROOT container element (an absolutely-
+  positioned `div` sized to the requested width/height) that every subsequent element is appended under.
+  `present()` MUST at minimum be a correct no-op-or-flush (DOM mutations from draw calls are already
+  live in the tree the moment they run) and SHOULD batch same-frame mutations into one `DocumentFragment`
+  append to avoid one reflow per draw call — the DOM-native equivalent of "flush drawing commands to the
+  display". `present_partial` inherits the ABC's concrete full-`present()` default unless overridden to
+  re-touch only the DOM subtree owning the damaged rect.
+- negative-control: two `save()`/`restore()` pairs around two different `set_fill_color()` calls produce
+  two elements with DIFFERENT fill colors, never both taking the color set after both saves (proving the
+  stack, not a single mutable global, drives each element's style); a `clip_rect` followed by an element
+  drawn OUTSIDE that rect, followed by `restore()`, is visibly clipped in the DOM (an `overflow:hidden`
+  ancestor bounds it) rather than silently drawn full-size.
+- verify-machine: a golden-fixture test draws a fixed sequence of primitive calls (mirroring the
+  existing SVG/Skia backend parity fixtures) and asserts the resulting DOM tree's element count, tag
+  types, and computed style values match the element-map table above; a save/restore/clip stress test
+  asserts stack correctness per the negative-control.
+- verify-human: a rendered fixture scene compared side-by-side against the SAME scene's Skia
+  (`render_headless`) and SVG renders confirms visually equivalent layout, color, and text — not pixel-
+  identical (DOM font rendering differs from Skia's), but recognizably the same design.
+- status: proposed
+- provenance: architect-synthesis — Fork C's "reuse the contract" applied concretely; the element map,
+  the style/transform-stack model, and the measure-text/present decisions are this spec's own invention,
+  flagged as such rather than attributed to David.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-R-DRAW-CONTRACT], [CXC-DOM-REALIZATION-SPLIT], [DX-NARROW-WAIST]
+
+---
+
+## 6. Control -> publish contract is reused, re-realized in the browser
+
+### [CXC-DOM-CONTROL-PUBLISH-REUSE] MUST re-realize each existing control widget's publish contract identically in the browser; MUST NOT invent a new publish shape per DOM control
+
+- requirement: (MUST, testable) for every widget type this backend realizes natively
+  ([CXC-DOM-REALIZATION-SPLIT]'s control renderer registry), the DOM event that corresponds to that
+  widget's existing Python interaction handler MUST produce the SAME publish call shape
+  (`namespace`, `value`, `source`) the native widget already produces. Concretely: a `<button>` `click`
+  event for an `emit_button`-realized control MUST publish the SAME `emits:` list of `{namespace,
+  value}` pairs `on_tap()` already publishes, resolved against the SAME live-binding-substitution rule
+  (`_resolve()`); a checkbox/toggle `change` event for a `theme_toggle`-shaped control publishes its
+  bound namespace's new boolean; a radio-group `change` event publishes the selected index to
+  `index_namespace`, matching `RadioButtonGroupWidget`'s `index_for()`/publish contract.
+  This is a RE-REALIZATION, not a redesign: the builder MUST consult the corresponding Python widget
+  module (`render/widgets/*.py`) as the reference publish contract for each control type, never invent a
+  new payload shape independently.
+- requirement: (MUST, testable) every publish this backend performs MUST travel over the WS connector's
+  wire format verbatim ([CXC-WS-WIRE-FORMAT]) — the browser runtime constructs the SAME `BusMessage`
+  JSON envelope shape the connector round-trips, never a simplified or DOM-specific payload shape.
+- negative-control: two DOM-realized controls of the SAME widget TYPE with different `emits`/binding
+  configuration produce DIFFERENT publish payloads on interaction (proving the payload is resolved from
+  the control's OWN declared config, not a shared template); a control's publish is NEVER emitted before
+  its triggering DOM event fires (no eager/prefetch publish).
+- verify-machine: a scripted DOM interaction (dispatch a `click`/`change` event) against each v1-
+  reused control type asserts the resulting outbound WS frame matches, byte-for-byte on
+  `namespace`/`value`, what the equivalent headless Python widget test asserts for the same
+  configuration and the same live-binding context.
+- verify-human: a real browser click on a dashboard-style DOM control (e.g. a re-realized `emit_button`)
+  is observed by a subscriber on the SAME bus (Python or another browser tab) — confirming the publish
+  actually reaches a live peer over the real WS connector, not merely that a JS function was called
+  ([CXC-WS-ACCEPTANCE]'s WS-V2/WS-V8 already cover the connector's own half of this path).
+- status: proposed
+- provenance: david-ratified-by-concurrence — re-tagged 2026-08-25 per [DEC-DOM-AUDIT-RESOLVED-2026-08-25]
+  (audit finding ALTERED-2). This is the architect's Fork B proposal (line 26404): "the control->publish
+  CONTRACT is REUSED (exists natively: emit_button/text_input/radio publish via
+  RenderContext.publish()); the DOM backend RE-REALIZES it (a `<button>` click -> the same `emits:`
+  publish; a `<input type=checkbox>` change -> the same value publish). The write travels browser->bus
+  over the WS endpoint." David never spoke to this mechanic individually; his entire ratification of the
+  whole of Fork B was the blanket "I concur, proceed" (line 26423). The node remains authoritative. The
+  per-widget-type mapping detail (theme_toggle, radio_button_group's `index_for()`) is architect-synthesis,
+  grounded in reading the cited widget modules.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-REALIZATION-SPLIT], [CXC-WS-WIRE-FORMAT], [CXC-DOM-PUBLISH-MODES]
+
+---
+
+## 7. Two publish modes — live-publish (existing) and form-buffered-atomic-submit (NEW)
+
+### [CXC-DOM-PUBLISH-MODES] MUST select the publish mode by form-container membership: live-publish outside a FORM, form-buffered-atomic-submit inside one
+
+- requirement: (MUST, testable) a control widget realized OUTSIDE any [CXC-DOM-FORM-PRIMITIVE]
+  container MUST publish on every triggering interaction immediately — LIVE-PUBLISH, the existing
+  behavior [CXC-DOM-CONTROL-PUBLISH-REUSE] already specifies, unchanged. This is the dashboard-control
+  case: a toggle, a live-value slider, a command button.
+- requirement: (MUST, testable) a control widget realized INSIDE a `[CXC-DOM-FORM-PRIMITIVE]` container
+  MUST NOT publish on its own triggering interaction. Instead its changed value MUST be written into the
+  enclosing form's LOCAL BUFFER only — FORM-BUFFERED-ATOMIC-SUBMIT, the NEW mode this spec introduces.
+  No bus traffic MUST occur for a buffered field's edit until the form's own submit action fires
+  ([CXC-DOM-FORM-PRIMITIVE]).
+- requirement: (MUST, testable) which mode applies is determined STRUCTURALLY by DOM/scene containment
+  (is this control's nearest ancestor widget a form primitive, yes or no) — never by a per-control
+  authored flag that could disagree with its actual container, and never by widget TYPE (the identical
+  `text` control type behaves live outside a form and buffered inside one).
+- negative-control: moving an identical control from outside a form to inside one (same widget config,
+  same binding) changes its behavior from immediate-publish to buffered-until-submit with NO other
+  change to the control's own declaration — proving the mode is a property of placement, not of the
+  control.
+- verify-machine: a test scene with the SAME control type both inside and outside a form asserts:
+  outside-form interaction produces an immediate outbound publish; inside-form interaction produces
+  ZERO outbound publishes and a buffer-state change instead, until the form's submit fires.
+- verify-human: none required beyond [CXC-DOM-ACCEPTANCE]'s form-submission glass gate, which already
+  exercises the buffered path end-to-end.
+- status: proposed
+- provenance: david-ratified-by-concurrence — re-tagged 2026-08-25 per [DEC-DOM-AUDIT-RESOLVED-2026-08-25]
+  (audit finding ALTERED-2). This is the architect's Fork B proposal (line 26404): "TWO publish modes,
+  selected by form-container membership: live-publish (dashboard control, publishes on change — exists
+  today) and form-buffered-atomic-submit (config editing — NEW)." David never spoke to this mechanic
+  individually; his entire ratification of the whole of Fork B was the blanket "I concur, proceed" (line
+  26423). The node remains authoritative. The structural-containment-not-a-flag determination rule is
+  architect-synthesis, closing the ambiguity a builder would otherwise have to guess at.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-CONTROL-PUBLISH-REUSE], [CXC-DOM-FORM-PRIMITIVE]
+
+---
+
+## 8. The FORM primitive (NEW)
+
+### [CXC-DOM-FORM-PRIMITIVE] MUST implement a NEW container widget that buffers child control values locally, validates on submit, and publishes the validated config atomically
+
+- requirement: (MUST, testable) a NEW widget type, `form` (or an equivalently named container widget),
+  MUST: (1) own a LOCAL BUFFER — a plain object keyed by each contained control's field name/namespace,
+  initialized from each control's current bound value at mount; (2) update ONLY that buffer, never the
+  bus, when a contained control fires its change event ([CXC-DOM-PUBLISH-MODES]); (3) on an explicit
+  SUBMIT action (a submit button, or the form's own committed keyboard affordance — Enter, matching the
+  existing `text_input.commit()` precedent), send the WHOLE buffered object to the server for validation
+  ([CXC-DOM-SERVER-VALIDATION]); (4) publish the validated config to the bus ATOMICALLY — one bus write
+  (or one coherent set of writes with no partially-applied intermediate state observable by another
+  peer) — ONLY after the server confirms validation success; (5) on a validation failure, publish
+  NOTHING, keep every field's edited (unpublished) value in the buffer, and surface the returned
+  per-field errors ([CXC-DOM-SERVER-VALIDATION]) next to their fields.
+- generalizes: this generalizes `TextInputWidget`'s existing single-field commit-buffer model (edit
+  locally, commit on Return/blur, publish once) to MULTIPLE fields committed together as one unit — the
+  same "buffer, then commit" shape, scaled from one namespace to a `{field: value}` object.
+- requirement: (MUST, testable) a form MUST NOT allow a nested form (a form widget as a descendant of
+  another form widget) in v1 — this is a stated boundary (see [CXC-DOM-OUT-OF-SCOPE] /
+  [DD-DOM-EDITABLE-COLLECTIONS]), not a silent gap: a scene author nesting forms gets a loud parse/mount-
+  time error naming the offending widget id, never a form whose submit semantics are ambiguous.
+- negative-control: editing three fields in a form and never submitting produces ZERO bus publishes for
+  any of the three, even after the form unmounts (an abandoned edit is discarded, not auto-committed);
+  submitting a form with one invalid field produces ZERO bus publishes for ANY field in that form — a
+  partially-valid submission never partially applies.
+- verify-machine: a test form with three bound fields asserts: editing all three without submitting
+  yields zero publishes; submitting with all three valid yields exactly one atomic publish sequence
+  carrying all three values; submitting with one deliberately invalid field yields zero publishes and a
+  non-empty per-field error surfaced on the SPECIFIC invalid field, with the other two fields' edited
+  values still present in the buffer (not reverted, not lost).
+- verify-human: an operator fills out a real config form in a real browser, submits, sees the config
+  actually take effect on a live plugin (or, on a deliberate typo, sees the specific field's error
+  inline) — the end-to-end proof that "validated config, applied atomically" is what actually happens,
+  not merely what a unit test asserts.
+- status: proposed
+- provenance: david-ratified-by-concurrence — re-tagged 2026-08-25 per [DEC-DOM-AUDIT-RESOLVED-2026-08-25]
+  (audit finding ALTERED-2). This is the architect's Fork B proposal (line 26404): "The FORM primitive
+  (NEW): a container that buffers child controls' values locally, validates on submit, publishes the
+  validated config atomically — generalizes text_input's existing commit-buffer model to multiple
+  fields." David never spoke to this mechanic individually; his entire ratification of the whole of Fork
+  B was the blanket "I concur, proceed" (line 26423). The node remains authoritative. The nested-form
+  boundary and the atomicity failure-mode details are architect-synthesis.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-PUBLISH-MODES], [CXC-DOM-SERVER-VALIDATION], [CXC-DOM-CONTROL-SET-V1]
+
+---
+
+## 9. Server-side validation — reusing the loader, never re-implemented in JS
+
+### [CXC-DOM-SERVER-VALIDATION] MUST validate a form submission server-side against the SAME pydantic `Config` evaluator the plugin loader already uses; MUST NOT implement a client-side JS re-derivation of validation logic
+
+- requirement: (MUST, testable) on submit, the form's buffered `{field: value}` object MUST be sent to
+  the server over the WS connection as the config payload for the target plugin/entity. The server MUST
+  validate it by constructing `cls.Config(**payload)` — the IDENTICAL call sequence
+  [CXC-CSL-CONFIG-VALIDATION] already specifies for the plugin loader, reused HERE rather than a second,
+  independent validation code path. This backend MUST NOT ship any client-side JavaScript that
+  re-implements field-type checking, enum membership, or any other rule a pydantic `Config` model
+  encodes — the whole point (per [CXC-CS-RULE-CONFIG-UX]'s "validation is the real evaluator") is that a
+  config that validates is a config that will actually run the same way, which is only true if there is
+  ONE evaluator, not two that could drift.
+- requirement: (MUST, testable) a validation failure MUST return the SAME `config:<field>: <message>`
+  taxonomy [CXC-CSL-ERROR-TAXONOMY] already defines — one item per invalid field — over the WS
+  connection back to the form, which MUST display each returned error next to the field it names (not
+  a generic "invalid config" banner). This is the wire-level generalization of
+  [CXC-CS-RULE-CONFIG-UX]'s "validation at config time runs the REAL evaluator" to the browser: the
+  browser never re-derives the taxonomy, it displays what the server already computed.
+- requirement: (SHOULD, testable) client-side JS SHOULD perform ONLY presentation-layer input
+  constraints that have no bearing on config correctness (an `<input type="number">`'s browser-native
+  numeric keypad, a `maxlength` on a text field) — never a rule whose failure would also be a pydantic
+  `ValidationError`. A number field's browser-native min/max attribute MAY mirror a pydantic constraint
+  for UX responsiveness, but the SERVER validation remains authoritative and MUST still run and MUST
+  still be able to reject a value the browser-native constraint let through (a stale/incorrectly-mirrored
+  client hint is a UX defect, never a correctness gap, because the server check is unconditional).
+- negative-control: a value the client-side hint would have accepted but that the SERVER'S pydantic
+  model rejects is STILL rejected end-to-end (proving the server call is unconditional, not skipped when
+  the client hint passed); disabling JavaScript client-side constraints entirely (submitting a
+  deliberately out-of-range raw value via a scripted WS frame) still produces the correct server-side
+  rejection — proving no validation logic silently lives only in the browser.
+- verify-machine: a test submits a form payload with one field failing a pydantic constraint the
+  client-side hint would NOT have caught (a cross-field constraint, or a constraint the DOM control type
+  cannot natively express) and asserts the server rejects it with the correct `config:<field>` reason,
+  displayed on that field.
+- verify-human: an operator deliberately submits an invalid config (e.g. a value the pydantic model
+  rejects for a reason not visible from the form UI alone, like a cross-field constraint) and confirms
+  the returned error is READABLE and NAMES the specific field — the same admin-UX-names-the-unmet-item
+  discipline [CXC-CSL-STATUS-SURFACE] already requires for capability parks, applied here to config
+  validation.
+- loader-landed-reuse-tightened: (diamond-remediation, 2026-08-25) [SPEC:CXC-CS-LOADER] has now LANDED
+  (`42d3285`, `composeserver_loader.py`), so "reuse [CXC-CSL-CONFIG-VALIDATION]" is no longer a forward
+  reference to an unbuilt unit — it names real code. The WS<->DOM integration pass is wiring the reuse
+  PROPERLY rather than by parallel re-derivation: it factors the loader's validation into a SHARED
+  `validate_config(cls, payload)` function that BOTH the loader and this backend's own `validation.py`
+  IMPORT — closing the "second independent validation path" the gap-analyzer flagged as finding P1. This
+  node's MUST NOT-re-implement requirement above now has a concrete shared function to point at: this
+  backend's server-side validation call is an IMPORT of that function, never a re-derivation of the same
+  `cls.Config(**payload)` call sequence written a second time.
+- status: proposed
+- provenance: david-ruling — Fork B, the starred call: "Validation is SERVER-side, reusing the loader
+  (david-ruling): the form submits the config over WS -> the server runs the REAL pydantic Config
+  validation (the SAME [CXC-CSL-CONFIG-VALIDATION] the loader does), returns per-field errors (already
+  emitted as config:<field>: <msg>), the form displays them. NO client-side JS re-implementation of
+  pydantic validation." The presentation-layer-hints-only SHOULD and its negative controls are
+  architect-synthesis, closing the "how far can client-side JS go" ambiguity explicitly.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-CSL-CONFIG-VALIDATION], [CXC-CSL-ERROR-TAXONOMY], [CXC-CS-RULE-CONFIG-UX], [CXC-DOM-FORM-PRIMITIVE]
+
+---
+
+## 10. Two-way value binding
+
+### [CXC-DOM-TWO-WAY-BINDING] MUST subscribe->display via `AttrBinding` AND write on event, for both publish modes
+
+- requirement: (MUST, testable) every DOM-realized control MUST bind its displayed value via the SAME
+  `AttrBinding` semantics ([CXC-BIND-ATTR]) every other backend already honors: the runtime subscribes
+  the control's bound namespace, and on a bus change coerces the raw value via the SAME coercion
+  contract `coerce_bound_value` specifies (ported to JS, conformance-matched per
+  [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME]) and sets it as the DOM element's displayed value — WITHIN ONE
+  FRAME of the bus event, mirroring [CXC-BIND-C1]'s existing latency bound.
+  This is the READ half.
+- requirement: (MUST, testable) the WRITE half is [CXC-DOM-PUBLISH-MODES]'s existing split: a live-
+  publish control writes to the bus on its own triggering event; a form-buffered control writes to the
+  form's local buffer on its own triggering event and to the bus only on form submit
+  ([CXC-DOM-FORM-PRIMITIVE]). Either way, a control's OWN publish (or buffer-write) of a value it just
+  wrote MUST NOT be immediately re-applied to itself as an incoming bind update in a way that fights the
+  user's in-progress edit — the SAME one-shot echo-suppression precedent `TextInputWidget` already
+  establishes for its `clear_on_commit` case.
+- requirement: (MUST, testable) a form-buffered control's DISPLAYED value, while the form is open and
+  unsubmitted, MUST reflect the user's own uncommitted edit (from the local buffer), NOT a concurrent
+  live bus update to that same namespace from another peer — the buffer is the authoritative display
+  source for a field currently being edited in a form, exactly as `TextInputWidget` already refuses a
+  bus echo to stomp an in-progress edit.
+- negative-control: a bus-side change to a namespace bound by a form-buffered field that is CURRENTLY
+  being edited does NOT overwrite the user's uncommitted keystrokes; the SAME bus-side change to the
+  SAME namespace bound by a LIVE (non-form) control DOES update that control's display immediately.
+- verify-machine: a scripted bus publish to a namespace bound by both a live control and a form-buffered
+  (open, edited) control asserts the live control's display updates and the form-buffered control's
+  display does NOT, within one frame of the publish.
+- verify-human: a real two-tab scenario — one tab shows a live dashboard control, another has a config
+  form open with a field bound to the same namespace mid-edit — confirms the live tab updates instantly
+  while the editing tab's in-progress value is undisturbed until submit or cancel.
+- status: proposed
+- provenance: david-ratified-by-concurrence — re-tagged 2026-08-25 per [DEC-DOM-AUDIT-RESOLVED-2026-08-25]
+  (audit finding ALTERED-2). This is the architect's Fork B proposal (line 26404): "Two-way value
+  binding: each control subscribes->displays the current value (AttrBinding) AND writes on event (to
+  the form buffer, or straight to the bus for a live control)." David never spoke to this mechanic
+  individually; his entire ratification of the whole of Fork B was the blanket "I concur, proceed" (line
+  26423). The node remains authoritative. The echo-suppression and buffer-precedence rules are
+  architect-synthesis, extending the existing `TextInputWidget` precedent to the form-buffered case
+  explicitly.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-PUBLISH-MODES], [CXC-DOM-FORM-PRIMITIVE], [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME]
+
+---
+
+## 11. v1 control set
+
+### [CXC-DOM-CONTROL-SET-V1] MUST support exactly this field-control vocabulary for a form; MUST NOT attempt editable nested-collection controls in v1
+
+- requirement: (MUST, testable) the v1 form-field control vocabulary is exactly: text (native
+  `<input type="text">`), number (native `<input type="number">`), checkbox (native
+  `<input type="checkbox">`), select — for an enum/`Literal` pydantic field (native `<select>`),
+  textarea (native `<textarea>`), date/time (native `<input type="date"|"time"|"datetime-local">`), a
+  READ-ONLY table (a real `<table>`, for displaying a list/rows of structured data), and a READ-ONLY
+  tree (an ARIA `role="tree"` structure, for namespace/hierarchy review — David: "very useful for
+  namespace review"). Every one of these uses the corresponding native HTML element or ARIA pattern,
+  never a custom-drawn substitute, per [CXC-DOM-SCOPE-SPLIT].
+- requirement: (MUST, testable) EDITABLE nested-collection controls — an editable table for a
+  `list[Model]` pydantic field, an editable/mutable tree — are explicitly OUT OF SCOPE for v1 and MUST
+  NOT be attempted. This is a stated deferral ([DD-DOM-EDITABLE-COLLECTIONS]), not a silent gap: a config
+  field whose shape needs one MUST fall back to the ALREADY-RATIFIED raw-mode DSL path
+  ([CXC-CS-RULE-CONFIG-UX]'s two-mode rule config UX — templates + hand-typed validated YAML) rather
+  than this backend inventing a partial/broken structured editor for it.
+  the-read-only-table-and-tree-are-not-that-deferral: the READ-ONLY table/tree in this v1 set are
+  DISPLAY-ONLY (no mutation path back to the bus) and therefore are NOT the deferred editable-collection
+  case — a builder MUST NOT read "table and tree are v1" as license to also ship editing on them.
+- verify-machine: a fixture pydantic `Config` model covering every v1 field type (str, int/float, bool,
+  a `Literal`/enum field, a long-text field, a date field, a `list[dict]` field for read-only table
+  display, a nested-dict field for read-only tree display) round-trips through the form's mount ->
+  buffer -> display path with the correct native element per field, and any field whose pydantic type
+  is `list[SomeModel]` (an EDITABLE nested collection) is rendered via the raw-mode DSL fallback path,
+  never via an attempted structured editor.
+- verify-human: David or the render-engineer reviews a real config form generated for a real plugin's
+  pydantic schema and confirms every field type present renders with the correct native control and
+  that a genuinely nested-collection field correctly falls back to raw-mode rather than rendering a
+  broken partial editor.
+- status: proposed
+- q2-confirmed-2026-08-25: David confirmed ([DEC-DOM-AUDIT-RESOLVED-2026-08-25], resolving the audit's
+  Q2) that READ-ONLY table (not just tree) is the correct v1 line — an editable table falls to the
+  ratified raw-mode DSL fallback ([DD-DOM-EDITABLE-COLLECTIONS]) exactly as an editable tree already
+  does.
+- provenance: david-ratified-by-concurrence — re-tagged 2026-08-25 per [DEC-DOM-AUDIT-RESOLVED-2026-08-25]
+  (audit finding ALTERED-1). The eight-item vocabulary (text, number, checkbox, select (enum/Literal),
+  textarea, date/time (native <input type=...>), read-only table, read-only tree) and the read-only/
+  editable split are the ARCHITECT'S proposed construction (line 26419), which David RATIFIED BY
+  CONCURRENCE ("I concur, proceed," line 26423) rather than enumerated himself. David's own words were a
+  conditional lean plus one named control: "I lean to implementing all the heavier ones alongside the
+  simpler ones if it's 'just more work' vs a different class of design challenge. Tree in particular can
+  be very useful for reviewing namespaces" (line 26411) — cited directly in the requirement above, not
+  attributed to the full list. The node remains authoritative — David did concur — but the quoted
+  vocabulary is the architect's proposal, not David's verbatim enumeration. The "read-only is not the
+  deferral" clarification remains architect-synthesis, closing a plausible misreading.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-FORM-PRIMITIVE], [CXC-CS-RULE-CONFIG-UX], [DD-DOM-EDITABLE-COLLECTIONS]
+
+---
+
+## 12. The config-UI generator is a CONSUMER of this spec, not part of it
+
+### [CXC-DOM-CONFIG-UI-CONSUMER] The pydantic-schema -> form mapping is OUT of scope here; this spec defines only the control layer and form primitive it consumes
+
+- claim: a separate unit (not designed by this spec) maps a plugin's pydantic `Config` schema to a
+  concrete form built from [CXC-DOM-CONTROL-SET-V1]'s vocabulary — field name -> control type, pydantic
+  constraints -> native HTML constraint attributes where expressible, a `Literal`/enum field -> a
+  `<select>`'s option list. That generator is a CONSUMER of the control layer and form primitive this
+  spec defines; it does not need its own bespoke publish/validation mechanics because it composes
+  entirely from what [CXC-DOM-FORM-PRIMITIVE] and [CXC-DOM-SERVER-VALIDATION] already provide.
+- why-separate: keeping the generator as its own unit means this spec's control layer stays useful for
+  ANY form (an operator hand-authoring a scene with specific fields), not only schema-generated ones —
+  the narrow-waist discipline applied to authoring surfaces, not just runtime backends.
+- status: proposed
+- provenance: david-ratified-by-concurrence — re-tagged 2026-08-25 per [DEC-DOM-AUDIT-RESOLVED-2026-08-25]
+  (audit finding ALTERED-2). This is the architect's Fork B proposal (line 26404): "The config-UI
+  (pydantic-schema -> form) is a CONSUMER of this spec, a separate unit — this spec defines the control
+  layer + form primitive; the config-UI generator maps a plugin's pydantic schema to a form of these
+  controls." David never spoke to this individually; his entire ratification of the whole of Fork B was
+  the blanket "I concur, proceed" (line 26423). The node remains authoritative.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-CONTROL-SET-V1], [CXC-DOM-FORM-PRIMITIVE], [DX-NARROW-WAIST]
+
+---
+
+## 13. Reuse the contract, reimplement the runtime — the third reactive tier
+
+### [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME] MUST reuse the Canvas ABC, scene format, binding-DSL grammar, control-publish vocabulary, and server validation BY REFERENCE; MUST reimplement the browser runtime in JS, conformance-matched to the Python golden reference
+
+- requirement: (MUST, testable) this backend MUST NOT fork or duplicate: the `Canvas` ABC's method
+  signatures and semantics ([CXC-R-DRAW-CONTRACT] — [CXC-DOM-CANVAS-SUBCLASS] implements it, never
+  redefines it); the `.compose.yaml` scene document format (widget tree, `design.*` keys); the binding-
+  DSL grammar (`AttrBinding`'s `{namespace, when, invert, map, default, expr}` shape, and the sandboxed
+  expression language `[SPEC:CXC-DSL]` defines); the control-publish vocabulary (each widget type's
+  publish payload shape, [CXC-DOM-CONTROL-PUBLISH-REUSE]); or server-side validation logic
+  ([CXC-DOM-SERVER-VALIDATION] — never re-implemented client-side).
+- requirement: (MUST, testable) this backend MUST reimplement, in JavaScript, its own RUNTIME: parsing a
+  scene document, building the DOM tree from it, wiring bindings (subscribe on mount, apply on bus
+  change), patching the DOM reactively on subsequent bus events, and publishing on control events. This
+  is the THIRD reactive tier the platform now carries — Python/Skia (desktop/server), C++/CYD
+  (embedded), and JS/DOM (browser) — each independently implementing the SAME declarative contract
+  against its own platform's native capabilities, exactly as the CYD C++ tier already does relative to
+  the Python tier ([CXC-PRIM-TIER-PARITY]).
+- requirement: (MUST, testable) the JS binding-expression evaluator (whatever mechanism realizes
+  [SPEC:CXC-DSL]'s sandboxed expressions in the browser) MUST conformance-match the Python golden
+  reference evaluator on every case the existing Python DSL test corpus already covers — the SAME
+  one-measurement-path / cross-tier-parity discipline the CYD/Skia glyph and justification corpora
+  already apply ([CXC-TM1637-FORMAT-BACKEND]'s "the oracle is the raster realization, not a round trip"
+  precedent, applied here to the DSL instead of seven-segment glyphs). A JS evaluator that merely LOOKS
+  equivalent by inspection, without a corpus proving it against the same cases the Python evaluator is
+  proven against, does not satisfy this requirement.
+- mechanism-choice-resolved: (diamond-remediation, 2026-08-25) HOW that conformance is achieved —
+  transpiling the Python-authored expression grammar into JS at build/publish time, versus an
+  independent JS reimplementation gated by a shared conformance corpus — was the open fork
+  [DD-DOM-DSL-EVAL-REUSE]; it is now RESOLVED by implementation: an independent, hand-written JS
+  evaluator gated by the shared `dsl_corpus.json` conformance corpus (also consumed by the CH32/CYD
+  tier), measured 234/234 bit-exact IEEE-754 against the Python golden reference. See
+  [DD-DOM-DSL-EVAL-REUSE] for the full resolution record.
+- negative-control: a scene that runs correctly against the Python headless runtime and is then served
+  to this DOM backend produces IDENTICAL widget-tree structure and IDENTICAL resolved binding values for
+  every namespace both runtimes subscribe — proving "reuse the contract" is not merely aspirational
+  but produces the same graph both tiers agree on.
+- verify-machine: the SAME `.compose.yaml` fixture parsed by both the Python parser and the JS runtime
+  produces structurally equivalent widget trees (id, type, declared bindings) — a cross-tier parity
+  test, mirroring the existing Skia/SVG/CYD parity fixtures; the shared DSL conformance corpus
+  (`dsl_corpus.json`, per [DD-DOM-DSL-EVAL-REUSE]'s resolution) passes identically against both the
+  Python and JS evaluators — measured 234/234.
+- verify-human: none required beyond what other nodes' glass gates already cover — this node's own
+  failure surface (a scene that parses differently, or a DSL expression that evaluates differently,
+  cross-tier) is fully machine-observable via the parity/conformance corpora.
+- status: proposed
+- provenance: architect-synthesis — Fork C (CYD precedent): "REUSE by reference: the Canvas 30-method
+  ABC, the .compose.yaml scene format, the binding-DSL grammar, the control-publish vocabulary, the
+  server-side validation. REIMPLEMENT in JS: the browser runtime... the third reactive tier after
+  Python/Skia and C++/CYD. The JS binding-expression evaluator MUST conformance-match the Python golden
+  reference... [DD-DOM-DSL-EVAL-REUSE] names the open mechanism choice... render-engineer's call under
+  the conformance constraint." Quoted from the dispatch verbatim per the design session's own framing of
+  this as architect-synthesis, not David's word.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-R-DRAW-CONTRACT], [CXC-PRIM-TIER-PARITY], [CXC-TM1637-FORMAT-BACKEND], [DD-DOM-DSL-EVAL-REUSE]
+
+---
+
+## 14. Transport — rides the WS endpoint; the SSE bridge coexists read-only
+
+### [CXC-DOM-TRANSPORT] MUST use the WS connector as this backend's bidirectional transport; the existing SSE bridge remains legacy read-only and is NOT extended for writes
+
+- requirement: (MUST, testable) this backend's browser runtime MUST open its bus connection over the
+  WS connector already fully specified at [SPEC:CXC-WS] — the SAME `BusMessage.to_json()`/`from_json()`
+  envelope ([CXC-WS-WIRE-FORMAT]), the SAME subscription model ([CXC-WS-SUBSCRIPTION]), the SAME
+  retained-state replay on subscribe ([CXC-WS-RETAINED-REPLAY]). This backend does not open a second,
+  competing connection mechanism.
+- requirement: (MUST, testable) the EXISTING `WebBusModule`/SSE bridge (`composeio/web.py`,
+  `static/bus-events.js`) MUST NOT be extended with a write/publish path for this backend's controls.
+  It remains what it already is — a read-only, one-way bus-to-browser push for legacy pages — and this
+  backend's controls (which need to WRITE) are out of its scope by construction, not by an added
+  restriction.
+- why-ws-not-sse: SSE is server-to-client only by protocol; a control's publish (browser-to-bus) has no
+  SSE-shaped path at all, and inventing an HTTP POST side-channel just for writes would fork this
+  backend's wire format away from [CXC-WS-WIRE-FORMAT]'s already-specified, already-symmetric envelope
+  for no benefit.
+- negative-control: this backend's own runtime code contains no reference to `/events` (the SSE route)
+  or to `EventSource` — it is built entirely against the WS connector's own client-side API surface.
+- verify-machine: a static/dependency scan of this backend's JS source asserts no `EventSource`
+  reference and no fetch/POST call standing in for a publish (every publish goes over the open WS
+  connection); a live test opens a WS connection via [CXC-WS-CONNECTOR-INTERFACE] and confirms this
+  backend's runtime binds/publishes over it successfully.
+- verify-human: none required beyond [CXC-WS-ACCEPTANCE]'s own glass gates for the connector, which this
+  backend inherits by using the same transport.
+- status: proposed
+- provenance: architect-synthesis, restating the design session's explicit transport call ("Transport:
+  WS (bidirectional); the SSE bridge coexists for legacy read-only") as a queryable node.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [SPEC:CXC-WS], [CXC-WS-WIRE-FORMAT], [CXC-WS-SUBSCRIPTION]
+
+---
+
+## 15. Explicit out-of-scope — cited, not specified
+
+### [CXC-DOM-OUT-OF-SCOPE] The units this spec deliberately does not design
+
+- the-canvaskit-backend: the rich-graphics browser backend (gauges, data viz, the colonial/BSG UX) is
+  its own, DEFERRED unit ([CXC-DOM-SCOPE-SPLIT]). This spec's obligation to it is narrow: leave the
+  hybrid-composition seam ([CXC-DOM-HYBRID-COMPOSITION]) unforeclosed so a canvas island can mount
+  beside DOM chrome once it exists.
+- the-config-ui-generator: the pydantic-schema -> form mapping is a CONSUMER of this spec, not designed
+  here ([CXC-DOM-CONFIG-UI-CONSUMER]).
+- the-ws-connector-transport: the WS transport itself — connection lifecycle, tenant boundary, entry
+  modes, auth position — is fully specified at [SPEC:CXC-WS] and only cited here as this backend's wire
+  ([CXC-DOM-TRANSPORT]); this spec does not respecify any of it.
+- editable-nested-collections: deferred to [DD-DOM-EDITABLE-COLLECTIONS], covered meanwhile by the
+  ratified raw-mode DSL fallback.
+- status: proposed
+- provenance: architect-synthesis, restating the session's explicit scope boundaries as a queryable node
+  rather than leaving them only in frontmatter prose.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-SCOPE-SPLIT], [CXC-DOM-CONFIG-UI-CONSUMER], [SPEC:CXC-WS], [DD-DOM-EDITABLE-COLLECTIONS]
+
+---
+
+## 16. Error and boundary matrix
+
+### [CXC-DOM-BOUNDARIES] Every condition a builder would otherwise have to invent an answer for
+
+| # | Condition | Required behaviour |
+|---|-----------|--------------------|
+| 1 | A widget type has no entry in the control renderer registry AND is not a plain layout/chrome primitive | falls through to the generic `Canvas`-primitive path if it draws via Canvas calls at all; if it is a genuinely unsupported type (e.g. a graphics widget on a DOM-only build), rendered as a NAMED placeholder, never silently blank ([CXC-DOM-HYBRID-COMPOSITION]) |
+| 2 | A control inside a form fires its change event | writes to the form's local buffer only; ZERO bus traffic ([CXC-DOM-PUBLISH-MODES]) |
+| 3 | A form is submitted with one or more invalid fields | ZERO bus publishes for the whole form; per-field `config:<field>` errors returned and displayed; all edited (including valid) field values remain in the buffer, unpublished and unreverted ([CXC-DOM-FORM-PRIMITIVE]) |
+| 4 | A form is abandoned (unmounted) without submitting | ZERO bus publishes for any buffered field; the edit is discarded, never auto-committed ([CXC-DOM-FORM-PRIMITIVE]) |
+| 5 | A bus-side update arrives for a namespace bound by a field CURRENTLY being edited in an open form | the buffer/display is NOT overwritten by the incoming value — the user's uncommitted edit wins until submit or cancel ([CXC-DOM-TWO-WAY-BINDING]) |
+| 6 | The SAME bus-side update arrives for a namespace bound by a LIVE (non-form) control | the control's display updates immediately, within one frame ([CXC-DOM-TWO-WAY-BINDING]) |
+| 7 | A control publishes a value it just received as its own bound value (echo) | suppressed once, mirroring `TextInputWidget`'s existing echo-suppression precedent — never a publish/re-apply feedback loop ([CXC-DOM-TWO-WAY-BINDING]) |
+| 8 | A pydantic `Config` field's type has no v1 control mapping (e.g. `list[SomeModel]`) | falls back to the ratified raw-mode DSL path ([CXC-CS-RULE-CONFIG-UX]); this backend never attempts a partial/broken structured editor for it ([CXC-DOM-CONTROL-SET-V1]) |
+| 9 | Client-side presentation hints (a browser-native min/max) would have accepted a value the server rejects | server rejection is unconditional and authoritative regardless of what the client hint allowed through ([CXC-DOM-SERVER-VALIDATION]) |
+| 10 | A widget type is fully served by DOM (control registry or primitive path) | its CanvasKit/Skia-in-browser realization is never built, loaded, or referenced — the laziness is structural, not merely deferred profiling ([CXC-DOM-REALIZATION-SPLIT]) |
+| 11 | A scene nests a form widget inside another form widget | loud parse/mount-time error naming the offending widget id; v1 does not support nested forms ([CXC-DOM-FORM-PRIMITIVE]) |
+| 12 | The WS connection this backend rides on is not yet `BOUND` (per [CXC-WS-LIFECYCLE]) | no control publish and no binding subscription is attempted before `BOUND`; this backend inherits [CXC-WS-BOUNDARIES] condition 3 unchanged |
+
+- part-of: [SPEC:CXC-DOM]
+
+---
+
+## 17. Acceptance — machine signal + glass gate
+
+### [CXC-DOM-ACCEPTANCE] The backend's two-tier verdict — a machine signal AND, for every failure class human eyes can catch that a narrow test cannot, an explicit human/glass gate
+
+- definition: per [DX-SPEC-CARRIES-ITS-EVIDENCE] and the loader/WS-spec precedent
+  ([CXC-CSL-ACCEPTANCE], [CXC-WS-ACCEPTANCE]), machine-green alone never accepts this backend — the
+  failure classes that matter most here (an inaccessible control that passes a naive click test, a
+  buffered edit silently reaching the bus, a validation error that displays on the wrong field) are
+  exactly the ones a narrow unit test can pass while the real browser experience is broken.
+  [CXC-VISION-EPISTEMICS] applies throughout this table.
+
+| ID | Requirement | verify-machine | verify-human (glass) |
+|----|-------------|-----------------|------------------------|
+| DOM-V1 | Controls realize as native DOM elements, never redrawn on raster canvas ([CXC-DOM-SCOPE-SPLIT]) | axe-core audit reports zero name/role/value violations on v1 controls | screen-reader pass (VoiceOver/NVDA) operates every control without a mouse |
+| DOM-V2 | Rich graphics stay out of this backend entirely ([CXC-DOM-SCOPE-SPLIT]) | zero CanvasKit/WASM references in a control-only scene's network trace | n/a — structural |
+| DOM-V3 | Hybrid composition — DOM chrome + canvas islands coexist without coordination ([CXC-DOM-HYBRID-COMPOSITION]) | mixed-scene fixture renders both independently; DOM-only fixture has zero graphics-backend requests | a real mixed page (once CanvasKit exists) shows both realized correctly side by side |
+| DOM-V4 | Control renderer registry dispatch is correct and canvas realization stays lazy ([CXC-DOM-REALIZATION-SPLIT]) | registry dispatch spy-asserted per widget type; zero CanvasKit calls for a control-only scene | none required |
+| DOM-V5 | DOM `Canvas` subclass implements the full ABC with correct stack semantics ([CXC-DOM-CANVAS-SUBCLASS]) | golden-fixture primitive sequence matches the element-map table; save/restore/clip stress test passes | side-by-side visual comparison against Skia/SVG renders of the same fixture |
+| DOM-V6 | Re-realized controls publish the SAME payload shape as their Python originals ([CXC-DOM-CONTROL-PUBLISH-REUSE]) | scripted DOM interaction's outbound WS frame matches the equivalent headless Python widget test | real click observed by a live subscriber on the same bus |
+| DOM-V7 | Publish mode selected correctly by form-container membership ([CXC-DOM-PUBLISH-MODES]) | identical control inside/outside a form produces buffered-vs-immediate publish correctly | none required beyond DOM-V9's glass gate |
+| DOM-V8 | Form buffers, validates, and publishes atomically ([CXC-DOM-FORM-PRIMITIVE]) | unsubmitted edits produce zero publishes; valid submit produces one atomic sequence; invalid submit produces zero publishes plus per-field errors, buffer retained | a real form fill-submit-see-it-take-effect (or see-the-specific-error) end to end |
+| DOM-V9 | Validation is server-side, reusing the loader's real evaluator ([CXC-DOM-SERVER-VALIDATION]) | a value only a cross-field/non-DOM-expressible constraint rejects is still rejected server-side | operator submits a deliberately invalid config and reads a specific, named field error |
+| DOM-V10 | Two-way binding: display tracks bus outside a form, buffer wins inside one ([CXC-DOM-TWO-WAY-BINDING]) | scripted bus publish updates the live control, not the mid-edit form field, within one frame | two-tab scenario: live tab updates instantly, editing tab is undisturbed until submit |
+| DOM-V11 | v1 control vocabulary is exactly the named set; editable collections correctly fall back to raw-mode ([CXC-DOM-CONTROL-SET-V1]) | fixture schema covering every v1 type renders correctly; a `list[Model]` field falls back to raw-mode, never a broken structured editor | David/render-engineer review of a real generated config form |
+| DOM-V12 | Rides the WS connector; SSE bridge stays read-only, unextended ([CXC-DOM-TRANSPORT]) | source scan finds no `EventSource`/SSE-write reference in this backend | none required beyond [CXC-WS-ACCEPTANCE]'s own gates |
+| DOM-V13 | JS runtime conformance-matches the Python golden reference ([CXC-DOM-REUSE-REIMPLEMENT-RUNTIME]) | shared `dsl_corpus.json` conformance corpus passes identically against Python and JS evaluators (measured 234/234 bit-exact IEEE-754, [DD-DOM-DSL-EVAL-REUSE]); cross-tier scene-parse parity fixture passes | none required — fully machine-observable via the conformance corpus |
+| DOM-V14 | Placement recorded, not silent ([CXC-DOM-PLACEMENT]) | the spec carries the `[PLACEMENT UNRATIFIED]` node + the filename-check property | n/a — structural |
+
+- part-of: [SPEC:CXC-DOM]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-VISION-EPISTEMICS], [CXC-CSL-ACCEPTANCE], [CXC-WS-ACCEPTANCE]
+
+---
+
+## 18. Evidence — pre-integration questions answered, post-integration slots EMPTY until a real build
+
+### [CXC-DOM-EVIDENCE] Pre-integration questions (answered by this design pass) and post-integration evidence (EMPTY — never run)
+
+- pre-integration questions answered by this spec: (1) DOM vs. redraw-in-canvas for controls -> native
+  DOM elements, never redrawn, [CXC-DOM-SCOPE-SPLIT]; (2) rich-graphics backend choice -> CanvasKit, not
+  RN-Skia, deferred, [CXC-DOM-SCOPE-SPLIT]; (3) composition of the two backends -> hybrid, per-widget-
+  class dispatch, canvas realization built lazily, [CXC-DOM-HYBRID-COMPOSITION]/[CXC-DOM-REALIZATION-SPLIT];
+  (4) the fallback layout/chrome realization -> a generic `Canvas` ABC subclass with an explicit style/
+  transform stack, [CXC-DOM-CANVAS-SUBCLASS]; (5) control->publish contract -> reused, re-realized per
+  widget type, [CXC-DOM-CONTROL-PUBLISH-REUSE]; (6) publish-mode selection -> structural, by form-
+  container membership, [CXC-DOM-PUBLISH-MODES]; (7) the form primitive's shape -> buffer/validate-on-
+  submit/atomic-publish, generalizing `text_input`'s commit model, [CXC-DOM-FORM-PRIMITIVE]; (8)
+  validation authority -> server-side, reusing [CXC-CSL-CONFIG-VALIDATION], no client-side reimpl,
+  [CXC-DOM-SERVER-VALIDATION]; (9) two-way binding precedence during an in-progress form edit -> the
+  buffer wins over a concurrent bus update, [CXC-DOM-TWO-WAY-BINDING]; (10) v1 control vocabulary ->
+  the eight named field types, editable collections deferred, [CXC-DOM-CONTROL-SET-V1]; (11) the config-
+  UI generator's relationship to this spec -> consumer, not part of it, [CXC-DOM-CONFIG-UI-CONSUMER];
+  (12) reuse/reimplement boundary -> contract reused by reference, runtime reimplemented in JS,
+  conformance-matched, [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME]; (13) transport -> the WS connector, SSE
+  stays legacy read-only, [CXC-DOM-TRANSPORT].
+- pre-integration questions LEFT open, flagged for render-engineer/David ratify (not silently resolved):
+  the editable nested-collection control design, deliberately deferred
+  ([DD-DOM-EDITABLE-COLLECTIONS]); tree virtualization/windowing at scale, noted but not a v1 blocker
+  ([DD-DOM-TREE-VIRTUALIZATION]). CORRECTED 2026-08-25 (diamond-remediation): the DSL evaluator's exact
+  reuse mechanism ([DD-DOM-DSL-EVAL-REUSE]) is NO LONGER open — it is RESOLVED by implementation
+  (candidate (b), the corpus-gated independent JS evaluator, measured 234/234); moved out of this list.
+- evidence-dom-canvas-subclass: EMPTY — no DOM `Canvas` subclass exists in this repository as of this
+  spec's authoring (2026-08-25); this is a build spec, not a report of landed code.
+- evidence-control-registry-real-browser: EMPTY — no real browser has rendered a v1 control set from
+  this backend (DOM-V1/DOM-V5/DOM-V11's human gates unrun).
+- evidence-form-real-submit: EMPTY — no real form submission has round-tripped through server-side
+  validation over a real WS connection (DOM-V8/DOM-V9's human gates unrun).
+- evidence-two-tab-binding: EMPTY — no real two-tab scenario has confirmed DOM-V10's live-vs-buffered
+  precedence.
+- evidence-js-conformance-corpus: FILLED (diamond-remediation, 2026-08-25) — the shared `dsl_corpus.json`
+  conformance corpus HAS been run against the JS evaluator: 234/234 bit-exact IEEE-754 against the
+  Python golden reference, per [DD-DOM-DSL-EVAL-REUSE]'s resolution. DOM-V13's machine gate is
+  exercised. This is the ONE evidence slot in this table no longer EMPTY; every other slot below remains
+  EMPTY exactly as authored — this correction does not claim the rest of the backend has been built.
+- evidence-accessibility-audit: EMPTY — no axe-core or screen-reader pass has been run against a real
+  rendered scene (DOM-V1's gates unrun).
+- why-empty-matters: per [DX-SPEC-CARRIES-ITS-EVIDENCE], "never run at all" must be a QUERYABLE
+  PROPERTY, not something a reader has to already know — every slot above is `EMPTY` explicitly rather
+  than simply absent, so a future query against this node can distinguish "not yet built" from "nobody
+  thought to record it."
+- status: draft
+- status-detail: draft — every evidence slot EMPTY by construction; this spec has not been implemented
+- provenance: architect-synthesis
+- part-of: [SPEC:CXC-DOM]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-DOM-ACCEPTANCE]
+
+---
+
+## 19. Open forks — flagged for the render-engineer's / architect's / David's ratify
+
+### [DD-DOM-EDITABLE-COLLECTIONS] DEFERRED (settled) — editable nested-collection controls are a genuinely different design class, out of v1
+
+- question: how should an editable table for a `list[Model]` pydantic field, or an editable/mutable
+  tree, be designed — recursive form nesting, an inline row-editor, a modal-per-item pattern?
+- why-deferred-not-open: this is not an unresolved ambiguity blocking v1 — David explicitly ruled it OUT
+  of v1 because it is "a genuinely different design class" (recursive/nested forms), and the ALREADY-
+  RATIFIED raw-mode DSL fallback ([CXC-CS-RULE-CONFIG-UX]) covers any config field this shape is needed
+  for in the meantime, so nothing is blocked waiting on this fork.
+- candidates: (not a recommendation, offered so the fork is concrete when it is picked up) (a) recursive
+  form nesting with a relaxed version of [CXC-DOM-FORM-PRIMITIVE]'s no-nested-forms boundary, one
+  sub-form per collection item; (b) an inline row-editor directly inside a table, each row its own
+  small buffered unit; (c) a modal/drawer-per-item pattern, editing one collection element at a time
+  against the SAME form-buffer-then-submit mechanics this spec already defines, just scoped to one item.
+- decision: OPEN, deferred — not yet decided, and not scheduled against v1.
+- rationale: see `why-deferred-not-open` above.
+- alternatives: see `candidates` above.
+- invalidating_assumption: once a real config schema is encountered in production that genuinely needs
+  this (a plugin whose config legitimately contains a list of sub-models an operator must edit through
+  the structured UI rather than raw-mode), the deferral needs revisiting — the raw-mode fallback is a
+  legitimate v1 answer, not a permanent one.
+- status: deferred
+- status-detail: deferred — settled as OUT of v1; not an open ambiguity requiring an immediate ratify
+- provenance: david-ruling — Fork B: "DEFER (a genuinely different design class — recursive/nested
+  forms) the EDITABLE nested-collection controls... the ratified raw-mode fallback... covers any config
+  too complex for the structured form meanwhile, so nothing is blocked." The candidate list is this
+  spec-writer's own addition, offered to make the eventual fork concrete, not a recommendation.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-CONTROL-SET-V1], [CXC-CS-RULE-CONFIG-UX], [CXC-DOM-FORM-PRIMITIVE]
+
+### [DD-DOM-TREE-VIRTUALIZATION] DEFERRED (settled) — tree windowing is a later scale concern, not a v1 blocker
+
+- question: at what namespace/hierarchy count does the read-only tree control ([CXC-DOM-CONTROL-SET-V1])
+  need virtualization/windowing (rendering only the visible subset of a large tree) rather than the
+  naive full-DOM-tree rendering v1 ships with?
+- why-deferred-not-open: v1's non-virtualized tree handles the hundreds of real namespaces this platform
+  currently has; this is a forward-looking scale note, not a v1 requirement gap.
+- decision: not decided; explicitly not scheduled against v1.
+- rationale: see `why-deferred-not-open` above.
+- alternatives: not enumerated here — a future windowing implementation (e.g. only mounting DOM nodes
+  for the currently-scrolled-into-view subtree) is a performance optimization layered onto the SAME
+  read-only tree control, not a new control type.
+- invalidating_assumption: if a real deployment's namespace count grows past what naive full-DOM
+  rendering can handle responsively (measured, not guessed), this deferral needs revisiting.
+- status: deferred
+- status-detail: deferred — noted for later, not a v1 blocker
+- provenance: architect-synthesis — re-tagged 2026-08-25 per [DEC-DOM-AUDIT-RESOLVED-2026-08-25] (audit
+  finding INVENTED-2). The virtualization/windowing caveat is the architect's own parenthetical (line
+  26419: "at thousands of nodes you'd eventually want virtualization/windowing... a later optimization,
+  not a v1 blocker"), not David's word. David's only statement about tree was "Tree in particular can be
+  very useful for reviewing namespaces" (line 26411), which says nothing about scale or virtualization.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-CONTROL-SET-V1]
+
+### [DD-DOM-DSL-EVAL-REUSE] RESOLVED — by implementation: candidate (b), an independent JS evaluator gated by the shared conformance corpus
+
+- question: [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME] specifies that the JS evaluator MUST conformance-match
+  the Python golden reference — it does not specify HOW: transpile the Python-authored expression
+  grammar into JS at build/publish time (one grammar, two emitted evaluators), versus an independent
+  hand-written JS reimplementation gated by a shared conformance corpus (two grammars, one shared proof
+  obligation).
+- why-left-open-originally: this was an implementation-mechanism choice under a FIXED constraint
+  (conformance), not a design-intent ambiguity — [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME]'s requirement was
+  fully testable and implementable regardless of which mechanism was chosen, so the choice did not block
+  authoring this spec; it was left to the render-engineer's call.
+- candidates: (a) transpile — parse the Python DSL grammar once, emit equivalent JS at scene-publish
+  time or build time; guarantees identity by construction but couples the JS runtime to a build step
+  that must run whenever the grammar changes. (b) independent JS reimplementation — hand-written JS
+  evaluator gated by running the SAME conformance corpus [CXC-TM1637-FORMAT-BACKEND]'s glyph-corpus
+  precedent already demonstrates for a different tier pair; cheaper to keep the JS runtime dependency-
+  free but carries ongoing drift risk the corpus must keep catching.
+- decision: RESOLVED — candidate (b): an INDEPENDENT, hand-written JS evaluator, gated by the SHARED
+  conformance corpus (`dsl_corpus.json`), the SAME corpus the CH32/CYD tier already consumes for its own
+  cross-tier parity proof. Measured: 234/234 cases bit-exact IEEE-754 against the Python golden
+  reference. This is the one-measurement-path discipline [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME] requires,
+  genuinely satisfied per the gap-analyzer — one shared corpus, one shared proof obligation, consumed by
+  every tier that needs conformance, not a per-tier ad hoc check.
+- rationale: candidate (b) keeps the JS runtime dependency-free (no build-time transpile step coupling
+  every DSL grammar change to a JS-emission pass) while still closing the drift risk the transpile
+  alternative would have avoided by construction — the shared conformance corpus is the mechanism that
+  closes it instead, and it already does double duty proving the CH32/CYD tier, so extending it to the
+  JS tier is REUSE of an already-proven discipline, not a new one invented for this backend alone.
+- alternatives: see `candidates` above — (a) transpile was not chosen; the corpus-gated independent
+  reimplementation was judged the better fit given the corpus already existed and already served a
+  second tier.
+- invalidating_assumption: once the DSL grammar itself is revised ([SPEC:CXC-DSL]), the JS evaluator
+  needs the conformance corpus extended to cover the new constructs before they can be trusted in the
+  browser — the chosen mechanism (independent reimplementation) carries this ongoing obligation
+  explicitly, as `why-left-open-originally`'s tradeoff analysis anticipated.
+- status: decided
+- status-detail: resolved by implementation — 234/234 bit-exact IEEE-754 against the Python golden
+  reference via `dsl_corpus.json`, the shared corpus also consumed by the CH32/CYD tier
+- provenance: architect-synthesis — the render-engineer's call under this node's fixed conformance
+  constraint, per the gap-analyzer's endorsement of the measured 234/234 result. The fork was originally
+  named `architect-proposed` in the design session ("[DD-DOM-DSL-EVAL-REUSE] names the open mechanism
+  choice (share/transpile the grammar vs. conformance-gated JS reimpl), render-engineer's call under the
+  conformance constraint"); the resolution recorded here is the render-engineer's actual implementation
+  choice, confirmed by measurement, not a further David ratify — David never spoke to the mechanism
+  choice, only to the fixed constraint it operates under.
+- part-of: [SPEC:CXC-DOM]
+- see-also: [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME], [CXC-TM1637-FORMAT-BACKEND]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-DOM-PLACEMENT] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-SCOPE-SPLIT] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-HYBRID-COMPOSITION] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-REALIZATION-SPLIT] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-CANVAS-SUBCLASS] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-CONTROL-PUBLISH-REUSE] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-PUBLISH-MODES] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-FORM-PRIMITIVE] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-SERVER-VALIDATION] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-TWO-WAY-BINDING] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-CONTROL-SET-V1] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-CONFIG-UI-CONSUMER] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-TRANSPORT] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-OUT-OF-SCOPE] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-BOUNDARIES] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-ACCEPTANCE] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-EVIDENCE] PART_OF [SPEC:CXC-DOM]
+- [DD-DOM-EDITABLE-COLLECTIONS] PART_OF [SPEC:CXC-DOM]
+- [DD-DOM-TREE-VIRTUALIZATION] PART_OF [SPEC:CXC-DOM]
+- [DD-DOM-DSL-EVAL-REUSE] PART_OF [SPEC:CXC-DOM]
+- [CXC-DOM-CANVAS-SUBCLASS] REALIZES [CXC-R-DRAW-CONTRACT]
+- [CXC-DOM-REALIZATION-SPLIT] REALIZES [DX-NARROW-WAIST]
+- [CXC-DOM-SCOPE-SPLIT] RELATED_TO [CXC-VISION-SEMANTIC-REALIZATION]
+- [CXC-DOM-HYBRID-COMPOSITION] RELATED_TO [CXC-VISION-SEMANTIC-REALIZATION]
+- [CXC-DOM-CONTROL-PUBLISH-REUSE] REUSES [CXC-R-DRAW-CONTRACT]
+- [CXC-DOM-SERVER-VALIDATION] REUSES [CXC-CSL-CONFIG-VALIDATION]
+- [CXC-DOM-SERVER-VALIDATION] REALIZES [CXC-CS-RULE-CONFIG-UX]
+- [CXC-DOM-SERVER-VALIDATION] EXTENDS [CXC-CSL-ERROR-TAXONOMY]
+- [CXC-DOM-TRANSPORT] DEPENDS_ON [SPEC:CXC-WS]
+- [CXC-DOM-TRANSPORT] RELATED_TO [CXC-WS-WIRE-FORMAT]
+- [CXC-DOM-CONTROL-SET-V1] RELATED_TO [CXC-CS-RULE-CONFIG-UX]
+- [CXC-DOM-CONTROL-SET-V1] RELATED_TO [DD-DOM-EDITABLE-COLLECTIONS]
+- [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME] MIRRORS [CXC-PRIM-TIER-PARITY]
+- [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME] MIRRORS [CXC-TM1637-FORMAT-BACKEND]
+- [DD-DOM-DSL-EVAL-REUSE] RELATED_TO [CXC-DOM-REUSE-REIMPLEMENT-RUNTIME]
+- [DD-DOM-EDITABLE-COLLECTIONS] RELATED_TO [CXC-CS-RULE-CONFIG-UX]
+- [CXC-DOM-CANVAS-SUBCLASS] DEPENDS_ON [CXC-DOM-REALIZATION-SPLIT]
+- [CXC-DOM-FORM-PRIMITIVE] DEPENDS_ON [CXC-DOM-PUBLISH-MODES]
+- [CXC-DOM-FORM-PRIMITIVE] DEPENDS_ON [CXC-DOM-SERVER-VALIDATION]
+- [CXC-DOM-TWO-WAY-BINDING] DEPENDS_ON [CXC-DOM-FORM-PRIMITIVE]
+- [SPEC:CXC-DOM] UPHOLDS [DX-SPEC-CARRIES-ITS-EVIDENCE]
+- [SPEC:CXC-DOM] UPHOLDS [DX-NARROW-WAIST]
+- [SPEC:CXC-DOM] DEPENDS_ON [SPEC:CXC-WS]
+- [SPEC:CXC-DOM] DEPENDS_ON [SPEC:CXC-CS-LOADER]
+- [SPEC:CXC-DOM] DEPENDS_ON [SPEC:CXC-COMPOSESERVER]
+
+---
+
+**Version**: 0.3 — 2026-08-25, diamond-remediation revision, per the WS<->DOM integration's completed
+diamond findings. (1) [DD-DOM-DSL-EVAL-REUSE] is RESOLVED, not open: candidate (b), an independent
+hand-written JS evaluator gated by the shared `dsl_corpus.json` conformance corpus (also consumed by the
+CH32/CYD tier) — measured 234/234 bit-exact IEEE-754 against the Python golden reference, satisfying
+[CXC-DOM-REUSE-REIMPLEMENT-RUNTIME]'s one-measurement-path constraint per the gap-analyzer's own
+endorsement. Provenance: architect-synthesis (the render-engineer's call under the fixed constraint),
+not a further David ratify. DOM-V13's acceptance row and `evidence-js-conformance-corpus` are updated to
+match — the ONE evidence slot in [CXC-DOM-EVIDENCE] no longer EMPTY. (2) [CXC-DOM-SERVER-VALIDATION]
+gains a `loader-landed-reuse-tightened` note: [SPEC:CXC-CS-LOADER] has LANDED (`42d3285`,
+`composeserver_loader.py`), so this node's "reuse [CXC-CSL-CONFIG-VALIDATION]" is no longer a forward
+reference — the WS<->DOM integration is wiring it through a SHARED `validate_config(cls, payload)`
+function BOTH the loader and this backend's `validation.py` import, closing the second-independent-
+validation-path gap the gap-analyzer flagged as finding P1. This SUPERSEDES the v0.2 footer's claim that
+[CXC-DOM-SERVER-VALIDATION] "audited clean and are UNCHANGED" — it is changed by this revision, in
+substance (import-the-shared-function) not in its original MUST/MUST NOT requirements, which remain
+david-ruling and untouched. Previously version 0.2 — 2026-08-25, revised per the independent provenance audit
+(`docs/composeserver/AUDIT-dom-backend.md`) and David's resulting rulings
+([DEC-DOM-AUDIT-RESOLVED-2026-08-25]). Q1 (was CanvasKit ratified, or still pending?): David ruled
+CanvasKit for the deferred WEB rich-graphics path, MOBILE DEFERRED ENTIRELY, and restored the
+architect's original "pending render-engineer live-doc verification" caveat this spec had dropped
+([CXC-DOM-SCOPE-SPLIT]). Q2 (read-only or editable v1 table?): David confirmed READ-ONLY table (not
+just tree) is the correct v1 line, editable deferred to the raw-mode fallback
+([CXC-DOM-CONTROL-SET-V1]). Provenance corrections applied: the CanvasKit-flavor-choice framing inside
+[CXC-DOM-SCOPE-SPLIT] is now explicitly three-way (the scope split = david-ruling; the
+CanvasKit-for-web/mobile-deferred-entirely selection = ALSO david-ruling, David's own 2026-08-25 call;
+the RN-Skia-as-escape-hatch framing = architect-recommendation); [DD-DOM-TREE-VIRTUALIZATION] re-tagged
+`david-ruling` -> `architect-synthesis` (David never mentioned virtualization/windowing — that was the
+architect's own parenthetical); [CXC-DOM-CONTROL-SET-V1] and the five Fork-B mechanic nodes
+([CXC-DOM-CONTROL-PUBLISH-REUSE], [CXC-DOM-PUBLISH-MODES], [CXC-DOM-FORM-PRIMITIVE],
+[CXC-DOM-TWO-WAY-BINDING], [CXC-DOM-CONFIG-UI-CONSUMER]) re-tagged `david-ruling` ->
+`david-ratified-by-concurrence`, citing the blanket "I concur, proceed" (line 26423) rather than
+implying six separate David rulings. [CXC-DOM-SERVER-VALIDATION] (the one Fork-B node with genuine
+([CXC-DOM-REUSE-REIMPLEMENT-RUNTIME], honestly `architect-synthesis` throughout) audited clean and are
+UNCHANGED. v0.1 was the initial build spec, authored from the composeio-hardware-architect's design
+session with David (2026-08-24/25, [DEC-COMPOSEUX-DOM-BACKEND-DESIGN-2026-08-25]): the DOM-vs-CanvasKit
+scope split with hybrid composition (Fork A); the control->publish reuse, two publish modes, NEW form
+primitive, server-side validation reuse, two-way binding, and the v1 control vocabulary (Fork B); the
+reuse-the-contract/reimplement-the-runtime split with conformance-gated JS DSL evaluation (Fork C, CYD
+precedent) — as MUST/SHOULD predicates with `verify-machine`/`verify-human` acceptance tiers, per
+[DX-SPEC-CARRIES-ITS-EVIDENCE], mirroring [SPEC:CXC-CS-LOADER] and [SPEC:CXC-WS]'s build-spec
+convention.
+**Status**: Draft — awaiting architect/David ratify on the whole document. [DD-DOM-DSL-EVAL-REUSE] is NO
+LONGER an open fork awaiting a lean — CORRECTED 2026-08-25, RESOLVED by implementation (see Version 0.3
+above). [DD-DOM-EDITABLE-COLLECTIONS] (editable nested-collection controls) and
+[DD-DOM-TREE-VIRTUALIZATION] (tree windowing at scale) remain settled-deferred, not open forks
+awaiting an immediate lean — they are noted so a future reader finds them recorded rather than
+rediscovering the same questions. The CanvasKit graphics path remains DEFERRED and UNVERIFIED — it does
+NOT block this spec's DOM/form backend, which is build-ready pending the whole-document ratify.
+The `david-ruling`-tagged nodes number FOUR: [CXC-DOM-SCOPE-SPLIT] (the DOM-vs-canvas scope split,
+spanning DOM-native-controls + the 2026-08-25 CanvasKit-for-web/mobile-deferred-entirely ruling +
+per-widget-class-realization-with-lazy-Skia framing), [CXC-DOM-REALIZATION-SPLIT] (per-widget-class
+dispatch, lazy canvas realization), [CXC-DOM-SERVER-VALIDATION] (the one Fork-B node with genuine
+design class" deferral). Mechanical check: grepping this file for the `provenance` property lines whose
+value begins `david-ruling` counts 4 (self-referentially excluding this sentence's own mention of the
+check). The
+`david-ratified-by-concurrence`-tagged nodes number SIX: [CXC-DOM-CONTROL-SET-V1] and the five Fork-B
+mechanic nodes ([CXC-DOM-CONTROL-PUBLISH-REUSE], [CXC-DOM-PUBLISH-MODES], [CXC-DOM-FORM-PRIMITIVE],
+[CXC-DOM-TWO-WAY-BINDING], [CXC-DOM-CONFIG-UI-CONSUMER]) — each authoritative (David did concur, line
+26423), but grounded in the architect's proposal, not David's verbatim enumeration. The
+`architect-synthesis`-tagged nodes now also include [DD-DOM-TREE-VIRTUALIZATION] (re-tagged from
+david-ruling this revision) and, as of this 0.3 diamond-remediation pass, [DD-DOM-DSL-EVAL-REUSE]
+(re-tagged from `architect-proposed`, now RESOLVED per Version 0.3 above), alongside
+[CXC-DOM-HYBRID-COMPOSITION], [CXC-DOM-CANVAS-SUBCLASS], [CXC-DOM-TRANSPORT],
+[CXC-DOM-REUSE-REIMPLEMENT-RUNTIME]'s mechanics, [CXC-DOM-OUT-OF-SCOPE], [CXC-DOM-BOUNDARIES],
+[CXC-DOM-ACCEPTANCE], and [CXC-DOM-EVIDENCE] — the implementation detail this spec had to invent to be
+implementable-without-guessing, each flagged as such. Mechanical check: `architect-synthesis` now counts
+9. The `architect-recommendation` tag appears once, inside [CXC-DOM-SCOPE-SPLIT], for the
+RN-Skia-as-per-widget-escape-hatch framing.

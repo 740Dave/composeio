@@ -1,0 +1,437 @@
+---
+scope: "The comprehensive device-firmware baseline settled with David 2026-09-03: bundle every CONFIDENT firmware capability into ONE comprehensive USB-tethered flash pass per device, so that every update after that pass is config-over-bus and no device needs a second USB visit. Six capabilities: the asset_reload content-hash auto-reload ported to the shared display mains; the bus_binding endpoint-repoint (bench-unverified); server-provided content-hash on asset/blob GET; the blob-route change-notify emit; a full doc:// purge; and UART/mothercard transport-flexibility (no reflash to enable UART on a qualifying MCU, standalone-to-daughtercard with zero reflash either side)."
+audience: "The architect performing the independent design-audit this document is explicitly gated on before it lands; then, once landed, the builder implementing the baseline and factlattice-gap-analyzer ruling the eventual CODE current/behind/ahead of it."
+boundary: "IN: the flash-once-then-config driver and its rationale; each of the six capabilities with its mechanism, its provenance tag, and its dependency on already-existing code; the capability-threshold scoping (ESP32/RP2040 qualify, CH32V003 sub-engine floor does not); the scope-on-wire hard dependency and its verification status; the explicit non-goals; the deferred-with-trigger fetch-by-hash/CAS decision; pre-integration questions; and post-integration evidence slots. OUT: the actual bench-flash execution (the 8-board live repoint test, the relay-on-hardware proof, the announce-bind L3 hardware) — those are EMPTY evidence slots here, not claims; a firmware-level security/auth model for the config-over-bus control plane; and any re-litigation of [SPEC:CXC-STORE], [SPEC:CXC-REPOINT], [SPEC:CXC-ASSET-CHANGE-NOTIFY] or [CXC-VISION-SCOPE-MEMBRANE]'s own content, which this document depends on and extends rather than restates."
+not-this: "NOT an outstanding design-audit — the independent design-audit this document was gated on has RUN; David reviewed the six flagged provenance points and both ambiguous questions in the 2026-09-03 session and RATIFIED all six corrections plus both clarifying answers (see §0's placement node and the Version note below) — the guard that held it back ([CXC-BUSSTORE-CONVERSION-STATUS] applied to a code-conversion pass; [SPEC:CXC-STORE]'s pre-audit draft applied the same guard to a decision-conversion pass; this was a capability-bundle-conversion pass) is satisfied, not bypassed. NOT a claim that any of the six capabilities has been built, bench-verified, or run on hardware beyond what each capability's own node states is already true today — every evidence slot in §10 remains EMPTY until the bench pass runs. NOT an OTA specification — OTA is explicitly out of scope and named only as the eventual real answer to the USB-tether pain this baseline works around. NOT a re-opening of [DD-STORE-QUERY-DISPOSITION], the doc:// scheme-retirement scope on [DEC-STORAGE-CONSOLIDATE-ONE-FACE], or the BP-CAN-ID v2 wire-format ratification (dd7e049) — this document cites and depends on those, it does not re-decide them."
+depends-on: [62-composeplatform-vision.lts, 73-bus-storage.lts, 74-composebus-repoint.lts, 80-cxc-asset-change-notify.lts, 92-storage-consolidation.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+lifecycle-position: ready-for-build — audit-complete, David-ratified 2026-09-03 (six provenance corrections + two clarifying answers applied), placement RATIFIED, not yet landed on hardware/code
+created: 2026-09-03
+---
+
+# The comprehensive device-firmware baseline — flash once, then live on config [SPEC:CXC-DEVICE-BASELINE]
+
+> **PLACEMENT RATIFIED, AUDIT COMPLETE.** It captures a comprehensive firmware-baseline design
+> settled in conversation with David 2026-09-03 and was returned to the architect for an
+> INDEPENDENT design-audit before landing — the same self-certification guard
+> [CXC-BUSSTORE-CONVERSION-STATUS] applied to a code-conversion pass, and [SPEC:CXC-STORE] applied
+> to a decision-conversion pass, applied here to a capability-bundle-conversion pass: the author of
+> a bundle does not get to be its only reviewer. That audit flagged six provenance points and two
+> ambiguous questions; David reviewed all eight in the 2026-09-03 session and RATIFIED all six
+> corrections plus both clarifying answers (§0 and each touched node below, v0.2). Placement is now
+> RATIFIED into `corpora/platform-specs/` ([CXC-DEVICE-BASELINE-PLACEMENT]) — 93 remains the first
+> free numeric prefix, chosen by listing this directory, not by counting.
+>
+> `lifecycle-position` says the same thing a query can read: **`ready-for-build — audit-complete,
+> David-ratified 2026-09-03 (six provenance corrections + two clarifying answers applied), placement
+> RATIFIED, not yet landed on hardware/code`**.
+>
+> **THE DRIVER, STATED PLAINLY.** USB-tethered reflash is the pain point. There is no OTA on any of
+> this firmware today — none is planned in this baseline; OTA is the eventual real answer and is
+> named only as the horizon (§7). So the bench session this baseline calls for buys EITHER a narrow
+> fix that gets reflashed again next month, or a comprehensive one after which every device update is
+> config-over-bus. Same labour at the bench, permanently different future: **flash once,
+> comprehensively, then live on config.**
+
+---
+
+## 0. The driver, its provenance, and placement
+
+### [DEC-DEVICE-BASELINE-FLASH-ONCE-THEN-CONFIG] Bundle every confident firmware capability into ONE comprehensive flash pass; after it, all device updates are config-over-bus
+
+- decision: every device visited for this baseline gets ALL SIX capabilities below in one USB session, not one capability at a time across six future bench visits. The alternative — landing each capability separately as it becomes confident — multiplies the exact cost this baseline exists to amortize: a USB-tethered visit to the physical device. Bundling is the point, not an optimization on top of it.
+- provenance: architect-recommendation-david-agreed. The bundling strategy (flash once comprehensively) is the architect's framing of David's stated pain point (USB-tethered reflash) and David's explicit intent that OTA stay out of scope now; the six-capability set and their individual dispositions were settled with David in the 2026-09-03 session that this document converts.
+- why-not-ota-instead: OTA is the mechanism that would make repeated USB visits unnecessary, and it is INTENTIONALLY not being built now (§7, [CXC-DEVICE-BASELINE-NONGOAL-OTA]) — so until it exists, minimizing the NUMBER of bench visits is the only lever available, and bundling is that lever.
+- see-also: [CXC-DEVICE-BASELINE-NONGOAL-OTA]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-PLACEMENT] Placement is RATIFIED — stays in platform-specs/, same reasoning as [SPEC:CXC-STORE]'s ratified placement, 93 chosen by listing
+
+- placement-status: RATIFIED (architect's call, 2026-09-03). This document stays filed in `corpora/platform-specs/`, alongside its dependencies and neighbours ([SPEC:CXC-STORE] at 92, [SPEC:CXC-REPOINT] at 74, [SPEC:CXC-ASSET-CHANGE-NOTIFY] at 80) — the SAME reasoning [CXC-STORE-PLACEMENT] gives for its own ratified placement: this is a spec carrying evidence slots, pre-/post-integration questions, and code-grounded capability dispositions, not merely a decision node, so it belongs beside the service/capability specs it depends on and extends rather than relocated toward the firmware source trees it specifies against (`cyd/`, `firmware/reactive_core/`).
+- number-chosen: 93. The directory was listed (`ls corpora/platform-specs/`); 00-92 are taken (with the two known pre-existing filename-number collisions at 00 and 46, per [CXC-VISION-PLACEMENT], neither touched by this addition) and 99 is a symlink to a `.smd` conventions file, not a `.lts` document — 93 is the first free `.lts` numeric prefix.
+- ratification-resolved: whether this bundle belongs filed as a service/capability spec alongside [SPEC:CXC-STORE] and [SPEC:CXC-REPOINT], or should instead live closer to the firmware source trees it specifies against — RESOLVED above, by the architect: `platform-specs/`, for the reasons in `placement-status`.
+- see-also: [CXC-VISION-PLACEMENT]
+- see-also: [CXC-STORE-PLACEMENT]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 1. Capability 1 — asset_reload baseline: port the content-hash auto-reload to the shared display mains
+
+### [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] Port cyd/src/asset_reload.{h,cpp} into main.cpp and qualia_main.cpp, mirroring the already-wired controller_main.cpp
+
+- capability: the content-hash auto-reload consumer (`cyd/src/asset_reload.h` / `.cpp`) is host-tested and already wired on `firmware/reactive_core/src/controller_main.cpp` (confirmed on read: `asset_reload_init`, `asset_reload_decide_held`, `asset_backstop_should_reload`, and the `_device/<id>/restart` fallback all present and included at controller_main.cpp lines 47/204/242/369-378/661). It is ABSENT from the shared display mains, `cyd/src/main.cpp` and `cyd/src/qualia_main.cpp` — confirmed on read: neither file includes `asset_reload.h` or calls any `asset_reload_*` function, though both already include and wire `bus_binding.h` (§2). This gap is independently named [DEFECT-CONFIG-FETCH-FIRMWARE-DOES-NOT-405602] in `asset_reload.h`'s own header comment and on [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]'s `display-asset-reload-gap` property.
+- what-porting-means: line-for-line reuse of the existing, host-tested `asset_reload.{h,cpp}` module (already proven at `env:native_test` per its own header) — this is NOT a new design, it is wiring the SAME consumer controller_main.cpp already uses onto the two remaining firmware mains, the identical shape [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]'s `r503-not-the-exemplar` property names for the throttle controller as the right exemplar.
+- self-select-rule: ⛔ **the device NEVER computes sha256.** It self-selects purely by STRING COMPARISON against a server-provided hash: `new == held` -> ignore (already latest, absorbs the retained-replay-on-connect case); `old == held` -> reload (the exact bytes I hold just changed, mine); otherwise -> not mine, do nothing (the event carries no asset path, so any other mismatch is genuinely ambiguous and must not trigger a fetch). Confirmed against `asset_reload.h`'s own documented contract, matched against `services/bus_storage/change_notify.py`'s emit shape (`{"old": <hash|null>, "new": <hash>}`, sha256 lowercase hex, computed server-side in `content_hash()`).
+- sha256-claim-scope: SCOPED 2026-09-08 (architect-inference, build-diamond code read) — the `self-select-rule` above ("the device NEVER computes sha256") is TRUE of the two display-main ports this baseline targets, `cyd/src/main.cpp` and `qualia_main.cpp` (verified: neither links mbedtls/sha256; the held hash arrives via `config_fetch` reading the server's `X-Content-Hash`/`ETag` header, §3). It is FALSE of the pre-existing exemplar this node cites as already-wired, `firmware/reactive_core/src/controller_main.cpp`, which computes sha256 ON-DEVICE (`mbedtls_sha256_*`, ~line 532) and passes that locally-computed hash to `asset_reload_set_held` — a deliberate, disclosed divergence: `asset_reload_bus.h`'s own header names it "THE ONE DELIBERATE DIVERGENCE FROM controller_main.cpp." This is NOT a whole-fleet invariant; it is scoped to the display-main port. Flagged as an architect follow-on, not resolved here: either retrofit `controller_main.cpp` to the header-based self-select, or formally accept the divergence.
+- auto-recovery: CORRECTED 2026-09-03 (audit resolution, Q1) — David's stated PRIMARY mechanism is DEVICE-SIDE message buffering: the device buffers inbound bus messages so a transient connectivity miss does not lose the `{old->new}` change event. This corrects an earlier draft of this node, which assumed BROKER-SIDE MQTT retention as the recovery mechanism; David clarified 2026-09-03 that caching "the inbound messages" meant the device buffering what it receives, not the broker retaining what it holds. ⛔ THIS IS AN EMPTY EVIDENCE SLOT, NOT A CLAIM: this document does not know whether device-side inbound-message buffering exists in firmware today — see [CXC-DEVICE-BASELINE-PRE-DEVICE-SIDE-BUFFERING] (§9) and [CXC-DEVICE-BASELINE-EV-10] (§10). Independently of buffering, a periodic re-hash BACKSTOP already exists in the ported module — `asset_backstop_should_reload` re-GETs the asset, hashes it, and compares to `held` on a timer and on every MQTT reconnect, closing the gap where a device holding H0 sees only the LAST transition `{H1->H2}` (a skipped multi-PUT) and correctly does nothing on the event alone. Beneath both, restart is the RECOVERY FLOOR (below).
+- manual-immediate-recovery: `_device/<id>/restart` (or broadcast `_device/restart`) re-runs the EXISTING boot config-fetch path — this is the RECOVERY FLOOR: it works regardless of whether the event-driven or backstop path has landed, because it is [DEC-ESP32-REMOTE-RESTART-BUS-COMMAND]'s already-ratified, already-committed mechanism.
+- recovery-floor-statement: restart-re-fetch-by-PATH is the recovery FLOOR for this whole baseline, not merely this one capability — every capability below that changes what a device holds falls back to the SAME `_device/<id>/restart` mechanism when its own live path is unproven or unavailable.
+- provenance: architect-recommendation-david-agreed for the port itself (porting `asset_reload.{h,cpp}` into `main.cpp`/`qualia_main.cpp`); DAVID-RULING (retagged 2026-09-03, audit resolution) for restart-as-the-recovery-floor — this was David's ORIGINAL idea, his genesis turn: "the recovery mechanism is a restart," not an architect recommendation David merely agreed to; the underlying restart mechanism is david-ruling ([DEC-ESP32-REMOTE-RESTART-BUS-COMMAND], 2026-07-30); the underlying boot-fetch-only discipline being reacted to is architect-recommendation-david-agreed ([DEC-FETCH-ON-BOOT-CONFIG-DISCIPLINE], 2026-07-28).
+- depends-on: [DEC-ESP32-REMOTE-RESTART-BUS-COMMAND]
+- depends-on: [DEC-FETCH-ON-BOOT-CONFIG-DISCIPLINE]
+- see-also: [CXC-ASSET-CHANGE-NOTIFY]
+- see-also: [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET]
+- see-also: [CXC-DEVICE-BASELINE-PRE-DEVICE-SIDE-BUFFERING]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 2. Capability 2 — bus_binding endpoint-repoint: bench-unverified, already wired
+
+### [CXC-DEVICE-BASELINE-CAP-BUS-BINDING] Repoint a device's bus master/storage URLs via retained state, no reflash — wired on both display mains, BENCH-UNVERIFIED
+
+- capability: `cyd/src/bus_binding.h` / `.h`-declared accessors are ALREADY wired on both shared display mains — confirmed on read: `main.cpp` calls `bus_binding_boot_init` (line 1057), `bus_binding_control_init` (line 1186), and `bus_binding_tick` (line 1258, comment: "announce which bus + drive confirm echo"); `qualia_main.cpp` calls the same three (lines 499, 602, 741). A device is repointed by publishing a retained `_device/<id>/bus` (per-device) or `_device/broadcast/bus` (fleet-wide) binding carrying target URLs; the board ARMS a trial, reboots, resolves the new tier, and AUTO-REVERTS on failure within the confirm window. Precedence is per-device > global > COMPILED FLOOR — the compiled `COMPOSEIO_FW_DOCUMENT_STORE_URL:8420` (or whichever host is baked in) is now only the rescue floor, not the only address a board can ever reach.
+- state-not-command: the binding is retained STATE the device reacts to, never a command sent to it — [DEC-BUS-BINDING-IS-STATE-NOT-A-COMMAND], the same discipline [DEC-ESP32-REMOTE-RESTART-BUS-COMMAND]'s `control-plane-legitimacy` property applies to restart.
+- bench-unverified: `bus_binding.h`'s own header comment states it plainly — "THE REPOINT / CONFIRM / REVERT LOOP IS BENCH-UNVERIFIED. The state machine is host-proven, but a live binding repointing a real board + the auto-revert window is NOT bench-confirmed." [SPEC:CXC-REPOINT]'s `build-status` property independently confirms: BUILT + LANDED + host-verified across 83/83 (cyd) and 20/20 (reactive_core) SELFTESTS, all 8 envs compile — but the REMAINING GATE is explicitly named as "the BENCH FLASH (8 boards, no OTA, needs David + glass)." machine-green does not equal glass-green here.
+- why-this-baseline-needs-it: without a live repoint, moving the fleet off `NODERED_HOST:8420` onto the merged store on `COMPOSEIO_MQTT_BROKER:8420` ([DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]) requires either a reflash per device or an interim reverse-proxy — [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]'s `fleet-repoint-decision` property names this exact fork and flags it as CXC-REPOINT territory, still open. This baseline's bench pass is the natural place to prove the repoint live, once, rather than as a separate future bench visit.
+- provenance: DAVID-AGREED (retagged 2026-09-03, audit resolution). David explicitly confirmed the inclusion — he named bus_binding in his own agreement list in the 2026-09-03 session this document converts. The inclusion is CONFIRMED, not flagged; bus_binding was already built and wired for a different reason (the repoint spec [SPEC:CXC-REPOINT]) before this baseline was scoped, and the read that a comprehensive flash pass should prove it live rather than leave a second bench visit outstanding remains the architect's framing.
+- depends-on: [SPEC:CXC-REPOINT]
+- see-also: [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 3. Capability 3 — content-hash on GET: bus_storage returns the hash it already computes
+
+### [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET] Return the content-hash on asset AND blob GET (ETag / X-Content-Hash) — the server already computes it for PUT, this stores and serves it
+
+- capability: `services/bus_storage/change_notify.py`'s `content_hash()` (sha256, lowercase hex) is ALREADY computed server-side on every PUT, to drive `AssetChangeNotifier.notify()`'s `{old,new}` change event (confirmed on read: `content_hash = hashlib.sha256(data).hexdigest()`, called from `notify()` with both the prior and new bytes). It is computed and used TRANSIENTLY — for the change event — and is NOT currently persisted or served back on GET.
+- what-changes: store the computed hash alongside the asset/blob at PUT time (a sidecar or index entry), and serve it on GET as a response header (`ETag` and/or `X-Content-Hash`) on both the asset route (`/api/v1/assets/*`) and the blob route (`/api/v1/blob/*`, the [SPEC:CXC-STORE] unified-store face).
+- why-this-is-the-missing-link: this is what lets a device HOLD a hash for [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]'s self-select rule WITHOUT computing it — the device fetches an asset at boot, reads the hash off the SAME response, and stores it as `held`. Without this, a device would need to either compute its own sha256 (explicitly ruled out, david-ruling: the device never computes sha256) or have no baseline hash to self-select against on first boot.
+- provenance: architect-recommendation-david-agreed. The mechanism (store-at-PUT, serve-on-GET, reusing the hash the server already computes) is the architect's proposal; the underlying constraint it satisfies — the device never computes its own hash — is david-ruling.
+- depends-on: [CXC-ASSET-CHANGE-NOTIFY]
+- see-also: [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]
+- see-also: [SPEC:CXC-STORE]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 4. Capability 4 — blob-route change-notify emit: extend the notifier past the asset tree
+
+### [CXC-DEVICE-BASELINE-CAP-BLOB-NOTIFY] Extend `_notify_asset_change` to `/api/v1/blob` so migrated document_store docs emit change events like assets
+
+- capability: `services/bus_storage/server.py`'s `_handle_config_put` marks the gap explicitly in its own comment (confirmed on read, `server.py` ~line 468 region): "SEAM, not a gap: [CXC-ASSET-CHANGE-NOTIFY] P-a is scoped to the asset tree only ([CXC-ACN-PRECEDENT] — unifying this route's own config-push notifier into asset-change-notify is a marked FUTURE follow-on, 'not yet unified in code'). Do not hang `_notify_asset_change` off this route." The `/api/v1/blob` route family — the [SPEC:CXC-STORE] unified-store face that now serves migrated `document_store` docs as `bus://<collection>/<id>.json` blobs — does not currently emit `{old,new}` change events on PUT the way `/api/v1/assets/*` does.
+- what-changes: wire the SAME `AssetChangeNotifier.notify()` call the asset PUT handler already uses onto `_handle_blob_put`, so a migrated document (an app surface, a board_profile, a recipe — anything now living as a `bus://` blob per [SPEC:CXC-STORE]'s `[CXC-STORE-CAP-GET]` / `[CXC-STORE-CAP-LIST]` disposition) gets the same change-notify coverage an asset gets.
+- ratified-by: David agreed to this extension explicitly in the 2026-09-03 session this document converts — a two-word "Yes, agreed" in response to the architect's proposal.
+- provenance: ARCHITECT-RECOMMENDATION-DAVID-AGREED (retagged 2026-09-03, audit resolution) for the extension itself — architect-proposed, David agreed with "Yes, agreed"; architect-recommendation for the mechanism (reuse the existing notifier by reference rather than build a second one).
+- see-also: [CXC-ASSET-CHANGE-NOTIFY]
+- see-also: [SPEC:CXC-STORE]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 5. Capability 5 — doc:// purge: the per-device pass eliminates every remaining reference
+
+### [CXC-DEVICE-BASELINE-CAP-DOC-PURGE] Purge doc:// wherever it exists — the fleet exits the cutover with doc:// genuinely gone, not merely deprecated
+
+- capability: [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]'s `doc-scheme-ruling` property already records David's ruling: "doc:// FULLY deprecated — remove the `resolve.py`/`assets.py` compat alias, NO cross-ref rewrite; the 2 app-surface breaks (fleet-540-soak, minnow-bringup) surface and are fixed at source." The alias code itself is already removed (commit `0f2e07d`, confirmed by [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]'s `doc-scheme-ruling` and cutover-status properties). This capability is the DEVICE-FACING completion of that ruling: the per-device firmware/config pass this baseline performs is the moment to also eliminate any `doc://` reference reachable from device-served config, not just the two known app-surface refs.
+- known-surface: the 2 known app-surface references — `apps/fleet-540-soak` and `apps/minnow-bringup` — per [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]'s ruling, fixed at source.
+- unknown-surface: this baseline additionally requires checking on-device configs and any live-store docs reachable from the fleet for a `doc://` reference that predates the migration — an EMPTY census slot (§9), not a claim that none exist.
+- distinction-from-cxc-store: [SPEC:CXC-STORE]'s `[CXC-STORE-CUTOVER-XREF-REWRITE]` names the cross-reference rewrite as OPTIONAL because the read-time compat alias would have covered it — but that alias is now REMOVED per David's fuller ruling here, which supersedes the optionality: with no alias, an un-rewritten `doc://` reference is a hard break, not a degraded-but-working path. This node records that supersession explicitly so the two documents are not read as contradicting each other.
+- provenance: david-ruling (the FULL deprecation, no alias, no rewrite — [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]'s `doc-scheme-ruling`); architect-recommendation-david-agreed (folding the device-facing completion of the purge into this baseline's per-device pass, so it is not a separate future visit).
+- see-also: [SPEC:CXC-STORE]
+- see-also: [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 6. Capability 6 — UART / mothercard transport-flexibility
+
+### [CXC-DEVICE-BASELINE-CAP-UART-GOAL] The goal: no reflash to enable UART on any qualifying device, mothercard or daughtercard — and a state-of-the-art correction
+
+- goal: David's verbatim intent — no reflash to enable UART on any qualifying device, mothercard OR daughtercard. The common model: build a widget STANDALONE (riding ComposeBus directly), then LATER slave it via UART as a DAUGHTERCARD to a mothercard, zero reflash either side.
+- state-of-the-art-correction: ⛔ being precise, correcting an earlier over-claim from this session — the UART ComposeBus TRANSPORT is ALREADY LIVE ON HARDWARE: an ESP32 running the Engine Thrust widget speaks ComposeBus over UART to this computer today. What is NOT yet built on hardware is (i) the MCU-as-MOTHERCARD relay and (ii) announce-bind LEVEL 3. This correction matters because it changes what this baseline needs to BUILD (the relay + L3 announce-bind) versus what it needs to CONFIGURE/EXTEND (the transport itself, already proven; the runtime-selectability of it, §6d).
+- code-grounding-uart-transport: `cyd/src/bus_uart.h`'s own header confirms the transport exists and states its limits precisely: the frame codec (`bus_frame.h`) is host-parity-tested against the Python encoder (`env:native_frame`) and is shared with `firmware/ftl_jump_button/src/main.cpp` on a CH32V003; the ESP-IDF driver wraps it with a UART port, an rx task, and the same queue-to-render-task shape `bus_mqtt.cpp` uses. The header also states what is NOT done as of its authoring (2026-08-12): no upstream ComposeBus host was confirmed on a bench board's UART at that time, and `config_fetch`/`capture_http` remain WiFi-only. This baseline's own claim (Engine Thrust live on UART today) POST-DATES that header comment and should be verified fresh by the audit rather than taken from either source alone.
+- header-claim-tension: UNRECONCILED 2026-09-08 (architect-inference, build-diamond code read) — `state-of-the-art-correction` above asserts the UART ComposeBus transport is ALREADY LIVE ON HARDWARE (Engine Thrust speaking ComposeBus over UART to this computer today). `bus_uart.h`'s own header comment, as of 2026-08-12, still states no upstream ComposeBus host was confirmed on a bench board's UART and that the transport "never carried a live scene." This tension is NOT resolved here — it is the architect's to close: either update `bus_uart.h`'s header comment to match the Engine-Thrust-live claim, or log the Engine-Thrust-live demo as evidence against that header's own stale negative. It does not block anything: the on-hardware proof this baseline actually needs is already the open [CXC-DEVICE-BASELINE-EV-06] slot, independent of which side of this tension is right.
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-UART-TRANSPORT] (a) UART ComposeBus transport — frame/deframe + chunk-reassembly, DECODE not TRANSFORM
+
+- capability: the UART transport's frame/deframe and chunk-reassembly logic is DECODE, not transform, per the ratified connector-transform boundary — [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]'s clarification (2): "DECODE-including-reassembly recovers the ORIGINAL fact and STOPS at wire-bytes; interpreting the bytes' meaning is a derive." The UART connector's job is exactly reassembling a fragmented wire payload back into `BusMessage` bytes (temptation T4 in that stress-test, explicitly held) — it must never interpret or map those bytes into a new semantic fact; that mapping, if any is needed, belongs to a state_profile peer, not the connector.
+- already-proven: the codec itself is host-parity-tested (`env:native_frame`) and shared across firmware trees (`bus_frame.h`, used identically by the CH32V003 `ftl_jump_button` firmware and the ESP-IDF `bus_uart.cpp`).
+- provenance: david-ruling for the UART-transport intent and its live-hardware status (Engine Thrust, stated plainly in this session); david-ratified-by-concurrence for the decode-not-transform boundary it must honor ([DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25], stress-tested and held 2026-08-25).
+- depends-on: [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-RELAY-MEMBRANE] (b) The relay/mothercard forwarder enforcing the scope membrane on BOTH subscribe and publish
+
+- capability: `cyd/src/relay_main.cpp` is prior art — a node already holding two transports (CAN upstream, UART downstream) and forwarding chunk-by-chunk between them, per [CXC-VISION-SCOPE-MEMBRANE]'s `prior-art` property. The relay IS the membrane: [CXC-VISION-SCOPE-MEMBRANE]'s ratified claim (2026-08-10, David) is that "a relay must respect scope on the PUBLISH path exactly as it does on the subscribe path, or a naive forward-everything relay leaks local chatter onto the shared bus" — and "the relay is NOT the scope boundary; the host's UPSTREAM transport is." A mothercard built on the relay shape without enforcing this leaks fleet-wide.
+- current-hardware-status: HOST-PROVEN ONLY. `relay_main.cpp`'s own header states this precisely — "this app has been COMPILED, and config_relay's forwarding rule and TTL ladder are host-tested against the Python oracle (`env:native_config_chunk`). Whether it has carried a live transfer between two real segments depends on hardware that may not exist yet." [CXC-VISION-SCOPE-MEMBRANE]'s `prior-art` property independently corroborates: "Host-proven only (`env:native_relay`, 40 checks) — it has never run on hardware." NO hardware run has been recorded anywhere this document depends on.
+- what-must-be-built: the CAN-upstream/UART-downstream shape exists; what's missing per this baseline's scope is enforcing SCOPE on the forward path in BOTH directions (not just recording it) and proving that enforcement on real hardware — a naive port of the existing host-tested logic to a live board is not sufficient by itself if the scope check was never exercised against a genuinely local vs. genuinely global message on real silicon.
+- provenance: david-ruling for the requirement that a mothercard exist at all (no-reflash-to-enable-UART, mothercard+daughtercard); architect-inference for scope-membrane being the correct enforcement mechanism, ratified separately by David 2026-08-10 on [CXC-VISION-SCOPE-MEMBRANE] itself.
+- depends-on: [CXC-VISION-SCOPE-MEMBRANE]
+- see-also: [CXC-DEVICE-BASELINE-SCOPE-PRECONDITION]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-ANNOUNCE-BIND-L3] (c) Daughtercard capability-announce over UART + the mothercard side that binds it — announce-bind LEVEL 3
+
+- capability: [CXC-VISION-ANNOUNCE-BIND]'s four-level pattern names level 3 explicitly: "A DAUGHTERCARD announces a capability descriptor to its host MOTHERCARD over the internal link (I2C or UART). The payoff is that the parent speaks ONE protocol forever: a daughtercard needing bespoke parent firmware has bought nothing." This baseline requires BOTH halves: the daughtercard-side announce, and the mothercard-side bind that consumes it.
+- current-status: "NO HARDWARE," per [CXC-VISION-ANNOUNCE-BIND]'s own `status-of-the-mechanism` property — "Level 3 has no hardware. Only level 4's widget side exists" — and its `evidence-uncountable-drop` / census evidence generally shows levels 1-2 are proposals with a task list, not running code, as of that document's own authoring. This is an EMPTY evidence slot for this baseline (§10), not a claim of readiness.
+- design-check-applies: [CXC-VISION-ANNOUNCE-BIND]'s own `design-check` property — "a mechanism built for level N MUST be reusable at N+1" — means level 3's design should reuse the SAME announce/bind shape as levels 1-2 (`_device/<id>/*` style namespacing, periodic-not-on-change publication) rather than invent a bespoke daughtercard protocol; this baseline does not relax that constraint.
+- provenance: david-ruling for the no-reflash mothercard/daughtercard requirement that makes level 3 necessary; architect-inference (unratified as a standalone claim, carried forward from [CXC-VISION-ANNOUNCE-BIND]) for the specific design-check reuse constraint applying to level 3's build.
+- depends-on: [CXC-VISION-ANNOUNCE-BIND]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-TRANSPORT-SELECT-RUNTIME] (d) bus_transport_select extended so MODE and UART PINS are config/NVS-selectable at runtime from board_profile
+
+- capability: `firmware/reactive_core/src/bus_transport_select.h` is the seed — confirmed on read: it already implements the NVS-key `transport` pattern in namespace `composeio`, a PURE host-testable resolve core (`transport_select_resolve`), the loud-not-silent unknown-name rule, and the "settable over the current link, takes effect next boot" idiom the rest of this baseline reuses (matching [CXC-REPOINT]'s and [CXC-DEVICE-BASELINE-CAP-BUS-BINDING]'s precedence idiom). [DEC-STORAGE-MERGED-DATA-ON-(a private host name, not published)-2026-09-02]'s `r503-not-the-exemplar` property confirms this IS the R503's actual no-reflash mechanism ("Its no-reflash story is NVS transport-select"), even though the R503's endpoint reachability itself uses compile-time `#define`s for a separate reason.
+- what-must-be-added: today `bus_transport_select` resolves a SUBSTRATE name (`offline`/`mqtt`/`uart`/`can`); this baseline extends it so a device additionally resolves a MODE — standalone / mothercard / daughtercard — and, for UART specifically, WHICH PINS to use, both sourced from `board_profile` (config/NVS), never from a per-build `#define`. This is what makes "build standalone, later slave as a daughtercard" a config change rather than a recompile — the literal mechanism behind the no-reflash goal in [CXC-DEVICE-BASELINE-CAP-UART-GOAL].
+- why-nothing-per-build: the design-check in [CXC-VISION-ANNOUNCE-BIND] and the precedent already set by `bus_transport_select`'s own substrate-selection axis both point the same direction — a board's ROLE should be as reconfigurable as its transport already is, using the identical NVS/config idiom, not a second bespoke mechanism.
+- wiring-status: WIRING-DEFERRED 2026-09-08 (architect-disposition, build-diamond: gap-analyzer + first-bringup + composeplatform-qa, independent) — `bus_transport_select.{h,cpp}` is host-complete and host-tested (mode standalone/mothercard/daughtercard + NVS UART-pin selection + the capability-predicate gate) but has ZERO firmware call sites: nothing calls `bus_transport_mode()`/`bus_transport_set_mode()`/`bus_uart_pins()` outside its own selftest. So the "build standalone, later slave as a daughtercard, zero reflash" OUTCOME cannot occur on any board yet, independent of hardware readiness. The runtime-role wiring is deferred, coupled to announce-bind L3 ([CXC-DEVICE-BASELINE-ANNOUNCE-BIND-L3], itself an unmade design), and must be wired BEFORE the Phase-C comprehensive flash to preserve the flash-once promise. See decision record DEC-DEVICE-BASELINE-6D-WIRING-DEFERRED-TO-L3 (decision graph, intelligence-console corpus; cited here as plain text, not a minting edge, since it lives in a different corpus and would otherwise dangle).
+- provenance: DAVID-RULING (split 2026-09-03, audit resolution) for the OUTCOME — no reflash to change a device's role; mode and UART pins are config-selectable (David's stated requirement); ARCHITECT-RECOMMENDATION for the specific MECHANISM — extending `bus_transport_select`'s existing NVS/board_profile path (identifying it as the seed to extend rather than build fresh) is the architect's proposal, not David's own mechanism choice.
+- depends-on: [CXC-DEVICE-BASELINE-CAP-UART-GOAL]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-CAPABILITY-THRESHOLD] The "any device" guarantee is gated by a CAPABILITY PREDICATE evaluable from board_profile, not chip-identity — ESP32 and RP2040 are examples that clear it, the CH32V003 an example that fails it
+
+- gate: REFRAMED 2026-09-03 per David's ruling this session — the no-reflash-to-enable-UART guarantee is gated by a CAPABILITY PREDICATE, evaluated from `board_profile`: does the device have sufficient RAM and compute to host the relay logic plus the full baseline. David's verbatim reframing: "I wanted the gate not to be based on 'is it an ESP32' but 'does the device have sufficient RAM and compute' — which it clearly does not [for the CH32V003]." The gate is NEVER chip-identity and NEVER a chip allowlist; this supersedes any earlier framing of the gate as a chip-family test.
+- examples-not-allowlist: ESP32-class and the RP2040 are EXAMPLES that CLEAR the capability predicate ("an RP2040 would also surely be a qualifying MCU," David) — illustrations of devices with sufficient RAM/compute, not the definition of qualification. The CH32V003 sub-engine floor is an EXAMPLE that FAILS the predicate — insufficient RAM/compute to carry the relay + full baseline — so it is a relayed DAUGHTERCARD by construction, never a mothercard, regardless of any future firmware work on it. The exclusion is on the CAPABILITY basis, not chip-family, and is DAVID-AGREED (this session) on that basis.
+- implementation-implication: a device tests its OWN capability, evaluated from its own `board_profile` — "do I have the room?" (sufficient RAM/flash to host the relay + the full baseline) — it NEVER tests "am I an ESP32." No chip-identity branch belongs anywhere in this gate's implementation.
+- threshold-definition-status: defined by CAPABILITY (sufficient RAM/flash to carry the relay + the full baseline), deliberately NOT defined as a numeric RAM/flash cutoff in this document — a precise cutover number is left for the architect's audit or a follow-on decision, so this baseline does not silently over-specify a boundary David did not state numerically.
+- provenance: DAVID-RULING for the capability-predicate framing itself (verbatim, 2026-09-03, correcting an earlier chip-identity framing); DAVID-AGREED (this session) for the CH32V003 exclusion specifically stated on the capability basis (insufficient RAM/compute), not chip-family; ESP32 and RP2040 are David's own exemplars of devices that clear the predicate.
+- see-also: [CXC-DEVICE-BASELINE-CAP-UART-GOAL]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-SCOPE-PRECONDITION] Hard dependency: scope must be on the wire, or the mothercard membrane cannot enforce local-stays/global-crosses — record as a PRECONDITION TO VERIFY, not an assumption
+
+- precondition: [CXC-VISION-SCOPE-MEMBRANE] states this as a blocking prerequisite, not a tidiness fix — "Restoring scope to the wire is a PREREQUISITE for the mothercard architecture, not a tidiness fix. This is the one item on this page that BLOCKS a build rather than informing one." Without scope surviving a wire round-trip, [CXC-DEVICE-BASELINE-RELAY-MEMBRANE]'s enforcement obligation has nothing to enforce against.
+- ratified-fix-claimed: BP-CAN-ID v2 (commit `dd7e049`, 2026-08-13, confirmed on read: "arbitration gets a DESIGN, scope gets a field, the value gets a type," layout `prio(3) | type(4) | ns_id(16) | src(4) | scope(2) = 29` bits, ratified by David after an independent CAN specialist's teardown) added the scope field and is stated in this baseline's brief to have ENDED the CAN-layout divergence between `python/composeio/transport_can.py` and `services/can_mqtt_bridge`.
+- discrepancy-flagged-not-resolved: ⛔ VERIFIED 2026-09-03 — RESOLVED, discrepancy closed. This document did not take the "ended" framing on faith; the flag stood until the code itself was read on 2026-09-03 against all three wire sites: `cyd/src/bus_can_id.h` (`bus_can_id_encode`, shifts `kCanPrioShift=26/kCanTypeShift=22/kCanNsShift=6/kCanSrcShift=2/kCanScopeShift=0`), `python/composeio/transport_can.py` (`encode_arbitration_id`/`decode_arbitration_id`, lines 171-207, identical shift/mask constants) and `services/can_mqtt_bridge/bridge.py` (lines 602-672, which IMPORTS `encode_arbitration_id`/`decode_arbitration_id`/`can_id_ns_hash` directly from `composeio.transport_can` rather than reimplementing the codec — so bridge and transport share one codec, not two that happen to agree). All three speak `prio(3)|type(4)|ns_id(16)|src(4)|scope(2)` identically; grep across all three for the old layouts (`ns_hash(16)|type(4)|src(9)`, `type(4)|scope(2)|ns(16)|seq(7)`) turns up only historical comments documenting the fix, no live code. The two corpus records this property used to flag as contradicting "ended" have both now been synced to match: [CXC-VISION-SCOPE-MEMBRANE]'s `current-defect`/`defect-is-not-free-to-fix` properties in `62-composeplatform-vision.lts` and [DEC-CAN-ARBITRATION-ID-LAYOUT-DIVERGENCE]'s `lifecycle-position` (now `resolved`) in the decision graph.
+- what-this-means-for-the-baseline: the UART transport ([CXC-DEVICE-BASELINE-UART-TRANSPORT]) and the relay/mothercard membrane ([CXC-DEVICE-BASELINE-RELAY-MEMBRANE]) MUST use the SAME `BusMessage` scope-carrying encoding `dd7e049` establishes — that requirement is not in doubt, and it is now also VERIFIED that `CANTransport` and `can_mqtt_bridge` are BOTH reconciled onto `dd7e049`'s layout in code, sharing the same codec module. This precondition is MET at [CXC-DEVICE-BASELINE-PRE-SCOPE-WIRE-VERIFY] (§9) — see that node for the verdict. What remains unverified is only the ON-HARDWARE proof at [CXC-DEVICE-BASELINE-EV-06]/[CXC-DEVICE-BASELINE-EV-07], which this code-read does not substitute for.
+- provenance: david-ruling for the hard dependency itself (scope-on-wire is a prerequisite, stated in this session's brief) and for the BP-CAN-ID v2 ratification (`dd7e049`, David, 2026-08-13); architect-inference for the discrepancy flag and its 2026-09-03 resolution, both this document's own finding from reading the corpus and code, not claims attributed to David.
+- depends-on: [CXC-VISION-SCOPE-MEMBRANE]
+- see-also: [CXC-DEVICE-BASELINE-PRE-SCOPE-WIRE-VERIFY]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 7. Explicit non-goals — recorded so they are not silently reintroduced
+
+### [CXC-DEVICE-BASELINE-NONGOAL-REHASH] On-device integrity re-hashing is explicitly NOT in this baseline
+
+- non-goal: the device does not re-hash a fetched asset to verify its own integrity. The transport already guarantees corruption-integrity on the trusted LAN, and re-hashing on a constrained MCU is compute deliberately avoided.
+- provenance: david-ruling.
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-NONGOAL-SOFT-RELOAD] Soft (in-place, no-reboot) config reload is explicitly NOT USB-flash-motivated and is out unless a specific case arises
+
+- non-goal: both `_device/<id>/restart` (hard reboot) and a hypothetical soft in-place reload are already USB-free, so a soft reload buys nothing toward THIS baseline's driver (eliminating USB visits) — it would only shave reboot flicker. Optional, per-widget, ONLY if a specific reboot-flicker case arises later; not part of this comprehensive pass.
+- provenance: architect-recommendation-david-agreed.
+- see-also: [DEC-ESP32-REMOTE-RESTART-BUS-COMMAND]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-NONGOAL-OTA] OTA is intentionally out of scope now — the eventual real answer, named as the horizon
+
+- non-goal: full ESP32/RP2040 OTA firmware-update capability is a separate, bigger decision, already named as a follow-on by [DEC-ESP32-REMOTE-RESTART-BUS-COMMAND]'s own `follow-on` property ("a full ESP32 OTA firmware-update capability... fixes the firmware-CAPABILITY case this restart cannot"). This baseline exists BECAUSE OTA is not being built now — bundling every confident capability into one flash pass is the mitigation, not the cure.
+- provenance: david-ruling (OTA intentionally not supported now; recorded as the horizon).
+- see-also: [DEC-DEVICE-BASELINE-FLASH-ONCE-THEN-CONFIG]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 8. Deferred with trigger — fetch-by-hash / content-addressed store
+
+### [DD-DEVICE-BASELINE-DEFER-FETCH-BY-HASH] Defer full fetch-by-hash / CAS + [CXC-ACN-RECOVERY] + [CXC-ACN-DELTA] — bus_storage is PATH-addressed today, verified
+
+- decision: DEFER building fetch-by-hash / a content-addressed store, [CXC-ACN-RECOVERY] (hash->current lineage index), and [CXC-ACN-DELTA] (delta/patch transfer). NOT in this baseline.
+- lifecycle-position: decided
+- status: decided
+- verification: bus_storage is PATH-addressed today — confirmed on read of `services/bus_storage/server.py`'s routing table: every GET route (`/api/v1/assets/<path>`, `/api/v1/blob/<path>`, `/api/v1/configs/<id>`) resolves by path/name/id; there is NO by-hash GET route anywhere in the file. Hashes are used ONLY for change-detection (`content_hash()` inside `AssetChangeNotifier`), never as an address.
+- resolution: the device stores `{path, server-provided-hash}` per [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET] / [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]; PATH is the recovery floor via `_device/<id>/restart`'s boot-fetch-by-path.
+- invalidating_assumption: this holds while (a) no consumer needs delta/patch transfer, and (b) fleet scale / shared-asset dedup does not make content-addressing pay for itself. The TRIGGER to build fetch-by-hash/CAS is either: adoption of delta-transfer as a requirement, OR fleet scale/dedup pressure making a by-hash address economical. Either condition reopens this decision.
+- rationale: bus_storage's existing path-addressed shape already covers everything this baseline needs (self-select by hash comparison, not by-hash fetch); building CAS now would be machinery ahead of a proven need, the same discipline [DD-STORE-QUERY-DISPOSITION] applied to the server-side query engine.
+- alternatives: build fetch-by-hash/CAS now, ahead of a proven need — rejected because bus_storage's path-addressed shape already covers this baseline's needs (self-select by hash comparison, never by-hash fetch), so the machinery would sit unused, the same shape [DD-STORE-QUERY-DISPOSITION]'s own `alternatives` property rejected for the server-side query engine.
+- provenance: DAVID-RULING (split 2026-09-03, audit resolution) for the DEFERRAL itself — David agreed to defer; ARCHITECT-RECOMMENDATION for the specific TRIGGER CONDITIONS — the architect's analysis of when delta-transfer adoption or fleet-scale/dedup pressure would reopen this decision; architect-recommendation for the verification method (reading the live route table rather than trusting a prior claim).
+- closes-question: this deferral CLOSES David's original [CXC-ACN-RECOVERY] usefulness-in-parallel question — David confirmed 2026-09-03: "Yes, 'defer fetch-by-hash' also closes my [CXC-ACN-RECOVERY] question." [CXC-ACN-RECOVERY] (device-pull recovery against a content-lineage index) is deferred/settled: recovery-via-lineage needs fetch-by-hash, which is deferred here.
+- see-also: [CXC-ASSET-CHANGE-NOTIFY]
+- see-also: [CXC-ACN-RECOVERY]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 9. Pre-integration questions — for the design-audit and for the bench pass
+
+### [CXC-DEVICE-BASELINE-PRE-BUS-BINDING-BENCH] Has the bus_binding repoint/confirm/revert loop been proven on real silicon?
+
+- question: EMPTY. Per [CXC-DEVICE-BASELINE-CAP-BUS-BINDING], the state machine is host-proven but the live repoint, the auto-revert window, and the two-stage escape-hatch GPIO have not been bench-confirmed on any of the 8 boards. This baseline's comprehensive flash pass is a candidate moment to close this gap, but it has not yet been run.
+- see-also: [CXC-DEVICE-BASELINE-CAP-BUS-BINDING]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-PRE-RELAY-HARDWARE] Has the CAN-up/UART-down relay ever carried a live transfer between two real segments?
+
+- question: EMPTY. `relay_main.cpp` is compiled and host-tested only; no record in any corpus document this baseline depends on shows it running on hardware.
+- see-also: [CXC-DEVICE-BASELINE-RELAY-MEMBRANE]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-PRE-ANNOUNCE-BIND-HARDWARE] Has announce-bind level 3 (daughtercard-to-mothercard) run on any hardware?
+
+- question: EMPTY. [CXC-VISION-ANNOUNCE-BIND] states plainly that level 3 has no hardware.
+- see-also: [CXC-DEVICE-BASELINE-ANNOUNCE-BIND-L3]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-PRE-DOC-PURGE-CENSUS] Beyond the 2 known app-surface refs, has a census found every remaining doc:// reference reachable from device-served config or live-store docs?
+
+- question: EMPTY. No census beyond the 2 known app-surface refs (`fleet-540-soak`, `minnow-bringup`) has been run against device-served configs or the live merged store.
+- see-also: [CXC-DEVICE-BASELINE-CAP-DOC-PURGE]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-PRE-DEVICE-SIDE-BUFFERING] Does device-side inbound-message buffering exist in firmware today?
+
+- question: EMPTY. Per [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]'s `auto-recovery` property (corrected 2026-09-03, audit resolution Q1), David's stated PRIMARY miss-recovery mechanism is DEVICE-SIDE buffering of inbound bus messages — NOT broker-side MQTT retention, which an earlier draft of this document wrongly assumed. This document does not know whether such buffering exists in any device firmware today; it is recorded here as David's stated mechanism to VERIFY or BUILD, not as an already-present capability.
+- see-also: [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-PRE-SCOPE-WIRE-VERIFY] Does `dd7e049` actually reconcile the CANTransport / can_mqtt_bridge layout divergence, or only the spec side?
+
+- question: VERIFIED 2026-09-03 — MET, not EMPTY. Read `cyd/src/bus_can_id.h` (`bus_can_id_encode`, `kCanPrioShift=26/kCanTypeShift=22/kCanNsShift=6/kCanSrcShift=2/kCanScopeShift=0`), `python/composeio/transport_can.py` (`encode_arbitration_id`/`decode_arbitration_id`, lines 171-207) and `services/can_mqtt_bridge/bridge.py` (lines 602-672) directly. All three implement `prio(3)|type(4)|ns_id(16)|src(4)|scope(2)` identically, and `bridge.py` does not reimplement the codec — it `from composeio.transport_can import (encode_arbitration_id, decode_arbitration_id, can_id_ns_hash, ...)` at line 201, so the bridge and the Python transport are provably the SAME codec, not two independent implementations that happen to agree. A grep for both retired layouts (`ns_hash(16)|type(4)|src(9)` and `type(4)|scope(2)|ns(16)|seq(7)`) across all three files finds them only in comments narrating the fix, never in live code. The divergence [DEC-CAN-ARBITRATION-ID-LAYOUT-DIVERGENCE] described is CLOSED in code, and the two corpus records [CXC-DEVICE-BASELINE-SCOPE-PRECONDITION]'s `discrepancy-flagged-not-resolved` property named as still contradicting "ended" ([CXC-VISION-SCOPE-MEMBRANE], [DEC-CAN-ARBITRATION-ID-LAYOUT-DIVERGENCE]) have been synced to match this verdict. [CXC-DEVICE-BASELINE-RELAY-MEMBRANE] and [CXC-DEVICE-BASELINE-UART-TRANSPORT] may now be built against a settled wire format; only their ON-HARDWARE evidence ([CXC-DEVICE-BASELINE-EV-06], [CXC-DEVICE-BASELINE-EV-07]) remains open, and this verification does not stand in for it.
+- see-also: [CXC-DEVICE-BASELINE-SCOPE-PRECONDITION]
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## 10. Post-integration evidence slots — EMPTY until something real fills them
+
+### [CXC-DEVICE-BASELINE-EV-01] asset_reload is ported to main.cpp and qualia_main.cpp and self-selects correctly on real hardware
+
+- evidence: EMPTY.
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-EV-02] bus_binding's repoint/confirm/revert loop is proven live on the bench, all 8 boards
+
+- evidence: EMPTY. Falsifiable against [CXC-DEVICE-BASELINE-PRE-BUS-BINDING-BENCH].
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-EV-03] content-hash-on-GET is landed and asset_reload's self-select rule is verified end to end against a live server-provided hash
+
+- evidence: EMPTY.
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-EV-04] The blob route emits change-notify events and at least one migrated-document consumer reacts to one
+
+- evidence: EMPTY.
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-EV-05] Zero doc:// references remain, fleet-wide, verified by the census named in [CXC-DEVICE-BASELINE-PRE-DOC-PURGE-CENSUS]
+
+- evidence: EMPTY.
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-EV-06] The UART transport's decode-only behavior is proven against the dd7e049 BusMessage scope-carrying encoding, on hardware
+
+- evidence: EMPTY. Falsifiable against [CXC-DEVICE-BASELINE-PRE-SCOPE-WIRE-VERIFY], which is now VERIFIED/MET (2026-09-03, code-read across all three wire sites — see that node). The precondition being met does not fill this slot: this evidence item asks for ON-HARDWARE proof, which the code-read does not and cannot substitute for. This slot now awaits only the bench pass, not a wire-format decision.
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-EV-07] The relay/mothercard membrane runs on real hardware and enforces scope on both the subscribe and publish path
+
+- evidence: EMPTY. Falsifiable against [CXC-DEVICE-BASELINE-PRE-RELAY-HARDWARE].
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-EV-08] Announce-bind level 3 runs on real hardware — a daughtercard announces, a mothercard binds
+
+- evidence: EMPTY. Falsifiable against [CXC-DEVICE-BASELINE-PRE-ANNOUNCE-BIND-HARDWARE].
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-EV-09] bus_transport_select's mode + UART pins are runtime-selectable from board_profile, verified on at least one mothercard and one daughtercard, zero reflash between roles
+
+- evidence: EMPTY.
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+### [CXC-DEVICE-BASELINE-EV-10] Device-side inbound-message buffering exists in firmware and is verified to close the transient-miss gap for asset_reload's change events
+
+- evidence: EMPTY. Falsifiable against [CXC-DEVICE-BASELINE-PRE-DEVICE-SIDE-BUFFERING]. Recorded as David's stated PRIMARY recovery mechanism (audit resolution, Q1, 2026-09-03), not a claim it exists today.
+- part-of: [SPEC:CXC-DEVICE-BASELINE]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [DEC-DEVICE-BASELINE-FLASH-ONCE-THEN-CONFIG] PART_OF [SPEC:CXC-DEVICE-BASELINE]
+- [CXC-DEVICE-BASELINE-PLACEMENT] RELATED_TO [CXC-VISION-PLACEMENT]
+- [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] DEPENDS_ON [DEC-ESP32-REMOTE-RESTART-BUS-COMMAND]
+- [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] DEPENDS_ON [DEC-FETCH-ON-BOOT-CONFIG-DISCIPLINE]
+- [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] DEPENDS_ON [CXC-ASSET-CHANGE-NOTIFY]
+- [CXC-DEVICE-BASELINE-CAP-BUS-BINDING] DEPENDS_ON [CXC-REPOINT]
+- [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET] DEPENDS_ON [CXC-ASSET-CHANGE-NOTIFY]
+- [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET] SUPERSEDES [CXC-DEVICE-BASELINE-NONGOAL-REHASH]
+- [CXC-DEVICE-BASELINE-CAP-BLOB-NOTIFY] EXTENDS [CXC-ASSET-CHANGE-NOTIFY]
+- [CXC-DEVICE-BASELINE-CAP-BLOB-NOTIFY] RELATED_TO [SPEC:CXC-STORE]
+- [CXC-DEVICE-BASELINE-CAP-DOC-PURGE] RELATED_TO [SPEC:CXC-STORE]
+- [CXC-DEVICE-BASELINE-UART-TRANSPORT] DEPENDS_ON [DEC-G1-CONNECTOR-TRANSFORM-BOUNDARY-2026-08-25]
+- [CXC-DEVICE-BASELINE-RELAY-MEMBRANE] DEPENDS_ON [CXC-VISION-SCOPE-MEMBRANE]
+- [CXC-DEVICE-BASELINE-ANNOUNCE-BIND-L3] DEPENDS_ON [CXC-VISION-ANNOUNCE-BIND]
+- [CXC-DEVICE-BASELINE-TRANSPORT-SELECT-RUNTIME] DEPENDS_ON [CXC-DEVICE-BASELINE-CAP-UART-GOAL]
+- [CXC-DEVICE-BASELINE-SCOPE-PRECONDITION] DEPENDS_ON [CXC-VISION-SCOPE-MEMBRANE]
+- [CXC-DEVICE-BASELINE-SCOPE-PRECONDITION] RELATED_TO [DEC-CAN-ARBITRATION-ID-LAYOUT-DIVERGENCE]
+- [DD-DEVICE-BASELINE-DEFER-FETCH-BY-HASH] RELATED_TO [CXC-ASSET-CHANGE-NOTIFY]
+- [DD-DEVICE-BASELINE-DEFER-FETCH-BY-HASH] CLOSES [CXC-ACN-RECOVERY]
+- [CXC-DEVICE-BASELINE-NONGOAL-SOFT-RELOAD] RELATED_TO [DEC-ESP32-REMOTE-RESTART-BUS-COMMAND]
+- [CXC-DEVICE-BASELINE-NONGOAL-OTA] RELATED_TO [DEC-DEVICE-BASELINE-FLASH-ONCE-THEN-CONFIG]
+
+### Causal
+
+- [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET] PRECONDITION_FOR [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]
+- [CXC-DEVICE-BASELINE-SCOPE-PRECONDITION] PRECONDITION_FOR [CXC-DEVICE-BASELINE-RELAY-MEMBRANE]
+- [CXC-DEVICE-BASELINE-SCOPE-PRECONDITION] PRECONDITION_FOR [CXC-DEVICE-BASELINE-UART-TRANSPORT]
+- [CXC-DEVICE-BASELINE-PRE-SCOPE-WIRE-VERIFY] PRECONDITION_FOR [CXC-DEVICE-BASELINE-EV-06]
+- [CXC-DEVICE-BASELINE-PRE-BUS-BINDING-BENCH] PRECONDITION_FOR [CXC-DEVICE-BASELINE-EV-02]
+- [CXC-DEVICE-BASELINE-PRE-RELAY-HARDWARE] PRECONDITION_FOR [CXC-DEVICE-BASELINE-EV-07]
+- [CXC-DEVICE-BASELINE-PRE-ANNOUNCE-BIND-HARDWARE] PRECONDITION_FOR [CXC-DEVICE-BASELINE-EV-08]
+- [CXC-DEVICE-BASELINE-PRE-DOC-PURGE-CENSUS] PRECONDITION_FOR [CXC-DEVICE-BASELINE-EV-05]
+- [CXC-DEVICE-BASELINE-PRE-DEVICE-SIDE-BUFFERING] PRECONDITION_FOR [CXC-DEVICE-BASELINE-EV-10]
+- [DEC-DEVICE-BASELINE-FLASH-ONCE-THEN-CONFIG] CAUSES [CXC-DEVICE-BASELINE-CAP-BUS-BINDING]
+
+### Entity
+
+- [CXC-DEVICE-BASELINE-EV-01] GROUNDS [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]
+- [CXC-DEVICE-BASELINE-EV-02] GROUNDS [CXC-DEVICE-BASELINE-CAP-BUS-BINDING]
+- [CXC-DEVICE-BASELINE-EV-03] GROUNDS [CXC-DEVICE-BASELINE-CAP-HASH-ON-GET]
+- [CXC-DEVICE-BASELINE-EV-04] GROUNDS [CXC-DEVICE-BASELINE-CAP-BLOB-NOTIFY]
+- [CXC-DEVICE-BASELINE-EV-05] GROUNDS [CXC-DEVICE-BASELINE-CAP-DOC-PURGE]
+- [CXC-DEVICE-BASELINE-EV-06] GROUNDS [CXC-DEVICE-BASELINE-UART-TRANSPORT]
+- [CXC-DEVICE-BASELINE-EV-07] GROUNDS [CXC-DEVICE-BASELINE-RELAY-MEMBRANE]
+- [CXC-DEVICE-BASELINE-EV-08] GROUNDS [CXC-DEVICE-BASELINE-ANNOUNCE-BIND-L3]
+- [CXC-DEVICE-BASELINE-EV-09] GROUNDS [CXC-DEVICE-BASELINE-TRANSPORT-SELECT-RUNTIME]
+- [CXC-DEVICE-BASELINE-EV-10] GROUNDS [CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]
+
+---
+
+**Version**: 0.2 — 2026-09-03, design-audit resolutions applied by factlattice-editor after David
+ratified all six flagged provenance points plus two clarifying answers in the 2026-09-03 session.
+Six provenance retags: (1) [CXC-DEVICE-BASELINE-CAP-BUS-BINDING] architect-inference -> DAVID-AGREED
+(David named bus_binding in his own agreement list; inclusion CONFIRMED, no longer flagged); (2)
+[CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD] restart-as-recovery-floor architect-recommendation ->
+DAVID-RULING (David's original idea, his genesis turn: "the recovery mechanism is a restart"); (3)
+[CXC-DEVICE-BASELINE-CAPABILITY-THRESHOLD] reframed as a CAPABILITY PREDICATE evaluable from
+`board_profile` (David: the gate is "does the device have sufficient RAM and compute," not "is it an
+ESP32") — ESP32/RP2040 are examples that clear it, the CH32V003 an example that fails it, exclusion
+DAVID-AGREED on the capability basis, not chip-family; (4) [CXC-DEVICE-BASELINE-CAP-BLOB-NOTIFY]
+david-ruling -> ARCHITECT-RECOMMENDATION-DAVID-AGREED (architect-proposed, David's "Yes, agreed");
+(5) [DD-DEVICE-BASELINE-DEFER-FETCH-BY-HASH] provenance split — deferral DAVID-RULING, trigger
+conditions ARCHITECT-RECOMMENDATION — and the deferral is now recorded as CLOSING [CXC-ACN-RECOVERY]'s
+usefulness-in-parallel question, per David's 2026-09-03 confirmation; (6)
+[CXC-DEVICE-BASELINE-TRANSPORT-SELECT-RUNTIME] provenance split — the outcome (no reflash to change
+role, mode/UART pins config-selectable) DAVID-RULING, the mechanism (extend bus_transport_select)
+ARCHITECT-RECOMMENDATION. Two clarifying answers applied: Q1 —
+[CXC-DEVICE-BASELINE-CAP-ASSET-RELOAD]'s `auto-recovery` property corrected from an assumed
+BROKER-SIDE MQTT-retention mechanism to David's stated PRIMARY mechanism, DEVICE-SIDE inbound-message
+buffering, recorded as an EMPTY capability to verify/build
+([CXC-DEVICE-BASELINE-PRE-DEVICE-SIDE-BUFFERING], [CXC-DEVICE-BASELINE-EV-10]), not an
+already-present claim, with restart remaining the recovery floor beneath it; Q2 — resolved by
+correction (5) above, closing [CXC-ACN-RECOVERY]. Every code-grounded claim (line numbers, function
+names, file paths, header comments) from v0.1 is carried forward unchanged; nothing in that
+grounding was touched by this audit pass. The one discrepancy left open by that pass —
+[CXC-DEVICE-BASELINE-SCOPE-PRECONDITION]'s claim that `dd7e049` ended the CAN-layout divergence,
+contradicted by two corpus records that postdated the commit without recording its resolution — is
+CLOSED as of 2026-09-03: `python/composeio/transport_can.py`, `services/can_mqtt_bridge/bridge.py`
+and `cyd/src/bus_can_id.h` were read directly and all three implement `prio(3)|type(4)|ns_id(16)
+|src(4)|scope(2)` identically, with `bridge.py` importing the codec functions from
+`transport_can.py` rather than reimplementing them. [CXC-DEVICE-BASELINE-PRE-SCOPE-WIRE-VERIFY] is
+now VERIFIED/MET (§9), [CXC-VISION-SCOPE-MEMBRANE] and [DEC-CAN-ARBITRATION-ID-LAYOUT-DIVERGENCE]
+have been synced to match, and the scope-on-wire precondition for the relay/mothercard build is MET.
+**Status**: Ratified — placement RATIFIED, audit-complete, David-ratified 2026-09-03. Ready for
+build; every capability's own evidence slot (§10) remains EMPTY until the bench pass runs.

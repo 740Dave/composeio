@@ -1,0 +1,203 @@
+---
+scope: "The ratified R503 sensor-facing user experience: the ring-LED feedback language (state to colour to pattern), the finger-triggered state machine and its poll-based trigger, the AuraLED control model (a fire-and-forget parameterized scene selector, host-owned transitions), the two timing axes locked by lived observation, and the six ratified DSD decisions (D1-D6) that closed the design audit. This is UX intent above the AuraLED wire command; the command's shape lives in C70, and the concrete colour/profile declaration for this specific 2-channel part lives in [CXC-R503-AURALED]."
+audience: "The firmware author rebuilding command_feedback() to this table; the author of the r503-2ch feedback_profile declaration; anyone reviewing what the ring is supposed to mean to a player."
+boundary: "IN: the feedback table, the state machine, the control model, the two locked timing axes, and the six ratified DSD decisions. OUT: the AuraLedConfig wire command and colour codes (C70), the agnostic FeedbackState enum and conformance rule (C72), and the RBAC/identity model (C71)."
+not-this: "Not a driver spec and not a re-derivation of the AuraLed command. It is the RATIFIED design intent a driver author codes toward; C70 states what the command IS, this states what it MUST MEAN."
+domain: plt.cux
+status: draft
+created: 2026-08-22
+artifact-readiness: design-review
+confidentiality: internal-only
+---
+
+# R503 Sensor UX — Feedback Language, State Machine, And Ratified Decisions [SPEC:CXC-R503-SENSOR-UX]
+
+> The ring answers three questions with colour and one with pattern: which flow (blue = match, purple =
+> enroll, red = reject/fault), and what phase (steady, blip, breathing, three-flashes) — commanded as a
+> fire-and-forget scene at state boundaries, never per-LED. Every state, decision, and locked timing axis
+> is one node with one id, so a driver test and a design review cite exactly one of them.
+
+---
+
+## Feedback language
+
+### [CXC-R503-SENSOR-UX-FEEDBACK-TABLE] The ratified state -> colour -> pattern table, and the colour rule it encodes
+
+- definition: RATIFIED (DSD 2026-08-21, closed 2026-08-22). Eleven states map to colour and pattern: armed/awaiting -> blue, steady-on 100%; capturing -> blue, fast-strobe (a blip); processing -> blue, breathing; granted -> blue, 3 flashes; denied -> red, 3 flashes; unrecognized -> red, 3 flashes; enroll-awaiting -> purple, steady-on; enroll-capturing -> purple, fast-strobe; enroll-processing -> purple, breathing; enroll-success -> purple, 3 flashes; error/fault -> red, fast-strobe 2s.
+- rule: The table encodes one rule: BLUE = match, PURPLE = enroll, RED = reject/fault. The device's feedback-flow mode sets the base colour, and the three states shared by both flows — awaiting, capture, success — follow it. "Three flashes" is the universal success gesture, coloured by which flow succeeded (match = blue, enroll = purple).
+- match-arc-is-all-blue: The match arc is ALL BLUE end to end: armed (steady) -> blue blip (capture) -> blue breathing (processing) -> result. This REVISES an earlier, superseded reading where capture was purple — see [DEC-R503-UX-CAPTURE-COLOR]. A blue blip is told apart from armed (steady) and processing (breathing) by PATTERN, not colour, which keeps purple cleanly reserved for the enroll flow.
+- denied-equals-unrecognized: denied and unrecognized are INTENTIONALLY identical on the ring — 3 red flashes, one "rejected" signal. The distinction between "you are not who you claim" and "I don't know you" is carried by the bus auth_event, not the LED. This is a deliberate ambiguity, not a missing feature.
+- off-after-capture: RATIFIED (David, 2026-08-24). After the scan/capture completes and BEFORE the terminal 3-flash result gesture, the ring goes OFF (dark) for a deliberate gap — on BOTH the match flow (before the blue-granted / red-denied / red-unrecognized 3-flash) and the enroll-success flow (before the purple 3-flash). David verbatim: "After the scan/capture is complete, can we turn off the ring light? Then the triple blink of blue (pass) or red (fail) will be more clear." He confirmed the same for enroll. See [DEC-R503-UX-RESULT-OFF-GAP] and cross-ref [CXC-R503-AURALED], whose scene sequence must now command this dark gap explicitly.
+- off-after-capture-rationale: With the ring lit (blue processing-breathing, or purple processing-breathing) right up to the result, the first flash of the 3-flash gesture visually merges into the preceding lit state and the whole gesture reads as TWO flashes, not three. The OFF dark gap disambiguates the boundary between "processing" and "result," so all three flashes of the terminal gesture read as distinct.
+- dsd-source: (a local path, not published)
+- status: ratified
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+
+## State machine
+
+### [CXC-R503-SENSOR-UX-STATE-MACHINE] Finger-triggered state machine: armed -> capturing -> processing -> result -> armed
+
+- definition: armed/awaiting -> [finger touch] -> capturing -> processing -> terminal result -> back to armed. Capturing is near-instant, so its LED reads as a single blip ("I felt you"), not a sustained state.
+- trigger: RATIFIED (D4). The trigger is GenImg-poll, finger-aware, approximately 100ms. The WAKEUP-interrupt model (true low-power sleep) is a RATIFIED DEFERRAL: it needs a 6th wire (WAKEUP -> GPIO; 3V3T tied to 3.3V keeps it safe, per [CXC-R503-WAKEUP-TRACKS-3V3T]) and is UX-identical to the polled model, so it is deferred until idle power matters, not until the UX changes.
+- dsd-source: (a local path, not published)
+- status: ratified
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+- see-also: [CXC-R503-WAKEUP-TRACKS-3V3T], [DEC-R503-UX-TRIGGER-POLLED]
+
+## Control model
+
+### [CXC-R503-SENSOR-UX-CONTROL-MODEL] The AuraLED is a fire-and-forget parameterized scene selector, not per-LED control
+
+- definition: The device commands the ring through AuraLedConfig {control-mode, speed, colour, count}; the R503's own MCU runs the animation once commanded. The host does not drive individual LEDs and does not hold a persistent connection to the animation — it is fire-and-forget.
+- constraint: The HOST owns STATE TRANSITIONS and sets feedback only at command boundaries, over the single shared UART the R503 already uses for every other command. There is no separate feedback channel.
+- dsd-source: (a local path, not published)
+- status: ratified
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+- see-also: [CXC-R503-AURALED]
+
+## Timing
+
+### [CXC-R503-SENSOR-UX-TIMING-LOCKED] Two timing axes, both LOCKED by lived observation, neither provisional
+
+- definition: Two timing facts are LOCKED, not provisional. (1) The result-flash timing and duration — the "3 flashes" success gesture and the 2s fault strobe — is GLASS-VALIDATED and locked. (2) The finger-to-sensor colour-shift timing — how quickly the ring visibly changes colour after a finger lands — is LOCKED BY LIVED OBSERVATION (David, 2026-08-22): this was the axis David was most concerned about under D3, and having lived with the built interaction he confirmed no changes are needed.
+- rationale: Per [DEC-R503-UX-PATTERN-LOCKED] (D3), the conditional latitude that left this timing open carried an explicit stop, the condition was observed on glass, and this is the verdict on it — not a hedge left to rot in the plan.
+- dsd-source: (a local path, not published)
+- status: ratified
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+- see-also: [DEC-R503-UX-PATTERN-LOCKED]
+
+## Follow-on work
+
+### [CXC-R503-SENSOR-UX-FOLLOWON] Follow-on: rebuild command_feedback() to this ratified table
+
+- definition: The R503 driver's command_feedback() previously assigned unrenderable green/cyan/yellow/white colours, predating this ratification. It has been rebuilt to the table at [CXC-R503-SENSOR-UX-FEEDBACK-TABLE].
+- sequencing: Sequenced AFTER the real-HAL-bus round-trip landed, to avoid churning the same firmware file twice. That precondition is now satisfied.
+- evidence-command-feedback-rebuilt: LANDED ad5908d (731b4f1 rebuild the ring feedback to the ratified 3-colour table); all 11 ratified table cells verified matching in real_r503_hal.cpp::command_feedback() by c1 gap-analysis 2026-08-22; result-flash timing + finger-to-sensor colour-shift glass-validated session 6 (2026-08-22).
+- status: operational
+- status-note: This corpus has no prior precedent for a "landed and glass-validated" status token on a CXC- node (siblings use draft/ruled/proposed/ratified only); `operational` is used here as the closest fit and should be reconciled if the corpus later adopts a formal built/deployed vocabulary for CXC- nodes.
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+
+## Ratified decisions
+
+### [DEC-R503-UX-ERROR-COLOR] D1 — error/fault is RED, fast-strobe 2s
+
+- decision: RATIFIED by David. error/fault renders red, fast-strobe for 2 seconds.
+- rationale: David confirmed the PATTERN in the original design transcript ("Agreed that error/fault is fast strobe for 2 seconds") but never confirmed the colour in words; the DSD flagged this as a silently-hardened architect inference and put it to David directly. Red is the consistent alert-axis colour used on every other reject/fault row, and it is the row where a wrong signal costs the most.
+- status: ratified
+- dsd-source: (a local path, not published)
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+
+### [DEC-R503-UX-CAPTURE-COLOR] D2 — capturing is BLUE (a purple answer was given, then SUPERSEDED)
+
+- decision: RATIFIED as BLUE, fast-strobe. The DSD's own answer (David, 2026-08-21) was "A distinct capturing colour... Capture should be purple themed" — SUPERSEDED when David, on seeing the built purple-capture behaviour, reverted the match-flow capture state to BLUE and reserved purple for the enroll flow only.
+- rationale: The final rule is blue = match, purple = enroll, red = reject/fault. The match arc is ALL BLUE (armed steady -> blue blip on capture -> blue breathing on processing -> result); a blue blip is distinguished from armed/processing by PATTERN, not colour, so purple stays cleanly reserved for the enroll flow.
+- supersession: The purple-for-capture answer recorded in the DSD is preserved here for provenance rather than silently dropped; this node records the FINAL, ratified state (blue), which is what the feedback table encodes.
+- status: ratified
+- dsd-source: (a local path, not published)
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+
+### [DEC-R503-UX-PATTERN-LOCKED] D3 — pattern distinguishability: LATITUDE CLOSED, locked by lived observation
+
+- decision: RATIFIED AND CLOSED (David, 2026-08-22). The DSD's own recommendation was "re-verify on hardware before locking"; David instead confirmed the patterns were already distinguishable by eye and left the axis under explicit conditional latitude ("TBD based on interaction experiences"). That conditional latitude is now RESOLVED: having lived with the built interaction — in particular the finger-to-sensor colour-shift timing, the axis he was most concerned about — David confirms NO changes are needed.
+- rationale: Per the conditional-latitude-must-carry-a-stop discipline, the conditional carried a stop, the condition was observed on glass, and this is the verdict on it, not a hedge left open. The pattern cells and the colour-shift timing are LOCKED by lived observation, not merely provisional, and there is no open tripwire remaining.
+- status: ratified
+- dsd-source: (a local path, not published)
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+
+### [DEC-R503-UX-TRIGGER-POLLED] D4 — start polled, defer WAKEUP
+
+- decision: RATIFIED. Start with GenImg-poll (~100ms, finger-aware). Defer the WAKEUP-interrupt model.
+- rationale: WAKEUP is not currently wired — the ratified hookup carries only UART + power. The polled model works today with the wiring already soldered and is UX-identical to the interrupt model David originally assumed. Add the interrupt later, needing a 6th wire, only if idle power matters.
+- status: ratified
+- dsd-source: (a local path, not published)
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+
+### [DEC-R503-UX-VERIFIED-SCOPE] D5 — downgrade "empirically verified" to what was actually shown
+
+- decision: RATIFIED. Colour was verified by a real sweep and eyewitness; of the six AuraLed control modes, only two (breathing and flashing, at two speeds each) were ever demonstrated on hardware. off, gradual-on, and gradual-off were named from the command's parameter shape and were never shown.
+- rationale: A reader of the earlier draft would assume everything under the primitive-inventory header was hardware-checked the way colour was. This ratification states exactly what was verified versus described, removing false confidence in the three unshown modes.
+- status: ratified
+- dsd-source: (a local path, not published)
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+- see-also: [CXC-R503-SENSOR-UX-CONTROL-MODEL]
+
+### [DEC-R503-UX-ARCHITECTURE-FRAMING] D6 — the state-on-bus / expression-in-leaf framing is the architect's synthesis
+
+- decision: RATIFIED, attributed as the architect's synthesis, not David's words. Two design halves: (a) the semantic STATE model, bus-visible and portable; (b) the R503-specific EXPRESSION of that state on the AuraLED. The device owns the mapping locally — state on the bus, behaviour in the leaf.
+- rationale: Reasonable and useful, but per the audit discipline every claim not directly attributed to David is flagged as an architect conclusion never put to him for a yes/no. Kept, and honestly attributed.
+- status: ratified
+- dsd-source: (a local path, not published)
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+
+### [DEC-R503-UX-RESULT-OFF-GAP] D7 — OFF-after-capture: a deliberate dark gap disambiguates the terminal 3-flash
+
+- decision: RATIFIED by David, 2026-08-24, verbatim: "After the scan/capture is complete, can we turn off the ring light? Then the triple blink of blue (pass) or red (fail) will be more clear." Confirmed by David to apply identically to the enroll-success flow (purple 3-flash).
+- rationale: With the ring lit continuously through processing (blue or purple breathing) right up to the terminal result, the first of the three result flashes merges visually into that preceding lit state, so the gesture reads as two flashes rather than three. Inserting an explicit OFF (dark) scene after capture/processing and before the 3-flash gesture opens a visible gap that makes the boundary — and therefore all three flashes — unambiguous.
+- scope: Applies to BOTH the match flow (before blue-granted / red-denied / red-unrecognized 3-flash) and the enroll-success flow (before purple 3-flash).
+- consequence: The device's scene sequence for every terminal result now issues an explicit OFF command between the processing scene and the 3-flash scene, rather than commanding the 3-flash scene directly off the end of processing. This is a change to [CXC-R503-SENSOR-UX-FOLLOWON]'s command_feedback() rebuild, not a new ratified colour or pattern cell.
+- open-caveat: OFF uses the AuraLed "off" control mode, one of the three modes named from the command's parameter shape but never hardware-demonstrated per [DEC-R503-UX-VERIFIED-SCOPE] (D5). The command_feedback() rebuild for this decision MUST verify on the part in hand that "off" actually renders dark (not merely that the part accepts the command) before this gap can be called glass-validated.
+- status: ratified
+- decided-in-session: cux-architect-2026-08-24-fingerprint
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+- see-also: [CXC-R503-SENSOR-UX-FEEDBACK-TABLE], [CXC-R503-AURALED], [DEC-R503-UX-VERIFIED-SCOPE]
+
+### [DEC-R503-UX-HAL-LIVE-REBIND-FIX] D8 — HAL binding: fail-loud on mock-with-real-sensor-present, AND live rebind, both
+
+- decision: RATIFIED by David, 2026-08-24 — "both": the device MUST fail loud (announce fingerprint_inoperable, never loaded/ready/armed) whenever it is running on the mock HAL while a real sensor is physically present, AND HAL promotion from mock to the real backend MUST be a LIVE capability the device re-evaluates whenever the real sensor answers, never a one-shot decision fixed at boot.
+- rationale: The under-spec surfaced by the DEFECT-ARMED-ROSTER-LOADED-R503-DEVICE-78C389 fork defect was two-part — a device that forked onto the mock at boot kept publishing loaded/ready/armed signals even after the real sensor came up, AND nothing on the device re-checked for the real sensor once it had already booted onto the mock. A fix that only added the fail-loud half would leave the device stuck announcing fingerprint_inoperable forever once forked, even after the real sensor was plugged in; a fix that only added live rebind without the fail-loud half would leave the fleet-visible state silently wrong for however long the rebind takes to notice. Both together close the gap. See the resulting contract at [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR].
+- status: ratified
+- decided-in-session: cux-architect-2026-08-24-fingerprint
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+- see-also: [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR]
+
+### [DEC-R503-MOCK-STRUCTURAL-GUARD] D9 — keep the mock, but annotate its envelope AND structurally guard it
+
+- decision: RATIFIED by David, 2026-08-24 — option (a): keep MockFingerprintHAL, because it is the host/native parity-test oracle and you cannot automate a fingertip ([CXC-FPHAL-PARITY-TEST]), AND both annotate its legitimate use-envelope and add a structural build-time guard — not annotate-only.
+- rationale: The mock's value is real: it is the only reachable way to exercise the six failure axes and the enrollment/parity round-trip on demand, so removing it was never on the table. The actual danger was narrower and already realized — DEFECT-ARMED-ROSTER-LOADED-R503-DEVICE-78C389 showed a device forked onto the mock silently impersonating an armed, ready sensor. Annotation alone documents the danger without closing it; "don't rely on care where a mechanism will do" — asking engineers to remember not to wire the mock into a production binding path is the same shape of failure that just shipped. A build-time guard (FP_ALLOW_MOCK) makes the just-fixed failure un-reintroducible rather than merely discouraged.
+- consequence: See [CXC-FPHAL-MOCK-ROLE] for the ratified use-envelope (X = host/native test oracle, unrestricted; Y = gated bench/dev with no sensor wired; Z = gated scripted UX/flow demo; NEVER = silent production-runtime fallback) and the structural guard it now records — the production build does not compile the mock into the device-binding path unless FP_ALLOW_MOCK is defined, and the default / no-real-sensor state binds an INOPERABLE NULL HAL instead. See [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] for the companion fail-loud-plus-live-rebind fix (D8): D8 catches a mock/real fork that has already happened at runtime; this decision prevents the mock from ever being compiled into that path in the first place. The two are complementary, not redundant.
+- status: ratified
+- decided-in-session: cux-architect-2026-08-24-fingerprint
+- part-of: [SPEC:CXC-R503-SENSOR-UX]
+- see-also: [CXC-FPHAL-MOCK-ROLE], [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-R503-SENSOR-UX-STATE-MACHINE] DEPENDS_ON [CXC-R503-SENSOR-UX-FEEDBACK-TABLE]
+- [CXC-R503-SENSOR-UX-CONTROL-MODEL] DEPENDS_ON [CXC-R503-AURALED]
+- [CXC-R503-SENSOR-UX-FEEDBACK-TABLE] DEPENDS_ON [CXC-R503-AURALED]
+- [CXC-R503-SENSOR-UX-FEEDBACK-TABLE] DEPENDS_ON [CXC-FPHAL-FEEDBACK-STATES]
+- [CXC-R503-SENSOR-UX-FEEDBACK-TABLE] DEPENDS_ON [CXC-FPHAL-FEEDBACK-CONFORMANCE]
+- [CXC-R503-SENSOR-UX-TIMING-LOCKED] DEPENDS_ON [DEC-R503-UX-PATTERN-LOCKED]
+- [CXC-R503-SENSOR-UX-FOLLOWON] DEPENDS_ON [CXC-R503-SENSOR-UX-FEEDBACK-TABLE]
+- [DEC-R503-UX-CAPTURE-COLOR] PART_OF [CXC-R503-SENSOR-UX-FEEDBACK-TABLE]
+- [DEC-R503-UX-ERROR-COLOR] PART_OF [CXC-R503-SENSOR-UX-FEEDBACK-TABLE]
+- [DEC-R503-UX-PATTERN-LOCKED] PART_OF [CXC-R503-SENSOR-UX-TIMING-LOCKED]
+- [DEC-R503-UX-TRIGGER-POLLED] PART_OF [CXC-R503-SENSOR-UX-STATE-MACHINE]
+- [DEC-R503-UX-VERIFIED-SCOPE] PART_OF [CXC-R503-SENSOR-UX-CONTROL-MODEL]
+- [DEC-R503-UX-ARCHITECTURE-FRAMING] PART_OF [SPEC:CXC-R503-SENSOR-UX]
+- [DEC-R503-UX-RESULT-OFF-GAP] PART_OF [CXC-R503-SENSOR-UX-FEEDBACK-TABLE]
+- [DEC-R503-UX-RESULT-OFF-GAP] DEPENDS_ON [DEC-R503-UX-VERIFIED-SCOPE]
+- [DEC-R503-UX-RESULT-OFF-GAP] DEPENDS_ON [CXC-R503-AURALED]
+- [DEC-R503-UX-HAL-LIVE-REBIND-FIX] DEPENDS_ON [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR]
+- [DEC-R503-MOCK-STRUCTURAL-GUARD] DEPENDS_ON [CXC-FPHAL-MOCK-ROLE]
+- [DEC-R503-MOCK-STRUCTURAL-GUARD] DEPENDS_ON [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR]
+
+### Causal
+
+- [DEC-R503-UX-PATTERN-LOCKED] ENABLES [CXC-R503-SENSOR-UX-TIMING-LOCKED]
+- [DEC-R503-UX-RESULT-OFF-GAP] CAUSES [CXC-R503-SENSOR-UX-FOLLOWON]
+
+### Temporal
+
+- [DEC-R503-UX-PATTERN-LOCKED] BEFORE [CXC-R503-SENSOR-UX-FOLLOWON]
+- [CXC-R503-SENSOR-UX-FEEDBACK-TABLE] BEFORE [CXC-R503-SENSOR-UX-FOLLOWON]
+- [DEC-R503-UX-RESULT-OFF-GAP] BEFORE [CXC-R503-SENSOR-UX-FOLLOWON]
+
+---
+
+**Version**: 1.2
+**Status**: Draft — PLACEMENT UNRATIFIED (staging in the R503 working directory, same posture as the sibling specs). All nine ratified decisions (D1-D9) are RATIFIED. D1-D6's command_feedback() driver rebuild LANDED and was gap-analysis-verified (see [CXC-R503-SENSOR-UX-FOLLOWON], evidence filled 2026-08-22); D7's OFF-after-capture gap (2026-08-24), D8's HAL live-rebind fix (2026-08-24), and D9's mock structural guard (2026-08-24) are ratified design intent NOT YET reflected in landed firmware — command_feedback(), the HAL promotion path, and the FP_ALLOW_MOCK-gated device-binding path all need a follow-on build pass, and D7's "off" control mode specifically needs hardware verification per its own open-caveat. The R503 in hand has not been characterized against this table in an automated test; the timing/pattern axes are locked by LIVED OBSERVATION on hardware, not by a machine acceptance test.

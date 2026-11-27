@@ -1,0 +1,257 @@
+---
+scope: "The R503 optical fingerprint module as a PERIPHERAL below the agnostic HAL: the electrical facts a board designer must not get wrong, the packet framing and checksum, the AuraLed feedback surface, and the four protocol traps that break the one-command-one-response assumption every reference driver makes. These are datasheet-derived hardware truths and hazards; the callable contract that sits above them is C72 (CXC-FPHAL)."
+audience: "The board designer wiring an R503 to an ESP32; the firmware author writing the r503 backend of the fingerprint HAL; the author of the R503HAL parity fixtures."
+boundary: "IN: pins, rails, the WAKEUP/3.3VT hazard, framing, checksum, AuraLed, the protocol traps, and the settled HAL binding declaration. OUT: the callable HAL operation set (C72), the identity/cast model (C71), and the bus contract (C73)."
+not-this: "Not a driver. It states what the part IS and where its documentation is wrong or self-contradictory, so a driver author codes against measured truth rather than against a manual that disagrees with itself across revisions."
+domain: plt.cux
+status: draft
+created: 2026-08-18
+artifact-readiness: design-review
+confidentiality: internal-only
+---
+
+# R503 Fingerprint Module — Realization Below The HAL [SPEC:CXC-R503]
+
+> The R503 is ONE realization of the agnostic fingerprint HAL (C72). This document carries the facts
+> that live below that seam: what the part electrically is, how its packets are framed, and the four
+> protocol traps a firmware backend must absorb. Every hazard is one node with one id, so a board
+> review comment and a firmware test can cite exactly one of them.
+
+---
+
+## Electrical facts and hazards
+
+### [CXC-R503-PART] The part — six pins, two independent rails, a 200-template on-chip store, and an on-chip matcher
+
+- fact: The R503 is a captive-pigtail optical fingerprint module with a 200-template on-chip store and an on-chip 1:N matcher. It exchanges packets over UART at a documented default of 57600 baud. It has two independent power rails: a main VCC and a separate touch-induction supply.
+- consequence: All identity work happens on the part. The host moves opaque templates and reads match outcomes; it never sees an image and never runs a matcher.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-PINOUT] Six pins on a captive pigtail — pin 1 is identified only by a photograph, and wire colour is disclaimed
+
+- fact: Pins are 1 VCC (DC 3.3V), 2 GND, 3 TXD (data out, TTL), 4 RXD (data in, TTL), 5 WAKEUP (finger-detect, standby HIGH and finger LOW), 6 3.3VT (touch-induction supply, DC 3-5V).
+- hazard: Pin 1 and pin 6 are identified by a photograph and by nothing else — no keying drawing, no polarity mark. The manual states outright that line order has nothing to do with wire colour. Never infer the pinout from wire colour on this part.
+- constraint: A board MUST confirm pin 1 physically against the part in hand before committing a footprint.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-RAILS] Two genuinely independent rails, an unregulated input, and no hot-plug
+
+- fact: VCC and 3.3VT are independent. The manual's own low-power mode runs with VCC OFF and 3.3VT ON so the part can still wake on a finger, which proves the two rails are separate.
+- hazard: The power input is unregulated and fed directly to the image sensor and decoding chip, so board-side filtering is the host's job. The manual warns that inserting or removing the cable while live may damage the part: no hot-plug.
+- constraint: A firmware backend that power-gates VCC to save power MUST allow a settling floor before assuming the part is ready after a wake.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-WAKEUP-TRACKS-3V3T] WAKEUP is driven from 3.3VT, so feeding 3.3VT at 5V overdrives an ESP32 GPIO
+
+- claim: The WAKEUP output's HIGH level tracks the 3.3VT rail, not VCC. This is a STRONG INFERENCE, not a flat datasheet fact: the manual says the touch signal is a CMOS output "roughly the same as the input voltage" inside a paragraph about the touch supply, and the low-power mode requires WAKEUP to work while VCC is off, which is only possible if WAKEUP is powered from 3.3VT.
+- hazard: The manual permits feeding 3.3VT at up to 5V. Doing so very likely puts a ~5V CMOS high on WAKEUP. On a 3.3V non-5V-tolerant ESP32 GPIO that is an overdrive.
+- constraint: A board MUST tie 3.3VT to 3.3V. That wiring rule alone removes the overdrive; no characterization pass is required to justify it on a toy sensor.
+- proportionality: A bench measurement of the WAKEUP high level, and any probe that feeds 3.3VT at 5V to observe the result, are cut as disproportionate. Those are overvoltage-survival characterizations appropriate to an automotive or avionics part; this is a game sensor of assurance experiential, and the cheap wiring constraint is the whole mitigation.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+#### [CXC-R503-SCEN-WAKEUP-OVERDRIVE] 3.3VT fed at 5V
+
+- given: a board that feeds the R503 3.3VT rail at 5V
+- when: a finger is presented and WAKEUP asserts
+- then: WAKEUP presents an approximately 5V CMOS high to the host GPIO, which overdrives a 3.3V non-5V-tolerant ESP32 pin
+- part-of: [CXC-R503-WAKEUP-TRACKS-3V3T]
+
+### [CXC-R503-LOGIC-LEVELS-ABSENT] No VIH, VIL, VOH, VOL, drive strength, or 5V-tolerance figure exists anywhere
+
+- fact: No revision states any VIH, VIL, VOH, VOL, drive-strength, leakage, or 5V-tolerance figure for any pin. Verified by grep across the document set: zero numeric hits.
+- constraint: A board MUST NOT assume the R503 signal pins are 5V-tolerant and MUST NOT assume a device is good on the basis of one signal reading. Level compatibility is established by measurement, not by the manual.
+- rationale: This is the surviving rule from a proposed destructive over-drive probe: the hazard is real and the rule stands, but a test that overdrives a pin to prove it is a brick vector and is not authored.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-REFERENCE-CIRCUIT-HAZARD] The only schematic in the document is for a different 5V part
+
+- hazard: The single schematic in the manual is labelled R307 with pin 1 at 5V. Building it as drawn puts 5V on an R503 pin 1, which is a 3.3V rail.
+- constraint: The manual schematic MUST NOT be used as the R503 reference wiring.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-PART-IDENTITY-UNCONFIRMED] Confirm which sibling part is in hand before trusting rail voltage or connector
+
+- hazard: Four parts are sold as "R503-something" and marketplace listings conflate them: the 3.3V R503, a 5V-rail R503-5V with a different connector, an R503S, and an R503Pro. They differ on rail voltage and connector.
+- constraint: A firmware backend MUST confirm the part identity by issuing ReadProdInfo (0x3C) and reading the 16-byte ASCII model string before any rail or connector assumption is trusted. The part reports what it is over the wire in one command.
+- acceptance-machine: Against the R503HAL backed by a serial capture or a mock that replays a ReadProdInfo response, assert the driver issues 0x3C and surfaces the 16-byte model string before it reports the part ready. The test reads only; nothing is written to the part.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+## Protocol facts
+
+### [CXC-R503-FRAMING] The packet — big-endian throughout, address-gated, and Length counts the checksum
+
+- fact: Packets are big-endian throughout and gated by a 4-byte device address. The Length field counts the payload plus the two checksum bytes.
+- constraint: A parser MUST treat Length as inclusive of the checksum and MUST reject a packet whose address does not match the bound device address.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-CHECKSUM] The checksum rule, recomputed against 21 worked examples and correct on all 21
+
+- fact: The checksum is the arithmetic sum of the package identifier, both package-length bytes, and every content byte, modulo 2^16. The header and the address are NOT included.
+- constraint: A firmware backend MUST verify the checksum before acting on any payload.
+- acceptance-machine: Recompute the checksum over the 21 worked packet examples from the document set and assert all 21 match the stated value. The test runs on captured bytes; no hardware is contacted.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+#### [CXC-R503-SCEN-CHECKSUM-RECOMPUTE] The 21 worked examples
+
+- given: the 21 worked request/response packets quoted in the R503 document set
+- when: the checksum is recomputed as PID plus both length bytes plus all content bytes, modulo 2^16
+- then: every one of the 21 recomputed values equals the value printed in the manual
+- part-of: [CXC-R503-CHECKSUM]
+
+### [CXC-R503-AURALED] The ring LED — six modes, and colour count is VARIANT-SCOPED (this part: 2-channel R+B, three colours)
+
+- fact: The AuraLed ring supports six modes. Colour count is VARIANT-SCOPED, not a family-wide constant. The datasheet's SEVEN colours — 0x01 red, 0x02 blue, 0x03 purple, 0x04 green, 0x05 yellow, 0x06 cyan, 0x07 white — is TRUE for full-colour members of the R503 family and FALSE for the specific part in hand in this project: a 2-channel Red+Blue module. That part renders exactly THREE colours — red, blue, and purple (red+blue together) — and accepts but cannot render the four green-derived codes (0x04-0x07), which come up dark on this part. Its self-animator has a five-second minimum cycle.
+- consequence: Because the on-part animator cannot express a sub-second blink, any fast acknowledgement must be driven by host-issued state changes, not by the part's own animator — true regardless of colour variant. A feedback design authored against this specific 2-channel part MUST NOT assume the four unrendered colours are available; a design authored against a full-colour sibling MUST NOT assume this part can render it unmodified.
+- feedback-profile: This part declares the concrete alternate profile `feedback_profile: r503-2ch` at the HAL seam (per [CXC-FPHAL-FEEDBACK-CONFORMANCE], which this part cannot meet the canonical colour set of): three rendered colours (red, blue, purple); the twelve canonical FeedbackStates mapped onto the ratified blue/purple/red table in [SPEC:CXC-R503-SENSOR-UX] (blue = match arc, purple = enroll arc, red = reject/fault); scene-selector timing (mode, speed, count) owned by the device via AuraLedConfig (0x35), never the host.
+- constraint: A firmware backend for THIS part MUST declare `feedback_profile: r503-2ch` in capabilities() (per [CXC-FPHAL-FEEDBACK-CONFORMANCE]) rather than letting a caller assume the canonical seven-colour mapping this part cannot render. The agnostic HAL (C72) itself stays colour-blind and names no vendor part; this constraint binds only the R503 backend's own declaration, never the HAL's contract.
+- off-after-capture-cross-ref: RATIFIED (David, 2026-08-24; see [DEC-R503-UX-RESULT-OFF-GAP], [CXC-R503-SENSOR-UX-FEEDBACK-TABLE]). The r503-2ch scene sequence MUST now command an explicit OFF (dark) scene between the processing state and the terminal 3-flash result gesture, on both the match arc and the enroll-success arc — a deliberate gap that keeps the 3-flash gesture reading as three distinct flashes rather than merging its first flash into the preceding lit state. This uses the "off" control mode named in the six-mode inventory but never hardware-demonstrated per [DEC-R503-UX-VERIFIED-SCOPE] (D5); the command_feedback() rebuild that adds this gap MUST verify "off" renders true dark on this part, not merely that the part accepts the command.
+- evidence-feedback-profile-announced: PROVEN 2026-08-24 — the GRANTED end-to-end run (real finger, device dev/s3-fp1) announced `feedback_profile: r503-2ch` in a live capabilities() call as part of the device announce, alongside a resolved match (player David, character Chief Tyrol, role deck_chief, capability open_hatch) that published a GRANTED auth_event on the bus with a glass-confirmed blue 3-flash on the ring. CAVEAT: this announcement and the GRANTED result only fired once the device's HAL had rebound to the real sensor (post-reboot) — before that, the fork defect (DEFECT-ARMED-ROSTER-LOADED-R503-DEVICE-78C389) kept the device running its match/announce path against the mock while a real sensor sat unused, masking the announcement entirely. See [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR], the invariant ratified to close that gap.
+- see-also: [CXC-R503-PART-IDENTITY-UNCONFIRMED], [CXC-R503-REVISION-DRIFT], [CXC-FPHAL-FEEDBACK-CONFORMANCE], [SPEC:CXC-R503-SENSOR-UX], [DEC-R503-UX-RESULT-OFF-GAP], [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR]
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-UNSOLICITED-0X55] The module emits a bare unframed 0x55 unbidden — at power-on and after every soft reset
+
+- hazard: The part emits a bare, unframed 0x55 byte at power-on AND after every soft reset (0x3D). A driver that special-cases 0x55 only at boot desyncs the first time it soft-resets. Three of six surveyed drivers handle it at all.
+- constraint: A firmware backend MUST drain RX immediately before every transmit AND parse with a sliding two-byte header window. Either alone is partial; together they absorb the power-on byte, the post-soft-reset byte, and any stale packet from an aborted transaction.
+- acceptance-machine: Feed a mock UART a stream that prepends a bare 0x55 before a framed response, both at boot and after a simulated soft reset, and assert the parser resynchronizes and returns the framed response in both cases. Runs against captured bytes; no hardware.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+#### [CXC-R503-SCEN-0X55-AFTER-SOFTRST] Stray byte after a soft reset
+
+- given: a firmware backend that has just issued 0x3D SoftRst
+- when: the part emits a bare unframed 0x55 followed later by a framed packet
+- then: the parser absorbs the 0x55 and returns the framed packet without desynchronizing
+- part-of: [CXC-R503-UNSOLICITED-0X55]
+
+### [CXC-R503-ACK-STREAM-BREAKS-REQ-RESP] One AutoEnroll command produces many acknowledge packets
+
+- hazard: A single AutoEnroll command produces a stream of about fifteen acknowledge packets, and the config bit that enables the stream sits at a different index on the sibling AutoIdentify command. This breaks the one-command-one-response assumption every simple driver makes.
+- constraint: A firmware backend that uses the AutoEnroll or AutoIdentify convenience commands MUST treat the reply as a bounded stream, not a single response. The agnostic enrollment sequence in C72 avoids these commands by driving capture explicitly.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-AUTOIDENTIFY-STREAM-UNBOUNDED] AutoIdentify's acknowledge stream can be unbounded
+
+- hazard: With the search-error config set to continue-until-match, a single AutoIdentify with a finger continuously present but never matching yields an UNBOUNDED acknowledge stream. Config2 documents 0 as "carry on all the time until a match is found or power is cut."
+- constraint: A firmware backend MUST NOT size an RX buffer on the assumption that AutoIdentify returns a bounded number of packets, and SHOULD avoid the continue-forever configuration entirely.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-MATCH-TIME-AMBIGUOUS] The match-time string has two readings that differ by 200 times, and neither should be encoded
+
+- fact: The datasheet writes match time exactly as "1:N<10ms/Fingerprint" and never restates or qualifies it. It has two readings — per-template or whole-database — that differ by roughly 200 times, and nothing in any revision disambiguates them.
+- constraint: A driver MUST NOT encode either reading as a timing constant. Timing budgets are established by measurement on the part in hand.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-CAPTURE-DOMINATES] Capture is the cost, not the match
+
+- claim: A one-shot verify budget is dominated by imaging, roughly GetImg (<0.2s) plus GenChar (<0.5s) plus Search (<10ms), which puts the whole operation under about 0.71s with the database search a rounding error. This is an INFERENCE that contradicts the folk belief that matching is the expensive step.
+- consequence: Optimization effort belongs on the capture path, not on the matcher. A design that pushes matching off-device to "save time" spends transport and template-portability cost to optimize the cheap half.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-REVISION-DRIFT] Physically consequential figures drift silently between revisions
+
+- hazard: Physically consequential figures changed between manual revisions — including the touch-supply voltage range and the default security level — and the changelog records none of them. The documentation is materially incomplete in the direction that hurts.
+- constraint: A builder MUST NOT use the changelog to decide whether a revision matters. Two modules on the same desk may ship with different documented defaults, and nothing on the wire announces which.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+### [CXC-R503-BAUD-SELF-CONTRADICTS] The baud-rate documentation is self-contradictory and one driver exposes seven brick-risk settings
+
+- hazard: Every revision contradicts itself on legal baud rates, and one widely-used driver exposes seven settings the parameter section forbids. Setting one and power-cycling could leave the module at an unreachable rate, and no recovery path is documented anywhere.
+- constraint: A firmware backend MUST bind the documented default of 57600 and MUST NEVER issue a baud-rate change. The presence of any SetSysPara baud path in an implementation is the tell that this rule was broken.
+- rationale: This is the surviving rule from a proposed baud-sweep probe: probing every baud to find the live one is itself a brick vector, so the rule stands but the sweep is not authored.
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+## HAL binding
+
+### [CXC-R503-HAL-BINDING] The declarative binding — settled, and inherited verbatim
+
+- fact: The R503 binds to the declarative HAL as id bioscan, on mcu0, role transactional, driver r503, interface uart at baud 57600, assurance experiential. Interface, baud, role, driver, and the declaration id are settled and are not re-opened here.
+- rationale: The transactional role exists because of this part. A sensor publishes and an actuator subscribes; neither can express an enrollment that takes several finger presentations over seconds and emits a stream of progress before yielding a result.
+- open-question: The assurance class name is contested. David ruled to rename experiential to a self-describing not-approved-for-real-world name, but that class is a closed fleet-wide vocabulary of three cited by name in other corpora, so the edit is a cross-corpus change queued for the composeio amendment path and CANNOT be made from this project. A successor MUST NOT read experiential here as final. Recorded as [DD-R503-ASSURANCE-NAME].
+- status: draft
+- part-of: [SPEC:CXC-R503]
+
+## Open decisions
+
+### [DD-R503-CONNECTOR] Measure the physical connector before committing a footprint
+
+- decision: NOT MADE. Proposed for the architect.
+- lean: The connector disagrees across manual revisions and across sibling parts, so the physical part in hand is the only authority. Propose: measure the connector on the part in hand and derive the footprint from that measurement, never from a manual drawing.
+- rationale: This is the same measure-before-you-commit rule the pinout hazard states; a footprint chosen from a revision that does not match the part is a board respin.
+- status: proposed
+- part-of: [SPEC:CXC-R503]
+
+### [DD-R503-LATCH-FAILSAFE] The default state of a fingerprint-gated latch on power loss
+
+- decision: NOT MADE. Proposed for the architect.
+- lean: A fingerprint ceremony that drives a physical latch must declare its power-loss default. Propose: fail-secure by default (latch holds closed on power loss) with a per-installation override, because a game hatch and a fire egress want opposite defaults and the safe default is the one that does not silently open.
+- open-question: The right default is deployment-specific and is David's call; the point here is only that the default MUST be declared, never implicit.
+- status: proposed
+- part-of: [SPEC:CXC-R503]
+
+### [DD-R503-MATCH-LOCALITY] Matching lives on the sensor, not off-device
+
+- decision: Architect's call, open to David's dissent — matching runs on the R503's on-chip matcher, not off-device.
+- lean: Keep matching on the part. The capture-dominates finding shows moving the match off-device optimizes the cheap half while paying transport and template-portability cost; and the sensor-knows-only-hop-1 model requires the slot to be produced where the finger is read.
+- rationale: One supporting argument from the original was struck because the rule it cited had been withdrawn; the remaining two hold.
+- status: proposed
+- part-of: [SPEC:CXC-R503]
+
+### [DD-R503-ASSURANCE-NAME] Rename of the experiential assurance class — RULED, edit queued cross-corpus
+
+- decision: RULED by David — rename the experiential assurance class to a self-describing not-approved-for-real-world name.
+- rationale: David chose a name that carries its own content over the architect's cheaper proposal of keeping the name and adding a required disclaimer property.
+- open-question: The class is one of a closed set of three cited by name across other corpora (platform specs 26 and 32), so this is a fleet-wide vocabulary change, not a word swap in this file. The edit CANNOT be made from this project and is queued on the composeio amendment path. Carried here so the deviation is visible and a successor does not read experiential as current.
+- status: ruled
+- part-of: [SPEC:CXC-R503]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-R503-PINOUT] PART_OF [CXC-R503-PART]
+- [CXC-R503-RAILS] PART_OF [CXC-R503-PART]
+- [CXC-R503-WAKEUP-TRACKS-3V3T] DEPENDS_ON [CXC-R503-RAILS]
+- [CXC-R503-LOGIC-LEVELS-ABSENT] DEPENDS_ON [CXC-R503-PINOUT]
+- [CXC-R503-CHECKSUM] DEPENDS_ON [CXC-R503-FRAMING]
+- [CXC-R503-AURALED] PART_OF [CXC-R503-PART]
+- [CXC-R503-AURALED] DEPENDS_ON [CXC-R503-PART-IDENTITY-UNCONFIRMED]
+- [CXC-R503-AURALED] DEPENDS_ON [CXC-R503-REVISION-DRIFT]
+- [CXC-R503-AURALED] DEPENDS_ON [CXC-FPHAL-FEEDBACK-CONFORMANCE]
+- [CXC-R503-CAPTURE-DOMINATES] CONTRAST_WITH [CXC-R503-MATCH-TIME-AMBIGUOUS]
+- [CXC-R503-HAL-BINDING] DEPENDS_ON [CXC-R503-BAUD-SELF-CONTRADICTS]
+
+### Causal
+
+- [CXC-R503-WAKEUP-TRACKS-3V3T] PRECONDITION_FOR [CXC-R503-LOGIC-LEVELS-ABSENT]
+- [CXC-R503-REFERENCE-CIRCUIT-HAZARD] CAUSES [CXC-R503-PART-IDENTITY-UNCONFIRMED]
+- [CXC-R503-UNSOLICITED-0X55] CAUSES [CXC-R503-ACK-STREAM-BREAKS-REQ-RESP]
+- [CXC-R503-BAUD-SELF-CONTRADICTS] PREVENTS [CXC-R503-HAL-BINDING]
+
+### Temporal
+
+- [CXC-R503-PART-IDENTITY-UNCONFIRMED] BEFORE [CXC-R503-HAL-BINDING]
+- [CXC-R503-CHECKSUM] BEFORE [CXC-R503-UNSOLICITED-0X55]
+
+---
+
+**Version**: 1.1
+**Status**: Draft — PLACEMENT UNRATIFIED (staging in the R503 working directory, with an exit condition to the main Compose* repo). The assurance-class rename is RULED but its edit is cross-corpus and unmade. An R503 HAS now been on a bench in this project (2026-08-24): [CXC-R503-AURALED]'s feedback_profile evidence slot is PROVEN by a GRANTED end-to-end run on real hardware, with the caveat recorded there that the run only succeeded post-reboot, once [CXC-FPHAL-MATCH-USES-ENROLL-SENSOR] (C72) closed the mock/real-sensor fork. Every OTHER hardware acceptance gate above this section remains unmet unless its own evidence property says otherwise.

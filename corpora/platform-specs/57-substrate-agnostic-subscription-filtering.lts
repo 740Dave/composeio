@@ -1,0 +1,940 @@
+---
+scope: "Substrate-agnostic subscription filtering, and the hierarchical ALLOCATED namespace identifier that makes it implementable. An entity on ComposeBus DECLARES the semantic messages it wants once, in one substrate-neutral registration; each substrate then ENFORCES that declaration as far UPSTREAM as its physics permits (MQTT at the broker, CAN in the receiver's acceptance filter, a UART child at its bus-side host, in-process nowhere because delivery is already free) and REPORTS which enforcement point it achieved. Covers the enforcement table and its polarity argument, the superset safety invariant, the enforcement-point degradation report, the `[4b root][4b group][8b leaf]` allocated namespace id that replaces `namespace_hash` for the device tier, the prefix-pattern to code+mask lowering, the hardware-measured CAN constraints the lowering must satisfy, the relay pattern (subscription up / messages down / union / one-byte slot compaction), scope through a relay, and the four open decision points."
+audience: "The builder implementing the declaration API, the per-substrate enforcement bindings, the namespace-id allocator, or a relay host; the composeux-architect, who owns the four open decision points and must close them before dispatch; David, who ratified the two decisions this spec lowers; anyone who later asks why the device tier stopped hashing namespaces, or why a UART child gets BETTER filtering than a CAN node."
+boundary: "IN: the substrate-agnostic declaration and its degradation report ([CXC-SUB-DECLARE], [CXC-SUB-REPORT]); the superset safety invariant ([CXC-SUB-SUPERSET]); the per-substrate enforcement table with its polarity and the rejected MQTT inversion ([CXC-SUB-ENFORCE], [CXC-SUB-NO-INVERT], [CXC-SUB-UNFILTERED]); the allocated hierarchical namespace identifier, its registry, its build-time rules and its lowering to a CAN code+mask ([CXC-NSID-LAYOUT], [CXC-NSID-ALLOCATE], [CXC-NSID-REGISTRY], [CXC-NSID-LOWERING], [CXC-NSID-CAN-WINDOW]); the hardware-measured facts the design rests on ([CXC-SUB-MEASURED]); the relay pattern, slot compaction, scope through a relay, the precision-descends property and the payload-shape boundary ([CXC-SUB-RELAY], [CXC-SUB-COMPACT], [CXC-SUB-SCOPE], [CXC-SUB-PRECISION], [CXC-SUB-PAYLOAD-BOUND]); the error matrix and the two-tier acceptance bar. OUT: the trailing-glob PATTERN LANGUAGE itself and the publisher's reciprocal granularity obligation (reused verbatim from [SPEC:CXC-PATSUB], never re-litigated); the 29-bit identifier layout itself, which is SETTLED — [BP-CAN-ID] v2, ratified 2026-08-13, with [BP-CAN-ID-DIVERGENCE] closed; this spec consumes that layout and records what it costs the CAN filter window ([CXC-NSID-CAN-WINDOW]); foreign-vehicle CAN ingestion ([SPEC:CXC-CAN], a different codec on the same wire); the peer/relay network-segment primitive and its unified emitter contract ([BPR-TRANSPORT-CONTRACT] — consulted, cited, not respec'd); the button_matrix_4x4 board's own firmware (an exemplar here, not a deliverable); MQTT broker administration; CAN-FD, ISO-TP and fragmentation."
+not-this: "Not a new subscription model — hierarchical prefix matching is ALREADY ComposeBus's implemented semantics (`python/composeio/bus.py:54`), already declared as `Transport.subscribe_pattern()` ([CXC-FL-PATTERN]) and already surfaced as [CAP-BUS-PATTERN-SUB]. This spec changes the IDENTIFIER and the ENFORCEMENT contract, not the model. Not a replacement for canonical string namespaces — a numeric id is a LOWERING of `bsg/dradis/contact` for substrates that cannot carry a string; MQTT keeps carrying the string and an app that never touches a device tier needs no allocation at all. Not content-based routing — deliberately, and the reason is the whole thesis ([CXC-SUB-WHY-HIERARCHICAL]). Not a design that permits under-delivery anywhere, on any substrate, for any optimisation ([CXC-SUB-SUPERSET]). Not dispatch-ready: FOUR decision points are OPEN and are the architect's to close ([DD-SUB-SLOT-NEGOTIATION], [DD-SUB-RELAY-ROLE], [DD-SUB-BOOT-VS-RUNTIME], [DD-SUB-PUBLISH-SLOTS])."
+depends-on: [21-composebus-pattern-subscription.lts]
+depends-on: [52-composeux-cross-tier-can.lts]
+depends-on: [49-capability-map.lts]
+domain: plt.cio
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-08-10
+---
+# Substrate-Agnostic Subscription Filtering & the Allocated Namespace Identifier [SPEC:CXC-SUBFILTER]
+
+> An entity on ComposeBus declares ONCE, in substrate-neutral terms, the semantic messages it wants; each substrate then enforces that declaration as far UPSTREAM as its physics permits and reports which enforcement point it achieved. The declaration is uniform; the mechanism is not, and pretending otherwise would either cripple MQTT or fabricate a filter CAN cannot honour. Two things make this implementable rather than aspirational: the subscription model is hierarchical PREFIX matching, which is the most expressive model that still lowers onto a bitmask; and the namespace identifier becomes ALLOCATED rather than hashed, because a hash is designed to destroy the very correlation between string prefix and bit prefix that a hardware mask needs. One invariant is load-bearing above all others: the enforced filter MUST be a SUPERSET of the declared set, never a subset — over-delivery costs cpu, which is measurable and is the thing being optimised; under-delivery silently drops a message the application asked for and is unrecoverable.
+
+---
+
+## 0. What this spec changes, and what it deliberately does not
+
+### [CXC-SUB-THESIS] The design intent — a leaf must not parse thousands of messages per second to find its own
+
+- premise (David, 2026-08-10, verbatim): "Any entity sitting on the ComposeBus [should] be able to define a
+  filter that limits the inbound messages it receives from the bus. To allow it to define the semantic messages
+  it wants to receive; this prevents under-powered devices like an ESP32 from having to parse each message it
+  receives against a list of messages it can act upon (of which there could be thousands per second). The
+  implementation mechanism for this can vary by substrate type (CAN/MQTT/Carrier Pigeon) but the registration
+  process for desired messages should be substrate agnostic."
+- requirement: a ComposeBus participant MUST be able to express its inbound interest ONCE, in terms that name
+  no substrate, and MUST receive an answer stating what was achieved and WHERE. It MUST NOT be required to
+  know, at declaration time, whether it is speaking to a broker, a CAN controller, a relay host, or a
+  same-process registry.
+- rationale: the uniformity belongs in the DECLARATION, not the mechanism — the narrow waist ([DX-NARROW-WAIST])
+  applied to subscription. A uniform mechanism would have to be the intersection of every substrate's
+  capability, which is "none" (carrier pigeon), and a per-substrate declaration would push substrate knowledge
+  into every application that wants to be portable.
+- consequence: this spec is the layer that makes [CAP-BUS-PATTERN-SUB]'s CAN path buildable. That capability
+  is currently `maturity: partial` with the flag "the CAN hardware-mask path ([CXC-PS-CAN]) is spec'd-not-built";
+  the missing piece was never the pattern language, it was the identifier ([CXC-NSID-ALLOCATE]).
+- documents: [DEC-SUBSTRATE-AGNOSTIC-SUBSCRIPTION-FILTERING]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-SUB-NOT-NEW] The subscription model is ALREADY ComposeBus's semantics — this spec reuses it by reference
+
+- definition: hierarchical prefix matching is implemented, shipped, and unchanged by this spec. Nothing in the
+  semantic model needed to move; David's own conceptualization matched what the code already does.
+
+| Layer | Where it already exists | What it already does |
+|-------|------------------------|----------------------|
+| Match rule | `python/composeio/bus.py:54` — `return namespace == prefix or namespace.startswith(prefix + "/")` | `p/*` matches `p` and everything under `p/` |
+| Pattern grammar | `python/composeio/bus.py:42-64` — `is_pattern`, `pattern_matches`, `validate_pattern` | trailing glob ONLY; a mid-pattern glob raises |
+| Transport primitive | `python/composeio/transport.py:186-197` — `Transport.subscribe_pattern(pattern)` | widens what ARRIVES; delivery still flows through `subscribe_all()` dispatch; default no-op |
+| MQTT binding | `python/composeio/transport_mqtt.py:167-188` — `_pattern_topic` / `subscribe_pattern` | `jumpdrive/*` -> `{prefix}/+/jumpdrive/#`, subscribed at the broker with `qos=1` |
+| Specification | [SPEC:CXC-PATSUB] — [CXC-PS-PRIMITIVE], [CXC-PS-TRANSPORT], [CXC-PS-CAN] | the primitive, the three bindings, the hardware-mask design |
+| Capability surface | [CAP-BUS-PATTERN-SUB] | `maturity: partial` — MQTT built, CAN spec'd-not-built |
+
+- requirement: an implementer MUST NOT introduce a second pattern language, a second match function, or a
+  parallel subscription registry. Every new mechanism in this spec attaches BELOW `subscribe_pattern()` or
+  BESIDE it, never in place of it.
+- what is genuinely new here, and it is exactly three things: (1) the enforcement CONTRACT — that enforcement
+  is per-substrate, upstream-biased, superset-safe, and reported by enforcement point ([CXC-SUB-ENFORCE],
+  [CXC-SUB-SUPERSET], [CXC-SUB-REPORT]); (2) the ALLOCATED namespace identifier that lets a prefix pattern
+  become a bitmask at all ([CXC-NSID-ALLOCATE]); (3) the RELAY, which extends the filtering stack across a
+  link where only one side sits on the bus ([CXC-SUB-RELAY]).
+- see-also: [CXC-PS-PRIMITIVE], [CXC-FL-PATTERN], [CAP-BUS-PATTERN-SUB]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-SUB-WHY-HIERARCHICAL] Hierarchical is not one model among several — it is the CEILING that still lowers onto a bitmask
+
+- claim: hierarchical prefix subscription is the MOST EXPRESSIVE subscription model that can still be pushed
+  into silicon. That is the reason to choose it, and it is a stronger reason than familiarity or MQTT parity.
+- rationale: a hardware acceptance filter is a comparison of an identifier against a code under a per-bit mask
+  ([CXC-SUB-MEASURED] M1, M5). A hierarchical name whose levels occupy fixed bit-fields makes "this subtree" a
+  contiguous, maskable set. Content-based routing — subscribe by a predicate over the PAYLOAD — is strictly
+  more expressive and cannot be pushed into a CAN acceptance filter at all for extended frames, because the
+  extended-frame filter has no data-byte inputs whatsoever (measured: [CXC-SUB-MEASURED] M1). A content-based
+  bus therefore obliges every leaf to receive and parse every message to evaluate the predicate — which is
+  precisely the thousands-per-second parsing [CXC-SUB-THESIS] exists to prevent.
+- principle (worth generalising): **the subscription model determines what can be enforced in silicon.** The
+  choice of subscription semantics is not a convenience decision taken at the API layer; it sets a hard ceiling
+  on every downstream substrate's ability to help. Choose the model at the ceiling, then lower it.
+- boundary: richer matching is not forbidden, it is DEMOTED — a client-side refinement over an
+  already-filtered stream ([CXC-PS-CAN]'s broad-mask-plus-software-pass fallback), never a transport
+  requirement and never something a leaf must run over unfiltered traffic.
+- contrast-with: [CXC-PS-DISCOVERY-VS-SUB]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## 1. The declaration and its answer
+
+### [CXC-SUB-DECLARE] One registration, substrate-neutral, answered with an enforcement report
+
+- definition: a participant declares a DECLARED SET — an ordered list of trailing-glob patterns and exact
+  namespaces, per [CXC-PS-PRIMITIVE]'s grammar — plus, for a device-tier participant, the direction each entry
+  applies to. The declaration names no substrate, no mask, no topic, no slot.
+- requirement: the declaration API MUST be the existing `subscribe_pattern()` waist extended to RETURN an
+  enforcement report ([CXC-SUB-REPORT]) rather than `None`. A transport that cannot enforce MUST still return
+  a report; returning nothing is indistinguishable from success and is forbidden.
+- requirement: the declared set MUST be expressible declaratively in a `.compose.yaml` (the device's config,
+  fetched at boot per [CAP-CONFIG-FETCH-BOOT]), not only imperatively in code — a leaf's interests are
+  configuration, and a firmware rebuild is not an acceptable cost for adding a subscription.
+- default: an empty declared set means SUBSCRIBE NOTHING, not subscribe everything. A participant that wants
+  everything declares `*` explicitly. Rationale: the failure mode of the opposite default is the exact
+  firehose this spec exists to end, arriving silently at a device that forgot to configure itself.
+- default: declaration happens at BOOT, before the transport starts carrying application traffic (see
+  [DD-SUB-BOOT-VS-RUNTIME] for the runtime case, which is OPEN).
+- error-case: a pattern that fails `validate_pattern()` (a mid-pattern glob) MUST raise at declaration time,
+  as it does today (`bus.py:58-64`), not be silently narrowed or widened.
+- error-case: a declared set that the substrate cannot enforce even partially MUST produce a report with
+  `enforcement: none` and a WARNING log naming the substrate — never a silent pass ([CXC-SUB-UNFILTERED]).
+- scenario:
+  - when: a device declares `["ship_condition/*", "system/alert"]` and is then attached to an MQTT transport,
+    and on another day to a CAN transport, and on a third to a UART link behind a relay host
+  - then: the declared set is byte-identical in all three configs; only the returned report differs, and in
+    every case the device receives at least `ship_condition`, everything under `ship_condition/`, and
+    `system/alert`
+- see-also: [CXC-SUB-REPORT], [CXC-SUB-SUPERSET], [CXC-PS-PRIMITIVE]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-SUB-REPORT] The degradation report names the ENFORCEMENT POINT, not just coverage
+
+- requirement: the report returned by a declaration MUST state, PER DECLARED ENTRY, which enforcement point
+  carried it. A coverage-only report ("4 of 5 filtered") is insufficient and MUST NOT be shipped.
+- rationale: enforcement points have materially different cost profiles, and a device budgeting cpu needs to
+  know which one it got. "3 at the broker, 1 in silicon, 1 in software" is three different bills: the broker
+  entry costs the leaf nothing at all; the silicon entry costs bandwidth but zero cpu (measured — the RX ISR
+  never runs, [CXC-SUB-MEASURED] M4); the software entry costs one comparison per arriving frame, which is the
+  cost this whole design exists to bound.
+- schema (the enforcement-point enum, closed):
+
+| `enforcement` | Meaning | Leaf cost per non-matching message |
+|---------------|---------|-----------------------------------|
+| `broker` | a source-side fabric declined to send it | zero — it never left the source |
+| `host` | a bus-side relay host declined to forward it over the child's link | zero on the child; one host-side comparison |
+| `silicon` | a receiver's hardware acceptance filter dropped it | zero cpu; full bandwidth and radio/wire energy |
+| `software` | the residue after a broader hardware/fabric filter, discarded in the node | one comparison per message |
+| `none` | no filtering exists on this link, and that is DECLARED | one comparison per message, over the whole link's traffic |
+
+- requirement: the report MUST be published to the bus, not only returned in-process — namespace
+  `_bus/subscription/report` (infrastructure namespace, per DP-CIO-17), so a monitor or the Composer can see
+  what a fleet actually achieved without interrogating each device.
+- requirement: a report entry whose `enforcement` is `software` or `none` MUST also carry the estimated
+  residue — the set (or pattern) of traffic the leaf will have to discard — so the cpu bill is legible before
+  it is paid, not inferred from a profiler afterwards.
+- default: `enforcement: software` is the safe assumed value when a transport has not been taught to report;
+  it is the pessimistic reading and it never overstates what was achieved.
+- scenario:
+  - when: a leaf on CAN declares five entries, and its controller's single acceptance filter can express only
+    a two-level prefix covering three of them exactly, admitting the other two plus residue
+  - then: the report reads three entries `silicon`, two entries `software` with their residue patterns, and
+    the leaf's operator can see the cpu bill before the device ships
+- see-also: [CXC-SUB-ENFORCE], [CXC-SUB-UNFILTERED]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## 2. The safety invariant — the load-bearing requirement of this spec
+
+### [CXC-SUB-SUPERSET] The ENFORCED filter MUST be a SUPERSET of the DECLARED set, on every substrate, always
+
+- requirement (LOAD-BEARING; every other requirement in this spec yields to it): for every participant, on
+  every substrate, at every instant including during reconfiguration, the set of messages the enforcement
+  mechanism admits MUST be a superset of the set the participant declared. Under-delivery is FORBIDDEN. There
+  is no optimisation, no filter-bank shortage, no bandwidth argument and no boot-time convenience that
+  licenses a subset.
+- rationale: the two failure directions are not symmetric, and the asymmetry is total. Over-delivery costs
+  cpu — bounded, measurable, profilable, and precisely the quantity this design is optimising, so a regression
+  shows up as a number. Under-delivery silently drops a message the application ASKED FOR: there is no error,
+  no counter, no log line, and no recovery, because the leaf never learns the message existed. A design that
+  can silently drop a subscribed message has re-created the class of defect the whole platform keeps paying
+  for — a surface that looks healthy while the thing it reports is absent.
+- criticality: high
+- consequence for masks: when a declared set cannot be expressed exactly, the mask MUST be WIDENED to the
+  nearest expressible superset and the residue rejected in software. It MUST NOT be narrowed to the nearest
+  expressible subset, even when the excluded entry looks unimportant. [CXC-PS-CAN]'s graceful fallback is
+  therefore not merely a nicety — it is the mandated resolution of every expressibility shortfall.
+- consequence for transitions: a reconfiguration that passes through an intermediate state MUST pass through
+  a WIDER one, never a narrower one. Widen first, then narrow; never narrow first ([DD-SUB-BOOT-VS-RUNTIME]).
+- consequence for relays: a relay's upstream subscription MUST be the UNION of its children's declared sets
+  plus its own ([CXC-SUB-RELAY]). A union is the smallest superset; anything smaller under-delivers to some
+  child.
+- testability: this is checkable on every substrate, carrier pigeon included, by the same procedure — publish
+  the declared set plus a control set, assert every declared message arrived. It needs no knowledge of the
+  mechanism, which is what makes it the one acceptance criterion that ports everywhere.
+- scenario:
+  - when: a leaf declares `["throttle/left", "system/alert"]` on a CAN controller with ONE single-mode
+    acceptance filter, which cannot express two disjoint exact namespaces in one bank
+  - then: the loaded mask is the narrowest expressible SUPERSET of both (in the worst case, accept-all), the
+    residue is rejected in software, the report reads `silicon` + `software`, and BOTH declared namespaces are
+    delivered — never one exactly and the other not at all
+- upholds: [CXC-SUB-THESIS]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## 3. Enforcement is per-substrate, as far UPSTREAM as physics permits
+
+### [CXC-SUB-ENFORCE] The enforcement table — polarity follows the fabric, not a convention
+
+- definition: each substrate lowers the same declared set in whichever direction its fabric natively sits.
+  Enforcement happens as far UPSTREAM as the physics permits, because everything saved upstream is saved for
+  every downstream resource at once — bandwidth, radio energy, wire energy, interrupt load, and cpu.
+
+| Substrate | Where the fabric sits | Enforcement point | Polarity | Precision available | Saves | Mechanism |
+|-----------|----------------------|-------------------|----------|--------------------|-------|-----------|
+| **MQTT** | a broker between peers | `broker` | **source-side** | arbitrarily precise (native topic wildcard) | bandwidth, radio, power AND cpu | `subscribe_pattern` -> `{prefix}/+/{ns}/#` at `qos=1` (`transport_mqtt.py:179-187`) |
+| **CAN** | a shared broadcast wire | `silicon` | **sink-side** | limited by filter geometry: one EXACT 29-bit maskable pattern, OR two patterns on ID[28:13] only — which under [BP-CAN-ID] v2 reaches `root`+`group`+one leaf bit, NOT an exact namespace ([CXC-NSID-CAN-WINDOW]) | cpu ONLY — the interrupt never fires ([CXC-SUB-MEASURED] M4) | acceptance code+mask over the namespace field ([CXC-NSID-CAN-WINDOW]) |
+| **UART, bus-side host present** | **the HOST is the fabric** | `host` | **source-side** | **arbitrarily precise** — software matching, no mask geometry, no filter-bank count | the child's wire bandwidth, cpu AND RAM | the host holds the child's declared set and simply does not send ([CXC-SUB-RELAY]) |
+| **in-process** | the same address space | `broker` (degenerate) | n/a | exact | nothing to save — delivery is a dict lookup and a call | the bus registry prefix-matches (`bus.py:47-55`); `Transport.subscribe_pattern` correctly no-ops |
+| **UART, neither side on the bus** | there is no fabric | `none` | n/a | none | nothing | none, and it MUST be declared ([CXC-SUB-UNFILTERED]) |
+
+- requirement: every Transport implementation MUST declare its enforcement point and its precision limits.
+  A transport that inherits `subscribe_pattern`'s default no-op MUST report `software` or `none` honestly; the
+  inherited default is correct ONLY for in-process, where delivery is genuinely free.
+- key-insight (and it contradicts the initial reading of UART): a UART link with a bus-side host is BETTER
+  than CAN, not worse. CAN is a shared broadcast medium — every node receives every bit electrically whether
+  it wants to or not, so its filter can only sit in the receiver and can only save the interrupt. A host on the
+  bus side of a UART can simply DECLINE TO SEND, which is source-side, and it matches in software, so it has
+  no mask geometry and no filter-bank limit at all. "UART has no filtering fabric" is wrong: the host IS the
+  fabric.
+- corollary: CAN's sink-side polarity is a consequence of physics, not of an API choice, and it is the ONLY
+  substrate here whose bandwidth cost is unavoidable. Every claim about CAN's filtering in this spec is a claim
+  about saving the CPU, never about saving the wire.
+- see-also: [CXC-PS-TRANSPORT], [CXC-SUB-REPORT]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-SUB-NO-INVERT] REJECTED — inverting MQTT to CAN's polarity for uniformity
+
+- rejected-design: make MQTT behave like CAN — subscribe `composeio/#` once and filter client-side — so that
+  every substrate shares one sink-side mechanism.
+- feasibility: technically trivial. `subscribe_pattern("*")` already produces exactly this topic
+  (`transport_mqtt.py:174-175`), so the inversion is a one-line change, which is precisely why it must be
+  refused in writing rather than left to a future implementer's taste.
+- rationale for rejection: it imports CAN's limitation without CAN's necessity. It would make a leaf's cpu
+  cost proportional to TOTAL bus traffic rather than to its own subscription — the exact scaling property
+  [CXC-SUB-THESIS] is written to prevent — and it would manufacture the thousands-per-second parsing problem
+  on the one substrate currently free of it. Uniformity of MECHANISM is not a goal of this design; uniformity
+  of DECLARATION is ([CXC-SUB-THESIS]), and it is already achieved.
+- consequence: a transport MUST NOT widen its wire subscription beyond the union of its declared patterns in
+  order to simplify its own dispatch. Note that today's bus-level wildcard (`bus._wire_transport_incoming`
+  calling `subscribe_all`) does NOT violate this: `MQTTTransport.subscribe_all` only appends to an in-process
+  callback list (`transport_mqtt.py:163-165`) and issues no broker subscription, so the socket still receives
+  only the declared topics.
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-SUB-UNFILTERED] Two peers over UART with neither side on the bus get NO filtering — and it must be DECLARED
+
+- definition: when two ComposeApps are linked over UART and neither sits on the shared bus, there is no fabric
+  between them and therefore no enforcement point. Every message crosses the link and each side discards what
+  it did not declare.
+- requirement: this configuration MUST report `enforcement: none` and MUST be treated as a DECLARED topology,
+  not as a degraded relay. A relay ([CXC-SUB-RELAY]) has a bus-side host; this does not, and describing it as
+  a broken relay would invite someone to "fix" it by adding a host that the deployment does not have.
+- acceptability: acceptable for small-scale deployments (David, 2026-08-10). The cost is bounded by the two
+  peers' own traffic, which is the whole link's traffic — an entirely different quantity from a shared bus's
+  traffic, and the reason this is tolerable here and not on MQTT.
+- error-case: a deployment that declares `enforcement: none` and then grows past its small scale has no
+  in-band signal that it did so. A node in this topology SHOULD publish its inbound message rate so the
+  crossing point is visible; it MUST NOT silently become the firehose it was exempted from.
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## 4. The namespace identifier — hierarchical and ALLOCATED
+
+### [CXC-NSID-LAYOUT] `[4b root][4b group][8b leaf]` in the 16-bit namespace field
+
+- definition: the 16-bit namespace field of a device-tier identifier is divided into three fixed-width levels.
+  A canonical namespace string of at most three levels lowers to exactly one 16-bit value.
+
+| Field | Bits (within the 16-bit ns field) | Width | Space | Owner |
+|-------|-----------------------------------|-------|-------|-------|
+| `root` | 15..12 | 4 | 16 values, of which 0 is RESERVED -> 15 assignable domains | central registry ([CXC-NSID-REGISTRY]) |
+| `group` | 11..8 | 4 | 16 per domain | the owning application |
+| `leaf` | 7..0 | 8 | 256 per group -> 4096 namespaces per domain | the owning application |
+
+- default (STATED, because an unstated width is a guess a builder will make): **`ROOT_BITS = 4`**. The 5-bit
+  root variant David costed (32 domains, 2048 per app) is available but is NOT the default, and taking it
+  requires re-cutting the two levels below it — 16 bits minus a 5-bit root leaves ELEVEN, which does not
+  accommodate `[4b group][8b leaf]`; it forces either `[3b group][8b leaf]` (8 groups) or `[4b group][7b leaf]`
+  (128 leaves). The decision node states the root as "4-5b" without resolving that consequence; this spec
+  resolves it by taking 4 and recording the arithmetic, rather than leaving a builder to discover it.
+- requirement: two levels of app-owned structure, not three. Fixed-width levels waste bits on shallow subtrees,
+  and 12 bits gets cramped at three levels. If it proves tight, WIDEN THE NS FIELD; do not add a level.
+- requirement: `root = 0` is RESERVED and MUST NOT be allocated. An all-zero namespace field is therefore never
+  a valid namespace, which makes a zeroed or uninitialised identifier detectable rather than plausible.
+- default: `group = 0` and `leaf = 0` denote the level ABOVE — `[root][0][0]` is the domain's own top-level
+  namespace and `[root][group][0]` is the group's own namespace. This is what makes a prefix subscription a
+  pure mask: "everything under root R" is `code = R<<12` with the low 12 bits don't-care, and it admits the
+  parent namespace as well, exactly matching `bus.py:54`'s `namespace == prefix or startswith(prefix + "/")`.
+- error-case: a canonical namespace with MORE than three levels (`bsg/dradis/contact/bearing`) has NO device-
+  tier identifier. It MUST be refused at allocation time with a build-time error naming the namespace. It MUST
+  NOT be truncated, hashed, or assigned a synthetic leaf — a silent lowering that loses a level would route
+  two distinct namespaces to one id.
+- scenario:
+  - when: an app declares `bsg/dradis/contact` with `bsg` allocated root 1, `dradis` allocated group 1, and
+    `contact` allocated leaf 7
+  - then: the device-tier identifier is `[1][1][7]` = `0x1107`, and a subscription to `bsg/dradis/*` is the
+    single comparison `(ns & 0xFF00) == 0x1100`
+- documents: [DEC-NAMESPACE-ID-ALLOCATED-HIERARCHICAL]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-NSID-ALLOCATE] ALLOCATE, do not hash — this replaces `namespace_hash` for the device tier
+
+- requirement: every segment of a device-tier namespace MUST be assigned an explicit numeric id from a table
+  in the owning application's spec/config (`dradis = 1`, `contact = 7`). Segment ids MUST NOT be derived from
+  the segment name by any hash, checksum, or digest.
+- what this replaces, and only for whom: `composeio.config.namespace_hash` (`python/composeio/config.py:384`)
+  is CRC-16/CCITT-FALSE over the WHOLE namespace string. It remains correct for any use that needs a compact
+  opaque token; it is REPLACED as the source of the 16-bit device-tier namespace field, which is what
+  `transport_can.py` (`_ns_hash`, `encode_arbitration_id`) and `services/can_mqtt_bridge` consume today.
+- rationale (the direct fix for the defect that prompted the whole analysis): a hash is DESIGNED to destroy
+  the correlation between string prefix and bit prefix. That correlation is exactly what a hardware mask needs.
+  Under CRC-16, `throttle/left` and `throttle/right` land at unrelated bit patterns and NO acceptance mask can
+  express "the throttle subtree" — not because the mask is weak but because the encoding deliberately removed
+  the structure the mask reads. Allocation makes subtree masking possible by construction.
+- rationale (collisions): a hash's collisions are silent and are discovered on a bus at 2 a.m. An allocation
+  table's collisions are impossible by construction within a group and detectable at build time across one —
+  two names cannot receive the same id if the allocator refuses to issue one twice.
+- precedent: this is what DBC files and CANopen object dictionaries ARE, and it is why those ecosystems do not
+  have this problem. The novelty here is only that ComposeBus keeps the canonical STRING as the primary name
+  and treats the number as a lowering ([CXC-NSID-LOWERING]).
+- error-case: a duplicate `(root, group, leaf)` in an allocation table MUST be a BUILD-TIME error that fails
+  the config compile, never a runtime warning.
+- error-case: a namespace arriving on a device-tier substrate with NO allocation MUST be dropped LOUDLY, with
+  the namespace named in the log. It MUST NOT fall back to `namespace_hash` — a fallback would silently
+  reintroduce the exact defect this node removes, at the one moment nobody is looking.
+- error-case: a namespace whose allocation exists but whose root is not in the registry MUST be refused at
+  build time ([CXC-NSID-REGISTRY]).
+- scenario:
+  - when: an app config allocates `throttle` group 3, `left` leaf 1 and `right` leaf 2, under root `bsg` = 1
+  - then: the two namespaces are `0x1301` and `0x1302`, a subscription to `bsg/throttle/*` is
+    `code = 0x1300` comparing the high 8 bits, and it admits exactly the throttle subtree and nothing else —
+    the case that was unexpressible under CRC-16
+- documents: [DEC-NAMESPACE-ID-ALLOCATED-HIERARCHICAL]
+- see-also: [CXC-NSID-LOWERING], [BP-CAN-ID]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-NSID-REGISTRY] Root ids are centrally assigned per DOMAIN, the way port numbers are
+
+- definition: a small central registry assigns one root id per domain. Structure BELOW the root is owned
+  entirely by the owning application and needs no central coordination.
+
+| Root id | Domain | Note |
+|---------|--------|------|
+| 0 | RESERVED | never allocated; an all-zero ns field is invalid ([CXC-NSID-LAYOUT]) |
+| 1 | `bsg` | Battlestar / DRADIS game domain |
+| 2 | `zb` | ZombieBox domain |
+| 3 | `ic` | Intelligence Console domain |
+| 4..15 | unassigned | assigned on request; 12 remaining under `ROOT_BITS = 4` |
+
+- rationale (why root-per-domain is the right cut): generic infrastructure — a bridge, a monitor, the bus core
+  — only ever needs to mask on the ROOT ("all bsg traffic"), with zero knowledge of any app's internals.
+  Anything needing subtree precision WITHIN an app is by definition a device of that app, which knows its own
+  schema. The only thing lost is cross-app subtree subscription, which is a design smell anyway.
+- requirement: the registry MUST live in ONE place and be read, not copied. A domain's own spec/config MUST
+  reference its assigned root rather than restating it, so a re-assignment is one edit.
+- consequence, accepted knowingly (David, 2026-08-10): root in the high bits means DOMAIN determines CAN
+  arbitration priority. His words: "extremely unlikely that BSG and ZB traffic would be on actual canbus hw,
+  but BSG and some other non-BSG physical devices could be on canbus. But in that case, I'd accept the
+  prioritization." Within-app priority remains app-defined, which is correct — an app places something
+  priority-shaped high in its own 12 bits.
+- error-case: an unregistered root id in a device-tier config MUST fail the build, naming the root and the
+  registry location.
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-NSID-LOWERING] The numeric id is a LOWERING of the canonical string, never a replacement
+
+- requirement: `bsg/dradis/contact` remains the canonical name of the namespace everywhere — in configs, in
+  bindings, in the Composer, in logs, on MQTT. `[1][1][7]` is its encoding for substrates that cannot carry a
+  string.
+- requirement: MQTT MUST continue to carry the string and MUST NOT be taught the table. An app that never
+  touches a device tier needs NO allocation at all — pay for what you use.
+- requirement: the lowering MUST be total and reversible within a bus segment: given the allocation table, id
+  -> string is a lookup, and a device-tier receiver MUST be able to present the canonical string in a log or a
+  report even though it never parsed one off the wire.
+- consequence for the relay: a relay host holds the table on behalf of its children, which is what lets a
+  2 KB child participate in a string-named bus without ever seeing a string ([CXC-SUB-COMPACT]).
+- key-insight: this is the same shape as [CXC-CAN-TWO-CANS]' distinction between a wire encoding and a bus
+  meaning — the load-bearing artifact is the namespace, and the identifier is a transport detail. Treating the
+  number as primary is what would make the table a second source of truth.
+- see-also: [CXC-NSID-ALLOCATE], [DX-NARROW-WAIST]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-NSID-CAN-WINDOW] Under `[BP-CAN-ID]` v2 the namespace field sits at ID[21:6] — the dual-filter window NO LONGER coincides with it
+
+- fact: the ratified identifier layout [BP-CAN-ID] is **v2, `prio(3) | type(4) | ns_id(16) | src(4) | scope(2)`**, placing the namespace field at bits **21..6** of the 29-bit extended identifier. The dual-filter mode of the ESP32-C3 TWAI controller compares EXACTLY ID[28:13] and nothing else — measured ([CXC-SUB-MEASURED] M3), consistent with C3 TRM v1.4 section 31.4.6.2.
+- corrected-2026-08-14: ⛔ **THE CLAIM THIS NODE CARRIED UNTIL NOW — "the two windows coincide exactly", and a leaf "gets TWO exact accept patterns at ANY granularity" — IS FALSE UNDER v2.** It was true only under v1 (`[ns 16][type 4][src 9]`), where the namespace field WAS ID[28:13]. v2 ratified 2026-08-13 moved `ns_id` down to ID[21:6] for sound reasons, and nobody redid this arithmetic when it landed; two independently dispatched agents found it the following day. This node is the justification for the entire allocation scheme, so a stale version of it would be BUILT UPON.
+- consequence: the windows overlap by nine bits and no longer coincide. ID[28:13] covers `ns_id` bits **15..7** only — `root`(4) + `group`(4) + **the single top bit of `leaf`** — because ns bit 15 lands at ID 21 and the window floor at ID 13 lands at ns bit 7. ns bits 6..0 fall BELOW the comparable window entirely and cannot be pinned at any mask setting. **A dual-mode bank therefore cannot express an exact namespace.** Root-only and root+group remain exactly expressible; an exact leaf does not.
+- accepted-loss: ratified as `DEC-ACCEPT-LOSS-OF-DUAL-FILTER-EXACT-MATCH` (2026-08-14). **Keep v2's ordering and correct this spec.** Priority-at-top is worth more than dual-mode exact matching: under v1, arbitration priority was a pseudo-random function of the namespace NAME — `shields` lost arbitration to console bounding boxes, and renaming a signal silently re-ranked it. That is a live-control defect; this is a filtering convenience.
+- cost-accepted-and-named: a leaf needing **two** exact namespaces in silicon cannot have it on an ESP32 and MUST filter the second in software, reporting `silicon` + `software` per entry ([CXC-SUB-REPORT]). This is a real capability loss, recorded rather than absorbed.
+- single-filter-is-unaffected: **single-filter mode still gives ONE exact 29-bit match**, and field position is irrelevant there because all 29 bits are per-bit maskable ([CXC-SUB-MEASURED] M5, measured). A leaf needing one exact namespace in hardware still gets it under v2. The loss is confined to dual mode.
+- general-lesson: a wire-layout change is a change whose blast radius must be MEASURED before a second change compounds it, and that measurement did not happen when v2 landed.
+- boundary: (corrected 2026-08-14) the 29-bit layout is **no longer open**. [BP-CAN-ID-DIVERGENCE] is CLOSED as of 2026-08-13 and all three implementations — `python/composeio/transport_can.py`, `cyd/src/bus_can_id.h` and `services/can_mqtt_bridge/bridge.py` — speak v2 identically, pinned across all 29 bits by `env:native_can_id` and `python/tests/test_can_wire_format_v2.py`. `transport_can.py`'s old `[4b type][2b scope][16b ns][7b seq]` packing is RETIRED, not a "deviation to correct": v2 supersedes BOTH v1 packings, and `transport_can.py` is now the single declaration of the shifts that the other two derive from.
+- requirement (the lowering table a builder implements — this is the whole point of the allocated id):
+
+| Declared pattern | Compared ns bits | `code` (ns field) | ns `mask` (1 = don't care, legacy TWAI polarity) |
+|------------------|------------------|-------------------|--------------------------------------------------|
+| `*` | none | `0x0000` | `0xFFFF` |
+| `<root>/*` | 15..12 | `root<<12` | `0x0FFF` |
+| `<root>/<group>/*` | 15..8 | `root<<12` OR-ed with `group<<8` | `0x00FF` |
+| `<root>/<group>/<leaf>` (exact) | 15..0 | the full 16-bit id | `0x0000` |
+
+- requirement: the ns code+mask MUST then be positioned into the full 29-bit filter word per the ratified
+  identifier layout — **[BP-CAN-ID] v2, so the 16-bit ns field is shifted left by 6** — with all
+  non-namespace bits (**`prio`, `type`, `src`, `scope`**) set DON'T-CARE unless the declaration also
+  constrained them. Non-namespace bits MUST default to don't-care — pinning them would narrow the enforced set
+  below the declared set, violating [CXC-SUB-SUPERSET].
+- requirement-dual-filter-refusal: (v2-specific, and it is a REFUSAL not a degradation) in **dual-filter** mode a declaration that
+  requires ns bits below 7 — i.e. any exact leaf — is NOT expressible in silicon at all ([CXC-NSID-CAN-WINDOW]
+  accepted-loss). An implementation MUST load the narrowest expressible SUPERSET (`root`+`group`+`leaf[7]`),
+  reject the residue in software, and REPORT `silicon` + `software` for that entry. It MUST NOT report
+  `silicon` alone, which would claim a hardware guarantee the controller cannot give.
+- error-case: more declared patterns than the controller has filter units MUST resolve by loading the
+  narrowest expressible SUPERSET covering all of them and rejecting the residue in software
+  ([CXC-SUB-SUPERSET]), reporting `silicon` + `software` per entry ([CXC-SUB-REPORT]).
+- scenario:
+  - when: a leaf declares exactly `bsg/dradis/*` on a controller in single-filter mode, under the [BP-CAN-ID]
+    **v2** layout
+  - then: one bank pins **ID[21:14]** (`root`+`group`, the ns field's bits 15..8 shifted up by 6) and leaves
+    every other identifier bit — `prio`, `type`, the leaf byte, `src`, `scope` — don't-care; every
+    `bsg/dradis/...` frame is accepted regardless of priority, type, source or leaf, and every other namespace
+    is dropped by the silicon without interrupting the CPU
+- scenario (the case v2 CHANGED — stated because it is the one a builder will get wrong):
+  - when: the same leaf declares an EXACT namespace `bsg/dradis/contact` on a controller in **dual**-filter
+    mode
+  - then: the bank can pin only ns bits 15..7, so the accepted set is `bsg/dradis/` plus the top bit of the
+    leaf byte — **128 sibling leaves are admitted alongside the declared one**, and the residue MUST be
+    rejected in software with the entry reported as `silicon` + `software`. Under v1 this declaration was
+    exactly expressible; under v2 it is not
+- see-also: [CXC-PS-CAN], [BP-CAN-ID], [BP-CAN-ID-DIVERGENCE]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## 5. The hardware facts this design rests on — MEASURED, not assumed
+
+### [CXC-SUB-MEASURED] ESP32-C3 TWAI acceptance-filter measurements, 2026-08-10
+
+- provenance: `docs/research/CAN-ACCEPTANCE-FILTER-RESULTS.md` on branch
+  `wt-agent-ad1ba9c68bf89edab-1786398375-14832`. One ESP32-C3 rev v0.4, MAC `(a device MAC, not published)`, firmware
+  `stamp=c8c58d8b`, 500 kbit/s, Track A self-reception loopback with the jumper on GPIO2 to GPIO10. Every
+  experiment passed its validity gate (`state=RUNNING`, `bus_error=0`, `msgs_to_tx=0`, `tx_failed=0`).
+
+| # | Measured fact | Evidence | Reference |
+|---|---------------|----------|-----------|
+| **M1** | An EXTENDED-frame single filter compares the IDENTIFIER ONLY — never data bytes | E1b: `code=0x0000A500 mask=0xFFFF00FF`; `0x024694a0` with `data[0]=0x5A` ACCEPTED, `0x02468b40` with `data[0]=0xA5` REJECTED; a mirror control at `code=0x00005A00` flipped the accepted set exactly | C3 TRM v1.4 sec 31.4.6.1 |
+| **M2** | A STANDARD-frame single filter DOES reach data bytes 1-2, and can mask the identifier out entirely | E1c: `code=0x2460A55A mask=0xFFFF0000`; ids `0x123`, `0x456`, `0x7ff` all accepted on matching data alone; `0x123` rejected when a data byte differed | C3 TRM v1.4 sec 31.4.6.1 |
+| **M3** | A DUAL filter compares ONLY ID[28:13]; ID[12:0] and RTR are not comparable at all | E1d: `0x02469fff` (differs from target in all 13 low bits) ACCEPTED; `0x0246a000` (differs only in ID[13]) REJECTED; both bank orderings byte-identical, so bank 2 is live | C3 TRM v1.4 sec 31.4.6.2 |
+| **M4** | Rejection happens in HARDWARE — the CPU is never interrupted for a rejected frame | E1e: identical 20-frame bursts; accept-all gave `msgs_to_rx=4, rx_missed=16` (queue depth 4), the rejecting filter gave `msgs_to_rx=0, rx_missed=0` with `tx ok=20, tx_failed=0` proving the frames reached the wire | — |
+| **M5** | In SINGLE-filter mode, field POSITION is irrelevant — all 29 bits are per-bit maskable | E4: a 2-bit field at ID[24:23] matched exactly across identifiers differing in 27 other bits (`0x00800000` and `0x1effffff` accepted; three neighbours rejected) | — |
+| **M6** | Changing the acceptance filter on an installed driver requires a driver RE-INIT | every `FILTER` command issued against an installed driver answered `reinit=1 counters=zeroed`; the legacy ESP-IDF TWAI API takes `twai_filter_config_t` as an argument to `twai_driver_install()`, so there is no in-place path | measured-adjacent (see limits) |
+
+- limits on this evidence, stated so nothing here is over-read:
+  - **M6 is measured-adjacent, not a measured bus-off.** The bench proves the driver re-installs on a filter
+    change; it does NOT measure how long a live segment loses the node, and no two-node bus existed to measure
+    it on. [DD-SUB-BOOT-VS-RUNTIME] treats the re-init as real and its DURATION as unquantified.
+  - **All measurements are self-reception on ONE board.** Peer reception across a real two-node bus was not
+    run (only one C3 was attached, no transceivers). E1a rules out the gross concern — self-reception plainly
+    passes through the filter, since it discriminated single identifier bits — but "identical in every respect
+    to peer reception" is not proven.
+  - **E2 (arbitration under contention) was not run.** Nothing in this spec infers anything about arbitration
+    behaviour from the bench.
+  - **The silicon agreed with the TRM on every point tested.** The bench found no documentation defect.
+- consequence: M1 is the fact that forecloses content-based routing on CAN ([CXC-SUB-WHY-HIERARCHICAL]); **M3
+  is the fact that BOUNDS what dual-filter mode can express under [BP-CAN-ID] v2 — it reaches ns bits 15..7
+  only, so an exact leaf is not expressible in dual mode ([CXC-NSID-CAN-WINDOW]). Under v1 the same
+  measurement made the namespace placement a windfall; the measurement did not change, the LAYOUT did, and the
+  conclusion inverted with it**; M4 is the fact that makes `enforcement: silicon` genuinely free of cpu
+  ([CXC-SUB-REPORT]); **M5 is the fact that keeps single-filter mode exact under v2 at any field position,
+  which is what makes the dual-mode loss survivable**; M6 is the constraint that shapes
+  [DD-SUB-BOOT-VS-RUNTIME].
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## 6. The relay — filtering on behalf of a child that cannot own it
+
+### [CXC-SUB-RELAY] Subscription propagates UP, messages flow DOWN; the host's upstream set is the UNION
+
+- definition: where only one side of a link sits on the bus, the BUS-SIDE HOST implements the filtering stack
+  on the child's behalf. The child declares its set over the link at setup; the host adds those entries to its
+  own upstream subscription and forwards downward only what the child declared.
+- exemplar (real hardware, (a local path, not published)):
+  `Host ESP32 --UART--> CH32V003 --I2C--> 2x MCP23017` — U1 at 0x20 reads 16 buttons (INTA to CH32V003 PD0),
+  U2 at 0x21 drives 16 LEDs. `J_HOST` is a 4-pin header carrying only VCC / GND / TX / RX (the Grove connector
+  `J_GROVE` carries the same four nets at 2.0 mm pitch), so **the UART is the entire channel** — there is no
+  side-band, no shared memory, and no second bus to fall back on. The CH32V003 has 2 KB of SRAM.
+- requirement: the host's own upstream subscription MUST be the UNION of every child's declared set plus the
+  host's own. A union is the smallest superset, and anything smaller under-delivers to some child
+  ([CXC-SUB-SUPERSET]).
+- requirement: one inbound message MAY fan out to N children. Each child receives it under ITS OWN per-child
+  slot id ([CXC-SUB-COMPACT]); slot spaces are per-link and MUST NOT be shared across children.
+- requirement: the host MUST NOT forward to a child anything outside that child's declared set, even when the
+  host itself subscribed to it. The union is an upstream quantity only; downstream, each link is filtered to
+  its own child's declaration.
+- error-case: a child declaring a namespace the host cannot subscribe to upstream (unallocated, unregistered
+  root, or refused by the upstream substrate) MUST receive an explicit per-entry failure in its setup answer,
+  and the host MUST surface it in its own report ([CXC-SUB-REPORT]). A silently-unhonoured child declaration
+  is under-delivery with extra steps.
+- scenario:
+  - when: two children on one host declare `["ui/led/*"]` and `["system/alert"]` respectively, and the host
+    itself declares `["net/status"]`
+  - then: the host's upstream subscription is exactly `{ui/led/*, system/alert, net/status}`; a `ui/led/3`
+    message reaches child 1 only; a `system/alert` reaches child 2 only; `net/status` reaches neither child
+- see-also: [CXC-SUB-COMPACT], [CXC-SUB-SCOPE], [DD-SUB-RELAY-ROLE]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-SUB-COMPACT] Filtering alone is insufficient for a 2 KB child — the host also COMPACTS to `[slot][value]`
+
+- requirement: at link setup the host MUST assign each of the child's declared namespaces a ONE-BYTE ORDINAL
+  (a slot), and the wire MUST then carry `[slot][value]`. The child never parses a namespace string, never
+  holds a string table, and never allocates for one.
+- rationale: for a 2 KB-SRAM CH32V003, filtering fixes the CPU bill but not the MEMORY bill. A namespace
+  string is tens of bytes; a slot is one. The declaration is what makes the compaction possible — the host
+  knows the child's complete set of interests precisely because the child declared it — so **both fall out of
+  ONE registration**. This is the strongest argument for making declaration mandatory rather than optional:
+  it is not only a filter, it is a code book.
+- default: slot 0 is RESERVED and means "unmapped / error"; a child receiving slot 0 MUST log and discard,
+  never guess. Slot 255 is RESERVED pending [DD-SUB-SLOT-NEGOTIATION]'s answer on the >255 case.
+- requirement: the mapping is LINK-LOCAL. A slot number has no meaning off the link and MUST NOT be forwarded
+  upstream ([DD-SUB-PUBLISH-SLOTS] covers the publish direction, which is OPEN).
+- error-case: a slot arriving for which the child holds no mapping MUST be discarded with a counter increment,
+  and the child SHOULD request re-negotiation. It MUST NOT be interpreted positionally against the child's
+  own table order.
+- scenario:
+  - when: a button-matrix child declares 16 LED namespaces `ui/led/0` through `ui/led/15` and the host assigns
+    slots 1 through 16
+  - then: an inbound `ui/led/7 = 1` crosses the UART as two bytes `[8][1]`, and the child indexes its LED
+    array directly with no string parsing, no allocation and no table lookup beyond an offset
+- see-also: [CXC-SUB-RELAY], [DD-SUB-SLOT-NEGOTIATION]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-SUB-SCOPE] A child is INSIDE the host's locality — host + children are ONE bus participant with internal structure
+
+- ratified: David, 2026-08-10, resolving the `scope-through-a-relay` question left open in
+  [DEC-SUBSTRATE-AGNOSTIC-SUBSCRIPTION-FILTERING].
+- definition: locality is the PARTICIPANT, not the process. A host and its UART children form one bus
+  participant whose internal structure happens to span a wire.
+- requirement (the symmetry, and getting it wrong in either direction is a defect):
+
+| Direction | Rule | Failure if inverted |
+|-----------|------|--------------------|
+| Host publishes `Scope.LOCAL` | **DOES** cross to children over the UART hop | children miss state the host considers local to itself, so a host-local value cannot drive a child LED |
+| Child publishes `Scope.LOCAL` | reaches the host and its SIBLINGS, and **MUST NOT** be relayed upstream | a naive forward-everything relay leaks local chatter onto the shared bus |
+| Child publishes `Scope.GLOBAL` | relayed upstream by the host's own transport | — |
+
+- requirement: the relay MUST respect scope on the PUBLISH path exactly as it does on the subscribe path.
+  This is `scope`-is-already-the-uplink-control applied one layer down — cf. `bus._send_message`, which
+  forwards to the global transport only when scope is global or auto.
+- consequence: **the relay is NOT a scope boundary — the host's UPSTREAM transport is.** A builder who places
+  the boundary at the relay will suppress legitimate host-to-child local delivery and simultaneously leak
+  child-local traffic, because both errors follow from the same misplacement.
+- unification (no new concept is introduced by any of this): the internal bus ALREADY spans a process boundary
+  — the Intelligence Console runs its whole data layer in-process and `Scope.LOCAL` never leaves. A UART child
+  is that same internal bus extended across a physical wire. Same scope semantics, wider extent.
+- practical payoff at the leaf: scope becomes an optimisation lever the child can declare. `button_matrix` can
+  publish press events as `local` when only the host consumes them, costing the shared bus nothing, while
+  `system/alert` arrives as `global` from upstream — the intent-up / state-down split with a bandwidth
+  dividend.
+- open-point (recorded, NOT blocking): `remote`. [BP-CAN-DATA] byte 0 defines four scope values
+  (local / global / remote / auto) and `remote` presumably means cross-segment. This spec does not say whether
+  a relay may ORIGINATE or FORWARD a `remote`-scoped message; a builder MUST treat `remote` across a relay as
+  unspecified and refuse it loudly rather than choose a behaviour.
+- see-also: [CAP-BUS-NAMESPACE-SCOPE]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-SUB-PRECISION] Precision INCREASES as you descend the tree — cheapest-node, read in the other direction
+
+- principle: each relay can afford more selectivity than the medium above it, so filtering gets MORE precise
+  the further from the shared bus you go. A host on CAN absorbs a coarse hardware mask — limited by filter
+  geometry ([CXC-SUB-MEASURED] M3, M5) — and delivers an EXACT set downward to each child, because its own
+  matching is software over a string it already holds.
+- key-insight: this is the cheapest-node principle inverted. Filtering-for-a-child is a behaviour the child
+  CANNOT own — it has neither the fabric nor the memory — so it flows UP to the cheapest node that CAN own it.
+  The usual reading pushes behaviour down to the leaf; this is the case where the same reasoning pushes it up,
+  and the two are not in tension because the criterion is identical: place the behaviour at the cheapest node
+  capable of performing it.
+- consequence for design reviews: a relay host that merely forwards its own filtered stream downward has
+  wasted the precision it was uniquely able to add, and its children pay for it in cpu and RAM. Forwarding is
+  not a simpler correct implementation; it is a worse one.
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [CXC-SUB-PAYLOAD-BOUND] The substrate-agnostic thesis is bounded by PAYLOAD SHAPE, not by semantics
+
+- claim: substrate-agnosticism holds for SEMANTICS. It does not, and cannot, hold for payload shape.
+- exemplar: the Intelligence Console could not ride CAN regardless of filtering. Its payloads
+  (`self/deliverables`, the bootstrap manifest) exceed 8 bytes on the first message, which is why
+  `CANTransport.send` refuses oversized payloads LOUDLY (`transport_can.py`: a classic CAN frame is 8 bytes,
+  fragmentation is not implemented, so it warns rather than shipping half a payload).
+- requirement: a spec or config that binds a fat-payload app to a thin substrate MUST fail at configuration
+  time with the byte counts named, not at runtime on the first oversized message.
+- consequence, and it is the constructive half: **the relay is also how a fat-payload app reaches a thin
+  substrate at all** — project the namespace DOWN to a slot carrying a scalar. The console cannot send its
+  deliverables list to a CH32V003, but it can send a derived `ui/led/3 = 1`. The projection is an act of
+  design, performed at the host, and it is what a relay is for beyond mere filtering.
+- see-also: [CXC-SUB-RELAY], [CXC-PS-GRANULARITY]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## 7. Capability facet
+
+### [CAP-BUS-SUBSTRATE-FILTER] Substrate-agnostic subscription filtering — declare once, enforced per substrate at the furthest-upstream point, reported by enforcement point
+
+- kind: capability
+- maturity: planned
+- flag: spec'd-not-built. This spec is what makes [CAP-BUS-PATTERN-SUB]'s CAN hardware-mask path buildable —
+  that capability's blocker was never the pattern language but the hashed identifier ([CXC-NSID-ALLOCATE]).
+  FOUR decision points remain OPEN ([DD-SUB-SLOT-NEGOTIATION], [DD-SUB-RELAY-ROLE], [DD-SUB-BOOT-VS-RUNTIME],
+  [DD-SUB-PUBLISH-SLOTS]); this capability cannot advance past `planned` until they are closed. Ratify.
+- tier-coverage: bus (MQTT source-side, in-process degenerate); device (CAN sink-side in silicon); relay
+  (UART child behind a bus-side host); declared-unfiltered (peer UART, neither side on the bus)
+- verified-by: none yet — the verification handles are the SUB-C rows of [CXC-SUB-ACCEPT], none of which
+  exists. Reads as "spec'd, unverified" by design.
+- depends-on: [CXC-SUB-DECLARE]
+- depends-on: [CXC-NSID-ALLOCATE]
+- see-also: [CAP-BUS-PATTERN-SUB]
+- see-also: [SPEC:CXC-SUBFILTER]
+- part-of: [CAP-MAP]
+
+---
+
+## 8. Decision points — OPEN, the architect's to close before dispatch
+
+### [DD-SUB-SLOT-NEGOTIATION] Slot negotiation over UART — initiator, the >255 case, host restart, and the not-yet-existing namespace
+
+- decision: PROPOSED, not ratified — **the CHILD declares, the HOST allocates.** Four sub-answers, each of
+  which a builder would otherwise have to invent: (a) INITIATOR — the child sends its declared set after its
+  boot banner; the host replies with the slot map. (b) PAST 255 — REFUSE the 256th declaration loudly and
+  report it ([CXC-SUB-REPORT]); slot 0 is `unmapped/error` and slot 255 stays reserved for a future two-byte
+  escape. (c) HOST RESTART — the CHILD RE-DECLARES; the host persists nothing and signals a LINK EPOCH that
+  increments on host start, and a child seeing a new epoch re-declares. (d) NAMESPACE NOT YET EXISTING — the
+  host MUST accept the declaration and assign a slot anyway, answering `assigned, not-yet-seen`.
+- rationale: (a) the host cannot know a child's semantic needs, so a host-initiated poll needs the same round
+  trip plus a discovery step for no gain. (b) 255 declarations on a 2 KB part is already past the plausible
+  budget, and an always-available two-byte escape would double the wire cost of every message against a case
+  that should not occur; refusing loudly makes the boundary visible at bring-up instead of at 2 a.m. (c) the
+  child OWNS the truth about its interests, and a host-persisted map goes stale silently against a re-flashed
+  child — the failure is the wrong LED lighting, with no error anywhere, which is precisely the silent-wrong
+  class this platform keeps paying for. (d) liveness is already the pattern primitive's contract
+  ([CXC-PS-PRIMITIVE]: family members that appear AFTER the subscription still deliver), so a
+  never-yet-published namespace is not an error; answering `not-yet-seen` lets the child distinguish "no data
+  yet" from "never will".
+- alternatives: (i) HOST-INITIATED POLL — the host asks each child for its set; symmetrical with a discovery
+  protocol the platform does not have, and it makes the host responsible for knowing a child exists before the
+  child speaks. (ii) STATIC COMPILED SLOT MAP, no negotiation at all — zero runtime cost and zero protocol,
+  genuinely attractive for a fixed product, but changing one namespace re-flashes BOTH sides and the map is
+  then duplicated in two firmwares (the fork-divergence class). (iii) HOST PERSISTS THE MAP across restart —
+  saves one round trip on every boot; costs the stale-map failure in (c). (iv) TWO-BYTE SLOTS ALWAYS — removes
+  the >255 boundary entirely at the cost of doubling every message's overhead on the most constrained link in
+  the system.
+- status: proposed
+- invalidating_assumption: "That a child's declared set is SMALL (tens) and STATIC across a power cycle. If
+  children begin declaring dynamically at runtime, or if a child legitimately needs more than 255 namespaces,
+  the refuse-loudly answer in (b) becomes wrong and the escape slot must be specified; and if re-declaration
+  latency ever lands on a human-visible path (a host restart that visibly blanks a panel), (iii) becomes
+  right and the staleness must be solved with a map checksum instead."
+- documents: [CXC-SUB-COMPACT]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [DD-SUB-RELAY-ROLE] Is a relay a first-class ROLE, or a Transport? — and `MAPPED_DEVICE_BUS` already covers more than it looks
+
+- checked-first, as instructed: [BPR-TRANSPORT-CONTRACT] (`docs/composeplatform/bus-peer-relay.lts`;
+  `python/composeio/transport_contract.py`) already defines ONE Transport waist with three knobs — QoS,
+  directionality, and far-side type — and its `FarSide.MAPPED_DEVICE_BUS` value explicitly covers a far side
+  that lacks native bus semantics, where "the bridge maps namespaces to arbitration IDs and
+  synthesizes-or-degrades the missing semantics." **RE-ENCODING is therefore already inside the Transport
+  contract**, and the premise that "a Transport moves ComposeBus messages across a substrate unchanged" is
+  narrower than the contract that actually exists. Slot compaction is a namespace-to-wire-id mapping of the
+  same species as namespace-to-arbitration-id.
+- what remains genuinely OUTSIDE the existing contract, and it is three things: (1) **RE-SCOPING** — a relay
+  applies scope policy on the publish path ([CXC-SUB-SCOPE]), whereas today the BUS decides which transport a
+  scope reaches (`bus._send_message` forwards to the global transport only for global/auto) and no Transport
+  applies scope itself; (2) **FAN-OUT** — a Transport has ONE far side, a relay has N children with N
+  independent slot spaces and N distinct declared sets; (3) **A DERIVED SUBSCRIPTION** — the relay's own
+  upstream subscription is a computed union of its children's, so it is not something its owner declares.
+- decision: PROPOSED, not ratified — a relay is a **Transport** profiled
+  `FIRE_AND_FORGET / BIDIRECTIONAL / MAPPED_DEVICE_BUS`, COMPOSED WITH one new collaborator (a subscription
+  aggregator) that owns the union, the per-child declared sets, the per-child slot tables and the scope policy.
+  Reuse the contract; add one collaborator; do not fork the waist and do not bury fan-out inside a class whose
+  contract says "one far side".
+- rationale: this is the only option that satisfies both standing constraints — [BPR-TRANSPORT-CONTRACT]
+  exists precisely to prevent a second forked emitter, and the three genuinely-new behaviours above are real
+  and must live somewhere legible. A collaborator is the smallest thing that is honest about both.
+- alternatives: (a) PURE TRANSPORT, everything inside — cheapest to write; buries fan-out and scope policy in
+  a class whose declared contract does not mention either, so the next reader trusts the contract and is
+  wrong. (b) FIRST-CLASS RELAY ROLE outside the Transport hierarchy — honest about re-scoping, but forks the
+  emitter waist that [BPR-TRANSPORT-CONTRACT] was written to unify, and re-opens the question the transport
+  contract already settled. (c) N TRANSPORTS, ONE PER CHILD — makes fan-out free and slot spaces naturally
+  per-instance, but the union must live above them anyway (so the collaborator appears regardless) and the
+  host then opens N transport objects onto ONE physical UART.
+- status: proposed
+- invalidating_assumption: "That scope policy on the publish path is the ONLY bus semantic a relay must apply
+  which a Transport does not. If a relay must also dedupe, re-sequence, arbitrate between children, or
+  originate `remote`-scoped traffic, it has grown a routing table and it IS a bus, not a transport — at which
+  point alternative (b) becomes right and the child side should be modelled as a real second ComposeBus
+  instance rather than a far side."
+- documents: [CXC-SUB-RELAY]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [DD-SUB-BOOT-VS-RUNTIME] Boot-time vs runtime subscription, given that a TWAI filter change costs a driver re-init
+
+- measured constraint: changing the acceptance filter on an installed driver requires a driver RE-INIT
+  ([CXC-SUB-MEASURED] M6) — a brief bus-off for that node on a live segment. The DURATION was not measured and
+  no two-node bus existed to measure it on. Consequence that makes this non-local: a CHILD subscribing at
+  RUNTIME widens its host's union ([CXC-SUB-RELAY]), which reconfigures the HOST's controller — so a child's
+  cheap-looking runtime subscribe can take its host off a shared CAN segment.
+- decision: PROPOSED, not ratified — **BOOT-TIME declaration is the contract; runtime subscription is an
+  explicitly-priced exception**, and on CAN specifically the priced exception should be satisfied in SOFTWARE
+  rather than by re-loading the mask. Concretely: (i) a runtime widen resolves by refining in software beneath
+  an UNCHANGED hardware mask whenever the boot mask is already a superset — which it will be whenever the boot
+  mask was widened for expressibility, and it costs no re-init and cannot violate [CXC-SUB-SUPERSET]; (ii) a
+  runtime widen that genuinely exceeds the boot mask coalesces over a debounce window (default 250 ms) so N
+  children joining together cost ONE re-init; (iii) a node may declare `filter_stability: locked`, after which
+  a widen that needs hardware is REFUSED with a report entry rather than silently taking the bus down; (iv)
+  NARROWING never requires urgency and MUST be deferred to the next boot, because narrowing is the only
+  direction that could pass through a subset state.
+- rationale: the asymmetry in [CXC-SUB-SUPERSET] resolves this almost entirely. Widening in software is always
+  safe (hardware stays a superset); narrowing in hardware is the only operation that needs a re-init and it is
+  never urgent, because an over-wide filter is merely expensive. The lean toward boot-time is therefore not
+  conservatism — it is that the runtime case decomposes into one free operation and one deferrable one.
+- alternatives: (a) RUNTIME EVERYWHERE, absorb the re-init — simple and uniform; a child hot-joining takes its
+  host's controller down mid-flight on a shared segment, which is a fault injected by a feature. (b)
+  BOOT-ONLY, no runtime at all — cheapest and safest; a relay host then cannot admit a child that plugs in
+  later, which is exactly the button-matrix use case, so it forecloses the deployment shape the relay was
+  designed for. (c) SOFTWARE-ONLY WIDENING, hardware mask frozen at boot forever — never a re-init, invariant
+  trivially held; the cpu cost of the residue grows unbounded as the widened set drifts from the boot
+  prediction, with no mechanism to reclaim it.
+- status: proposed
+- invalidating_assumption: "That a device's set of interests is knowable at BOOT. If devices become genuinely
+  dynamic — a hot-plug child mesh, or a Composer authoring session retargeting a live device's subscriptions
+  from the glass — then boot-time-as-contract inverts, the re-init cost must be engineered around rather than
+  avoided, and the bus-off duration becomes a number that must be MEASURED on a two-node bus before any of
+  this is safe. Also invalidated if a controller with in-place filter update (a non-legacy TWAI driver or
+  different silicon) becomes the target, since M6 is a property of this driver and this part."
+- documents: [CXC-SUB-DECLARE]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+### [DD-SUB-PUBLISH-SLOTS] The publish direction's slot space — separate from subscribe, and does the host translate or forward?
+
+- decision: PROPOSED, not ratified — **SEPARATE slot space per direction**, allocated in the same setup
+  exchange (the child declares what it PUBLISHES, with a SCOPE per entry; the host assigns up-slots), and the
+  host **TRANSLATES** (slot to canonical namespace string) rather than forwarding the slot upstream.
+- rationale (separate spaces): the two directions have different cardinalities and different owners — a
+  button matrix subscribes 16 LED namespaces and publishes 16 button namespaces, but a display child may
+  subscribe 40 and publish 0. Sharing one 8-bit space halves both for no gain, and it makes an off-by-one in
+  one direction corrupt the other. It also removes an allocation conflict: the subscribe direction is
+  allocated by the HOST, so a shared space would need two allocators to agree.
+- rationale (translate, not forward): a slot is a LINK-LOCAL name. Forwarding it upstream would put a name
+  with no meaning off-link onto the shared bus and require every upstream consumer to hold the host's table —
+  which is [CXC-NSID-ALLOCATE]'s defect in a new costume, a bit pattern whose meaning is not recoverable from
+  the bus. The host holds the canonical string and publishes it, with `src` identifying the child.
+- consequence that a builder must not miss: because the host applies scope on the publish path
+  ([CXC-SUB-SCOPE]), the child's publish declaration MUST carry a SCOPE PER SLOT — otherwise the host cannot
+  tell a child-local press event from one that belongs upstream, and the safe default (treat everything as
+  local) would silently strand global events at the host.
+- alternatives: (a) ONE SHARED SLOT SPACE, host translates — one table instead of two; halves the space and
+  couples the directions. (b) SEPARATE SPACES, host FORWARDS the slot upstream with a child id — cheapest on
+  the host; leaks a link-local name onto the shared bus. (c) NO PUBLISH SLOTS AT ALL — the child sends full
+  namespace strings upstream. A 2 KB child can hold its own short const string table, and the up direction is
+  typically low-rate and change-driven ([CXC-PS-RATE], [CXC-PS-GRANULARITY]), so this costs wire bytes and
+  buys zero negotiation in that direction. A genuine contender for children that publish few, rare events.
+- status: proposed
+- invalidating_assumption: "That the UP direction is low-rate and low-cardinality relative to the DOWN
+  direction. If a child becomes a high-rate sensor publishing many namespaces, alternative (c) collapses and
+  the publish slot space becomes as load-bearing as the subscribe one — and if BOTH directions then approach
+  255, the shared-space alternative (a) becomes actively harmful rather than merely wasteful."
+- documents: [CXC-SUB-COMPACT]
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## 9. Error and boundary matrix
+
+### [CXC-SUB-BOUNDARIES] Every condition a builder would otherwise have to invent an answer for
+
+| # | Condition | Required behaviour |
+|---|-----------|--------------------|
+| 1 | Empty declared set | subscribe NOTHING; `*` must be explicit ([CXC-SUB-DECLARE]) |
+| 2 | Mid-pattern glob (`a/*/b`) | RAISE at declaration time (`validate_pattern`, `bus.py:58-64`) |
+| 3 | Declared set inexpressible in available filter units | load the narrowest expressible SUPERSET + software residue; NEVER a subset ([CXC-SUB-SUPERSET]) |
+| 4 | Transport cannot enforce at all | report `enforcement: none` + WARNING naming the substrate; never a silent pass |
+| 5 | Transport not taught to report | assume `enforcement: software` (pessimistic; never overstates) |
+| 6 | Namespace deeper than 3 levels on a device tier | BUILD-TIME error naming the namespace; never truncate, never hash |
+| 7 | Namespace with no allocation arrives on a device tier | drop LOUDLY with the namespace named; MUST NOT fall back to `namespace_hash` |
+| 8 | Duplicate `(root, group, leaf)` in an allocation table | BUILD-TIME error; fail the config compile |
+| 9 | Unregistered root id in a config | BUILD-TIME error naming the root and the registry location |
+| 10 | `root = 0`, or an all-zero ns field on the wire | invalid; reject as an uninitialised identifier |
+| 11 | Non-namespace identifier bits (type, src) in a mask | DON'T-CARE by default; pinning them narrows below the declared set |
+| 12 | Child declares a namespace the host cannot subscribe upstream | explicit per-entry failure in the setup answer + host report entry |
+| 13 | Slot 0 arrives at a child | log and discard; never guess, never index positionally |
+| 14 | Slot with no mapping arrives at a child | discard + counter increment; SHOULD request re-negotiation |
+| 15 | Child publishes `Scope.LOCAL` | reaches host and siblings; MUST NOT be relayed upstream ([CXC-SUB-SCOPE]) |
+| 16 | Host publishes `Scope.LOCAL` | DOES cross to children |
+| 17 | `Scope.REMOTE` across a relay | UNSPECIFIED — refuse loudly; do not choose a behaviour ([CXC-SUB-SCOPE]) |
+| 18 | Payload exceeds the substrate's frame capacity | fail at CONFIGURATION time with byte counts named; the runtime path already refuses loudly (`transport_can.py`) |
+| 19 | Runtime widen needing more than the boot hardware mask | coalesce over the debounce window; refuse if `filter_stability: locked` ([DD-SUB-BOOT-VS-RUNTIME]) |
+| 20 | Any reconfiguration transition | pass through a WIDER intermediate state, never a narrower one |
+| 21 | Peer UART, neither side on the bus | declared topology with `enforcement: none`; NOT a degraded relay |
+| 22 | More than 255 declarations on one link | refuse the 256th LOUDLY pending [DD-SUB-SLOT-NEGOTIATION] |
+
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## 10. Acceptance — two tiers, machine and glass
+
+### [CXC-SUB-ACCEPT] Every requirement has a machine signal; every physical claim has a bench gate
+
+- rule: a machine signal alone certifies the logic. Anything whose truth lives in silicon or on a wire ALSO
+  needs a bench observation, because a loopback test shares an encoder with itself and cannot detect a
+  disagreement with real hardware — which is exactly how [BP-CAN-ID-DIVERGENCE] stayed invisible for months.
+
+| ID | Requirement | `verify.machine` | `verify.human` (glass / bench) |
+|----|-------------|------------------|-------------------------------|
+| SUB-C1 | **Superset invariant** holds on every substrate ([CXC-SUB-SUPERSET]) | `tests/subscription/test_superset_invariant.py::test_enforced_superset_per_substrate` — publish declared set + control set over in-process, MQTT, CAN-loopback and a mock relay; assert EVERY declared message arrived | on the CAN bench, a declared two-entry set is transmitted and both entries are observed accepted (`STAT rxid` shows both), with `bus_error=0` |
+| SUB-C2 | Superset holds DURING reconfiguration | `tests/subscription/test_superset_invariant.py::test_no_narrower_intermediate_state` — instrument the mask across a widen; assert no sampled state is narrower than the pre-existing one | — |
+| SUB-C3 | Report names the ENFORCEMENT POINT per entry ([CXC-SUB-REPORT]) | `tests/subscription/test_degradation_report.py::test_report_names_enforcement_point` — assert per-entry enum + residue on the `software`/`none` entries | operator reads `_bus/subscription/report` on the glass and can state the cpu bill without opening a profiler |
+| SUB-C4 | Empty declared set subscribes nothing | `tests/subscription/test_degradation_report.py::test_empty_declaration_is_deny_all` | — |
+| SUB-C5 | **String prefix correlates with bit prefix** ([CXC-NSID-ALLOCATE]) | `tests/namespace/test_allocated_id.py::test_prefix_correlates_with_bit_prefix` — for every allocated namespace, `startswith(prefix + "/")` implies the id matches the prefix's code+mask; assert over the full table | — |
+| SUB-C6 | Unallocated namespace refused, never hashed | `tests/namespace/test_allocated_id.py::test_unallocated_namespace_refused_loudly` — assert the log names it and `namespace_hash` is NOT called | — |
+| SUB-C7 | Duplicate allocation is a build error | `tests/namespace/test_allocated_id.py::test_duplicate_allocation_is_build_error` | — |
+| SUB-C8 | More than 3 levels refused at allocation | `tests/namespace/test_allocated_id.py::test_deep_namespace_refused_at_build` | — |
+| SUB-C9 | Pattern lowers to the specified code+mask ([CXC-NSID-CAN-WINDOW]) | `tests/namespace/test_can_lowering.py::test_pattern_to_code_mask` — table-driven against the four rows of the lowering table | **bench**: load the derived code+mask on the C3, transmit the declared subtree plus three near-miss neighbours, observe the subtree accepted and the neighbours rejected with `bus_error=0` |
+| SUB-C10 | Rejection costs no CPU | — | **bench**: 20-frame rejected burst yields `msgs_to_rx=0, rx_missed=0` with `tx ok=20, tx_failed=0` (the [CXC-SUB-MEASURED] M4 procedure, re-run against a mask derived from a DECLARATION rather than a literal) |
+| SUB-C11 | Host's upstream set is the UNION ([CXC-SUB-RELAY]) | `tests/relay/test_union_subscription.py::test_host_upstream_is_union` — two children + host own set; assert the upstream subscription is exactly the union and each child receives only its own set | — |
+| SUB-C12 | Child `LOCAL` is not relayed upstream; host `LOCAL` does reach children | `tests/relay/test_scope_through_relay.py::test_child_local_not_relayed_upstream` and `::test_host_local_reaches_children` | — |
+| SUB-C13 | Wire carries `[slot][value]`; child parses no string ([CXC-SUB-COMPACT]) | `tests/relay/test_slot_compaction.py::test_wire_is_slot_value` — assert the framed bytes and that no namespace string crosses the link | **bench**: on `button_matrix_4x4`, an inbound `ui/led/7 = 1` lights LED 7 and the UART capture shows two bytes |
+| SUB-C14 | MQTT is NOT inverted ([CXC-SUB-NO-INVERT]) | `tests/subscription/test_no_broker_inversion.py::test_socket_receives_only_declared_topics` — assert no `#`-rooted broker subscription is issued for a narrow declaration | — |
+| SUB-C15 | Fat payload on a thin substrate fails at CONFIG time | `tests/subscription/test_payload_bound.py::test_oversized_binding_refused_at_config` — assert byte counts appear in the message | — |
+| SUB-C16 | Unfiltered peer topology is DECLARED | `tests/subscription/test_unfiltered_declared.py::test_reports_none_not_degraded_relay` | — |
+
+- requirement: SUB-C1 is the gate. A build that fails any other row is incomplete; a build that fails SUB-C1
+  is UNSAFE and MUST NOT ship, because its failure mode is silent.
+- part-of: [SPEC:CXC-SUBFILTER]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-SUBFILTER] DEPENDS_ON [SPEC:CXC-PATSUB]
+- [SPEC:CXC-SUBFILTER] REALIZES [DEC-SUBSTRATE-AGNOSTIC-SUBSCRIPTION-FILTERING]
+- [SPEC:CXC-SUBFILTER] REALIZES [DEC-NAMESPACE-ID-ALLOCATED-HIERARCHICAL]
+- [CXC-SUB-NOT-NEW] DEPENDS_ON [CXC-PS-PRIMITIVE]
+- [CXC-SUB-NOT-NEW] RELATED_TO [CXC-FL-PATTERN]
+- [CXC-SUB-THESIS] RELATED_TO [CAP-BUS-PATTERN-SUB]
+- [CXC-SUB-THESIS] USES [DX-NARROW-WAIST]
+- [CXC-SUB-WHY-HIERARCHICAL] DEPENDS_ON [CXC-SUB-MEASURED]
+- [CXC-SUB-DECLARE] UPHOLDS [CXC-SUB-THESIS]
+- [CXC-SUB-REPORT] DEPENDS_ON [CXC-SUB-DECLARE]
+- [CXC-SUB-SUPERSET] UPHOLDS [CXC-SUB-THESIS]
+- [CXC-SUB-ENFORCE] UPHOLDS [CXC-SUB-SUPERSET]
+- [CXC-SUB-ENFORCE] DEPENDS_ON [CXC-PS-TRANSPORT]
+- [CXC-SUB-NO-INVERT] UPHOLDS [CXC-SUB-THESIS]
+- [CXC-SUB-UNFILTERED] RELATED_TO [CXC-SUB-REPORT]
+- [CXC-NSID-LAYOUT] DEPENDS_ON [CXC-NSID-REGISTRY]
+- [CXC-NSID-ALLOCATE] DEPENDS_ON [CXC-NSID-LAYOUT]
+- [CXC-NSID-LOWERING] DEPENDS_ON [CXC-NSID-ALLOCATE]
+- [CXC-NSID-LOWERING] USES [DX-NARROW-WAIST]
+- [CXC-NSID-CAN-WINDOW] DEPENDS_ON [CXC-NSID-LAYOUT]
+- [CXC-NSID-CAN-WINDOW] DEPENDS_ON [CXC-SUB-MEASURED]
+- [CXC-NSID-CAN-WINDOW] RELATED_TO [CXC-PS-CAN]
+- [CXC-SUB-RELAY] DEPENDS_ON [CXC-SUB-SUPERSET]
+- [CXC-SUB-COMPACT] DEPENDS_ON [CXC-SUB-RELAY]
+- [CXC-SUB-COMPACT] DEPENDS_ON [CXC-SUB-DECLARE]
+- [CXC-SUB-SCOPE] DEPENDS_ON [CXC-SUB-RELAY]
+- [CXC-SUB-SCOPE] RELATED_TO [CAP-BUS-NAMESPACE-SCOPE]
+- [CXC-SUB-PRECISION] EXEMPLIFIES [CXC-SUB-ENFORCE]
+- [CXC-SUB-PAYLOAD-BOUND] RELATED_TO [CXC-SUB-RELAY]
+- [CXC-SUB-PAYLOAD-BOUND] RELATED_TO [CXC-PS-GRANULARITY]
+- [CXC-SUB-BOUNDARIES] DEPENDS_ON [CXC-SUB-SUPERSET]
+- [CXC-SUB-ACCEPT] DEPENDS_ON [CXC-SUB-BOUNDARIES]
+- [CAP-BUS-SUBSTRATE-FILTER] RELATED_TO [CAP-BUS-PATTERN-SUB]
+- [DD-SUB-SLOT-NEGOTIATION] DOCUMENTS [CXC-SUB-COMPACT]
+- [DD-SUB-RELAY-ROLE] DOCUMENTS [CXC-SUB-RELAY]
+- [DD-SUB-RELAY-ROLE] RELATED_TO [BPR-TRANSPORT-CONTRACT]
+- [DD-SUB-BOOT-VS-RUNTIME] DOCUMENTS [CXC-SUB-DECLARE]
+- [DD-SUB-BOOT-VS-RUNTIME] DEPENDS_ON [CXC-SUB-MEASURED]
+- [DD-SUB-PUBLISH-SLOTS] DOCUMENTS [CXC-SUB-COMPACT]
+- [DD-SUB-PUBLISH-SLOTS] DEPENDS_ON [CXC-SUB-SCOPE]
+
+### Entity
+
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-THESIS]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-NOT-NEW]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-WHY-HIERARCHICAL]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-DECLARE]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-REPORT]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-SUPERSET]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-ENFORCE]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-NO-INVERT]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-UNFILTERED]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-NSID-LAYOUT]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-NSID-ALLOCATE]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-NSID-REGISTRY]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-NSID-LOWERING]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-NSID-CAN-WINDOW]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-MEASURED]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-RELAY]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-COMPACT]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-SCOPE]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-PRECISION]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-PAYLOAD-BOUND]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CAP-BUS-SUBSTRATE-FILTER]
+- [SPEC:CXC-SUBFILTER] CONTAINS [DD-SUB-SLOT-NEGOTIATION]
+- [SPEC:CXC-SUBFILTER] CONTAINS [DD-SUB-RELAY-ROLE]
+- [SPEC:CXC-SUBFILTER] CONTAINS [DD-SUB-BOOT-VS-RUNTIME]
+- [SPEC:CXC-SUBFILTER] CONTAINS [DD-SUB-PUBLISH-SLOTS]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-BOUNDARIES]
+- [SPEC:CXC-SUBFILTER] CONTAINS [CXC-SUB-ACCEPT]
+
+### Temporal
+
+- [CXC-SUB-DECLARE] BEFORE [CXC-SUB-ENFORCE]
+- [CXC-SUB-ENFORCE] BEFORE [CXC-SUB-REPORT]
+- [CXC-NSID-REGISTRY] BEFORE [CXC-NSID-ALLOCATE]
+- [CXC-NSID-ALLOCATE] BEFORE [CXC-NSID-CAN-WINDOW]
+- [CXC-SUB-DECLARE] BEFORE [CXC-SUB-COMPACT]
+
+### Causal
+
+- [CXC-SUB-WHY-HIERARCHICAL] ENABLES [CXC-NSID-CAN-WINDOW]
+- [CXC-NSID-ALLOCATE] ENABLES [CXC-NSID-CAN-WINDOW]
+- [CXC-NSID-ALLOCATE] PRECONDITION_FOR [CXC-SUB-ENFORCE]
+- [CXC-SUB-DECLARE] ENABLES [CXC-SUB-COMPACT]
+- [CXC-SUB-MEASURED] CAUSES [DD-SUB-BOOT-VS-RUNTIME]
+- [CXC-SUB-RELAY] ENABLES [CXC-SUB-PRECISION]
+- [CXC-SUB-SCOPE] PRECONDITION_FOR [DD-SUB-PUBLISH-SLOTS]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-08-10
+**Status**: Draft — NOT dispatch-ready. Lowers two ratified decisions ([DEC-SUBSTRATE-AGNOSTIC-SUBSCRIPTION-FILTERING], [DEC-NAMESPACE-ID-ALLOCATED-HIERARCHICAL], both David 2026-08-10) into an implementable contract. FOUR decision points are OPEN and are the architect's to close before dispatch: [DD-SUB-SLOT-NEGOTIATION], [DD-SUB-RELAY-ROLE], [DD-SUB-BOOT-VS-RUNTIME], [DD-SUB-PUBLISH-SLOTS]. One further item is resolved-by-arithmetic rather than ratified and should be confirmed at ratify: `ROOT_BITS = 4` ([CXC-NSID-LAYOUT]) — the decision node says "4-5b root" without noting that a 5-bit root cannot accommodate `[4b group][8b leaf]`. `remote` scope across a relay remains UNSPECIFIED by design ([CXC-SUB-SCOPE]). The 29-bit identifier layout is SETTLED — [BP-CAN-ID] v2, ratified 2026-08-13, [BP-CAN-ID-DIVERGENCE] closed — and [CXC-NSID-CAN-WINDOW] was CORRECTED 2026-08-14 against it: its "the two windows coincide exactly" claim was true only of v1 and is now false, the loss of dual-filter exact matching is accepted (`DEC-ACCEPT-LOSS-OF-DUAL-FILTER-EXACT-MATCH`), and single-filter mode remains exact. Hardware claims are MEASURED on one ESP32-C3 (2026-08-10, `stamp=c8c58d8b`, Track A loopback) and their limits are stated at [CXC-SUB-MEASURED].
+**Intelligence**: composed by `factlattice-editor` from the composeux-architect's narrative brief; grounded against `bus.py`, `transport.py`, `transport_mqtt.py`, `transport_can.py`, `config.py`, `transport_contract.py`, the `button_matrix_4x4` board source, and `docs/research/CAN-ACCEPTANCE-FILTER-RESULTS.md`.

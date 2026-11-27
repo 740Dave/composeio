@@ -1,0 +1,61 @@
+---
+scope: "The DSD-viewer surface + its delivery endpoint: `send_dsd_for_human_review` as THE primary interactive path by which a composed Decision-Support-Doc reaches the human — validated, published as an `_app/dsd/open` intent, rendered as an editable FORM, saved-on-close, and its answers minted back to the decision graph. This file governs the DELIVERY CONTRACT (the endpoint's exposure + trust). Home of the [SPEC:CXC-DSDV] nodes the decision-ops code already cites."
+audience: [composeux-architect, David, any Intelligence composing a DSD for human review]
+boundary: "IN: the endpoint's identity as the trusted primary path, its exposed-tool-list membership invariant ([CXC-DSDV-REGISTER]), the runtime-freshness rule, and the NO-silent-fallback discipline. OUT: the form-rendering / parse / preselect / save-mint mechanics (the fuller [CXC-DSDV-FORM|PARSE|PRESELECT|SAVE|NOTIFY|LAUNCHER] node set — authored separately by factlattice-editor); the decision-ops write path ([SPEC:CXC-DEC-OPS]); the `.claude/skills/decision-support-doc` SKILL text (architect-owns)."
+not-this: "Not a fidelity/visual spec (it scopes the endpoint's LOGIC + exposure, not the widget's look). Not a fallback design — the `open`-the-markdown editable path is a LOUD, announced degradation only, never a silent substitute for this endpoint ([CXC-DSDV-MCP] constraint)."
+depends-on: [45-session-bootstrap-read.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-07-28
+---
+# DSD Viewer — the Trusted Delivery Endpoint [SPEC:CXC-DSDV]
+
+> The DSD-viewer build (decision [DEC-DSD-VIEWER-WIDGET], W3/D5+D6) shipped the interactive viewer + the `send_dsd_for_human_review` MCP endpoint and folded it onto the ONE decision-ops surface ([DD-DSDV-MCP-HOME] RESOLVED — D5). The endpoint's behaviour lived only in code (`composeio.decision_ops.dsd_review` / `.mcp_server`) citing a `[SPEC:CXC-DSDV]` that was never written — so when the live MCP client went stale and stopped serving the tool, the documented `open`-the-markdown "fallback" SILENTLY masked a dead primary path, undetected for weeks. This file is the missing spec: it makes the primary path trusted BY CONSTRUCTION and forbids the silent mask ([SBR-TRUST] applied one layer up, to the DSD delivery surface).
+
+---
+
+## 1. The endpoint IS the primary path
+
+### [CXC-DSDV-MCP] `send_dsd_for_human_review` is THE interactive DSD-delivery path — no silent fallback
+- definition: the composeux-architect composes a DSD, then calls `send_dsd_for_human_review(dsd_path)` on the decision-ops MCP surface. The service does the work: validate the path is a real, repo-scoped, parseable DSD; publish an `_app/dsd/open` intent (the in-process launcher spawns the interactive viewer); return a correlatable status. A validation-only failure publishes NOTHING and reports the failure loudly. This is the ABSTRACTION the human asked for — the architect never hand-launches the viewer.
+- requirement: this interactive endpoint is the PRIMARY, documented delivery path. The `open`-the-markdown editable path is a DEGRADATION, permitted ONLY when the endpoint is announced-unavailable, and it must be LOUD — the human (and the architect) are told the primary path is down. It is NEVER a silent substitute chosen because the tool "wasn't found."
+- constraint: [SBR-TRUST] do_not_workaround — if the endpoint is absent from the live tool surface, that is a FIXABLE FAULT (a stale client / an unregistered server), HALT-AND-FIX it; do not route around it to the markdown fallback and call the run a success. A documented "fallback" that masks a non-functional primary path IS the silent-fallback anti-pattern; it launders a dead surface into "honest degradation."
+- relates-to: [CXC-DSDV-REGISTER], [SBR-TRUST]
+- part-of: [SPEC:CXC-DSDV]
+
+---
+
+## 2. Trusted by construction
+
+### [CXC-DSDV-REGISTER] The endpoint is exposed on the decision-ops MCP tool surface by construction, and its liveness is a HALT-AND-FIX
+- premise: an endpoint that is implemented but not REACHABLE on the live tool surface is worse than absent — the caller trusts the fallback and never learns the primary path is dead. The defect that authored this node: the tool was in the code AND in `.mcp.json`, but the running MCP client session predated the fold-in commit and never reconnected, so the architect's ToolSearch found nothing DSD-related.
+- requirement: `send_dsd_for_human_review` MUST appear on the decision-ops MCP server's `tools/list` (declared in `mcp_server.TOOLS`) AND be dispatchable (present in `DecisionOpsMcp.dispatch`'s handler map) — dropping it from EITHER surface is a regression a test must catch (`tests/test_decision_ops_dsd.py`). The decision-ops server MUST be registered in the MCP client config (`.mcp.json`). These are the by-construction guarantees; a CI guard, not a human noticing months later, enforces them.
+- runtime-freshness: a newly-folded MCP tool is only LIVE after the client (re)connects to the server. A stale client that serves an old tool list is the same freshness class as a stale lts-engine index ([SBR-TRUST] STALE-IS-NOT-A-DEGRADE-TRIGGER): route by WHY — reconnect the MCP client (`/mcp` reconnect, or restart the session's server) to load the current `tools/list`; NEVER silently fall back. This shares a MECHANISM with a corpora reorg not reflected by a live lts-engine: both are servers in the one `.mcp.json` whose live session has not reloaded — one reconnect that takes reloads both.
+- relates-to: [CXC-DSDV-MCP], [SBR-TRUST]
+- part-of: [SPEC:CXC-DSDV]
+
+---
+
+## 3. Scope note — the fuller DSDV spec is pending
+
+### [CXC-DSDV-SPEC-PENDING] The viewer's form/parse/save/notify nodes remain to be authored
+- definition: the decision-ops + render code cites a wider set of [CXC-DSDV-*] behaviour nodes — form rendering ([CXC-DSDV-FORM]), DSD parse ([CXC-DSDV-PARSE]), recommendation preselect ([CXC-DSDV-PRESELECT]), free-text comments ([CXC-DSDV-COMMENTS]), multi-select ([CXC-DSDV-MULTI]), save-close write-back + node mint ([CXC-DSDV-SAVE]), the standalone launcher ([CXC-DSDV-LAUNCHER]), the save-close notify ([CXC-DSDV-NOTIFY]), the round-trip verify ([CXC-DSDV-VERIFY]), and the bidirectional contract ([CXC-DSDV-CONTRACT]). This defect fix spec'd ONLY the delivery-endpoint trust invariants ([CXC-DSDV-MCP], [CXC-DSDV-REGISTER]) — the defect's scope. The remaining behaviour nodes are to be authored by factlattice-editor so the whole DSDV surface is spec-backed, not code-only.
+- part-of: [SPEC:CXC-DSDV]
+
+---
+
+## 4. The viewer window
+
+### [CXC-DSDV-WINDOW] The DSD viewer opens RESIZABLE with content reflow + persisted geometry — Designer-family parity
+
+- premise: a DSD form is often a long, multi-decision document; a maker reading and answering it needs to resize the window exactly as they resize the Designer console. The DSD viewer therefore MUST meet the render-engine's Designer-family resize parity bar ([SPEC:CXC-RENDER] [CXC-R-WINDOW-RESIZE]) — it is not a finished viewer while it opens fixed-size. Today `intelligence/console/dsdviewer.compose.yaml` opens at a fixed `780x940` with no resize opt-in, while the console ([SPEC:CXC-CONSOLE-PROD] [CXC-ICP-S1-RESIZE]) and the Decisions viewer ([SPEC:CXC-DVL] [CXC-DVL-WINDOW]) already resize.
+- requirement (MUST): the `design:` block of `intelligence/console/dsdviewer.compose.yaml` gains `resizable: true`, a sensible `min_width` / `min_height` floor (e.g. `640 x 520`, below which the form still renders one decision group legibly), `persist_geometry: true`, and a stable `window_key: dsd-viewer`. This is the SAME scene-level opt-in the console and Decisions viewer use — NO runtime code change, NO widget-binding change, and NO change to the save-on-close / `_app/dsd/answered` notify path ([CXC-DSDV-NOTIFY]). The form's fixed-`x/y/w/h` regions migrate to relative containers so a resize re-lays-out without clip or overlap (layout containers only — the frozen-seam discipline).
+- reuse-by-reference (never fork): the resize → relayout path is the runtime's existing `_handle_resize` ([SPEC:CXC-RENDER] [CXC-R-WINDOW-RESIZE], `python/composeio/render/engine/runtime.py`); geometry persist / restore is the existing store ([SPEC:CXC-DVL] [CXC-DVL-GEOMETRY]); reference scenes are `intelligence/console/console.compose.yaml` and `python/composeio/render/examples/decisions_tab.compose.yaml`.
+- constraint: the spawned DSD viewer already inherits the launcher's placement + geometry-store handoff env ([CXC-DSDV-LAUNCHER]); `persist_geometry` + `window_key: dsd-viewer` make its dragged size / placement durable under its OWN key, distinct from the console's.
+- when: a maker drags the DSD-viewer window larger to read a long decision, then closes and reopens it.
+- then: the form reflows to each size with no clipped control-group down to the `640x520` floor, and reopens at the last size + placement (clamped on-screen).
+- verify.machine: a headless-render geometry test on `dsdviewer.compose.yaml` at several widths asserting zero control-group overlap / out-of-bounds clip; PLUS a `window_key: dsd-viewer` geometry round-trip (persist-on-resize, re-seed size + placement at launch).
+- verify.human: a maker resizes an open DSD across sizes, confirms the form stays legible and un-clipped, and that a resized viewer reopens at its last size after relaunch. BOTH tiers required — machine geometry-green necessary; glass reflow-legibility sufficient only with human sign-off.
+- relates-to: [CXC-R-WINDOW-RESIZE]
+- part-of: [SPEC:CXC-DSDV]

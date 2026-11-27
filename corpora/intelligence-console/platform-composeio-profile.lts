@@ -1,0 +1,742 @@
+---
+title: "ComposeIO / ComposeUX — platform domain profile"
+id: "PROFILE:PROFILE-COMPOSEIO"
+domain: plt.cio
+scope: "The registered vocabulary of the ComposeIO + ComposeUX corpora — namespaces, node-id prefixes, document tags, and the bare relationship verbs the corpus authors in its `## Relationships` blocks. Derived by scanning corpora/**/*.lts, not by declaration."
+audience: "The FactLattice parser and linter (loaded at parse time); the ComposeUX architect and any agent authoring into these corpora."
+boundary: "Registers VOCABULARY and nothing else. It declares no node schemas, no enums, and no lifecycle — those are open ratification items recorded in the GUIDANCE notes below, deliberately left undeclared so no validator fires on a rule David has not ratified."
+not-this: "Not a style guide, not a linter configuration, not a description of what the corpus SHOULD contain. Every entry below is present because the corpus already uses it, with the observed count carried on the node."
+status: draft
+created: 2026-08-11
+updated: 2026-08-11
+---
+# ComposeIO / ComposeUX — platform domain profile [PROFILE:PROFILE-COMPOSEIO]
+
+> The `.lts` successor to `corpora/platform-specs/99-composeio-profile.yaml`, authored to close
+> [FIX-LTS-PROFILE-DRIFTED-FROM-CORPUS]. The yaml declared 38 prefixes in a punctuation form V1
+> cannot match (`BP-EXT-`, `CXC-HALD-`) while every prefix the corpus actually mints went
+> unregistered. Every registration below was DERIVED by scanning `corpora/**/*.lts` and carries its
+> observed count in an `evidence` property, so the drift is re-checkable rather than re-assertable.
+>
+> ⛔ BOOTSTRAPPING INVARIANT. This document is parsed with CORE notation only — it cannot use the
+> vocabulary it registers, or the profile would be needed in order to parse the profile
+> (`factlattice/profile.py::_assert_core_only_parse`). There is therefore NO `## Relationships`
+> section here, no namespaced edge type, and no relationship-bearing property. Every construct is a
+> plain heading node with plain `- key: value` properties.
+
+---
+
+## [PROFILE-DOMAIN] Domain identity
+
+- domain-id: plt.cio
+- domain-name: ComposePlatform — ComposeIO bus + ComposeUX composer
+- domain-version: 2.0
+- conventions-source: corpora/platform-specs/99-composeio-profile.yaml (the yaml predecessor this document supersedes) + 99-composeio-conventions.smd (the prose narrative of record)
+- namespaces: plt.cio, plt.cux
+- evidence: `domain: plt.cux` in 62 corpus files and `domain: plt.cio` in 2; 31 cross-corpus references authored as `[plt.cio:SPEC:*]` (24) and `[plt.cux:SPEC:*]` (7)
+
+---
+
+## Registered node-id prefixes
+
+> V1 compares a node's `type_prefix` — the id text BEFORE THE FIRST HYPHEN — against this set, with
+> trailing hyphens normalized off both sides. `CXC-IC-LAUNCH` therefore has type_prefix `CXC`, and a
+> registration of `CXC-IC-` could never match it. That is the precise shape of the drift being
+> closed: register the FIRST SEGMENT, not the sub-family.
+
+### [PREFIX-CXC] ComposeUX / ComposeIO Composer spec nodes
+
+- registers-prefix: CXC-
+- document: corpora/platform-specs (the whole spec corpus)
+- definition: The platform's primary node family; sub-families (CXC-R-, CXC-IC-, CXC-HAL-, CXC-TERM-, CXC-PRIM-, ...) all resolve to this one type prefix
+- evidence: 641 heading nodes across 49 files, plus 44 document roots of the form [SPEC:CXC-*]
+
+### [PREFIX-DEC] Architect decision nodes
+
+- registers-prefix: DEC-
+- document: decision-graph-composeux-architect
+- definition: Load-bearing project decisions, session-keyed, carrying rationale and lifecycle-position
+- evidence: 169 heading nodes in decision-graph-composeux-architect.lts
+
+### [PREFIX-DELIV] Deliverable ledger nodes
+
+- registers-prefix: DELIV-
+- document: deliverable-ledger
+- definition: Artifact ledger records, one per produced deliverable
+- evidence: 159 heading nodes in deliverable-ledger.lts, plus the document root [LEDGER:DELIV-LEDGER]
+
+### [PREFIX-DD] In-spec design decisions
+
+- registers-prefix: DD-
+- document: corpora/platform-specs (embedded in the spec that raises them)
+- definition: A design decision recorded inside the spec it governs; the unit III.5 requires to be ratified or scoped OUT before dispatch
+- evidence: 38 heading nodes across 9 spec files
+
+### [PREFIX-CAP] Platform capability headlines
+
+- registers-prefix: CAP-
+- document: 49-capability-map
+- definition: Capability-map entries; the [CAP-MAP] root plus one node per platform capability
+- evidence: 20 heading nodes across 3 files (49-capability-map, 54, 57)
+
+### [PREFIX-PROJECT] Project registry entries
+
+- registers-prefix: PROJECT-
+- document: projects
+- definition: One node per registered project in the intelligence-console project registry
+- evidence: 20 heading nodes in projects.lts
+
+### [PREFIX-LEC] lts-engine consolidation nodes
+
+- registers-prefix: LEC-
+- document: 44-lts-engine-consolidation
+- definition: The lts-engine consolidation spec's layer, invariant and sequencing nodes
+- evidence: 17 heading nodes in 44-lts-engine-consolidation.lts
+
+### [PREFIX-INSIGHT] Insight records
+
+- registers-prefix: INSIGHT-
+- document: insights_and_warts
+- definition: A noticed truth about the design, distinct from a decision (chose X because Y) and a principle (we always work this way)
+- evidence: 16 heading nodes in insights_and_warts.lts
+
+### [PREFIX-SBR] Session bootstrap-read nodes
+
+- registers-prefix: SBR-
+- document: 45-session-bootstrap-read
+- definition: The strategic wake-read spec's slices, invariants and process flow
+- evidence: 12 heading nodes in 45-session-bootstrap-read.lts
+
+### [PREFIX-DP] Composer design principles
+
+- registers-prefix: DP-
+- document: 00-composer-design-principles
+- definition: The Composer's own design-principle nodes (DP-CIO-*), predating and narrower than the corpus-wide PRINCIPLE- family
+- evidence: 10 heading nodes in 00-composer-design-principles.lts
+
+### [PREFIX-DX] Design-excellence principles
+
+- registers-prefix: DX-
+- document: design-excellence-composeplatform
+- definition: ComposePlatform design-excellence nodes (DX-NARROW-WAIST and siblings), cited by name from the spec corpus
+- evidence: 8 heading nodes in design-excellence-composeplatform.lts
+
+### [PREFIX-FIX] Recorded fixes
+
+- registers-prefix: FIX-
+- document: decision-graph-composeux-architect
+- definition: A recorded repair, co-resident with decisions in the decision graph; counted as a decision by the EXEMPLIFIES coverage report
+- evidence: 8 heading nodes in decision-graph-composeux-architect.lts
+
+### [PREFIX-STRATEGY] Phase-linked working strategies
+
+- registers-prefix: STRATEGY-
+- document: strategies
+- definition: A concrete working move, time-indexed to a phase of the instance's own context lifecycle
+- evidence: 8 heading nodes in strategies.lts
+
+### [PREFIX-COMP] Composer component contracts
+
+- registers-prefix: COMP-
+- document: 14-composer-components
+- definition: The ComposeUX component contract nodes (COMP-1 .. COMP-7)
+- evidence: 7 heading nodes in 14-composer-components.lts
+
+### [PREFIX-DM] Device-monitor nodes
+
+- registers-prefix: DM-
+- document: 15-composer-device-monitor
+- definition: The capability-driven device_monitor composition nodes (DM-1 .. DM-7)
+- evidence: 7 heading nodes in 15-composer-device-monitor.lts
+
+### [PREFIX-MCPA] mcp_action binding nodes
+
+- registers-prefix: MCPA-
+- document: 13-mcp-action-binding
+- definition: The mcp_action binding spec's nodes (MCPA-1 .. MCPA-6)
+- evidence: 6 heading nodes in 13-mcp-action-binding.lts
+
+### [PREFIX-HANDOVER] Session-handover nodes
+
+- registers-prefix: HANDOVER-
+- document: 46-handover-process
+- definition: The measured-crossing handover spec's nodes
+- evidence: 3 heading nodes plus the document root [SPEC:HANDOVER-PROCESS]
+
+### [PREFIX-MATURITY] Context-lifecycle phase nodes
+
+- registers-prefix: MATURITY-
+- document: strategies
+- definition: A phase of the instance's context lifecycle, carrying a context band and characteristic tendencies
+- evidence: 3 heading nodes in strategies.lts
+
+### [PREFIX-Q] Open questions
+
+- registers-prefix: Q-
+- document: strategies
+- definition: An explicitly open question left on a ledger as its refinement surface
+- evidence: 2 heading nodes in strategies.lts
+
+### [PREFIX-DEFECT] Defect records
+
+- registers-prefix: DEFECT-
+- document: 43-defect-tracking-store
+- definition: A defect record; the store spec seeds the family and defect_ops writes it
+- evidence: 1 heading node in 43-defect-tracking-store.lts
+
+### [PREFIX-CIO] ComposeIO document roots
+
+- registers-prefix: CIO-
+- document: corpora/platform-specs (document-level ids only)
+- definition: Document roots for the ComposeIO-side specs (CIO-DASHBOARD, CIO-RENDERERS, CIO-UX-COMPONENTS, CIO-UX-MCPACTION, CIO-UX-DEVMON)
+- evidence: 5 document roots; no section node uses this prefix
+
+### [PREFIX-SESSION] Session-scoped document roots
+
+- registers-prefix: SESSION-
+- document: 45-session-bootstrap-read
+- definition: Document root [SPEC:SESSION-BOOTSTRAP-READ]; the file's section nodes use SBR-
+- evidence: 1 document root
+
+### [PREFIX-LTS] lts-engine document root
+
+- registers-prefix: LTS-
+- document: 44-lts-engine-consolidation
+- definition: Document root [SPEC:LTS-ENGINE-CONSOLIDATION]; the file's section nodes use LEC-
+- evidence: 1 document root
+
+### [PREFIX-PROJECTS] Project-registry document root
+
+- registers-prefix: PROJECTS
+- document: projects
+- definition: Document root [REGISTRY:PROJECTS]. Registered WITHOUT a trailing hyphen because the id has no hyphen, so its whole text is the type prefix and PROJECT- would not match it
+- evidence: 1 document root
+
+### [PREFIX-STRATEGIES] Strategy-ledger document root
+
+- registers-prefix: STRATEGIES
+- document: strategies
+- definition: Document root [LEDGER:STRATEGIES]; hyphenless, same rule as PROJECTS
+- evidence: 1 document root
+
+### [PREFIX-PRINCIPLE] Collaboration and design principles
+
+- registers-prefix: PRINCIPLE-
+- document: principles
+- definition: A phase-invariant way we work — how we collaborate, how we design, how we scope builds. The target family of the D5 EXEMPLIFIES mapping; `exemplifies_coverage` defaults `principle_prefix` to exactly PRINCIPLE
+- evidence: 30 heading nodes in principles.lts (authored alongside this profile)
+
+### [PREFIX-PRINCIPLES] Principles-ledger document root
+
+- registers-prefix: PRINCIPLES
+- document: principles
+- definition: Document root [LEDGER:PRINCIPLES]; hyphenless, same rule as PROJECTS and STRATEGIES
+- evidence: 1 document root
+
+### [PREFIX-PROFILE] Profile document root and domain declaration
+
+- registers-prefix: PROFILE-
+- document: platform-composeio-profile
+- definition: This profile's own document root plus its [PROFILE-DOMAIN] declaration node
+- evidence: 2 nodes in this file
+
+### [PREFIX-PREFIX] Prefix registrations
+
+- registers-prefix: PREFIX-
+- document: platform-composeio-profile
+- definition: One node per registered node-id prefix; the node-id prefix carries the kind, per the `.lts` profile encoding
+- evidence: 32 nodes in this file
+
+### [PREFIX-DOCTAG] Document-tag registrations
+
+- registers-prefix: DOCTAG-
+- document: platform-composeio-profile
+- definition: One node per registered domain document tag
+- evidence: 3 nodes in this file
+
+### [PREFIX-EDGETYPE] Relationship-verb registrations
+
+- registers-prefix: EDGETYPE-
+- document: platform-composeio-profile
+- definition: One node per registered relationship verb
+- evidence: 15 nodes in this file
+
+### [PREFIX-GUIDANCE] Linter guidance notes
+
+- registers-prefix: GUIDANCE-
+- document: platform-composeio-profile
+- definition: Hand-authored notes the domain writes FOR the linter, surfaced through `Profile.guidance_notes`
+- evidence: 9 nodes in this file
+
+### [PREFIX-ENUM] Enum registrations
+
+- registers-prefix: ENUM-
+- document: platform-composeio-profile
+- definition: One node per registered frontmatter enum, migrated from the yaml predecessor's top-level enum blocks
+- evidence: 3 nodes in this file
+
+### [PREFIX-NODEFAMILY] Node-family schema registrations
+
+- registers-prefix: NODEFAMILY-
+- document: platform-composeio-profile
+- definition: One node per node-family schema block (required and recommended properties for a family), migrated from the yaml predecessor's `decision_nodes`
+- evidence: 1 node in this file
+
+### [PREFIX-LIFECYCLE] Decision-lifecycle registration
+
+- registers-prefix: LIFECYCLE-
+- document: platform-composeio-profile
+- definition: The decision-lifecycle pipeline and its off-pipeline terminal states, migrated from the yaml predecessor's `decision_lifecycle`
+- evidence: 1 node in this file
+
+### [PREFIX-PCB] PCB hardware landscape
+
+- registers-prefix: PCB-
+- document: 64-pcb-board-landscape
+- corpus: pcb-specs (moved 2026-09-02 from platform-specs into its own registered corpus, per David's ruling; also carried as an additional specs root on intelligence-console/visual-composer/headless-monitor so existing citations keep resolving)
+- definition: The four real ComposeBus PCBs characterised in HAL terms, plus the five HAL stresses they surface. A top-level family rather than a `CXC-` sub-family because the subject is PHYSICAL BOARDS, not a platform capability — the ids were minted in July against an unregistered corpus and are already cited by 32-composeux-hal-declaration.lts and 62-composeplatform-vision.lts
+- evidence: 16 nodes in 64-pcb-board-landscape.lts; previously carrying 7 `unregistered_prefix` findings while the source document sat outside every registered root
+- ratification: UNRATIFIED 2026-08-13 — a new top-level prefix is David's call, per [GUIDANCE-PREFIX-FIRST-SEGMENT] this registration is on the FIRST segment and is the only form V1 can match
+
+---
+
+## Registered node-id prefixes — MIGRATED FROM THE YAML PREDECESSOR
+
+> Every registration in this section was carried over from `99-composeio-profile.yaml` when that file
+> was retired. The yaml declared 39 prefixes; 21 of them normalize onto first segments this profile
+> already registers (`CXC-`, `CIO-`, `CAP-`, `DX-`, `DP-`) and are recorded as sub-families in those
+> nodes' definitions rather than as separate registrations that could never match — see
+> [GUIDANCE-PREFIX-FIRST-SEGMENT]. The 18 below are the yaml's genuinely distinct FIRST SEGMENTS.
+>
+> ⚠ Two of them — `DASH-` and `REN-` — were carrying 71 live `unregistered_prefix` findings against
+> this corpus for as long as the two profiles were separate: the yaml declared them and the yaml was
+> only ever discovered for `corpora/platform-specs`, while this profile, which did not, was the one
+> the intelligence-console root discovered. That is the measured cost of two vocabularies.
+>
+> The other 16 address the ComposeIO core spec corpus (`spec/`), which no corpus-config root
+> currently includes. They are declared-but-unused today and cost nothing: V1 only ever checks
+> USED-against-DECLARED, so an unused registration produces no finding. They are carried anyway
+> because dropping a registration nobody is currently exercising is precisely how vocabulary is
+> silently lost.
+
+### [PREFIX-DASH] Runtime-dashboard nodes
+
+- registers-prefix: DASH-
+- document: 10-composer-runtime-dashboard
+- definition: The Composer runtime-dashboard spec's nodes
+- evidence: 43 heading nodes across 10-composer-runtime-dashboard.lts and 34-composeux-intelligence-console.lts; unregistered under this profile until the yaml was retired into it
+
+### [PREFIX-REN] Widget-renderer nodes
+
+- registers-prefix: REN-
+- document: 11-composer-widget-renderers
+- definition: The widget-renderer spec's nodes
+- evidence: 28 heading nodes in 11-composer-widget-renderers.lts; unregistered under this profile until the yaml was retired into it
+
+### [PREFIX-BP] Bus protocol
+
+- registers-prefix: BP-
+- document: 01-composeio-bus-protocol
+- definition: ComposeBus protocol nodes. Sub-families documented by the yaml and covered by this one registration — BP-MSG- (message format), BP-SCOPE- (scope/dedup), BP-TYPE- (message type), BP-EXT- (01-amendment-bus-extensions), BP-ACK- (01-amendment-critical-ack)
+- evidence: declared-but-unused in the registered corpora; the ComposeIO core spec corpus is not a corpus-config root
+
+### [PREFIX-CS] Config schema
+
+- registers-prefix: CS-
+- document: 02-composeio-config-schema
+- definition: Config-schema nodes. Sub-families: CS-LED- (LED behaviour), CS-STATE- (state engine), CS-APP- (02-amendment-app-config)
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-APP] App framework
+
+- registers-prefix: APP-
+- document: 08-composeio-app-framework
+- definition: ComposeApp framework nodes. Sub-family: APP-ARCH- (app architecture)
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-MCP] MCP server
+
+- registers-prefix: MCP-
+- document: 09-composeio-intelligence-mcp-server
+- definition: Intelligence MCP server nodes. Sub-family: MCP-ARCH- (MCP architecture). Distinct from MCPA- (mcp_action bindings), which is its own first segment
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-CR] Capture-replay
+
+- registers-prefix: CR-
+- document: 01-amendment-capture-replay
+- definition: Bus capture-and-replay nodes
+- evidence: used outside the registered corpora: the CR- ids are defined in spec/01-amendment-capture-replay.smd (the ratified capture-replay amendment, an SMD file) and cited from docs/composeplatform/bus-peer-relay.lts ([CR-SAFETY-2], [CR-SAFETY-3]); no registered .lts corpus defines a CR- node yet (checked 2026-11-26)
+- overlap-accepted: CR- is also registered by another deployment's profile, for that deployment's own change records. Accepted by composeux-architect: lookups resolve per corpus, and renaming would rewrite a ratified amendment's ids.
+
+### [PREFIX-MR] Module roles
+
+- registers-prefix: MR-
+- document: 03-composeio-module-roles
+- definition: Module-role nodes
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-HB] Haven bridge
+
+- registers-prefix: HB-
+- document: 04-haven-bridge
+- definition: Haven bridge nodes
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-SCHED] Scheduler
+
+- registers-prefix: SCHED-
+- document: 05-haven-scheduler
+- definition: Haven scheduler nodes
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-NEWS] News service
+
+- registers-prefix: NEWS-
+- document: 06-news-service
+- definition: News-service nodes. The yaml's DP-NEWS- (news design principles) normalizes onto the DP- first segment, already registered
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-NOTIFY] Notification bridge
+
+- registers-prefix: NOTIFY-
+- document: 07-notification-bridge
+- definition: Notification-bridge nodes
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-NR] Node-RED integration
+
+- registers-prefix: NR-
+- document: 10-composeio-node-red-integration
+- definition: Node-RED integration nodes
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-SD] SMD MkDocs site
+
+- registers-prefix: SD-
+- document: 11-smd-mkdocs
+- definition: SMD MkDocs site nodes
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-HT] Haven Terminus
+
+- registers-prefix: HT-
+- document: 12-haven-terminus-composeapp
+- definition: Haven Terminus ComposeApp nodes
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-SH] Service hub v2
+
+- registers-prefix: SH-
+- document: 13-service-hub-v2
+- definition: Service-hub v2 nodes
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-BM] Board Manager
+
+- registers-prefix: BM-
+- document: 14-board-manager
+- definition: Board Manager nodes
+- evidence: declared-but-unused in the registered corpora
+
+### [PREFIX-CONV] Conventions-document nodes
+
+- registers-prefix: CONV-
+- document: 99-composeio-conventions
+- definition: The prose conventions document's nodes (CONV-PREFIX, CONV-RELVERB, CONV-XREF, CONV-FOOTER, CONV-DEPENDS, CONV-DECISION-MARKER), cited by name throughout this profile
+- evidence: declared-but-unused as `.lts`; 99-composeio-conventions is still `.smd` and un-migrated
+
+---
+
+## Registered document tags
+
+> Only the DOMAIN half belongs here. V2 unions this set with SPEC §1.7's core tags, so SPEC (48
+> documents), SYSTEM (1) and PROJECT (1) are already valid and are deliberately NOT re-declared —
+> re-declaring core vocabulary is how a profile starts to look like a definition of the format.
+
+### [DOCTAG-LEDGER] Append-only ledger
+
+- document-tag: LEDGER
+- definition: A ledger of records rather than a specification — the deliverable ledger, the strategy ledger, and the principles ledger
+- evidence: 3 documents (deliverable-ledger.lts, strategies.lts, principles.lts)
+
+### [DOCTAG-REGISTRY] Registry
+
+- document-tag: REGISTRY
+- definition: A registry of named entities the platform addresses by id
+- evidence: 1 document (projects.lts)
+
+### [DOCTAG-PROFILE] Domain profile
+
+- document-tag: PROFILE
+- definition: A `.lts` domain profile, per [PROFILE-SELFHOST] — a profile is a document parsed by the parser it configures
+- evidence: 1 document (this file)
+
+### [DOCTAG-AMEND] Amendment to an existing spec
+
+- document-tag: AMEND
+- definition: An amendment to an existing specification; uses the `amends:` frontmatter key. MIGRATED from the yaml predecessor, which declared SPEC, SYSTEM and AMEND — SPEC and SYSTEM are SPEC §1.7 CORE tags (`CORE_DOCUMENT_TAGS` in `factlattice_engine/lint/profile_rules.py`) that V2 unions in already, so re-declaring them would only restate the format; AMEND is genuinely domain vocabulary and would have been lost with the yaml
+- evidence: no document currently DECLARES itself `[AMEND:*]` in the registered corpora, but 4 qualified cross-references author the doctype (`[AMEND:BP-CAPTURE-REPLAY]`, `[AMEND:CS-APP]` in 10-composer-runtime-dashboard.lts) against the un-migrated ComposeIO core spec corpus
+
+---
+
+## Registered frontmatter enums — MIGRATED FROM THE YAML PREDECESSOR
+
+> These three blocks were live in the yaml and drive V5 (`enum_value_unknown`). Carrying them over is
+> a straight transcription: the declared value sets are IDENTICAL to the yaml's, so V5 asks exactly
+> the question it was already asking, against exactly the same vocabulary. [GUIDANCE-SCOPE] below
+> previously listed the enums as deliberately-undeclared; that stance was correct while the yaml was
+> still live and enforcing them elsewhere, and is superseded now that this document is the only
+> profile — leaving them out would have SILENTLY relaxed a rule, which is the failure class this
+> whole consolidation exists to close, not a conservative default.
+
+### [ENUM-CONFIDENTIALITY] Frontmatter `confidentiality`
+
+- enum-key: confidentiality
+- values:
+  - public
+  - nda-shareable
+  - internal-only
+- definition: The FactLattice core confidentiality values, declared here because the yaml declared them; a domain that declares an enum EMPTY and a domain that declares none are different rules, so silence is not a safe transcription of a present block
+
+### [ENUM-ARTIFACT-READINESS] Frontmatter `artifact-readiness`
+
+- enum-key: artifact_readiness
+- values:
+  - educational
+  - system-design
+  - code-generation
+- extended-values:
+  - design-review
+  - concept-capture
+- definition: core = FactLattice SPEC §1.5; extended = the ComposeIO additions for in-flight design artifacts (`design-review` for a spec drafted for architect review, `concept-capture` for an early pre-design capture). The `{core, extended}` split is an authoring convenience — `Profile.enum_values` unions them
+
+### [ENUM-SCENARIO-PREFIXES] Scenario prefixes
+
+- enum-key: scenario_prefixes
+- values:
+  - SCEN-
+- definition: Registered for future use (T-SC06); no scenario nodes exist in the corpus yet. Carried verbatim from the yaml. ⚠ NOTHING in the engine reads `scenario_prefixes` — it is a declaration with no reader, preserved rather than dropped so its retirement is a decision someone makes rather than a side effect of a file deletion
+
+---
+
+## Registered node-family schemas — MIGRATED FROM THE YAML PREDECESSOR
+
+### [NODEFAMILY-DECISION] Decision / provenance nodes
+
+- section: decision_nodes
+- families: CXC-ICD-, DD-
+- required:
+  - decision
+  - rationale
+  - status
+- recommended:
+  - alternatives
+  - invalidating_assumption
+- definition: A node in these families records a decision and MUST carry what was decided, why, and its status (V3); it SHOULD carry the alternatives weighed and the assumption whose falsification would reopen it (V4). Migrated verbatim from the yaml's `decision_nodes` block
+- migration-note: ⚠ The yaml also carried a `field_aliases` map (`alternatives` ← `alternatives-considered`; `invalidating_assumption` ← `invalidating-assumption`). The `.lts` profile encoding has NO field-alias construct and NOTHING in the engine ever read `field_aliases` — it was inert in the yaml too. It is recorded here in prose so the intent survives the migration and can be built deliberately, rather than disappearing with the file that held it
+
+---
+
+## Registered decision lifecycle — MIGRATED FROM THE YAML PREDECESSOR
+
+### [LIFECYCLE-DECISION] The decision pipeline
+
+- section: decision_lifecycle
+- pipeline:
+  - raised
+  - decided
+  - spec-authored
+  - built
+  - committed
+  - deployed
+- off-pipeline:
+  - superseded
+  - deferred
+  - withdrawn
+- decision-prefixes: DEC
+- session-key-property: decided-in-session
+- definition: The ordered pipeline (index = rank) plus the terminal states that are legitimately OFF it. V6 validates `lifecycle-position` against the union; the SPLIT is what answers "decisions made but never implemented". Migrated verbatim from the yaml's `decision_lifecycle`
+- migration-note: ⚠ The yaml also carried `evidence_edge: lifecycle.ADVANCED_TO`. The `.lts` LIFECYCLE encoding has no `evidence-edge` key and NOTHING in the engine read it — inert in the yaml as well. Recorded here so the intended evidence edge is not lost with the file
+- caveat: See [GUIDANCE-LIFECYCLE-UNDECLARED] and [GUIDANCE-LIFECYCLE-COMMENTS] — this pipeline is a DECISION-family vocabulary, and the deliverable and strategy families use different value sets against the same property name. Declaring it here reproduces exactly the rule the yaml already enforced and no more; widening it to honestly order all three families is a separate, still-open ratification
+
+---
+
+## Registered relationship verbs
+
+> These are BARE verbs, matching the ComposeIO `[A] VERB [B]` triple idiom ([CONV-RELVERB]).
+> Registration is what makes them RECOGNISED: an unregistered bare verb standing between a source id
+> and a bracketed target is preserved but flagged `unregistered_verb` (SPEC §2.4 preserve-and-flag),
+> so today 299 of the corpus's 804 authored triples carry that flag. Core verbs need no entry here
+> and have none — DEPENDS_ON, RELATED_TO, IMPLEMENTS, CONTAINS, SUPERSEDES, PART_OF, BEFORE,
+> CAUSES, ENABLES, PRECONDITION_FOR, PREVENTS and CONTRAST_WITH are all core and account for the
+> other 505 triples.
+
+### [EDGETYPE-USES] A consumes or applies B
+
+- edge-type: USES
+- tier: domain
+- definition: A consumes, applies, or is built on the contract B provides
+- evidence: 98 authored triples across 17 files
+
+### [EDGETYPE-REALIZES] A makes design B real
+
+- edge-type: REALIZES
+- tier: domain
+- definition: A is the concrete implementation that makes design or intent B real
+- evidence: 59 authored triples across 21 files
+
+### [EDGETYPE-UPHOLDS] A preserves invariant B
+
+- edge-type: UPHOLDS
+- tier: domain
+- definition: A preserves or enforces the invariant, principle or constraint B
+- evidence: 45 authored triples across 16 files
+
+### [EDGETYPE-DOCUMENTS] A is the provenance record for B
+
+- edge-type: DOCUMENTS
+- tier: domain
+- definition: A is a decision-provenance or rationale record explaining B; the DD- family's characteristic edge
+- evidence: 39 authored triples across 9 files
+- property-key: documents
+- layer: semantic
+- property-key-status: ⛔ DECLARED BUT INERT — the engine does not yet READ this. Registered 2026-08-15 under [DEC-PROFILES-MAY-REGISTER-THEIR-OWN-EDGE-KEYS] because `documents:` is already authored 29 times as a PURE single-id reference across 8 files (55-console-launches-the-intelligence 8, 56-terminal-widget 8, 57-substrate-agnostic-subscription-filtering 7, 59-lts-writer 2, 58-document-root-and-element-inflation 2, 61-config-over-bus 1, 54-composeux-ordered-container 2) and mints ZERO edges — the identical shape to the `relates-to` defect, one key over. MEASURED THE SAME DAY: `factlattice.profile.load_profile` projects this correctly (`property_edges == {'documents': ('DOCUMENTS','semantic',False)}`) but NO PRODUCTION CALLER passes `property_edges=` to `parse_file`/`parse_text` — `index_builder.build_index` forwards `profile_layers` and `domain_verbs` only, and `corpus._reparse_dir` forwards `domain_verbs` only. So the parser hook (parser.py:1139) is dead code on every live path, and `lts_preview` with this profile ACTIVE and AVAILABLE mints nothing from `documents:` — verified, not assumed. The declaration is left standing because it is CORRECT and becomes live the moment the caller is wired; until then the 29 relationships stay invisible and DOCUMENTS must be authored as a `## Relationships` triple, which does mint. Engine fix belongs to 740Dave/factlattice (PUBLIC, David's word alone) on branch fix/property-edge-minting-and-profile-registrable-keys.
+
+### [EDGETYPE-EXEMPLIFIES] A is a concrete instance of principle B
+
+- edge-type: EXEMPLIFIES
+- tier: domain
+- definition: A is a concrete instance of the principle or pattern B. Registered BARE deliberately — `exemplifies_coverage` matches an edge whose type IS the verb or whose namespaced suffix is, and the bare form is what the corpus already authors
+- evidence: 34 authored triples across 11 files
+
+### [EDGETYPE-APPLIES-AT-PHASE] A is the move for phase B
+
+- edge-type: APPLIES_AT_PHASE
+- tier: domain
+- definition: Strategy A is the right working move at context-lifecycle phase B; the reverse traversal is the boot-read query [SBR-BOOT-STRATEGIES]
+- evidence: 10 authored triples in strategies.lts, whose own Relationships note flags this verb as awaiting exactly this registration
+
+### [EDGETYPE-EXTENDS] A extends contract B
+
+- edge-type: EXTENDS
+- tier: domain
+- definition: A extends B's contract rather than forking it — the narrow-waist idiom expressed as an edge
+- evidence: 6 authored triples across 6 files
+
+### [EDGETYPE-BUILDS-ON] A builds on B
+
+- edge-type: BUILDS_ON
+- tier: domain
+- definition: A is layered on B. Singleton usage; a candidate to normalize onto EXTENDS
+- evidence: 1 authored triple in 28-composeux-headless-monitor.lts
+
+### [EDGETYPE-CLOSES] A closes open item B
+
+- edge-type: CLOSES
+- tier: domain
+- definition: A closes the open question or gap B. Singleton usage
+- evidence: 1 authored triple in 22-composeux-expression-dsl.lts
+
+### [EDGETYPE-GENERALIZES] A generalizes B
+
+- edge-type: GENERALIZES
+- tier: domain
+- definition: A is the general form of the specific case B. Singleton usage
+- evidence: 1 authored triple in 31-composeux-board-bringup.lts
+
+### [EDGETYPE-MIRRORS] A mirrors B
+
+- edge-type: MIRRORS
+- tier: domain
+- definition: A deliberately reproduces B's semantics on another tier. Singleton usage; a candidate to normalize onto core SIMILAR_TO
+- evidence: 1 authored triple in 22-composeux-expression-dsl.lts
+
+### [EDGETYPE-MITIGATES] A mitigates risk B
+
+- edge-type: MITIGATES
+- tier: domain
+- definition: A reduces the impact of hypothesis or risk B. Singleton usage; causal in meaning, a candidate to normalize onto core PREVENTS
+- evidence: 1 authored triple in 56-terminal-widget.lts
+
+### [EDGETYPE-PORTS] A ports B to another tier
+
+- edge-type: PORTS
+- tier: domain
+- definition: A carries B's behaviour onto a different substrate. Singleton usage
+- evidence: 1 authored triple in 29-composeux-embedded-reactive.lts
+
+### [EDGETYPE-RESERVES] A reserves capability B
+
+- edge-type: RESERVES
+- tier: domain
+- definition: A holds B in reserve for a later slice. Singleton usage
+- evidence: 1 authored triple in 24-composer-flow-headless-authoring.lts
+
+### [EDGETYPE-REUSES] A reuses B
+
+- edge-type: REUSES
+- tier: domain
+- definition: A reuses B by reference rather than forking it. Singleton usage; a candidate to normalize onto USES
+- evidence: 1 authored triple in 23-composeux-widget-primitives.lts
+
+### [EDGETYPE-GROUNDS] A is the physical evidence B was validated against
+
+- edge-type: GROUNDS
+- tier: domain
+- definition: A is hardware or measured reality that B's design was checked against — the evidence direction, distinct from REALIZES (which runs design -> implementation) and from DOCUMENTS (which is provenance for a decision). Registered because no core or domain verb carries "this design was tested against this physical thing"
+- evidence: 1 authored triple in 64-pcb-board-landscape.lts; authored since 2026-07-18 in the source document and carrying `unregistered_verb` the whole time
+- ratification: UNRATIFIED 2026-08-13
+
+### [EDGETYPE-STRESSES] A is a case B's model cannot express
+
+- edge-type: STRESSES
+- tier: domain
+- definition: A is a concrete case that B's model fails to cover or can only express badly — the exact inverse of UPHOLDS, and the verb a coverage gap needs. A corpus that can only say UPHOLDS can record agreement but not the counter-example, which is the more valuable of the two
+- evidence: 8 authored triples in 64-pcb-board-landscape.lts, five of them from the per-stress nodes onto the specific spec-32 node each one breaks
+- ratification: UNRATIFIED 2026-08-13
+
+---
+
+## Linter guidance
+
+### [GUIDANCE-SCOPE] What this profile declares — SUPERSEDED by the yaml retirement
+
+- note: SUPERSEDED 2026-08-11. The original stance was that this profile registers vocabulary only — namespaces, prefixes, document tags, relationship verbs — and leaves `decision_nodes`, enums and `decision_lifecycle` undeclared so V3/V4/V5/V6 stay silent pending ratification. That was right while `99-composeio-profile.yaml` was still live and still enforcing those four blocks over `corpora/platform-specs`. It stopped being right the moment this document became the ONLY profile: an undeclared block is then not a deferred rule, it is a REPEALED one, and repealing a rule as a side effect of deleting a file is the silent-loss class this consolidation exists to close. All four blocks are now migrated verbatim from the yaml, so the rules in force are exactly the rules that were already in force — no more, no less. `mutation_nodes` remains undeclared because the yaml never declared it either.
+
+### [GUIDANCE-YAML-RETIRED] The yaml predecessor is retired, and what that cost
+
+- note: `corpora/platform-specs/99-composeio-profile.yaml` was DELETED on 2026-08-11 after a full two-way set difference against this document. Migrated in: 18 first-segment prefixes (of which DASH- and REN- were carrying 71 live findings), the AMEND document tag, three enums (confidentiality, artifact_readiness, scenario_prefixes), the decision_nodes schema, and the decision_lifecycle pipeline. Deliberately NOT migrated, with reasons: the SPEC and SYSTEM document tags (SPEC §1.7 core, unioned in by V2 already); the DEPENDS_ON and RELATED_TO relationship verbs (core, in `CORE_EDGE_LAYER`, and registering a core verb as a domain verb is how a domain starts redefining the format); 21 sub-family prefixes such as BP-EXT- and CXC-HALD- that V1's first-segment match could never fire on, folded into their first-segment nodes' definitions as documentation. Carried as prose because the encoding has no construct for them and nothing read them: `decision_nodes.field_aliases`, `decision_lifecycle.evidence_edge`, and `linter_guidance.footer` / `linter_guidance.references` (version_required, status_required, qualified_registered_doctype_ok — all three grep to zero readers in the engine).
+
+### [GUIDANCE-FOOTER-AND-XREF] Footer and cross-reference policy, carried from the yaml
+
+- note: The yaml's `linter_guidance.footer` and `linter_guidance.references` blocks encoded three policies no engine code has ever read, preserved here as notes so they survive the file. [CONV-FOOTER]: a missing **Version** or **Status** footer is a WARNING, never an error (`version_required: false`, `status_required: false`). [CONV-XREF]: a qualified `[SPEC:ID]` / `[AMEND:ID]` cross-document reference with a registered doctype is VALID even when it resolves nowhere in the loaded corpus. [CONV-XREF-NODE]: a bare cross-document node reference carrying a registered prefix is a warning, not an error, when unresolvable.
+
+### [GUIDANCE-PREFIX-FIRST-SEGMENT] Register the first segment, never the sub-family
+
+- note: V1 matches a node's `type_prefix` — the id text before the FIRST hyphen — with trailing hyphens normalized off both sides. A registration of `CXC-IC-` or `BP-EXT-` can therefore NEVER match any node, which is why the yaml predecessor could declare 38 prefixes and validate none of them. Sub-families are documentation; only the first segment is a registration.
+
+### [GUIDANCE-BARE-VERBS] A bare unregistered verb is flagged, not dropped
+
+- note: In the anchored form `[SRC] VERB [TGT]` the parser preserves the edge and flags it `unregistered_verb` (SPEC §2.4). Registering a verb here does not CREATE the edge, it CLEARS the flag and makes the edge recognised. 299 of the corpus's 804 authored triples are in that state before this profile loads.
+
+### [GUIDANCE-LIFECYCLE-UNDECLARED] The lifecycle vocabulary is not one vocabulary
+
+- note: `lifecycle-position` appears 363 times across three DIFFERENT node families with three different value sets — decisions (raised, decided, settled, corrected, observed, proposed, parked, spec-authored, built, implemented, committed, superseded), deliverables (accepted, submitted, reviewed, superseded) and strategies (seeded), plus `fixed` on a defect. A single `decision_lifecycle` pipeline cannot honestly order them, and `made_but_not_implemented` is only meaningful if the ordering is right. Declaring it is David's ratify, not an authoring call.
+
+### [GUIDANCE-LIFECYCLE-COMMENTS] Trailing comments live INSIDE the value
+
+- note: Roughly 25 `lifecycle-position` lines in decision-graph-composeux-architect.lts carry a trailing `# ...` comment, and `.lts` defines no comment form — so the parsed value is the whole string, e.g. `committed   # David glass-confirmed`. Those will not match ANY declared stage whatever the profile says. The fix is to move the comment to its own property, not to widen the enum.
+
+### [GUIDANCE-UNTAGGED-H1] Five documents mint no document node
+
+- note: 40-decisions-tab.lts, 41-intelligence-host-spawner.lts, 42-idle-tracking.lts, insights_and_warts.lts and design-excellence-composeplatform.lts open with an h1 carrying NO `[DOCTYPE:ID]`, so they mint no document node and no `document_tag`. V2 cannot flag them because there is nothing to flag; they are invisible to any query addressing a document by tag.
+
+### [GUIDANCE-DISCOVERY-IS-PER-ROOT] This profile is REGISTERED, not merely discovered
+
+- note: RESOLVED 2026-08-11. `discover_profile` globs `*-profile.lts` in the corpus root NON-recursively, so siting a profile in a directory only ever binds it to THAT directory — which is why this document, sitting in `corpora/intelligence-console`, was dark for `corpora/platform-specs` (which discovered the yaml) and dark again for any lint over a file LIST (which derived no root at all). The fix is registration, not relocation: every composeio corpus now names this file in the `profile` key of its `FACTLATTICE_CORPUS_CONFIG` entry, and `factlattice.profile.resolve_profile_ex` consults the registry BEFORE auto-discovery. Every lint result now reports `profile.resolved_from`, so `corpus-config` versus `directory-auto-discovery` versus `none` is a fact a reader can see rather than infer.
+
+---
+
+**Version**: 2.0 — 2026-08-11. v1.0 was derived by scanning `corpora/**/*.lts` (1155 heading nodes, 804 authored relationship triples, 64 document roots). v2.0 SUPERSEDES and retires `corpora/platform-specs/99-composeio-profile.yaml`, absorbing its full declared vocabulary after a two-way set difference — see [GUIDANCE-YAML-RETIRED] for what was migrated, what was deliberately left out as core, and what was carried as prose because the encoding has no construct for it.
+**Status**: Draft — the `.lts` profile encoding itself remains offered-for-ratification per `factlattice/profile.py`. The four blocks migrated from the yaml ([ENUM-*], [NODEFAMILY-DECISION], [LIFECYCLE-DECISION]) are NOT new rules awaiting ratify: they reproduce rules the yaml was already enforcing. Widening the lifecycle vocabulary to honestly cover the deliverable and strategy families ([GUIDANCE-LIFECYCLE-UNDECLARED]) is still open and still David's call.

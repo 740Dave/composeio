@@ -1,0 +1,415 @@
+---
+scope: "A generic ComposeIO capability — the MENU-INDEXED SCREEN RESOLVER: given a structured menu tree, a filesystem root, and a naming convention, resolve any menu node to an asset reference by DERIVING its path from the tree (never storing it), with a defined fallback walk for an unresolved leaf and a bidirectional lint that keeps the menu and the art tree in agreement. Documents BSG's Colonial Console (`cic_menu`) as instance #1 — scoped to STD's per-(console, sub-tab) grid only; mode-surface resolution is an adjacent, explicitly out-of-scope concern. Formalizes and generalizes the Layer-3 convention already in [SPEC:CXC-COMP] and `compose_projects/bsg/resources/screen_base_layout/STD-screen-modeling-guidance.md`."
+audience: [David (architect) — the design forks are RATIFIED (DSD 2026-08-18); build authorization is a separate, later step, "the builder implementing the resolver + lint", any Intelligence or app author wiring a second ComposeIO app's menu onto this engine, the render-engineer who will retire BSG's hand-maintained per-screen path lookups onto it and who owns the NEEDS-CONFIRM items in section 6]
+boundary: "IN: the generic engine contract — the menu schema (tree + label + optional annotation, [CXC-MENU-SCHEMA]), slug derivation ([CXC-MENU-SLUG]), default-path derivation ([CXC-MENU-PATH]), the fallback walk ([CXC-MENU-WALK]), the resolve function ([CXC-MENU-RESOLVE]), the opaque screen-kind annotation vocabulary the lint needs ([CXC-MENU-KINDS]), and the bidirectional (now four-check) tree<->asset lint ([CXC-MENU-LINT]). Also IN: BSG's `cic_menu` as instance #1, SCOPED to STD's 7x5 console/sub-tab grid only ([CXC-MENU-CIC-INSTANCE], [CXC-MENU-CIC-INVENTORY]). Also IN, as a clearly-marked provisional capture, NOT part of the generic engine and each carrying `part-of: [SPEC:CXC-COMP]` rather than this document's own id: [SPEC:CXC-COMP] extensions raised in the same review pass — content-band isolation, slot-sizing/fit-mode (+ the now-ratified slot-scene-grammar decision, Arm A), dialog-as-base-capability, and the irregular-region realization-mode split (section 6). OUT: SVG slot semantics, the `slot:@` binding grammar, screen-KIND *rendering* interpretation, layer z-order, and text styling — all already owned by [SPEC:CXC-COMP] and left there by reference. OUT, explicitly and not merely deferred: mode SELECTION and mode-SURFACE resolution (the radio row, `<mode>_mode.svg` files, `composite.py`'s `MODE_FIXTURES`) — a shallower, differently-named tier this resolver instance does not model; see [CXC-MENU-CIC-INSTANCE]'s `corrected` note. This spec's engine layer (sections 2-4) knows nothing about BSG, HELM, amber, or SVG-slot semantics."
+not-this: "Not a redefinition of [CXC-COMP-KINDS] or of any SVG/slot rendering rule — the engine's screen-kind vocabulary ([CXC-MENU-KINDS]) is a closed set of THREE OPAQUE TOKENS the lint needs to decide file-expected vs not; what a kind MEANS at render time stays BSG/[SPEC:CXC-COMP] policy. Not a mandate to retire `composite.py`'s `MODE_FIXTURES` dict — that dict resolves mode-SURFACE files, a tier this resolver instance explicitly does NOT model (corrected from an earlier draft that mis-scoped EXT/DRADIS/CHRONO into this tree; see [CXC-MENU-CIC-INSTANCE]). Not a build authorization — every [DD-MENU-*] fork is now DECIDED (David ratified all five via the DSD, `docs/architecture/DECISIONS-menu-resolver-forks.md`, 2026-08-18), but ratifying the DESIGN is not the same as authorizing the BUILD; `artifact-readiness: design-review` stays unchanged until the engine + lint are implemented and pass [CXC-MENU-VERIFY]. Section 6 is NOT the generic engine and is not held to [CXC-MENU-WHY]'s BSG-free rule — it is [SPEC:CXC-COMP] material captured here provisionally because it surfaced in the same review pass."
+depends-on: [SPEC:CXC-COMP]
+depends-on: [SPEC:CXC-CIC]
+depends-on: [compose_projects/bsg/resources/screen_base_layout/STD-screen-modeling-guidance.md]
+depends-on: [compose_projects/bsg/resources/screen_base_layout/cic_menu_structure.md]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-08-18
+updated: 2026-08-18
+---
+# ComposeUX — The Menu-Indexed Screen Resolver [SPEC:CXC-MENU]
+
+> A generic engine: given a structured menu TREE, a filesystem ROOT, and a naming CONVENTION, resolve any menu node to an asset reference — deriving its path, never storing it, walking a defined fallback chain when the node's own art is absent, and linting the tree and the art directory into bidirectional agreement. The engine carries no BSG, HELM, amber, or SVG-slot vocabulary ([DX-ENGINE-VS-POLICY]); BSG's Colonial Console (`cic_menu`) is documented here as instance #1 — SCOPED to STD's per-(console, sub-tab) grid, riding the engine by reference rather than forking it ([DX-NARROW-WAIST]). Mode selection and mode-surface resolution are a DIFFERENT, adjacent tier this instance does not model (§5). Section 6 captures several related [SPEC:CXC-COMP] extensions David raised in the same review pass, each filed `part-of: [SPEC:CXC-COMP]`; it is POLICY, not engine, content. ✅ **[PLACEMENT RATIFIED]** (David, DSD 2026-08-18, `docs/architecture/DECISIONS-menu-resolver-forks.md`, [DEC-CXC-MENU-SPEC-HOME-NEW-DOC]) — filed as a new numbered doc (77), per the [DD-COMP-SPEC-HOME] precedent (one-slice-per-numbered-doc). Section 6's physical migration to [SPEC:CXC-COMP] is a ratified FOLLOW-ON, not a landing blocker — see [DD-MENU-SPEC-HOME].
+
+---
+
+## 1. Intent & the engine/policy seam
+
+### [CXC-MENU-WHY] The engine/policy seam for menu-indexed screen resolution
+
+- definition: [CXC-COMP-STD-CONTENT] already resolves STD's per-(console, sub-tab) screens by reference, and `composite.py`'s `MODE_FIXTURES` hand-maintains a parallel mode->file dict for the DIFFERENT mode-surface tier — two instances of the same shape (a menu-indexed lookup) built ad hoc rather than once. This spec extracts the GENERIC mechanism for the FORMER (any depth, any app), and explicitly does NOT fold the latter in (§5, [CXC-MENU-CIC-INSTANCE]'s `corrected` note) — the two tiers use different naming conventions and conflating them was an error caught in review, not a design choice.
+- role: names the seam per [DX-ENGINE-VS-POLICY] — "what is the mechanism EVERY deployment needs vs. the policy only THIS one needs?" The mechanism (tree, slug, path derivation, walk, lint) is the GENERIC ENGINE (sections 2-4) and ports to any ComposeIO app. The policy (menu CONTENTS, the colonial theme, the actual SVGs, the `slot:@` vocabulary) stays in BSG (section 5). A builder MUST be able to read sections 2-4 without learning what HELM or DRADIS are.
+- requirement: sections 2-4 ([CXC-MENU-SCHEMA] through [CXC-MENU-LINT]) MUST NOT reference a BSG-specific label, an SVG element name, or the `slot:@` grammar — including in their worked examples, not only their definitions; every BSG fact MUST live in section 5 and be cited from there. Section 6 is exempt from this rule by design: it is explicitly-marked [SPEC:CXC-COMP] policy content, not engine content.
+- reuse-by-reference: the by-reference resolve + placeholder discipline is not reinvented — it generalizes [CXC-COMP-MISSING]'s screen-level "missing -> placeholder, never fall-through" ([DD-MENU-WALK-AMENDMENT] below proposes the one place this generalization changes behavior, not the principle). It deliberately does NOT touch [CXC-CIC-RADIO-MODE]'s separate mode-level never-fall-through rule, which governs a tier this spec does not model. No fork.
+- placement-status: "[PLACEMENT RATIFIED] (David, DSD 2026-08-18, [DEC-CXC-MENU-SPEC-HOME-NEW-DOC]). Filed as `corpora/platform-specs/77-composeux-menu-resolver.lts` — option (a) of [DD-MENU-SPEC-HOME], now the ratified home, per [CXC-VISION-PLACEMENT]'s standing guard. `artifact-readiness: design-review` is UNCHANGED — the DESIGN is ratified; the ENGINE is not yet built, so nothing in this document authorizes a build."
+- see-also: [DX-ENGINE-VS-POLICY], [DX-NARROW-WAIST]
+- part-of: [SPEC:CXC-MENU]
+
+---
+
+## 2. Generic engine contract — the menu schema
+
+### [CXC-MENU-SCHEMA] The menu schema — the structured-data source of truth for a menu document
+
+- definition: the menu is STRUCTURED DATA (YAML), the source of truth for the tree, superseding a hand-maintained markdown listing ([DD-MENU-SCHEMA-FORMAT] — settled). The schema carries exactly four things: a `root` (the filesystem root every derived path is relative to), an `extension` (the default asset file extension, no leading dot — app policy), a `bus-namespace` (the `bus://assets/<namespace>/...` segment a resolved reference publishes under), and a `tree` — a nested list of nodes, each carrying a `label` (the human-readable menu text; also the ONLY input to slug derivation, [CXC-MENU-SLUG]), an optional `children` (its absence or emptiness marks the node a LEAF), and an optional `annotation` ([CXC-MENU-ANNOTATION]).
+- requirement: a menu document MUST declare exactly one `root`, one `extension`, and one `bus-namespace` at the top level, and MUST NOT declare a per-node `slug` field — the slug is DERIVED from `label` ([CXC-MENU-SLUG]), never authored, so the tree cannot silently diverge into a label that says one thing and a slug that says another. The SAME menu document MUST feed every consumer that needs the tree — a nav-row renderer, this resolver, a scaffolding tool, and the lint — so there is exactly one source, never a markdown copy plus a code copy.
+- worked-shape: |
+    root: /assets
+    extension: png
+    bus-namespace: demo
+    tree:
+      - label: Foo
+        children:
+          - {label: Bar}
+          - {label: Baz}
+      - label: Qux
+        children:
+          - {label: Log, annotation: {kind: pure-widget-no-file}}
+- default: an unannotated leaf is treated as `kind: bespoke-svg` — the common case needs no annotation at all ([CXC-MENU-ANNOTATION]). (The token is spelled `bespoke-svg` for historical continuity with [CXC-COMP-KINDS]; the engine does not require the resolved file to actually be an SVG — `extension` decides that.)
+- scenario:
+  - when: a second ComposeIO app authors its own menu YAML with its own `root`/`extension`/`bus-namespace` and `tree`
+  - then: it resolves through this SAME engine with zero code change — the engine reads no app-specific vocabulary, only the four schema fields above
+- see-also: [DX-STRUCTURE-SURVIVES], [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER]
+- part-of: [SPEC:CXC-MENU]
+
+### [CXC-MENU-SLUG] Slug derivation from a menu label
+
+- definition: a node's slug is derived from its `label` by ONE deterministic rule, never authored, never stored: lowercase the label; collapse each run of one-or-more non-alphanumeric characters to a single hyphen; trim a leading or trailing hyphen left by a label that starts or ends on a non-alphanumeric run.
+- requirement: the resolver MUST derive a slug from `label` on every read and MUST NOT accept or persist a separately-authored slug field ([CXC-MENU-SCHEMA]) — a value no human maintains cannot rot ([DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER] applied to naming: the slug is a projection of the label, not a second fact to keep in sync). The derived slug MUST NOT equal the reserved token `default` — [CXC-MENU-WALK]'s ancestor-fallback sentinel filename stem, guarded by [CXC-MENU-LINT]'s `reserved-slug` check — because a leaf slugging to `default` would collide with its own would-be sibling fallback file and make the walk's own output ambiguous for that node's parent.
+- default: two sibling nodes (same parent) whose labels collapse to the same slug is a lint ERROR (`slug-collision`, [CXC-MENU-LINT]), not a silently-resolved pick. A leaf whose label collapses to exactly `default` is a lint ERROR (`reserved-slug`, [CXC-MENU-LINT]) unless it carries an explicit `annotation.path` override supplying a distinct concrete filename.
+- scenario:
+  - when: labels "FOO BAR", "QUX-WIDGET!!", and "  BAZ" (leading whitespace) are each passed through the rule
+  - then: they derive "foo-bar" (basic multi-word), "qux-widget" (trailing punctuation run collapsed and trimmed), and "baz" (leading run trimmed) respectively — no manual mapping table anywhere in the engine or the app. (BSG's own instance reproduces this rule against real labels in [CXC-MENU-CIC-INVENTORY]'s table.)
+- see-also: [CXC-MENU-SCHEMA], [CXC-MENU-PATH], [CXC-MENU-WALK]
+- part-of: [SPEC:CXC-MENU]
+
+### [CXC-MENU-ANNOTATION] The optional per-node annotation — the engine's escape hatch
+
+- definition: an `annotation` block is the ESCAPE HATCH, not the mechanism — it carries ONLY what convention cannot derive. Two fields, both optional: `kind` (one of the three tokens in [CXC-MENU-KINDS]; absent = `bespoke-svg`) and `path` (a deliberate art-path OVERRIDE for a rare, intentional reuse/share; when present it REPLACES the derived path entirely — [CXC-MENU-PATH] never runs for that node).
+- requirement: an app author MUST leave `annotation` absent for the common case (a leaf with its own convention-derived art); MUST supply `kind: pure-widget-no-file` or `kind: live-drop-in` for a leaf the lint should NOT expect a file for; and MUST supply `path` only for a genuine deliberate override — including the reserved-slug case ([CXC-MENU-SLUG]) — never as a substitute for fixing a label that derives the wrong slug.
+- default: no annotation -> `kind: bespoke-svg`, no path override -> the derived path from [CXC-MENU-PATH].
+- see-also: [CXC-MENU-KINDS], [CXC-MENU-PATH]
+- part-of: [SPEC:CXC-MENU]
+
+---
+
+## 3. Generic engine contract — resolution
+
+### [CXC-MENU-PATH] Default asset-path derivation from a leaf's slug path
+
+- definition: a leaf's DEFAULT art path is `<root>/<s1>/<s2>/.../<sn>.<extension>`, where `s1..sn` are the DERIVED slugs ([CXC-MENU-SLUG]) of every ancestor from the tree's top level down to and including the leaf itself. Nothing about this path is stored anywhere — it is recomputed from the tree on every resolve ([DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER], P1B: derive when the node holds the inputs).
+- requirement: the resolver MUST compute this path by walking the tree from the leaf to the root and joining derived slugs with `/`, and MUST NOT read it from, or write it to, any manifest, dict, or cache treated as a source of truth (a derivation cache for performance is permitted; it MUST NOT diverge from re-derivation, per [CXC-COMP-CREDO]'s no-second-copy discipline).
+- generalizes: the join works identically for a tree of ANY depth — depth 1, depth 3, depth 10 are the same operation applied N times. This formula is a generalization of a concrete depth-3 convention one app already used by hand; see [CXC-MENU-CIC-INSTANCE] for that worked instance and for the one place the generalization required a correction, not an assumption.
+- default: a node with an `annotation.path` override ([CXC-MENU-ANNOTATION]) uses that value instead of this derivation; every other node uses this derivation unconditionally.
+- scenario:
+  - when: the leaf `Foo > Bar > Baz` is resolved against `root: /assets`, `extension: png`
+  - then: the derived path is `/assets/foo/bar/baz.png` — no app-specific code, only the ancestor-slug join
+- see-also: [CXC-MENU-SLUG], [CXC-MENU-WALK]
+- part-of: [SPEC:CXC-MENU]
+
+### [CXC-MENU-WALK] The fallback walk for an unresolved leaf
+
+- definition: when a leaf's own derived (or overridden) path does not resolve to a real asset, the resolver walks OUTWARD through the leaf's ancestors, innermost first, trying `<root>/<s1>/.../<sk>/default.<extension>` for each ancestor depth `k` from `n-1` down to `1`; the first hit wins. Exhausting every ancestor without a hit yields the clean labeled placeholder ("`<full label path>` — screen not built"), never a fall-through to another leaf's resolved asset.
+- change: "A missing leaf's art now falls back through its ANCESTORS' default backdrops before the placeholder, instead of going straight to the placeholder."
+- context_for_change:
+    prior_state: "[CXC-COMP-MISSING] (ratified): a missing/unbuilt (console, sub-tab) renders the clean placeholder directly — no intermediate fallback of any kind. That invariant is SCOPED to screen-level resolution; it does not touch [CXC-CIC-RADIO-MODE]'s separate, UNCHANGED mode-level never-fall-through rule (a mode must never render another mode's content — this walk never crosses a top-level mode boundary, and does not model mode-level resolution at all, §5)."
+    reasoning: "A shared ancestor-level backdrop is a more honest 'not built yet' than a bare placeholder for a leaf that has no distinctive art yet, and it lets a screen degrade gracefully while its own art is authored incrementally. The walk is bounded (never crosses the tree's own root) so it cannot become the fall-through-to-another-leaf defect [CXC-COMP-MISSING] exists to prevent."
+    rejected_alternative: "Keep [CXC-COMP-MISSING] exactly as ratified — no walk, straight to placeholder always. This was the fallback if David rejected the amendment; he did not — David RATIFIED the walk via the DSD ([DEC-CXC-MENU-WALK-AMENDMENT-ADOPTED], `docs/architecture/DECISIONS-menu-resolver-forks.md`, 2026-08-18), so this alternative is now foreclosed."
+    counter_argument: "A fallback walk is one more place a missing screen can silently look 'good enough' when it is not actually built, weakening the placeholder's honesty."
+    counter_response: "The walk only ever resolves to an EXPLICITLY authored `default.<ext>` at an ancestor level — never an unrelated sibling's art — so it degrades to art someone deliberately provided as a fallback, not to a guess. Absent any `default.<ext>` at any ancestor, behavior is identical to today's [CXC-COMP-MISSING]."
+    invalidating_assumption: "That an ancestor-level `default.<ext>` is a genuine authored asset and not itself missing. If no app ever authors one, the walk is a no-op and this amendment has no observable effect."
+    implication: "[CXC-COMP-MISSING]'s placeholder rule is NOT repealed — it is the walk's terminal case. Its base/mode-ownership split and its scope over [CXC-CIC-RADIO-MODE]'s mode-level rule are UNCHANGED and continue to govern; only the screen-level 'straight to placeholder' step gains optional intermediate stops."
+- on-ratify: "[DD-MENU-WALK-AMENDMENT] IS NOW RATIFIED ([DEC-CXC-MENU-WALK-AMENDMENT-ADOPTED], David, DSD 2026-08-18) — the FIRST of the two gates on upgrading the Relationships section's `[CXC-MENU-WALK] RELATED_TO [CXC-COMP-MISSING]` edge to a typed AMENDS edge has now cleared. The SECOND gate has not: `AMENDS` is not yet a registered verb — it needs an `EDGETYPE-AMENDS` registration in `platform-composeio-profile.lts` (naming its `property-key`, mirroring how `[EDGETYPE-DOCUMENTS]` was registered per SPEC §1.3.2), which has not landed. Until it does, `RELATED_TO` stays the correct edge — minting a verb the parser cannot yet resolve would assert infrastructure that does not exist, which is worse than the weaker edge."
+- requirement: the resolver MUST try, in strict inner-to-outer order, the leaf's own path, then each ancestor's `default.<extension>` from innermost to the tree's top level, and MUST NOT skip an intermediate level or invert the order; it MUST NOT ever return another LEAF's own resolved path as a fallback (only ancestor-level `default.<extension>` files are eligible); and reaching the end of the walk with no hit MUST yield the placeholder, never an error and never empty output.
+- default: no `default.<extension>` authored at any ancestor level -> the walk degrades exactly to today's [CXC-COMP-MISSING] behavior (leaf miss -> placeholder, one step).
+- scenario:
+  - when: leaf `Foo > Bar` has no `bar.png`, but `/assets/foo/default.png` exists
+  - then: the resolver returns `/assets/foo/default.png`, never the placeholder and never another leaf's asset
+  - and: if `/assets/foo/default.png` were also absent, the walk tries `/assets/default.png`, then the placeholder
+- see-also: [CXC-COMP-MISSING], [CXC-CIC-RADIO-MODE], [DD-MENU-WALK-AMENDMENT]
+- part-of: [SPEC:CXC-MENU]
+
+### [CXC-MENU-RESOLVE] Resolve — a menu node to a bus asset reference
+
+- definition: `resolve(node)` composes [CXC-MENU-PATH] (or the `annotation.path` override) and [CXC-MENU-WALK] into one function returning a `bus://assets/<bus-namespace>/<slug-path>.<extension>` reference, publishing under the schema's declared `bus-namespace` ([CXC-MENU-SCHEMA]) — the resolve-by-reference model several bus-backed ComposeIO apps already use ad hoc, generalized here to any namespace.
+- requirement: `resolve` MUST be a PURE function of the menu tree + the node identity (no hidden state, no cache treated as authoritative) and MUST return a `bus://` reference in every case — the leaf's own asset, a walked ancestor default, or the placeholder marker — never raise, never return nothing ([CXC-COMP-MISSING]'s drop-nothing discipline, generalized).
+- see-also: [CXC-MENU-PATH], [CXC-MENU-WALK], [CXC-MENU-SCHEMA]
+- part-of: [SPEC:CXC-MENU]
+
+### [CXC-MENU-KINDS] The screen-kind annotation vocabulary
+
+- definition: three OPAQUE tokens the engine carries but does not interpret: `bespoke-svg` (a distinctive art file is expected at the leaf's own path), `pure-widget-no-file` (no file is ever expected — the leaf composes a generic widget directly), `live-drop-in` (no file is ever expected — the leaf mounts an existing self-contained live surface). The engine's ONLY use of `kind` is deciding, for the doc->tree lint ([CXC-MENU-LINT]), whether a leaf's missing own-file is a FINDING (`bespoke-svg`, file expected) or NOT (`pure-widget-no-file` / `live-drop-in`, no file ever expected) — it does not know what an SVG slot is, what a widget composition looks like, or what a live drop-in mounts.
+- requirement: the lint MUST treat exactly `pure-widget-no-file` and `live-drop-in` as file-not-expected, and every other value (including absence, which defaults to `bespoke-svg`) as file-expected; an app author MUST NOT invent a fourth token in the engine layer — an app-specific rendering distinction belongs in the APP's own kind vocabulary (e.g. [CXC-COMP-KINDS]), not in this generic set.
+- relates-to: [CXC-COMP-KINDS] is BSG's existing, richer (a)/(b)/(c) vocabulary for the SAME three-way split, carrying SVG-rendering semantics this engine layer deliberately does not know. The two are the SAME idea at two seams — [CXC-COMP-KINDS] is the policy-side interpretation of the tokens this engine treats as opaque. This spec does not modify or supersede [CXC-COMP-KINDS]; that consolidation, if wanted, is separate future work, not assumed here.
+- see-also: [CXC-MENU-ANNOTATION], [CXC-MENU-LINT], [CXC-COMP-KINDS]
+- part-of: [SPEC:CXC-MENU]
+
+---
+
+## 4. Generic engine contract — the bidirectional lint
+
+### [CXC-MENU-LINT] The bidirectional tree<->asset lint
+
+- definition: the enforcement that makes "menu and art agree" a FACT rather than a claim ([CXC-MENU-SCHEMA]'s single-source premise is worthless without a check). FOUR checks over the SAME tree + the SAME filesystem scan in one pass — two WARNING (an incompleteness that leaves a leaf unresolved, but resolution stays well-defined) and two ERROR (a structural ambiguity that makes resolution UNDEFINED for the affected node(s)), mirroring [CXC-COMP-LINT]'s own ERROR/WARNING split:
+  - (a) DOC -> TREE, WARNING, `unbuilt-and-undeclared`: every LEAF in the tree must satisfy at least one of — its own derived/overridden path resolves to a real file; OR its `annotation.kind` is `pure-widget-no-file` or `live-drop-in` ([CXC-MENU-KINDS], no file ever expected); OR the fallback walk ([CXC-MENU-WALK]) hits a real ancestor default. A leaf satisfying NONE of these is flagged, naming the leaf's full label path.
+  - (b) TREE -> DOC, WARNING, `orphan`: every file matching `<root>/**/*.<extension>` must equal SOME leaf's own derived-or-overridden path in the CURRENT tree (an ancestor `default.<extension>` counts as accounted for too). A file matching neither is flagged, naming the file — this is the negative control that catches a renamed, typo'd, or deleted menu entry whose art was left behind.
+  - (c) SIBLING-SLUG COLLISION, ERROR, `slug-collision`: two sibling nodes (same parent) whose labels derive the SAME slug ([CXC-MENU-SLUG]) make `resolve` ambiguous for BOTH — flagged naming the parent and both colliding labels. ERROR, not WARNING: this is not an incompleteness gap, it is a broken contract — two different menu entries would silently share one path.
+  - (d) RESERVED-SLUG, ERROR, `reserved-slug`: a leaf whose derived slug equals `default` collides with [CXC-MENU-WALK]'s own ancestor-fallback sentinel filename stem — flagged naming the leaf. ERROR, for the same reason as (c): the leaf and its would-be sibling `default.<extension>` become indistinguishable.
+- requirement: the lint MUST run all four checks over the SAME tree + the SAME filesystem scan in one pass (no drift between separate runs); MUST classify (a)/(b) as WARNING and (c)/(d) as ERROR, and MUST preserve the tree/file in every case — a WARNING never drops anything, and an ERROR still names and preserves what it flags, it only additionally REFUSES a publish/build gate the way [CXC-COMP-LINT]'s bake refuses on ERROR (matching [CXC-COMP-LINT]'s preserve-and-flag discipline and this corpus's forward+orphan dangle-lint precedent, `lts_lint(dangle=true)`); and an app author MUST be able to run it standalone (CLI/CI/bus-peer) exactly like [CXC-COMP-LINT]'s ONE-linter, N-front-ends discipline.
+- default: a tree with every leaf either file-backed, kind-annotated as fileless, or walk-satisfied, no sibling-slug collisions, no leaf slugging to `default`, and an asset directory with no file outside the tree, lints CLEAN with zero findings across all four checks.
+- scenario:
+  - when: a leaf's label is renamed in the YAML from "Bar" to "Bar Prime" without renaming `bar.png` on disk
+  - then: (a) flags "Foo / Bar Prime" as `unbuilt-and-undeclared` (its new slug `bar-prime` resolves to nothing) and (b) flags `foo/bar.png` as `orphan` (no current leaf's slug path matches it) — the SAME rename produces BOTH findings, catching it from either direction
+- scenario:
+  - when: two siblings under `Foo` are labelled "Bar!" and "Bar?" (both derive slug `bar`), and a third sibling is labelled "Default" (derives slug `default`)
+  - then: (c) flags a `slug-collision` naming `Foo` and both `Bar!`/`Bar?`, and (d) flags a `reserved-slug` naming `Foo > Default` — both ERROR, both blocking a publish gate that runs this lint
+- see-also: [CXC-MENU-RESOLVE], [CXC-MENU-WALK], [CXC-MENU-SLUG], [CXC-COMP-LINT]
+- part-of: [SPEC:CXC-MENU]
+
+---
+
+## 5. BSG instance #1 — `cic_menu`, scoped to STD's grid
+
+### [CXC-MENU-CIC-INSTANCE] BSG's `cic_menu` as resolver instance #1, scoped to STD's per-(console, sub-tab) grid
+
+- definition: BSG's Colonial Console binds the generic schema concretely, SCOPED to STD's per-(console, sub-tab) grid — the ONLY tier this resolver instance covers: `root: compose_projects/bsg/resources/screen_base_layout/std` (the `std` segment is FOLDED INTO the root, since this instance resolves STD's content tree specifically), `extension: svg`, `bus-namespace: cic`. The tree's top level is STD's 7 CONSOLES ([CXC-MENU-CIC-INVENTORY]), each carrying its 5 SUB-TABS as leaves. Mode SELECTION (the radio row choosing STD/DRADIS/EXT/CHRONO, [CXC-CIC-RADIO-MODE]) and mode-SURFACE resolution (each mode's own `<mode>_mode.svg` — including STD's own shell surface — today `composite.py`'s hand-maintained `MODE_FIXTURES` dict) are a DIFFERENT, SHALLOWER tier this resolver instance does NOT model: a mode-surface file resolves by a suffix convention (`<slug>_mode.svg`), not by the directory-join convention [CXC-MENU-PATH] derives, so folding a mode into THIS tree as a leaf would derive the WRONG path (`<root>/ext.svg`, not `ext_mode.svg`).
+- corrected: "An earlier draft of this node listed STD/DRADIS/EXT/CHRONO as the tree's top level, with DRADIS/EXT/CHRONO each a single annotated leaf. Independent QA caught the contradiction: [CXC-MENU-PATH]'s own derivation formula cannot produce `ext_mode.svg` from a leaf named `EXT` — it would produce `ext.svg`. Fixed by scoping this instance to STD's grid only, folding `std` into `root`, and moving mode-surface resolution out of the tree entirely (below). Whether a FUTURE resolver instance — or a generalization of this one — also covers mode-surface resolution is left OPEN and explicitly OUT OF SCOPE here, not assumed."
+- source-of-truth-supersession: this instance's tree SUPERSEDES `cic_menu_structure.md` as the menu's source of truth — [DD-MENU-SCHEMA-FORMAT] (settled, David decided). The same YAML is intended to feed the nav-row renderer, this resolver, a screen scaffolder, and [CXC-MENU-LINT]; the nav-row renderer's `menu.py` parser and BSG's publish step MUST migrate to read this YAML tree instead of `cic_menu_structure.md` — `cic_menu_structure.md` is retired once both consumers migrate, not before.
+- measured-evidence-for-single-source: `compose_projects/bsg/resources/screen_base_layout/STD-screen-modeling-guidance.md`'s own appendix table (authored earlier, from the SAME markdown menu) lists NAVCON with only 3 sub-tabs (CARTOGRAPHY, PLOT, TAC); the current `cic_menu_structure.md` lists NAVCON with 5 (CARTOGRAPHY, DEAD REC, PLOT, TAC, ATTACK PT). The two documents describing "the same menu" have ALREADY drifted — measured, not hypothetical — which is exactly the failure a single structured source with one set of consumers is meant to close.
+- flag-scope-of-mode-fixtures: `composite.py`'s `MODE_FIXTURES` dict (`{"STD": "std_mode.svg", "EXT": "ext_mode.svg", "DRADIS": "dradis_mode.svg"}`, CHRONO left unmapped) maps MODE LABEL to its mode-surface file. It is cited here only as the motivating instance of the SAME disease (a hand-maintained lookup dict standing in for a derivable convention, [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER]) that this spec corrects for the far more numerous 35-screen case — this spec does NOT retire it. CHRONO's silent absence from the dict — a mode that is "David's WIP" rendering as an undifferentiated placeholder with no signal distinguishing "not started" from "just never added to the dict" — is itself a `pure-manual-dict` failure mode this design's lint would catch immediately as `unbuilt-and-undeclared`, WERE CHRONO ever modeled as a tree leaf in a future mode-surface-covering instance; it is not one today.
+- requirement: an app onboarding onto this engine MUST author its tree in the schema of [CXC-MENU-SCHEMA] and MUST NOT re-derive its own path-join or slug logic — BSG's instance is the worked proof that the generic formula reproduces the app's existing literal convention exactly, once the `std` segment is correctly folded into `root` rather than modeled as a tree level.
+- scenario:
+  - when: the leaf `NAVCON > ATTACK PT` is resolved against this instance
+  - then: the derived path is `compose_projects/bsg/resources/screen_base_layout/std/navcon/attack-pt.svg` — reproducing the literal `<root>/<mode>/<console-slug>/<subtab-slug>.svg` formula that motivated this spec (STD-screen-modeling-guidance.md), with `std` supplied by `root` and the remaining two levels supplied by the generic N-level join ([CXC-MENU-PATH])
+- scenario:
+  - when: `NAVCON > PLOT` has no `plot.svg` authored yet, but `std/navcon/default.svg` exists
+  - then: `resolve` returns `std/navcon/default.svg` per [CXC-MENU-WALK] (ratified, [DEC-CXC-MENU-WALK-AMENDMENT-ADOPTED]); absent that too, it walks to `std/default.svg`, then the placeholder
+- see-also: [CXC-MENU-SCHEMA], [CXC-MENU-PATH], [CXC-CIC-NAV], [CXC-COMP-STD-CONTENT], [CXC-COMP-KINDS], [CXC-CIC-RADIO-MODE]
+- part-of: [SPEC:CXC-MENU]
+
+### [CXC-MENU-CIC-INVENTORY] The STD 7x5 console/sub-tab inventory and its derived slugs
+
+- definition: the STD mode's tree is exactly 7 consoles x 5 sub-tabs = 35 leaves, per `cic_menu_structure.md` (the current, authoritative markdown this instance's YAML supersedes). Every slug below is DERIVED by [CXC-MENU-SLUG]'s rule, shown here as a worked table, not a second source of truth — this table is the CONCRETE instance of [CXC-MENU-SLUG]'s abstract rule and of [CXC-MENU-PATH]'s abstract join.
+
+| Console (slug) | Sub-tabs (label -> slug) |
+|---|---|
+| HELM (`helm`) | WAYPOINT->`waypoint`, HEADING->`heading`, TRACK->`track`, VELOCITY->`velocity`, FUEL->`fuel` |
+| NAVCON (`navcon`) | CARTOGRAPHY->`cartography`, DEAD REC->`dead-rec`, PLOT->`plot`, TAC->`tac`, ATTACK PT->`attack-pt` |
+| FTL (`ftl`) | PRM OUTPUT->`prm-output`, GENERATOR->`generator`, PROXIMITY->`proximity`, ALERTS->`alerts`, LOG->`log` (kind: pure-widget-no-file) |
+| DC (`dc`) | OVERVIEW->`overview`, SYSTEMS->`systems`, SUBLIGHT->`sublight`, FLT DECKS->`flt-decks`, DISPATCH->`dispatch` (kind: pure-widget-no-file) |
+| FIRE CONTROL (`fire-control`) | TARGETING->`targeting`, KEW->`kew`, S2SM->`s2sm`, NUCLEAR->`nuclear`, STORES->`stores` |
+| EMSO (`emso`) | EA->`ea`, EWSP->`ewsp`, SIGINT->`sigint`, ELINT->`elint`, COMINT->`comint` |
+| SECURITY (`security`) | OVERVIEW->`overview`, NETWORK->`network`, VTD->`vtd`, MARDET->`mardet`, DISPATCH->`dispatch` (kind: pure-widget-no-file) |
+
+- default: every leaf not annotated `pure-widget-no-file` above defaults to `bespoke-svg`, per [CXC-COMP-KINDS]'s existing classification of the un-annotated majority (e.g. HELM+VELOCITY, NAVCON+CARTOGRAPHY).
+- reserved-slug-check: no label in this table derives `default` — verified by inspection; [CXC-MENU-LINT]'s `reserved-slug` check has nothing to flag against the current 35.
+- scenario:
+  - when: `resolve(FIRE CONTROL > NUCLEAR)` runs against this instance
+  - then: it returns `bus://assets/cic/std/fire-control/nuclear.svg`, matching `compose_projects/bsg/resources/screen_base_layout/std/fire-control/nuclear.svg` on disk if authored, walking to `std/fire-control/default.svg` then `std/default.svg` then the placeholder otherwise (walk ratified, [DEC-CXC-MENU-WALK-AMENDMENT-ADOPTED])
+- see-also: [CXC-MENU-CIC-INSTANCE], [CXC-COMP-KINDS], [CXC-MENU-SLUG]
+- part-of: [SPEC:CXC-MENU]
+
+---
+
+## 6. Adjacent CXC-COMP extensions captured this session
+
+> ⛔ **NOT the generic engine, and NOT structurally part of it either.** Everything in this section is [SPEC:CXC-COMP] POLICY — SVG-slot and screen-composition material — captured HERE only because it surfaced in the same review pass that produced this document. [CXC-MENU-WHY]'s "engine sections MUST NOT reference BSG" rule does not apply here; this section is exempt by design (frontmatter `not-this`). Each node below carries `part-of: [SPEC:CXC-COMP]` (its true semantic home) rather than `[SPEC:CXC-MENU]` — filing it under the menu-resolver spec would assert composition/rendering nodes as structural members of the resolver engine, exactly the seam-blur this document exists to avoid — plus a `captured-here` note recording that it is physically authored in THIS file pending migration. The MIGRATION ITSELF is now a RATIFIED follow-on ([DD-MENU-SPEC-HOME]), not merely a maybe; each node's OWN `[PLACEMENT UNRATIFIED]` tag still stands until that migration actually happens — the design decisions ABOUT this content (content-band, fit-mode, slot-scene-grammar) are separately ratified below and are not affected by the pending physical move.
+
+### [CXC-MENU-CONTENT-BAND] Content-band isolation — an opt-in inverse of `ref:` for a screen SVG's renderable span
+
+- definition: a screen SVG's renderable content is bracketed by a CHROME-AGNOSTIC sentinel PAIR — two marker layers, `content-start` and `content-end` — placed as ordinary top-level groups in SVG document order. Everything BETWEEN the pair (exclusive of the sentinels themselves) is renderable content; everything OUTSIDE the pair (before `content-start`, after `content-end`) is authoring CONTEXT, skipped by the derivation with NO per-layer `ref:` tag required. This is the OPT-IN inverse of [CXC-COMP-REF]'s opt-OUT `ref:` convention: instead of marking every context group individually, an author brackets the content ONCE and everything outside is implicitly context.
+- requirement: the derivation MUST verify EXACTLY ONE well-formed, correctly-ordered `content-start`/`content-end` pair per screen SVG that uses this convention (content-start appears before content-end in document order; no more than one of each). A MISSING or malformed sentinel (zero pairs, more than one pair, out-of-order pair, an unpaired singleton) MUST fail LOUD as an ERROR — never a silent fall-back to treating the whole document as content.
+- why-document-order-suffices: in SVG, document order IS paint order IS z-order — there is no separate z-index channel, so the sentinel pair's DOCUMENT-order bracket is, without any extra bookkeeping, also the LAYER-order bracket [CXC-COMP-LAYER-ORDER] already derives the render's z-order from. The band needs no coordination with that derivation; it is reading the same ordering.
+- relates-to: [CXC-COMP-REF] is the existing opt-out convention this is the opt-in inverse of; [CXC-COMP-LAYER-ORDER] is the z-order derivation the `why-document-order-suffices` note ties to; this convention EXTENDS [SPEC:CXC-COMP]'s domain (screen-SVG authoring), not the generic menu-resolver engine.
+- placement-status: "[PLACEMENT UNRATIFIED]. Its natural home is [SPEC:CXC-COMP] (which already owns `ref:`, [CXC-COMP-REF]); see [DD-MENU-CONTENT-BAND] for the open default-vs-coexist question."
+- captured-here: "physically authored in [SPEC:CXC-MENU] (this document, §6) because it surfaced in this review pass; `part-of` below names its semantic home, not its filing location."
+- see-also: [CXC-COMP-REF], [CXC-COMP-LAYER-ORDER], [DD-MENU-CONTENT-BAND]
+- part-of: [SPEC:CXC-COMP]
+
+### [DD-MENU-CONTENT-BAND] Ratified — coexist (interim); always-required is the intended future direction
+
+- decision: whether every screen SVG is required to author the `content-start`/`content-end` sentinel pair ([CXC-MENU-CONTENT-BAND]) going forward (opt-in becomes the DEFAULT, `ref:` deprecated for new screens), or the two conventions COEXIST (an author picks whichever is more convenient per screen, and the derivation supports both).
+- chosen: COEXIST (interim) — RATIFIED. The derivation accepts EITHER `ref:`-tagged groups OR a content-band pair, per screen; `ref:` is NOT deprecated by this ratify. This is explicitly a TRANSITION-PERIOD state, not the final resting position — see `future-direction`.
+- future-direction: "The intended TRAJECTORY is ALWAYS-REQUIRED — the content-band becomes the sole convention for new screens and `ref:` is deprecated — but that cutover is NOT scheduled by this decision. Coexistence is the deliberate interim state for the transition period; a follow-on decision should set the cutover condition (e.g. a screen-migration threshold or a date) rather than letting 'interim' become permanent by default."
+- alternatives: (a) the content-band becomes the sole convention for new screens immediately (fewer per-layer tags to maintain on a complex screen, at the cost of a REQUIRED pair an author must remember to place) — NOT chosen for now, named as the eventual direction in `future-direction`; (b) coexistence — the derivation accepts either `ref:`-tagged groups OR a content-band pair, per screen, with the sentinel pair taking precedence when both are present on one screen — CHOSEN, interim.
+- rationale: a hard cutover to opt-in would break every existing `ref:`-tagged screen on the day of the change; coexistence lets new screens adopt the band immediately while existing screens migrate on their own schedule, which is the standard shape for a convention transition.
+- invalidating_assumption: that the transition period has a natural end condition. None is set by this decision — a follow-on decision should schedule the always-required cutover once enough screens have migrated to the band; until then, coexistence has no expiry and could drift into becoming the permanent state by default rather than by decision.
+- status: decided
+- resolved-by: [DEC-CXC-MENU-CONTENT-BAND-COEXIST]
+- dsd-source: docs/architecture/DECISIONS-menu-resolver-forks.md
+- captured-here: "physically authored in [SPEC:CXC-MENU] (this document, §6); `part-of` below names its semantic home."
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-MENU-SLOT-SIZING] Slot sizing and the two slot kinds it must distinguish
+
+- definition: extends [SPEC:CXC-COMP]'s slot model ([CXC-COMP-SLOT]): a `slot:` group's bounding box IS the bound widget's target rect. When the widget's native aspect ratio differs from the slot bbox's aspect ratio, a FIT-MODE resolves the mismatch — LETTERBOX is the ratified DEFAULT ([DD-MENU-FIT-MODE]): the widget scales uniformly to fit entirely within the bbox, residual space left empty, never cropped, never distorted.
+- kinds-of-slot: TWO kinds, distinguished by binding shape. (1) SINGLE-WIDGET slots (`slot:gauge@velocity`) — the widget needs ONE binding handed in from outside; the `@<binding>` segment is REQUIRED, per [CXC-COMP-SLOT]'s SETTLED grammar (`slot:<widget>@<binding>`, split on first `@`, `<widget>` a REGISTERED widget kind — [DD-COMP-SLOT-NAMING], [DEC-CXC-COMP-SLOT-DELIMITER-AT]). (2) SELF-CONTAINED-SCENE drop-ins — a scene carrying its OWN internal bindings (e.g. `engine_thrust_panel` subscribing `throttle/left` and `throttle/right` itself with no external hand-off, [CXC-R-SCENE-GEOMETRY-POLICY]'s `worked-example`) is a REGISTERED WIDGET KIND, `scene` — RATIFIED via [DD-MENU-SLOT-SCENE-GRAMMAR] (Arm A). `slot:scene@<mount-scope>` fits the SETTLED grammar UNCHANGED: `<widget>` = `scene`, `<binding>` = an OPTIONAL mount-scope rather than a single bound value; [CXC-COMP-SLOT]'s `slot:<widget>@<binding>` first-`@`-split rule is NOT amended.
+- needs-confirm: "⛔ NEEDS-RENDER-ENGINEER-CONFIRM + NEEDS-GLASS. Two claims are UNVERIFIED here: (1) that a self-contained scene actually composites into an arbitrarily-sized slot rect (nested-scene composition at an arbitrary target size is not yet proven); (2) the ROOT-SCALE-IS-A-NO-OP-ON-BAND-TIER caveat — whether a scene's own root-level scale/geometry-policy declaration ([CXC-R-SCENE-GEOMETRY-POLICY]'s `resizable`/`fixed-size` choice) is INERT once the scene is mounted inside a sized slot, i.e. the slot's fit-mode is the ONLY scale that applies and the scene's own declaration must not double-apply. Neither claim is proven by this node; both need the render engineer plus a glass check before this contract is treated as settled."
+- relates-to: [CXC-COMP-SLOT] (extends it), [CXC-R-SCENE-GEOMETRY-POLICY] (the unverified root-scale caveat, and the source of the `engine_thrust_panel` self-contained-scene precedent), [DD-MENU-SLOT-SCENE-GRAMMAR] (the ratified grammar decision kind (2) relies on)
+- placement-status: "[PLACEMENT UNRATIFIED]. Extends [SPEC:CXC-COMP]'s slot model; likely home is [SPEC:CXC-COMP] itself, same as [CXC-MENU-CONTENT-BAND]."
+- captured-here: "physically authored in [SPEC:CXC-MENU] (this document, §6); `part-of` below names its semantic home."
+- see-also: [CXC-COMP-SLOT], [CXC-R-SCENE-GEOMETRY-POLICY], [DD-MENU-FIT-MODE], [DD-MENU-SLOT-SCENE-GRAMMAR]
+- part-of: [SPEC:CXC-COMP]
+
+### [DD-MENU-SLOT-SCENE-GRAMMAR] Ratified (Arm A) — how a self-contained-scene slot fits the settled `slot:<widget>@<binding>` grammar
+
+- decision: whether a self-contained-scene drop-in (carrying its own internal bindings, [CXC-MENU-SLOT-SIZING]'s kind (2)) fits the SETTLED slot grammar as a REGISTERED WIDGET KIND with an optional mount-scope binding (Arm A), or requires AMENDING the grammar itself to admit a bare `slot:<scene>` group label with no `@binding` at all (Arm B). Flagged explicitly as amending-settled-[DD-COMP-SLOT-NAMING]/[DEC-CXC-COMP-SLOT-DELIMITER-AT] territory — exactly like [DD-MENU-WALK-AMENDMENT] — and was resolved by ratify, not by silently asserting either arm as fact.
+- chosen: ARM A — RATIFIED (David, DSD). A self-contained scene registers as a REGISTERED WIDGET KIND, `scene`. `slot:scene@<mount-scope>` fits the SETTLED grammar UNCHANGED: `<widget>` = `scene`, `<binding>` = an OPTIONAL mount-scope rather than a single bound value. [CXC-COMP-SLOT]'s `slot:<widget>@<binding>` first-`@`-split rule stays exactly as ratified — NO grammar amendment. Arm B is NOT adopted.
+- alternatives: "Arm A (CHOSEN, ratified)": register a self-contained scene as a REGISTERED WIDGET KIND (`scene`), so a label like `slot:scene@engine-thrust` fits the SETTLED grammar UNCHANGED — `<widget>` is the registered kind, `<binding>` is an OPTIONAL mount-scope rather than a single bound value. No grammar amendment. "Arm B (NOT chosen)": amend the grammar to admit a bare `slot:<scene>` label with NO `@binding` segment — a genuine amendment to a twice-ratified convention (first-hyphen, then reversed to `@`, [DEC-CXC-COMP-SLOT-DELIMITER-AT]); retained here as the alternative David did not take.
+- rationale: Arm A costs nothing against the ratified grammar — registering a new widget kind is already how the grammar extends ([CXC-COMP-WIDGET-KIND]'s existing mechanism); Arm B would have cost a parser/grammar change to a document already ratified twice, for a case Arm A already covers.
+- invalidating_assumption: that an optional mount-scope binding is expressive enough for every self-contained-scene case. If some future scene genuinely needs zero binding segment at all (not even an optional one), Arm A cannot express it and this decision would need reopening toward Arm B. Retained as a live watch-item, not a blocker to the ratified decision.
+- status: decided
+- resolved-by: [DEC-CXC-MENU-SLOT-SCENE-GRAMMAR-ARM-A]
+- dsd-source: docs/architecture/DECISIONS-menu-resolver-forks.md
+- captured-here: "physically authored in [SPEC:CXC-MENU] (this document, §6); `part-of` below names its semantic home."
+- part-of: [SPEC:CXC-COMP]
+
+### [DD-MENU-FIT-MODE] Ratified — slot fit-mode: letterbox default; override mechanism deferred
+
+- decision: which FIT-MODE a mismatched-aspect widget uses inside its slot bbox, and how an app author requests a non-default one.
+- chosen: LETTERBOX is the ratified DEFAULT (David decided) — uniform scale to fit within the bbox, residual space empty, never cropped or distorted. The OVERRIDE MECHANISM for a non-default fit-mode is explicitly DEFERRED (David, DSD) — not rejected, not scheduled, deliberately left for a future pass. Letterbox stands UNCHANGED as the only behavior until an override mechanism is separately designed and ratified.
+- alternatives: (a) letterbox (the default, chosen); (b) stretch — non-uniform scale to fill the bbox exactly, distorting aspect; (c) reflow — the widget re-lays-out its own internal content to match the bbox's aspect rather than scaling a fixed composition. (b) and (c) remain available as a future EXPLICIT per-slot override; the request mechanism for them is DEFERRED, not designed.
+- rationale: letterbox never distorts and never crops — the safest default for an art-directed screen where a wrong aspect should be visibly obvious (empty bars) rather than silently wrong (stretched or cropped). Deferring the override mechanism rather than designing it now avoids speculative grammar for a need that has not yet arisen.
+- invalidating_assumption: that no widget kind needs to fill its slot exactly with no letterboxing (e.g. a full-bleed background image) before the override mechanism is eventually designed. If one arises sooner, the deferral should be revisited ahead of its own schedule.
+- status: decided
+- status-scope: "the DEFAULT ARM (letterbox) is decided and unchanged. The OVERRIDE MECHANISM is now explicitly DEFERRED — itself a decided position (defer, not design-now), not an unresolved open question."
+- resolved-by: [DEC-CXC-MENU-FIT-MODE-OVERRIDE-DEFERRED]
+- dsd-source: docs/architecture/DECISIONS-menu-resolver-forks.md
+- captured-here: "physically authored in [SPEC:CXC-MENU] (this document, §6); `part-of` below names its semantic home."
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-MENU-DIALOG-BASE] Dialog-as-base-capability — how a screen requests a confirmation
+
+- definition: extends [SPEC:CXC-COMP]'s base model ([CXC-COMP-BASE]): the confirmation dialog is a BASE capability, authored ONCE in the base SVG — geometry (the dialog frame, its buttons, its message area) is entirely base-owned, per [CXC-COMP-BASE]'s existing base/mode ownership split and its existing dialog slots (`slot:button@confirm`, `slot:button@abort`, `slot:button@close`, `slot:text@message`). A screen never authors its own dialog layout; it INVOKES the base dialog by raising it WITH A MESSAGE — a dynamic stamped label rendered into the base's `slot:text@message` — while every affordance (confirm/abort/close) is a base slot the screen never redraws.
+- requirement: a screen or widget that needs a confirmation MUST invoke the base dialog's raise-with-message capability rather than drawing its own dialog box; the base dialog's geometry MUST NOT be duplicated into any screen or mode surface.
+- needs-confirm: "the exact raise-with-message INVOCATION API (what a screen calls, what arguments it passes, whether it is a bus message or a direct call) is TO-CONFIRM — not specified by this node."
+- relates-to: [CXC-COMP-BASE] (owns the dialog's existing slots this node's invocation raises)
+- placement-status: "[PLACEMENT UNRATIFIED]. Extends [SPEC:CXC-COMP]'s base model; likely home is [SPEC:CXC-COMP] itself, same as [CXC-MENU-CONTENT-BAND]."
+- captured-here: "physically authored in [SPEC:CXC-MENU] (this document, §6); `part-of` below names its semantic home."
+- see-also: [CXC-COMP-BASE]
+- part-of: [SPEC:CXC-COMP]
+
+### [CXC-MENU-IRREGULAR-REGION] Irregular screen region — two realization modes and their owners
+
+- definition: an irregular (non-rectangular) screen region has TWO distinct realization modes, with different OWNERS and different reuse consequences — recorded here so the choice and its reuse cost are on the graph, not left implicit in a screen's art. (1) MATTE-CLIP (shape = VIEWPORT / presentation): the content renders into a plain RECT, knowing NOTHING about the irregular boundary; a matte layer ABOVE crops it by overdraw ([CXC-R-SPRITE-CONTAINER]'s verified master-mask compositing — no active clip_rect, masking by LAYERING). The content stays shape-agnostic and reusable across boundary shapes ([DX-NARROW-WAIST]). ENGINE-owned. (2) SHAPED-CONTAINMENT (shape = ARENA / constraint): the content's OWN LOGIC keeps its elements inside the polygon (constrains positions to the boundary). NOT an engine capability — the engine renders given positions, it cannot confine them. ANIMATION/CONTENT-owned, and it must take the shape as INPUT, coupling that content to the specific boundary.
+- requirement: a screen author choosing an irregular region MUST record which mode applies and MUST NOT assume the engine can enforce SHAPED-CONTAINMENT — if positions must stay inside a boundary, the content generating those positions owns that constraint, the render does not.
+- worked-instance: "DRADIS resolves to MATTE-CLIP, for two reasons: (i) semantics — a tactical scope is a window onto a larger space; a contact reaching the edge is CLIPPED (out of sensor range), it must never bounce off a decorative console edge; (ii) reuse — the Qualia-derived contacts animation must stay shape-agnostic ([DX-NARROW-WAIST]), so `slot:dradis-contacts` is a RECT target and the irregular Colonial boundary is a matte layer ABOVE `dradis2d-animation_layer`, cropping by overdraw exactly as [CXC-R-SPRITE-CONTAINER] specifies — the animation itself never learns the boundary's shape."
+- relates-to: [CXC-R-SPRITE-CONTAINER] (the matte-clip mechanism), [CXC-R-SCENE-GEOMETRY-POLICY] (the adjacent geometry-declaration contract), [DX-NARROW-WAIST] (the reuse argument for keeping content shape-agnostic)
+- placement-status: "[PLACEMENT UNRATIFIED]. Extends [SPEC:CXC-COMP]'s rendering model; likely home is [SPEC:CXC-COMP] itself, same as [CXC-MENU-CONTENT-BAND]."
+- captured-here: "physically authored in [SPEC:CXC-MENU] (this document, §6); `part-of` below names its semantic home."
+- see-also: [CXC-R-SPRITE-CONTAINER], [CXC-R-SCENE-GEOMETRY-POLICY], [DX-NARROW-WAIST]
+- part-of: [SPEC:CXC-COMP]
+
+---
+
+## 7. Acceptance — machine signal + glass gate per surface
+
+### [CXC-MENU-VERIFY] Acceptance — machine signal and glass gate per surface
+
+- definition: each requirement carries a machine signal AND, for a human-perceptible surface, an explicit glass gate ([CXC-COMP-VERIFY] precedent). Rows MENU-C1 through MENU-C7 and MENU-C9 test the GENERIC engine and use neutral fixtures; MENU-C8 tests the BSG INSTANCE specifically and is the one row that legitimately names BSG facts.
+
+| ID | Requirement | verify.machine | verify.human (glass) |
+|----|-------------|-----------------|------------------------|
+| MENU-C1 | A leaf's default path is derived from the join of its ancestors' slugs, never stored ([CXC-MENU-PATH]) | a test loads a fixture tree, asserts the derived path equals the expected slug-path join for a leaf at depth 3 and a leaf at depth 2 | n/a (structural) |
+| MENU-C2 | Slug derivation matches the stated rule, including the trim case ([CXC-MENU-SLUG]) | a parametrized test asserts "FOO BAR"->`foo-bar`, "QUX-WIDGET!!"->`qux-widget`, "  BAZ"->`baz`; the BSG instance table ([CXC-MENU-CIC-INVENTORY]) is asserted separately under MENU-C8 | n/a (structural) |
+| MENU-C3 | An `annotation.path` override REPLACES the derived path, never appends to it ([CXC-MENU-ANNOTATION]) | a fixture node with `annotation.path` set asserts `resolve` returns exactly that value, ignoring [CXC-MENU-PATH] entirely | n/a (structural) |
+| MENU-C4 | The fallback walk tries the leaf, then each ancestor default innermost-first, before the placeholder ([CXC-MENU-WALK]) | a fixture with a `default.<ext>` at an outer ancestor level asserts a missing leaf resolves to it, not the placeholder; a second fixture with defaults at BOTH the immediate-parent level and a grandparent level asserts the immediate-parent one wins (innermost-first) | on glass: an unbuilt STD screen inside a console with an authored console-level backdrop shows that backdrop, not a bare placeholder |
+| MENU-C5 | Exhausting the walk yields the placeholder, never another leaf's asset ([CXC-MENU-WALK], [CXC-COMP-MISSING]) | a fixture with no own path and no ancestor defaults asserts the placeholder marker is returned, and a property test asserts no leaf's `resolve` result ever equals a DIFFERENT leaf's own path | on glass: NAVCON/PLOT unbuilt shows "STD / NAVCON / PLOT — screen not built", never HELM's or another console's art |
+| MENU-C6 | Doc->tree lint flags every leaf resolving to nothing queryable ([CXC-MENU-LINT]) | a fixture tree with one un-annotated leaf carrying no file and no ancestor default asserts an `unbuilt-and-undeclared` finding naming that leaf, and asserts a `pure-widget-no-file`/`live-drop-in` leaf with no file raises NO finding | n/a (structural) |
+| MENU-C7 | Tree->doc lint flags every asset file with no corresponding live leaf ([CXC-MENU-LINT]) | a fixture asset directory with one file whose slug-path matches no current tree leaf asserts an `orphan` finding naming that file; a rename-without-file-move fixture asserts BOTH directions fire from the one change | n/a (structural) |
+| MENU-C8 | BSG's instance resolves and slugs exactly as documented, scoped to STD only ([CXC-MENU-CIC-INVENTORY], [CXC-MENU-CIC-INSTANCE]) | a snapshot test enumerates all 35 STD (console, sub-tab) pairs from the instance YAML and asserts each derived slug + path against the inventory table; a separate assertion confirms the tree contains NO node for DRADIS/EXT/CHRONO | on glass: each of the 35 STD screens, built or not, is reachable via its console/sub-tab tabs and shows either its art or a correctly labeled placeholder |
+| MENU-C9 | Lint ERRORs a sibling-slug collision and a reserved-slug (`default`) leaf, never silently resolving one over the other ([CXC-MENU-LINT]) | two fixtures: sibling labels that collide to the same slug assert a `slug-collision` ERROR naming both labels; a leaf labelled to derive `default` asserts a `reserved-slug` ERROR naming that leaf | n/a (structural) |
+
+- part-of: [SPEC:CXC-MENU]
+
+---
+
+## 8. Design Decisions
+
+### [DD-MENU-SCHEMA-FORMAT] Menu source format — settled to YAML, superseding the markdown menu
+
+- decision: whether the menu's SOURCE OF TRUTH moves to structured YAML (superseding `cic_menu_structure.md`) or stays markdown with a separate machine-readable projection.
+- chosen: YAML as the sole source, feeding the nav-row renderer, this resolver, a scaffolder, and [CXC-MENU-LINT] from one file ([CXC-MENU-SCHEMA], [CXC-MENU-CIC-INSTANCE]'s `source-of-truth-supersession`). SETTLED — David decided.
+- migration: the nav-row renderer's `menu.py` parser and BSG's publish step (today reading `cic_menu_structure.md`) MUST be migrated to read the YAML tree instead; `cic_menu_structure.md` is retired once both consumers migrate, not before — until then it remains the human-readable projection, not the source of truth.
+- alternatives: (a) keep `cic_menu_structure.md` as the human-edited source and generate/maintain a separate YAML/JSON projection for tooling (rejected: two files invite exactly the drift measured in [CXC-MENU-CIC-INSTANCE]'s `measured-evidence-for-single-source`); (b) embed the tree directly in code as a Python literal (rejected: not editable by a non-engineer, and re-derives the hand-maintained-dict disease this spec exists to retire).
+- rationale: a single structured file is the only form four independent consumers (nav renderer, resolver, scaffolder, lint) can share without a translation step that can itself drift; markdown cannot be parsed as a tree without inventing an ad hoc convention on top of it.
+- invalidating_assumption: that all four consumers can tolerate YAML specifically (vs., say, a `.lts` menu document parsed by the SAME FactLattice engine this spec is authored in — an alternative not explored here). This is retained as a note for future reconsideration, not a live blocker to the settled decision.
+- status: decided
+- part-of: [SPEC:CXC-MENU]
+
+### [DD-MENU-WALK-AMENDMENT] Ratified — the fallback walk amends the never-fall-through rule
+
+- decision: whether [CXC-COMP-MISSING]'s screen-level "missing -> placeholder, straight, no intermediate step" is AMENDED to the ancestor-default walk ([CXC-MENU-WALK]), or the walk is dropped and every miss resolves the placeholder as today.
+- chosen: Arm (a) ADOPTED — David ratified the ancestor-default walk via the DSD. [CXC-COMP-MISSING] is now amended by [CXC-MENU-WALK] exactly as specified. The no-op-if-unused degradation is preserved and remains true post-ratify: absent any authored `default.<ext>` anywhere in a tree, resolved behavior stays byte-identical to pre-amendment [CXC-COMP-MISSING].
+- alternatives: (a) adopt the walk as specified in [CXC-MENU-WALK] — CHOSEN; (b) keep [CXC-COMP-MISSING] unamended — no walk, ever — NOT chosen, retained here as the historical alternative David considered and did not take.
+- rationale: the walk is genuinely useful (graceful degradation for a screen mid-authored) and it is a change to a RATIFIED invariant, so [DX-INTERPRETATION-IS-AN-INFERENCE] governed the process correctly: the amendment was surfaced as a question rather than silently applied, and David has now formally closed it.
+- invalidating_assumption: that BSG actually wants any ancestor-level `default.<ext>` authored at all. If none is ever authored, the ratified walk is a no-op in practice; [CXC-MENU-VERIFY]'s MENU-C4 still degrades to [CXC-COMP-MISSING]'s existing test coverage with zero observable behavior change on the BSG instance until a `default.<ext>` is actually authored somewhere.
+- edge-on-ratify: see [CXC-MENU-WALK]'s `on-ratify` note — the ratify gate is now CLEAR; the `RELATED_TO` edge to [CXC-COMP-MISSING] still upgrades to a typed `AMENDS` edge only once the SECOND gate (an `EDGETYPE-AMENDS` profile registration) also lands.
+- status: decided
+- resolved-by: [DEC-CXC-MENU-WALK-AMENDMENT-ADOPTED]
+- dsd-source: docs/architecture/DECISIONS-menu-resolver-forks.md
+- part-of: [SPEC:CXC-MENU]
+
+### [DD-MENU-SPEC-HOME] Ratified — new document (option a); section 6 migrates to [SPEC:CXC-COMP] as a follow-on
+
+- decision: whether the generic resolver contract lives as its OWN document (this file, `77-composeux-menu-resolver.lts`) or as a new section inside [SPEC:CXC-COMP].
+- chosen: OPTION (a) — a NEW document, this file. RATIFIED (David, DSD). The header's `[PLACEMENT UNRATIFIED]` tag is RESOLVED to `[PLACEMENT RATIFIED]` — see the header and [CXC-MENU-WHY]'s `placement-status`. PLUS a ratified FOLLOW-ON: section 6's [SPEC:CXC-COMP]-adjacent nodes physically MIGRATE into [SPEC:CXC-COMP] in a separate pass — they already carry `part-of: [SPEC:CXC-COMP]` + `captured-here`, so semantic ownership is already correct even while the TEXT stays physically in this file for this landing; the migration does NOT block landing.
+- alternatives: (a) this new `77-` document — CHOSEN; (b) fold as new sections into [SPEC:CXC-COMP] (con: [SPEC:CXC-COMP] is already SVG/slot-specific policy — folding a domain-agnostic engine contract into a policy-heavy document is the inverse of the seam [CXC-MENU-WHY] draws, and would make the engine harder to port to a second app without also porting BSG's SVG vocabulary as unwanted baggage); (c) a THIRD corpus root reserved for cross-app generic engines, separate from `platform-specs`' current BSG-heavy tail (not evaluated in depth, not chosen). Retained as the historical alternatives David did not take.
+- rationale: keeping engine and instance in ONE document (this file) rather than a fourth split satisfies [DX-NARROW-WAIST] at the DOCUMENT level too — the instance section cites the engine sections by node id, never duplicates them — while a fold into [SPEC:CXC-COMP] would have left no home for a second app's future instance section without re-opening BSG's own spec.
+- migration-follow-on: "the §6 PHYSICAL migration to [SPEC:CXC-COMP] is a RATIFIED FOLLOW-ON, not a landing blocker. §6 nodes already carry `part-of: [SPEC:CXC-COMP]` + `captured-here` (added ahead of this ratify, during the QA remediation pass), so the graph already asserts their correct semantic home; only the TEXT's physical location moves, in a separate pass, on [SPEC:CXC-COMP]'s own next revision."
+- invalidating_assumption: that `platform-specs` numbering 77 stays free at land time — [CXC-VISION-PLACEMENT] already records this directory's history of numeric-prefix collisions (two live pairs as of its writing); this is a check for the LANDING step (git-expert), not a design question, and does not reopen this ratified decision if 77 is still free.
+- status: decided
+- resolved-by: [DEC-CXC-MENU-SPEC-HOME-NEW-DOC]
+- dsd-source: docs/architecture/DECISIONS-menu-resolver-forks.md
+- part-of: [SPEC:CXC-MENU]
+
+---
+
+## Relationships
+
+### Semantic
+
+[SPEC:CXC-MENU] DEPENDS_ON [SPEC:CXC-COMP]
+[SPEC:CXC-MENU] DEPENDS_ON [SPEC:CXC-CIC]
+[SPEC:CXC-MENU] UPHOLDS [DX-ENGINE-VS-POLICY]
+[SPEC:CXC-MENU] UPHOLDS [DX-NARROW-WAIST]
+[SPEC:CXC-MENU] REALIZES [DX-STRUCTURE-SURVIVES]
+[CXC-MENU-WHY] UPHOLDS [DX-ENGINE-VS-POLICY]
+[CXC-MENU-SCHEMA] UPHOLDS [DX-STRUCTURE-SURVIVES]
+[CXC-MENU-SCHEMA] RELATED_TO [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER]
+[CXC-MENU-SLUG] DEPENDS_ON [CXC-MENU-SCHEMA]
+[CXC-MENU-SLUG] UPHOLDS [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER]
+[CXC-MENU-SLUG] RELATED_TO [CXC-MENU-LINT]
+[CXC-MENU-ANNOTATION] DEPENDS_ON [CXC-MENU-SCHEMA]
+[CXC-MENU-PATH] DEPENDS_ON [CXC-MENU-SLUG]
+[CXC-MENU-PATH] RELATED_TO [CXC-MENU-ANNOTATION]
+[CXC-MENU-WALK] DEPENDS_ON [CXC-MENU-PATH]
+[CXC-MENU-WALK] RELATED_TO [CXC-COMP-MISSING]
+[CXC-MENU-WALK] RELATED_TO [CXC-CIC-RADIO-MODE]
+[CXC-MENU-RESOLVE] DEPENDS_ON [CXC-MENU-PATH]
+[CXC-MENU-RESOLVE] DEPENDS_ON [CXC-MENU-WALK]
+[CXC-MENU-RESOLVE] DEPENDS_ON [CXC-MENU-SCHEMA]
+[CXC-MENU-KINDS] DEPENDS_ON [CXC-MENU-ANNOTATION]
+[CXC-MENU-KINDS] RELATED_TO [CXC-COMP-KINDS]
+[CXC-MENU-LINT] DEPENDS_ON [CXC-MENU-RESOLVE]
+[CXC-MENU-LINT] DEPENDS_ON [CXC-MENU-WALK]
+[CXC-MENU-LINT] DEPENDS_ON [CXC-MENU-KINDS]
+[CXC-MENU-LINT] DEPENDS_ON [CXC-MENU-SLUG]
+[CXC-MENU-LINT] RELATED_TO [CXC-COMP-LINT]
+[CXC-MENU-CIC-INSTANCE] DEPENDS_ON [CXC-MENU-SCHEMA]
+[CXC-MENU-CIC-INSTANCE] DEPENDS_ON [CXC-MENU-PATH]
+[CXC-MENU-CIC-INSTANCE] RELATED_TO [CXC-CIC-NAV]
+[CXC-MENU-CIC-INSTANCE] RELATED_TO [CXC-COMP-STD-CONTENT]
+[CXC-MENU-CIC-INSTANCE] RELATED_TO [CXC-COMP-KINDS]
+[CXC-MENU-CIC-INSTANCE] RELATED_TO [CXC-CIC-RADIO-MODE]
+[CXC-MENU-CIC-INVENTORY] DEPENDS_ON [CXC-MENU-CIC-INSTANCE]
+[CXC-MENU-CIC-INVENTORY] USES [CXC-MENU-SLUG]
+[CXC-MENU-CONTENT-BAND] RELATED_TO [CXC-COMP-REF]
+[CXC-MENU-CONTENT-BAND] RELATED_TO [CXC-COMP-LAYER-ORDER]
+[DD-MENU-CONTENT-BAND] DOCUMENTS [CXC-MENU-CONTENT-BAND]
+[CXC-MENU-SLOT-SIZING] RELATED_TO [CXC-COMP-SLOT]
+[CXC-MENU-SLOT-SIZING] RELATED_TO [CXC-R-SCENE-GEOMETRY-POLICY]
+[CXC-MENU-SLOT-SIZING] RELATED_TO [DD-MENU-SLOT-SCENE-GRAMMAR]
+[DD-MENU-SLOT-SCENE-GRAMMAR] DOCUMENTS [CXC-MENU-SLOT-SIZING]
+[DD-MENU-FIT-MODE] DOCUMENTS [CXC-MENU-SLOT-SIZING]
+[CXC-MENU-DIALOG-BASE] RELATED_TO [CXC-COMP-BASE]
+[CXC-MENU-IRREGULAR-REGION] RELATED_TO [CXC-R-SPRITE-CONTAINER]
+[CXC-MENU-IRREGULAR-REGION] RELATED_TO [CXC-R-SCENE-GEOMETRY-POLICY]
+[CXC-MENU-IRREGULAR-REGION] UPHOLDS [DX-NARROW-WAIST]
+[CXC-MENU-VERIFY] RELATED_TO [CXC-COMP-VERIFY]
+[DD-MENU-SCHEMA-FORMAT] DOCUMENTS [CXC-MENU-SCHEMA]
+[DD-MENU-WALK-AMENDMENT] DOCUMENTS [CXC-MENU-WALK]
+[DD-MENU-WALK-AMENDMENT] RELATED_TO [CXC-COMP-MISSING]
+[DD-MENU-SPEC-HOME] DOCUMENTS [SPEC:CXC-MENU]
+
+---
+
+**Version**: 1.0 — RATIFIED (revision 3: landing-prep pass — David ratified all five remaining forks via the DSD, `docs/architecture/DECISIONS-menu-resolver-forks.md`, 2026-08-18; revision 2 addressed re-QA PASS_WITH_NOTES — 1 MEDIUM + 3 notes + 1 new element; revision 1 addressed the original QA FAIL — 2 HIGH blockers + mediums; see changelog in the accompanying report)
+**Created**: 2026-08-18
+**Status**: DESIGN RATIFIED — every [DD-MENU-*] fork is now `status: decided` ([DD-MENU-SCHEMA-FORMAT], [DD-MENU-WALK-AMENDMENT], [DD-MENU-SLOT-SCENE-GRAMMAR] Arm A, [DD-MENU-FIT-MODE] with its override half explicitly DEFERRED, [DD-MENU-CONTENT-BAND] coexist-interim, [DD-MENU-SPEC-HOME] new-doc + follow-on migration). `[PLACEMENT RATIFIED]`. `artifact-readiness: design-review` is UNCHANGED — ratifying the DESIGN does not authorize the BUILD; that is a separate, later step. Landing is git-expert's, not this document's.

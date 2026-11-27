@@ -1,0 +1,108 @@
+---
+scope: "Single-touch directional swipe gestures for the interaction engine — 4-way (up/down/left/right) swipe on one touch point, published bus-natively so an Intelligence swipes identically to a finger."
+audience: "Render-engine developers, widget authors"
+boundary: "IN: swipe detection on single-touch, the swipe bus event, and how widgets/apps react to it. OUT: multitouch/pinch/rotate gestures (out of scope, David 2026-07-06); tap/long-press/pan (already exist, M1)."
+not-this: "Not a full multitouch gesture recognizer. Single touch point; four cardinal directions."
+depends-on: [12-composeux-render-engine.lts, 16-composeux-bindings-behaviors.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: code-generation
+---
+# ComposeUX Single-Touch Swipe Gestures [SPEC:CXC-GESTURE]
+
+> Extend the interaction engine ([CXC-R-ENGINE-TOUCH]) with 4-way directional swipe on a single touch point. Tap, long-press, and pan already exist (M1); swipe is the one gesture the touch displays need. Like every interaction, a swipe is a bus event — so an Intelligence can swipe as readily as a finger.
+
+---
+
+## 1. Intent
+
+### [CXC-GEST-INTENT] The One Gesture the Displays Need
+
+- definition: recognize a directional flick (up/down/left/right) from a single-touch down→move→up sequence and publish it. No multitouch, no pinch, no rotate (deliberately out of scope) — those add cost the display fleet doesn't need.
+- rationale: touch displays (the CYD's XPT2046 resistive panel; touch monitors on RPi/MinnowBoard) want swipe navigation — flip a tab, dismiss a dialog, page a list. Single-touch keeps recognition cheap enough for the constrained tier.
+- status: planned
+- part-of: [SPEC:CXC-GESTURE]
+
+---
+
+## 2. Detection
+
+### [CXC-GEST-SWIPE] Classify a Single-Touch Flick
+
+- definition: on a pointer/touch down→move→up, classify a swipe when the travel exceeds `min_distance` within `max_time` and the path is dominantly axial; the direction is the dominant axis + sign. Otherwise the sequence remains a tap/long-press/pan (existing M1 behavior — swipe recognition must not regress those).
+- params (tunable, per-surface defaults): `min_distance` (logical px), `max_time` (ms), `min_velocity`, `axis_dominance` (ratio of dominant to cross-axis travel). Sensible defaults tuned for both a mouse drag (desktop) and a resistive-touch flick (CYD).
+- backends: pointer/touch events already reach the engine (SDL on desktop, XPT2046 on CYD). Swipe classification is Layer-2 (shared), so it works on every backend that delivers pointer events.
+- test: a down→right-move→up over threshold yields `right`; a slow short drag yields pan, not swipe; each of the four directions classifies correctly.
+- part-of: [SPEC:CXC-GESTURE]
+
+---
+
+## 3. Bus-Native Reaction
+
+### [CXC-GEST-BUS] A Swipe Is a Bus Event
+
+- definition: a recognized swipe publishes an interaction event — a namespace carrying the direction (and target widget id / position). Widgets or apps subscribe and react; nothing is hardwired in the engine.
+- intelligence-parity: because the swipe is a published event and the engine also accepts injected interaction events, an Intelligence publishing a swipe drives the surface identically to a finger — the credo ([CXC-R-CONTROL]).
+- reaction via bindings/behaviors: a swipe namespace can trigger a behavior or a command through [SPEC:CXC-BIND] — e.g. swipe-left → publish `ui/tab = next`, or swipe-up → a dialog's `visible = off`. Wiring is declarative, not code.
+- test: a swipe in each direction publishes the correct event; a config that maps swipe-left to a tab change switches tabs; an Intelligence-injected swipe produces the identical reaction.
+- part-of: [SPEC:CXC-GESTURE]
+
+---
+
+## 4. Declarative Gesture Producer
+
+### [CXC-GEST-PRODUCER] A Gesture Publishes Semantic State; the State Machine Consumes It
+
+- definition: A widget's declarative `gestures:` block maps an engine-synthesized gesture (`tap` / `double_tap` / `long_press` / `pan` / `pan_start` / `pan_end` / `swipe`) to a `publish: {namespace, value}` — a semantic bus state. A gesture NEVER mutates a widget's state directly; it publishes a namespace, and a [CXC-BIND-STATES] `state:` selector binds that namespace. So a finger drag and an Intelligence `publish()` reach the identical transition through the SAME path — the control-is-a-peer seam ([CXC-R-CONTROL]). This is the declarative realization of [CXC-RM-GESTURE]'s credo ("an Intelligence swipes identically to a finger"): the gesture's OUTPUT is a bus state, not a private call.
+- schema:
+  ```yaml
+  gestures:
+    - on: long_press        # tap-and-hold begins designation
+      publish: { namespace: fire_control/lock, value: acquiring }
+    - on: pan               # drag steers; @pointer = surface coords
+      publish: { namespace: fire_control/cursor, value: "@pointer" }
+    - on: pan_end           # release commits the lock
+      publish: { namespace: fire_control/lock, value: tracking }
+  ```
+- `@pointer` substitution: the one non-literal, engine-provided token — `@pointer` resolves to the event's surface `{x, y}` at publish time (`@pointer_x` / `@pointer_y` for a scalar coordinate, so x/y can bind to separate namespaces). Everything else is a literal; no inline code — the boundary holds ([CXC-BIND-BOUNDARY]).
+- seam: parsed beside `behaviors:` / `states:` (`parse_gestures`); wired to the existing gesture synthesis (`on_pan` / `on_long_press` / `on_swipe` / `on_tap` + `_publish_interaction` to `INTERACTION_NS` — [CXC-GEST-BUS]). One state path, two producers; it composes with [SPEC:CXC-BIND] bindings and the state selector with no new coupling.
+- optional (Phase C advanced): a progress-driven scrub transition (`progress: {namespace}`) reads a tween's `u` from the bus instead of the clock — drag halfway and the reticle is halfway locked; an Intelligence can publish `lock_progress = 0.5` and freeze it mid-lock. Same `_interpolate` / easing / damage; only the clock source differs. Genuinely more capable than a time-only transition; scoped to Phase C, the trigger-then-play path is the 90%.
+- implemented: `render/engine/states.py` — `parse_gestures` + `GesturePublish` + `GESTURE_NAMES` / `POINTER_TOKENS`; `render/engine/parser.py` `_pop_state_gesture`. The YAML-1.1 `on:` boolean trap is recovered (a bare `on:` field loads as `True`, the same trap as `is: on` — remapped so the author need not quote the field name).
+- status: operational (2026-08-04) — Phase C producer path landed (trigger-then-play); progress-scrub is the advanced case.
+- authored-in-session: 2026-08-04-slint-mit-oss
+- design-doc: docs/architecture/animation-states-design.md
+- see-also: [CXC-BIND-STATES], [CXC-GEST-BUS], [CXC-R-CONTROL]
+- part-of: [SPEC:CXC-GESTURE]
+
+---
+
+## 5. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-GEST-C1 | 4-way classification | Down→move→up over threshold classifies as up/down/left/right correctly; sub-threshold stays tap/pan |
+| CXC-GEST-C2 | No regression | Tap, long-press, and pan (M1) still work unchanged alongside swipe |
+| CXC-GEST-C3 | Bus event | A recognized swipe publishes direction + target to a namespace |
+| CXC-GEST-C4 | Declarative reaction | A config maps a swipe to a behavior/command via [SPEC:CXC-BIND] and it fires |
+| CXC-GEST-C5 | Intelligence parity | An injected swipe event drives the surface identically to a physical swipe |
+| CXC-GEST-C6 | Touch hardware | Swipe recognizes on the CYD XPT2046 panel with the tuned thresholds |
+| CXC-GEST-C7 | Gesture producer | A `gestures:` block publishes a semantic bus state a [CXC-BIND-STATES] selector consumes; an Intelligence publishing the same namespace produces the IDENTICAL transition; `@pointer` resolves to surface coords; inline code refused |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-GESTURE] IMPLEMENTS [CXC-R-ENGINE-TOUCH]
+[CXC-GEST-BUS] DEPENDS_ON [SPEC:CXC-BIND]
+[CXC-GEST-BUS] RELATED_TO [CXC-R-CONTROL]
+[CXC-GEST-PRODUCER] REALIZES [CXC-RM-GESTURE]
+[CXC-GEST-PRODUCER] DEPENDS_ON [SPEC:CXC-BIND]
+[CXC-GEST-PRODUCER] RELATED_TO [CXC-BIND-STATES]
+[CXC-GEST-PRODUCER] RELATED_TO [CXC-R-CONTROL]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-07-06
+**Status**: Draft — build spec for single-touch swipe gestures. Extended (2026-08-04, session `2026-08-04-slint-mit-oss`) with [CXC-GEST-PRODUCER]: the declarative `gestures:` producer block that maps an engine-synthesized gesture to a semantic bus publish a [CXC-BIND-STATES] selector consumes — realizing [CXC-RM-GESTURE] and the control-is-a-peer seam. Producer path landed; progress-scrub deferred to Phase C.

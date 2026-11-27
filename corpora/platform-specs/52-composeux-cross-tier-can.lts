@@ -1,0 +1,388 @@
+---
+scope: "Cross-tier CAN — foreign-vehicle ingestion onto ComposeBus. A CAN frame is a transport detail; the load-bearing artifact is the DECODED SIGNAL on ComposeBus. Every tier's job is identical: pull raw frames off its native controller, run a per-vehicle declarative DECODER, and publish retained signal state to a tier-agnostic namespace so no consumer can tell whether the bytes came off an RPi's MCP2515 (stdlib SocketCAN) or an ESP32's on-chip TWAI. The tiers do not meet at a library (they physically cannot — SocketCAN != TWAI silicon); they meet at the BUS. IN: the two-layer namespace contract (raw frame + decoded signal), the CAN 2.0B frame convention, the DBC-subset decoder-map schema (config-over-code, two evaluators + one golden), the Linux stdlib-SocketCAN reader (retires python-can) behind the mockcan seam, the ESP-IDF TWAI reader (LISTEN_ONLY), the license win, the phasing, and the machine+glass acceptance gates."
+audience: [David (architect) — ratify the contract + phasing, "the builder implementing either reader or the decoder evaluators", ComposeIO/ComposeUX architects, any Intelligence editing a decoder map as a peer bus artifact]
+boundary: "IN: the ComposeBus namespace contract that unifies both tiers ([CXC-CAN-CONTRACT] — the [BP-CAN-FOREIGN] namespace-contract realization); Layer-1 raw-frame + Layer-2 decoded-signal namespaces; the frame convention; the json-engine rule; the RX-only loop guard; the DBC-subset decoder map + its schema; the stdlib SocketCAN reader + bridge.py migration; the ESP-IDF TWAI reader + board decision; the MCP2515 / SN65HVD230+TWAI hardware nodes; the license position; the contract-first phasing + the OQ-1 candump blocker. OUT: ComposeBus-over-CAN transport encoding ([BP-MSG-CAN] / [BP-CAN-ID] — a DISTINCT codec on the same wire, this doc's [CXC-CAN-TWO-CANS] disambiguates them, does not respec them); the bus pattern-subscription/hardware-acceptance-mask primitive (reused from [SPEC:CXC-PATSUB] / [CXC-PS-CAN], not re-built); the reactive embedded core the TWAI reader plugs into (reused from [SPEC:CXC-EMBED-REACTIVE], not respec'd); the mock/virtual-CAN choice (reuses [DD-BPR-MOCK-CAN] / mockcan.py, not re-litigated); CAN-FD, ISO-TP, multi-frame reassembly (out of scope for both tiers); the REAL Fiat 500e decoder map (blocked on the OQ-1 candump — this doc ships the SCHEMA + a synthetic map, not the vehicle's real ids); MQTT->CAN transmit (reserved for the ComposeBus-over-CAN role, [CXC-CAN-LOOPGUARD])."
+not-this: "Not a new CAN library — the entire point is that there is NO shared library; each tier uses its native controller (stdlib socket / ESP-IDF TWAI). Not a respec of ComposeBus-over-CAN ([BP-MSG-CAN]) — that is a different codec on the same wire. Not a decoder-in-firmware design — vehicle specificity lives in a declarative map (config-over-code), never in reader branches. Not the real Fiat map — every frame id here is a placeholder until the OQ-1 candump. Two decisions are DRAFTED + FLAGGED for the architect to RATIFY: the spec home ([DD-CAN-SPEC-HOME]) and the ESP32 board choice ([DD-CAN-BOARD]); one decision is RATIFIED-IN-DESIGN and recorded here with its change/context_for_change ([DD-CAN-NATIVE-PER-TIER] — drop python-can, native per tier)."
+depends-on: [SPEC:CXC-EMBED-REACTIVE]
+depends-on: [SPEC:CXC-PATSUB]
+depends-on: [21-composebus-pattern-subscription.lts]
+depends-on: [29-composeux-embedded-reactive.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-08-04
+updated: 2026-08-04
+---
+# ComposeUX Cross-Tier CAN — Foreign-Vehicle Ingestion [SPEC:CXC-CAN]
+
+> A CAN frame is a transport detail; the load-bearing artifact is the DECODED SIGNAL on ComposeBus. Every tier does the identical job — pull raw frames off its native controller, run a per-vehicle decoder, publish retained signal state to a tier-agnostic namespace — so no consumer can tell whether the bytes came off an RPi's MCP2515 or an ESP32's on-chip TWAI. The tiers cannot share a CAN library (SocketCAN != TWAI silicon), so they meet at the BUS: the namespace contract ([CXC-CAN-CONTRACT]) is the narrow-waist unifier, and both readers are thin, interchangeable producers behind it. Formalizes `docs/architecture/cross-tier-can-design.md` (ratified design; this doc lowers it — it does not redesign it).
+
+---
+
+## 0. Disambiguate the two CANs (this bites if you skip it)
+
+### [CXC-CAN-TWO-CANS] Two distinct CAN concerns share only the wire, not the meaning
+
+- definition: there are TWO CAN concerns in this codebase and they share ONLY the physical bus. (1) **ComposeBus-over-CAN** ([BP-MSG-CAN] / [BP-CAN-ID], existing, `services/can_mqtt_bridge/bridge.py`): CAN is a TRANSPORT FOR ComposeBus itself; ComposeIO owns the arbitration ids ([BP-CAN-ID] v2, ratified 2026-08-13: `id = prio(3)|type(4)|ns_id(16)|src(4)|scope(2)`; v1 was `namespace_hash(16)|type(4)|source(9)`); the "decode" reverses the namespace hash. (2) **Foreign-vehicle CAN ingestion** (THIS doc): CAN is a FOREIGN DATA SOURCE; the vehicle OEM (FCA/Fiat) owns the ids, opaque to ComposeIO until a per-vehicle decoder ([CXC-CAN-DECODER]) gives them meaning; the ids do not exist yet in code (the Fiat gap).
+- key-insight: both concerns ride the EXACT SAME raw-frame reader ([CXC-CAN-SOCKETCAN] on Linux, [CXC-CAN-TWAI] on ESP32) — the difference is purely which CODEC runs on the bytes. That shared raw primitive is why one migration ([CXC-CAN-BRIDGE-MIGRATE]) serves both. Keep the concepts separate in your head; unify them at the reader.
+- requirement: a builder MUST NOT conflate the two: the foreign decoder ([CXC-CAN-DECODER]) NEVER runs the `message_from_can` / `can_id_from_message` namespace-hash codec, and the ComposeBus-over-CAN codec NEVER runs the DBC-subset decoder map. The raw reader is the ONLY shared code; the codec above it is selected by role.
+- default: the raw reader, absent a configured foreign decoder AND absent the ComposeBus-over-CAN codec, publishes ONLY the Layer-1 raw frame ([CXC-CAN-RAW]) — it is a `candump` tool, never a silent no-op.
+- see-also: [CXC-CAN-CONTRACT], [BP-MSG-CAN]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## 1. The bus contract — the narrow-waist unifier
+
+### [CXC-CAN-CONTRACT] The tiers meet at the bus, not a library (the foreign-CAN namespace contract)
+
+- definition: the load-bearing artifact of this whole design. Both readers publish the SAME two-layer namespace shape ([CXC-CAN-RAW] raw frame + [CXC-CAN-SIGNAL] decoded signal); consumers subscribe whichever layer they need, tier-agnostic and by reference. The carousel Fiat tile ALREADY subscribes `fiat/soc` without knowing a bridge exists — this contract is what finally publishes it.
+- key-insight: there is NO shared CAN library and there CANNOT be — neither `python-can` nor SocketCAN exists on the ESP32, whose CAN controller is on-chip TWAI silicon with its own driver. So the tiers meet at the BUS, not a library. This is the BETTER unifier anyway: the reader board and the display board decouple over the bus and need not be the same device ([CXC-CAN-BOARD]).
+- home-note: this node is the realization of the design's proposed `[BP-CAN-FOREIGN]` namespace contract. It is authored HERE (not beside [BP-MSG-CAN]) because the bus-protocol spec is still `.smd` (unmigrated) and this corpus authors `.lts`; if/when the bus protocol migrates, this section MAY relocate beside [BP-MSG-CAN] — flagged at [DD-CAN-SPEC-HOME].
+- requirement: a consumer subscribing a Layer-2 signal MUST behave identically regardless of which reader published it; a test MUST prove RPi-published and ESP32-published `fiat/*` state are indistinguishable to the carousel tile ([CXC-CAN-VERIFY] CAN-C8).
+- default: Layer-1 raw ([CXC-CAN-RAW]) is OFF per bus; Layer-2 signal ([CXC-CAN-SIGNAL]) is the product surface a dashboard subscribes.
+- scenario:
+  - when: an ESP32 TWAI reader ([CXC-CAN-TWAI]) publishes `fiat/soc` and, on another day, an RPi SocketCAN reader ([CXC-CAN-SOCKETCAN]) publishes `fiat/soc`
+  - then: the carousel Fiat SOC gauge moves identically in both cases; no consumer code changes between the two producers
+- see-also: [CXC-CAN-RAW], [CXC-CAN-SIGNAL], [DX-NARROW-WAIST], [DD-CAN-SPEC-HOME]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-RAW] Layer 1 — raw-frame namespace (json engine, always; diagnostic/capture/bring-up)
+
+- definition: one namespace per `(bus, frame_id)`: `can/<bus>/<frame_id_hex>`, value the `json` engine, always. `<bus>` is the logical bus name (`can0`, `fiat`, `hvac`) so one host can carry several buses; `<frame_id_hex>` is the arbitration id, lower-cased hex, `0x`-prefixed. Payload shape: `{"id": <int>, "eff": <bool>, "dlc": <int 0..8>, "data": "<hex string, 2*dlc chars>", "t": <float epoch seconds>}`. Example: `can/can0/0x3d5 -> {"id": 981, "eff": false, "dlc": 8, "data": "0a1b00ff0022ee01", "t": 1723200000.123}`.
+- requirement: 11-bit and 29-bit ids SHARE the namespace space; the `eff` flag (extended-frame format) MUST disambiguate `0x123` (standard) from a 29-bit `0x00000123`. A reader MUST publish BOTH `id` and `eff` and MUST NEVER infer frame width from id magnitude.
+- requirement: this layer is opt-in and firehose-y (a vehicle bus is hundreds of frames/sec). It MUST default OFF per bus and be enabled explicitly for a `candump`-style capture or decoder bring-up. It is NOT what a dashboard subscribes.
+- default: OFF per bus. When enabled, it publishes every accepted data frame (post-[CXC-CAN-FRAME] filtering) on its `(bus, frame_id)` namespace.
+- error-case: an under-length socket read (fewer than the 16 SocketCAN frame bytes) or a malformed frame MUST be dropped with a logged warning, never published as a partial record.
+- scenario:
+  - when: raw capture is enabled on bus `fiat` and the vehicle emits arbitration id 0x3d5 (standard)
+  - then: `can/fiat/0x3d5` publishes `{"id":981,"eff":false,"dlc":8,"data":"...","t":...}`, and the operator correlates its byte changes to dashboard changes to back out start-bit/scale/offset ([CXC-CAN-OQ-CANDUMP])
+- see-also: [CXC-CAN-JSON-RULE], [CXC-CAN-FRAME]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-SIGNAL] Layer 2 — decoded-signal namespace (the product; retained current-value)
+
+- definition: one namespace per physical quantity, vehicle-scoped — the namespaces the carousel Fiat tile already subscribes: `fiat/soc`, `fiat/speed` (float kph), `fiat/range` (int km), `fiat/gear` (enum `[P,R,N,D]`). Each carries the engine chosen for its real domain (see the engine rule below). These are STATE, not event.
+- requirement: retained / current-value semantics — a decoder publishes ON CHANGE, and a late-subscribing dashboard MUST immediately see the last known value. A signal MUST be published change-driven, not re-emitted every frame ([CXC-PS-GRANULARITY]).
+- requirement: pick the engine per the signal's real domain. `json` (float) is the SAFE DEFAULT for any continuous physical value; a builder MUST NOT cram a float into `continuous_0_255` if it loses precision. A strict engine (e.g. `binary`, `enum`) is permitted ONLY for a signal with a PROVEN strict domain the decoder guarantees ([CXC-CAN-JSON-RULE]).
+- default: engine `json` for any continuous quantity (`fiat/speed`, `fiat/range`, a float SOC); `enum` only where the decoder map supplies a total `map:` covering every raw value (`fiat/gear`). One namespace per distinct meaning ([CXC-PS-GRANULARITY]) so subscribers filter at the wire.
+- error-case: until a decoder publishes, these namespaces rest at their pre-existing value (0 / unset) — the tile's "no data" state, never a fabricated reading.
+- scenario:
+  - when: a decoder ([CXC-CAN-DECODER]) computes SOC = 74 and the prior published value was 73
+  - then: `fiat/soc` publishes 74 (on-change); a dashboard that subscribes a second later immediately reads 74 (retained current value)
+- see-also: [CXC-CAN-DECODER], [CXC-PS-GRANULARITY], [CXC-CAN-JSON-RULE]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-FRAME] The frame convention (the wire truth both readers must honor)
+
+- definition: CAN 2.0B classic. A frame is `{ arbitration_id, eff_flag, dlc (0..8), data[0..8] }`. Both tiers agree because the physics is identical; each reader normalizes to the `{id, eff}` pair BEFORE publishing.
+- requirement: **11-bit** standard id (`eff=false`) or **29-bit** extended id (`eff=true`). SocketCAN carries the EFF bit as `0x80000000` in the 32-bit `can_id` field (mask standard ids with `0x000007FF`, extended with `0x1FFFFFFF`); TWAI carries it as `twai_message_t.extd`. A reader MUST derive `eff` from the transport's flag, never from id magnitude.
+- requirement: **DLC <= 8** classic data bytes only. **No CAN-FD, no ISO-TP, no multi-frame reassembly** in scope for either reader (the Fiat OBD-II PIDs are single-frame; `bridge.py` never used them). The mock-CAN substrate models fragmentation for the ComposeBus-over-CAN critical-ack path — that is a DIFFERENT concern ([CXC-CAN-TWO-CANS]); do not conflate.
+- requirement: **RTR and error frames MUST be dropped at the reader** (SocketCAN: `can_id & (0x40000000 | 0x20000000)`; TWAI: the driver's RTR/error flags). A decoder wants data frames only.
+- default: a frame failing any of the above (over-length DLC, RTR, error) is dropped silently at the reader with an optional debug log; it is never published on either layer.
+- see-also: [CXC-CAN-SOCKETCAN], [CXC-CAN-TWAI]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-JSON-RULE] Raw frames and any string-y decoded signal use the json engine (the SIGABRT trap)
+
+- definition: a frame id, a hex data string, a gear selection are free-form structured values. Putting them through a STRICT engine (`binary`, `tri_level`) and hitting the first out-of-domain value (a `""` during init, an unmapped enum index) raises `ValueError` inside a callback -> on macOS an `NSException` -> `SIGABRT`, whole-process abort. The hazards-list rule applies directly.
+- requirement: Layer-1 raw ([CXC-CAN-RAW]) MUST use `json`, always — non-negotiable. Any string-y decoded signal MUST use `json`. Only a decoded signal with a PROVEN strict domain (e.g. a real binary contactor state) MAY use a strict engine, and only after the decoder GUARANTEES the domain (a total `map:` for `enum`, a validated 0/1 for `binary`). When unsure, `json`.
+- error-case: an `enum` decode whose raw value is absent from the map MUST fall back to publishing the raw integer on a `json` namespace (or drop with a warning), NEVER raise into the callback. A decoder MUST NOT be able to abort the process on unexpected vehicle data.
+- scenario:
+  - when: a gear-signal frame carries raw nibble 5 but the map only covers `{0:P,1:R,2:N,3:D}`
+  - then: the decoder does NOT raise (no SIGABRT); it drops the sample with a warning (or publishes raw 5 to a json diagnostic namespace), and `fiat/gear` retains its last valid value
+- see-also: [CXC-CAN-RAW], [CXC-CAN-SIGNAL], [CXC-CAN-DECODER]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-LOOPGUARD] Foreign decoders are strictly RX (no re-ingesting your own writes)
+
+- definition: every published message carries `source` (the reader's id). A bidirectional bridge (ComposeBus-over-CAN, which also does MQTT->CAN) MUST NOT transmit a frame it just received; `bridge.py` already guards this (`if bus_msg.source != "can"`).
+- requirement: the foreign-ingestion path is READ-ONLY — a reader MUST NOT transmit onto a moving vehicle's bus. This sidesteps the loop entirely for the Fiat use case. TX is RESERVED for the ComposeBus-over-CAN transport role ([BP-MSG-CAN]), never for foreign ingestion. On ESP32 this is enforced in silicon by `TWAI_MODE_LISTEN_ONLY` ([CXC-CAN-TWAI]).
+- default: a foreign decoder configuration opens its reader RX-only; any TX path is a distinct, explicitly-configured ComposeBus-over-CAN role.
+- see-also: [CXC-CAN-TWAI], [BP-MSG-CAN]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## 2. The decoder — a declarative map, not a code plugin (config-over-code)
+
+### [CXC-CAN-DECODER] DBC-subset declarative map; pure + tier-shared in spec; two evaluators, one golden
+
+- definition: the "what would SDR do?" call — push vehicle specificity OUT of reader firmware and INTO configuration. The same SocketCAN reader and the same TWAI reader become a Fiat / Tesla / HVAC decoder purely by loading a different map. There are NO per-vehicle `if frame_id == 0x3d5` branches in a reader, ever.
+- definition: the decoder is a DBC-SUBSET declarative map — a `.yaml` or a `doc://decoders/<vehicle>` bus document — keyed by frame id, each entry carrying one or more signal extractions (start_bit / length / scale / offset / byte_order / map). We adopt DBC's SEMANTICS but a YAML/bus-document SURFACE — no `.dbc` parser dependency; editable by a human or an Intelligence as a peer bus artifact. If a real `.dbc` shows up later, a one-file importer lowers it into this map; the runtime never learns DBC.
+- requirement: the map is PURE and TIER-SHARED IN SPEC, not in code — identical BYTES on both tiers, but the EVALUATOR is reimplemented per tier (Python on Linux, C++ on ESP32) because the languages differ. The Python evaluator MUST be tested against the map; the C++ evaluator MUST crosscheck against the SAME golden decode (the CYD `*_crosscheck.py` pattern). One contract, two evaluators.
+- requirement: byte order is per-signal and a classic silent-corruption bug source — big-endian (Motorola) vs little-endian (Intel) bit numbering MUST be carried explicitly (`byte_order: big|little`, default `big` for OBD-II). An evaluator MUST NOT guess byte order.
+- error-case: a map entry referencing a `start_bit`/`length` that overruns the frame's `dlc` MUST be rejected at map-load with a clear error, not silently truncated at decode time.
+- scenario:
+  - when: the Python evaluator and the C++ evaluator each decode the same synthetic frame against the same map entry
+  - then: both produce the identical engineering value (crosscheck green); a divergence fails the build ([CXC-CAN-VERIFY] CAN-C4)
+- see-also: [CXC-CAN-DECODER-SCHEMA], [CXC-CAN-JSON-RULE]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-DECODER-SCHEMA] The decoder-map schema (the ratified declarative artifact)
+
+- definition: the frozen schema of a decoder map. Top level: `bus: <logical bus name>`, `signals: [ <signal entry>, ... ]`. Each signal entry:
+
+| Field | Required | Type / values | Default | Meaning |
+|-------|----------|---------------|---------|---------|
+| `frame_id` | yes | int (hex ok, e.g. `0x3d5`) | — | the arbitration id this entry decodes |
+| `eff` | no | bool | `false` | extended-frame flag; disambiguates 11- vs 29-bit ([CXC-CAN-FRAME]) |
+| `publish` | yes | string (a Layer-2 namespace, e.g. `fiat/soc`) | — | the decoded-signal namespace to publish |
+| `start_bit` | yes | int | — | bit offset into the up-to-8-byte payload |
+| `length` | yes | int (bits) | — | signal width in bits |
+| `byte_order` | no | `big` \| `little` | `big` | Motorola/Intel bit numbering ([CXC-CAN-DECODER]) |
+| `scale` | no | float | `1.0` | engineering value = raw * scale + offset |
+| `offset` | no | float | `0.0` | additive offset |
+| `map` | no | object (int -> string) | — | enum decode; MUTUALLY EXCLUSIVE with scale/offset; MUST be total over the signal's raw range for a strict `enum` engine ([CXC-CAN-JSON-RULE]) |
+| `engine` | no | `json` \| `enum` \| a proven-strict engine | `json` | the ComposeBus state engine for `publish` ([CXC-CAN-SIGNAL]) |
+
+- requirement: exactly one of {`scale`/`offset`} or {`map`} decodes an entry — an entry declaring BOTH MUST be rejected at map-load. An entry with `engine: enum` MUST carry a `map`.
+- requirement: the synthetic Fiat map that SHIPS carries placeholder `frame_id`s (marked as placeholders) and is the artifact the OQ-1 candump ([CXC-CAN-OQ-CANDUMP]) POPULATES with real ids/layouts. No consumer depends on the placeholder ids being real.
+- default: a map absent `eff`/`byte_order`/`scale`/`offset`/`engine` uses the table defaults above (`eff=false`, `byte_order=big`, `scale=1.0`, `offset=0.0`, `engine=json`).
+- error-case: an empty `signals: []` map loads cleanly and decodes nothing (a valid "raw-capture only" configuration); a map missing a required field (`frame_id`/`publish`/`start_bit`/`length`) MUST fail load with the offending entry named.
+- scenario:
+  - when: a map entry `{frame_id: 0x11a, publish: fiat/gear, start_bit: 0, length: 4, map: {0: P, 1: R, 2: N, 3: D}, engine: enum}` decodes a frame whose nibble is 3
+  - then: `fiat/gear` publishes `"D"` on the `enum` engine
+- see-also: [CXC-CAN-DECODER], [CXC-CAN-OQ-CANDUMP]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## 3. Reader A — Linux / RPi stdlib SocketCAN (retires python-can)
+
+### [CXC-CAN-SOCKETCAN] The stdlib SocketCAN reader (the whole python-can dep, replaced by ~20 lines)
+
+- definition: SocketCAN is in the Linux kernel and the Python stdlib already speaks it (`socket.AF_CAN` / `SOCK_RAW` / `CAN_RAW` / `PF_CAN`). `python-can`'s `interface="socketcan"` backend is a thin convenience wrapper over exactly these socket calls; `bridge.py` uses only `can.Bus(interface="socketcan")` + `can.Message` for raw frames (no notifiers, no CAN-FD, no ISO-TP), so the wrapper earns nothing but an LGPL obligation. The reader is: open an `AF_CAN`/`SOCK_RAW`/`CAN_RAW` socket bound to a channel; `recv(16)`; `struct.unpack("=IB3x8s", ...)`; drop RTR/error frames; return `(arb, eff, data[:dlc])`. ZERO third-party imports; MIT-clean.
+- requirement: bitrate is NOT set from userspace — SocketCAN takes it from the interface config (`ip link set can0 type can bitrate 500000`), which the carousel deploy already does via `can0.service` (systemd). `CAN_BITRATE` becomes a systemd/comment concern, not a socket arg. This matches the MCP2515 reality ([CXC-CAN-HW-MCP2515]).
+- requirement: the reader MUST support KERNEL-SIDE acceptance filters (`s.setsockopt(SOL_CAN_RAW, CAN_RAW_FILTER, ...)`) — the silicon/kernel drops non-matching frames before userspace. On a busy vehicle bus this is the difference between decoding four PIDs and drowning in the firehose; a Fiat decoder SHOULD filter to exactly the frame ids in its map. This is the SocketCAN realization of the [CXC-PS-CAN] hardware-acceptance-mask contract.
+- requirement: the reader MUST expose ONE seam — "give me the next `(arb, eff, data)`" — with a SocketCAN implementation and a mockcan implementation behind it, reusing the [DD-BPR-MOCK-CAN] / `python/composeio/peer/mockcan.py` substrate (chosen over Linux `vcan` — kernel-module, off the table on macOS CI — and over python-can's virtual bus). Run against `MockCanBus` on macOS, against real `AF_CAN` on the Pi.
+- default: blocking `recv` in a thread (as `bridge.py` polls today) OR a `select`/non-blocking loop — either is acceptable; keep `bridge.py`'s existing threaded-poll shape to minimize the diff. No acceptance filter set = accept all (the firehose; only for capture).
+- error-case: binding `AF_CAN` on a host without `can0` MUST log a warning and continue in a degraded MQTT-only mode ([CXC-CAN-BRIDGE-MIGRATE] preserves `bridge.py`'s existing graceful-degrade), exactly as the carousel Fiat backend degrades when `can0` is absent. An `OSError` on bind is NOT fatal.
+- scenario:
+  - when: the reader runs on macOS CI behind `MockCanBus` and a test injects a synthetic extended-id frame
+  - then: the reader returns the correct `(arb, eff=true, data)` and the decoder ([CXC-CAN-DECODER]) yields the right `fiat/*` value — no `can0`, no python-can, green ([CXC-CAN-VERIFY] CAN-C3)
+- see-also: [CXC-CAN-BRIDGE-MIGRATE], [CXC-CAN-HW-MCP2515], [DD-BPR-MOCK-CAN], [CXC-PS-CAN]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-BRIDGE-MIGRATE] Migrating services/can_mqtt_bridge/bridge.py (mechanical, low-risk)
+
+- definition: swap `can.Bus(...)` for the [CXC-CAN-SOCKETCAN] socket, keeping EVERY line of the `message_from_can` / `can_id_from_message` ComposeBus-over-CAN codec untouched. `can.Bus(...)` -> `open_can(CAN_INTERFACE)`; `self._can_bus.recv(timeout=0.1)` -> `select([s],[],[],0.1)` + `read_frame(s)`, mapping `(arb, eff, data)` into `message_from_can(arb, data)` (guard `eff` where the old code checked `can_msg.is_extended_id`); `.send(can.Message(...))` -> the stdlib `s.send(struct.pack(...))`.
+- requirement: DELETE `python-can` from `services/can_mqtt_bridge` requirements. That single deletion CLEARS MIT-readiness checklist item P1-5 and the §2b LGPL caution — the migration author MUST also update `docs/oss-readiness/mit-readiness-assessment.md` §2b/§2e and strike P1-5.
+- requirement: the round-trip MUST be byte-identical to today — the ComposeBus-over-CAN codec is not touched, only the transport under it.
+- requirement: graceful degrade MUST be preserved — `bridge.py` already runs MQTT-only if CAN setup fails; a host without `can0` logs a warning and continues.
+- default: bitrate handling moves to `can0.service` (systemd), not a socket arg ([CXC-CAN-SOCKETCAN]).
+- scenario:
+  - when: the migrated bridge runs on a real RPi `can0` and round-trips a ComposeBus-over-CAN message
+  - then: the frame bytes on the wire are identical to the pre-migration `python-can` output; on macOS CI the same paths run green under `mockcan`; `pip`-installing the bridge pulls NO LGPL dependency ([CXC-CAN-VERIFY] CAN-C5)
+- see-also: [CXC-CAN-SOCKETCAN], [CXC-CAN-LICENSE], [DD-CAN-NATIVE-PER-TIER]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## 4. Reader B — ESP32 / CYD ESP-IDF TWAI (Apache-2.0)
+
+### [CXC-CAN-TWAI] The ESP-IDF TWAI reader (LISTEN_ONLY; a second native producer)
+
+- definition: the ESP32 has an on-chip CAN controller, renamed TWAI (Two-Wire Automotive Interface), driven by ESP-IDF `driver/twai.h` (Apache-2.0). Neither python-can nor SocketCAN is relevant — this is bare silicon + C++, landing in `cyd/` firmware alongside `bus_mqtt` / `reactive_core`. Install once (`twai_driver_install` with `TWAI_MODE_LISTEN_ONLY`, `TWAI_TIMING_CONFIG_500KBITS()`, an accept-all or hardware-mask filter), `twai_start()`, then non-blocking `twai_receive(&m, 0)` in the reactive loop; map `m.identifier` / `m.extd` (EFF) / `m.data_length_code` / `m.data[8]` through the [CXC-CAN-DECODER] map, then publish.
+- requirement: `TWAI_MODE_LISTEN_ONLY` is the REQUIRED mode for reading a vehicle — the controller receives and ACKs are NOT transmitted, so plugging into a live car's bus is passive and safe ([CXC-CAN-LOOPGUARD] enforced in silicon). `TWAI_MODE_NORMAL` is ONLY for the ComposeBus-over-CAN TX role, never foreign ingestion.
+- requirement: bitrate is set IN FIRMWARE (unlike SocketCAN) via a timing macro (`TWAI_TIMING_CONFIG_500KBITS()` for Fiat/OBD-II; macros cover 125k..1M). A hardware acceptance filter (`twai_filter_config_t`) is the TWAI analog of SocketCAN's kernel filter and the [CXC-PS-CAN] mask realization — let silicon drop the firehose so the reactive loop only wakes for the decoder's frame ids.
+- requirement: publishing REUSES the existing bus surface — `bus_mqtt_publish_number("fiat/soc", 74.0)` for numeric, `bus_mqtt_publish_state(ns, str)` for enums (`bus_mqtt.h`). The frame arrives on esp-mqtt's task and is drained on the render/reactive task like every other value (the `bus_mqtt` threading discipline). NO new publish path — the TWAI reader is one more producer into `reactive_core` ([SPEC:CXC-EMBED-REACTIVE]).
+- hardware-note: an EXTERNAL transceiver is MANDATORY ([CXC-CAN-HW-SN65HVD230]) — the TWAI controller outputs logic-level 3.3V TX/RX and does NOT drive differential CAN_H/CAN_L. TWAI needs exactly two GPIOs: `TWAI_TX` (output-capable) + `TWAI_RX` (any GPIO, input-only fine), routed through the GPIO matrix.
+- default: RX-only (`LISTEN_ONLY`), 500 kbit/s, accept-all filter until a decoder map narrows it; behind a board profile so a non-CAN board builds unaffected.
+- scenario:
+  - when: a bench SN65HVD230 + a CAN frame generator drives `fiat/soc` through the TWAI reader onto the shared broker
+  - then: the carousel Fiat tile's gauges move live off the ESP32-published state, indistinguishable from RPi-published state ([CXC-CAN-VERIFY] CAN-C8)
+- see-also: [CXC-CAN-BOARD], [CXC-CAN-HW-SN65HVD230], [SPEC:CXC-EMBED-REACTIVE], [CXC-PS-CAN]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-BOARD] The board decision — CYD 2-pin budget vs a bare ESP32 / qualia-class S3 (FLAGGED)
+
+- definition: the classic CYD (ESP32-2432S028R) exposes EXACTLY THREE free GPIOs on its P3 connector (`cyd/include/cyd_pins.h`): `CYD_P3_IO1 21` (output-capable), `CYD_P3_IO2 22` (output-capable), `CYD_P3_IO3 35` (INPUT-ONLY). TWAI needs TX (output) + RX (any). So the CYD CAN host CAN — e.g. `TWAI_TX=21`, `TWAI_RX=35` (GPIO35 input-only FORCES the RX assignment) — but that consumes 2 of its 3 free pins, leaving one. Everything else (SPI display, XPT2046 touch, backlight, LDR, speaker, SD-CS) is already committed. Tight but viable for a fixed CAN dash.
+- recommendation: if the target is a permanent Fiat dash on a small panel, the CYD's two-pin budget is acceptable and cheapest. If the CAN node does anything beyond a couple of gauges, or you want pins free for a transceiver enable / bus-off LED / a second bus, put CAN on a BARE ESP32 devkit or the qualia-class ESP32-S3 (`cyd/include/qualia_panel.h`, the PSRAM tier with far more free GPIO) and let it publish `fiat/*` to the same namespaces the CYD dash subscribes — decoupling the READER board from the DISPLAY board over the bus (the whole point of [CXC-CAN-CONTRACT]).
+- requirement: this is a build-time decision DRAFTED + FLAGGED for the architect to RATIFY ([DD-CAN-BOARD]); the contract supports either outcome with no consumer change.
+- default (recommended, pending ratify): a STANDALONE ESP32/S3 CAN reader publishing `fiat/*`, so the display board (CYD or RPi) stays a pure subscriber.
+- see-also: [DD-CAN-BOARD], [CXC-CAN-CONTRACT], [CXC-CAN-HW-SN65HVD230]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## 5. Hardware nodes
+
+### [CXC-CAN-HW-MCP2515] RPi SPI-CAN HAT (MCP2515) + can0.service
+
+- definition: the Linux/RPi tier's CAN front-end — an MCP2515 SPI-CAN controller wired to the Pi (GPIO 8/9/10/11 + INT GPIO25), enabled by `dtoverlay=mcp2515-can0`, 16 MHz oscillator, brought up as `can0` by a `can0.service` systemd unit that sets the bitrate (`ip link set can0 type can bitrate 500000`). Today this is prose in `compose_projects/carousel/README.md`; this node PROMOTES it to an addressable hardware spec node (the design's `[HW:mcp2515]`, realized under the registered CXC- family since `HW:` lowercase would not parse as a node id).
+- requirement: the SocketCAN reader ([CXC-CAN-SOCKETCAN]) relies on `can0.service` having set the bitrate — the reader MUST NOT attempt to set bitrate from userspace.
+- see-also: [CXC-CAN-SOCKETCAN]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-HW-SN65HVD230] ESP32 CAN transceiver (SN65HVD230) + TWAI pin budget
+
+- definition: the ESP32 tier's CAN front-end — an SN65HVD230 3.3V CAN transceiver (the correct choice for the ESP32; a TJA1050 is 5V and needs level care) between the ESP32's logic-level TWAI TX/RX and the differential CAN_H/CAN_L bus. The bus MUST be terminated with 120 ohm across CAN_H/CAN_L at BOTH physical ends; many SN65HVD230 breakouts ship a 120 ohm on a solder jumper — check before adding a second. Exactly two GPIOs are consumed (`TWAI_TX` output-capable, `TWAI_RX` any); on the CYD the free-pin budget is the constraint ([CXC-CAN-BOARD]). This is the design's `[HW:sn65hvd230]` / `[HW:twai]`, realized under the CXC- family.
+- requirement: the TWAI reader ([CXC-CAN-TWAI]) MUST NOT be run without an external transceiver — the on-chip controller cannot drive the differential pair.
+- see-also: [CXC-CAN-TWAI], [CXC-CAN-BOARD]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## 6. License — the whole reason we are doing this
+
+### [CXC-CAN-LICENSE] MIT-clean, zero copyleft; removes an existing obligation
+
+- definition: the entire cross-tier CAN capability is MIT-clean with zero copyleft, and it REMOVES an existing obligation rather than adding one. Linux/RPi: Python stdlib `socket` (`AF_CAN`/`CAN_RAW`) — PSF (MIT-compatible), stdlib, nothing vendored. ESP32/CYD: ESP-IDF `driver/twai.h` — Apache-2.0, fetched by PlatformIO, not vendored (ESP-IDF was already an accepted platform license — the CYD graphics stack is ESP-IDF; TWAI adds no new license surface). dev/test: `mockcan.py` — first-party (-> MIT).
+- requirement: `python-can` (LGPL-3.0) is ELIMINATED, not merely isolated. The MIT-readiness assessment (§2b, §2e, checklist P1-5) currently lists it as "the one copyleft dep in the publishable tree" and recommends keep-optional-noted; this design takes the STRONGER option the assessment itself names ("reimplement over SocketCAN directly"), so the copyleft caution DISAPPEARS from the CAN path. The [CXC-CAN-BRIDGE-MIGRATE] author MUST update §2b/§2e and strike P1-5 when the migration lands.
+- see-also: [CXC-CAN-BRIDGE-MIGRATE], [DD-CAN-NATIVE-PER-TIER]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## 7. Phased plan (contract-first) + the OQ-1 blocker
+
+### [CXC-CAN-PHASE-0] Phase 0 — ratify the contract + spec home (this doc -> a spec node)
+
+- definition: land §1 as a spec node — the two-layer namespace shape ([CXC-CAN-RAW] + [CXC-CAN-SIGNAL]), the frame convention ([CXC-CAN-FRAME]), and the decoder-map schema ([CXC-CAN-DECODER-SCHEMA]) — reviewed and FROZEN. Record the python-can-drop decision with its change/context_for_change ([DD-CAN-NATIVE-PER-TIER]). Resolve the spec home ([DD-CAN-SPEC-HOME]).
+- acceptance: the contract is reviewed and frozen; NO code depends on an unratified contract.
+- status: in-progress — this document IS the Phase-0 deliverable, pending the architect's ratify.
+- see-also: [CXC-CAN-CONTRACT], [DD-CAN-SPEC-HOME], [DD-CAN-NATIVE-PER-TIER]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-PHASE-1] Phase 1 — SocketCAN reader + bridge.py migration (retires the LGPL dep)
+
+- definition: build the [CXC-CAN-SOCKETCAN] stdlib reader behind the mockcan seam; unit-test frame pack/unpack + EFF handling against `MockCanBus` on macOS CI. Migrate `bridge.py` ([CXC-CAN-BRIDGE-MIGRATE]), delete python-can, update the MIT-readiness assessment, strike P1-5.
+- acceptance: the ComposeBus-over-CAN round-trip is byte-identical on real `can0` (RPi) and green under `mockcan` (macOS CI); `pip`-installing the bridge pulls NO LGPL dependency; the decoder evaluator decodes a synthetic frame -> the right `fiat/*` value.
+- status: planned (David's recommendation: build next).
+- see-also: [CXC-CAN-SOCKETCAN], [CXC-CAN-BRIDGE-MIGRATE], [CXC-CAN-LICENSE]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-PHASE-2] Phase 2 — ESP32 TWAI reader (the second native producer)
+
+- definition: add the [CXC-CAN-TWAI] reader to `cyd/` behind a board profile; wire its decoded output through the existing `bus_mqtt_publish_*`. Crosscheck the C++ decoder evaluator against the Python golden on the shared map. Make the board call ([CXC-CAN-BOARD] / [DD-CAN-BOARD]).
+- acceptance: a bench SN65HVD230 + a CAN frame generator drives `fiat/*` onto the shared broker; the carousel Fiat tile's gauges move live off the ESP32-published state, indistinguishable from an RPi-published one (the tier-agnostic proof).
+- status: planned (sequence behind the board decision).
+- see-also: [CXC-CAN-TWAI], [CXC-CAN-BOARD]
+- part-of: [SPEC:CXC-CAN]
+
+### [CXC-CAN-OQ-CANDUMP] The blocker — the Fiat 500e candump (OQ-1)
+
+- definition: the decoder map ([CXC-CAN-DECODER-SCHEMA]) is a PLACEHOLDER until the Fiat 500e's actual CAN ids and signal layouts are known. This is the standing open question `fiat/project_spec.smd` OQ-1: "Which specific CAN PIDs does the Fiat 500e expose on the OBD-II port? — Open, needs candump capture from live vehicle." Every SOC/speed/range/gear frame id in this doc and the shipped synthetic map is a stand-in.
+- requirement: the unblocking action is a `candump` from the car — the Layer-1 raw capture ([CXC-CAN-RAW]) is EXACTLY the reverse-engineering instrument (enable `can/fiat/*`, drive/toggle the car, correlate frame changes to dashboard changes, back out start-bit/scale/offset). Phase 1 delivers this capture tool as a side effect; no separate tooling is needed.
+- default: until the candump exists, the readers, the bus contract, the tile, and a SYNTHETIC decoder all ship and are testable end-to-end (published synthetic `fiat/*` moves the gauges, already proven in the carousel tests). Only the REAL Fiat map waits on David + the car.
+- status: open — blocked on a live-vehicle candump (David + the Fiat 500e).
+- see-also: [CXC-CAN-RAW], [CXC-CAN-DECODER-SCHEMA], [CXC-CAN-PHASE-1]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## 8. Acceptance — machine signal + glass gate per surface
+
+### [CXC-CAN-VERIFY] Two-tier verdicts — every human-perceptible surface carries a glass gate
+
+- definition: each requirement carries a machine signal (`verify.machine`) AND, for a human-perceptible surface, an explicit human/glass gate (`verify.human`). A machine-green build whose gauges nobody watched move is not accepted.
+
+| ID | Requirement | verify.machine | verify.human (glass) |
+|----|-------------|----------------|----------------------|
+| CAN-C1 | Raw Layer-1 shape + eff-not-magnitude ([CXC-CAN-RAW], [CXC-CAN-FRAME]) | `test_raw_frame_namespace` asserts `can/<bus>/<hex>` publishes `{id,eff,dlc,data,t}` with `json` engine; a 0x123 standard and a 0x00000123 extended frame publish distinct `(namespace,eff)` and are NOT merged by magnitude | n/a (structural) |
+| CAN-C2 | RTR/error/over-DLC frames dropped at the reader ([CXC-CAN-FRAME]) | `test_frame_filter` asserts injected RTR, error, and DLC>8 frames publish on NEITHER layer and are logged, not raised | n/a (structural) |
+| CAN-C3 | stdlib SocketCAN reader works with zero third-party imports, behind the mockcan seam ([CXC-CAN-SOCKETCAN]) | `test_socketcan_reader` (macOS CI, `MockCanBus`) asserts `(arb,eff,data)` decode of standard + extended frames with NO python-can import; a decoder run yields the right `fiat/*` value | n/a (structural) |
+| CAN-C4 | Two evaluators, one golden ([CXC-CAN-DECODER]) | `test_decoder_python_golden` + the C++ `twai_decoder_crosscheck` decode the same synthetic frame against the same map to the IDENTICAL engineering value; a divergence fails the build; big/little byte_order both covered | n/a (structural) |
+| CAN-C5 | bridge.py migration byte-identical; LGPL dep gone ([CXC-CAN-BRIDGE-MIGRATE], [CXC-CAN-LICENSE]) | on real `can0`, the ComposeBus-over-CAN round-trip is byte-identical to pre-migration; macOS CI green under `mockcan`; a dependency scan of the installed bridge finds NO LGPL package; P1-5 struck | n/a (structural) |
+| CAN-C6 | No SIGABRT on unexpected vehicle data ([CXC-CAN-JSON-RULE]) | `test_enum_out_of_domain` injects an unmapped enum index + an empty init value and asserts the process does NOT abort (no ValueError into callback); the signal retains its last valid value or drops with a warning | n/a (structural) |
+| CAN-C7 | Decoder-map schema validation ([CXC-CAN-DECODER-SCHEMA]) | `test_map_load` asserts: missing required field -> load error naming the entry; both scale/offset AND map -> rejected; `enum` without `map` -> rejected; start_bit/length overrun dlc -> rejected; empty `signals:[]` -> loads, decodes nothing | n/a (structural) |
+| CAN-C8 | Tier-agnostic producers — RPi and ESP32 publishes are indistinguishable ([CXC-CAN-CONTRACT]) | a test subscribes `fiat/soc` and asserts identical consumer behavior whether an RPi SocketCAN reader or an ESP32 TWAI reader published it | on glass: the carousel Fiat SOC/SPEED gauges move live and IDENTICALLY off an RPi-published vs an ESP32-published `fiat/*` — an observer cannot tell which board is the source |
+| CAN-C9 | Foreign path is RX-only ([CXC-CAN-LOOPGUARD]) | `test_foreign_rx_only` asserts a foreign decoder configuration opens no TX path; on ESP32 the driver installs `TWAI_MODE_LISTEN_ONLY` | on glass: an ESP32 plugged into a LIVE vehicle bus perturbs nothing (LISTEN_ONLY — no ACK transmitted) |
+| CAN-C10 | Acceptance filter narrows the firehose ([CXC-CAN-SOCKETCAN], [CXC-CAN-TWAI]) | `test_acceptance_filter` asserts a SocketCAN `CAN_RAW_FILTER` (and a TWAI hardware mask) delivers ONLY the decoder-map frame ids to userspace/the reactive loop | n/a (structural) |
+
+- see-also: [CXC-CAN-CONTRACT]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## 9. Design Decisions
+
+### [DD-CAN-NATIVE-PER-TIER] Drop python-can; go native per tier (RATIFIED IN DESIGN — recorded here)
+
+- decision: drop `python-can` (LGPL-3.0) and go NATIVE PER TIER — stdlib SocketCAN on Linux/RPi ([CXC-CAN-SOCKETCAN]), ESP-IDF TWAI (Apache-2.0) on ESP32/CYD ([CXC-CAN-TWAI]). There is NO shared CAN library; the tiers meet at the ComposeBus namespace contract ([CXC-CAN-CONTRACT]), and both readers are thin producers behind it.
+- rationale: `python-can` earned nothing but an LGPL obligation — `bridge.py` used only raw `socketcan` frames, which is ~20 lines of stdlib. Dropping it is a dependency REDUCTION and a license WIN ([CXC-CAN-LICENSE]), taking the strongest option the MIT-readiness assessment itself named. A shared library is not merely unnecessary — it is IMPOSSIBLE: neither python-can nor SocketCAN exists on the ESP32, whose CAN controller is on-chip TWAI silicon with its own driver. The namespace contract is the only possible unifier, and it is the better one (reader board and display board decouple over the bus).
+- alternatives: (a) keep python-can, isolated + "keep-optional-noted" (the MIT assessment's fallback) — rejected: retains the copyleft caution and a dependency that earns nothing; (b) attempt a shared CAN abstraction across tiers — rejected: physically impossible (SocketCAN != TWAI silicon), so any "shared" layer is two reimplementations with a shared name, i.e. exactly the two-evaluators-one-golden model ([CXC-CAN-DECODER]) minus the honesty.
+- invalidating_assumption: that a shared CAN library is worth an LGPL dep. FALSIFIED once the ESP32 tier proves no shared library is even possible — SocketCAN and TWAI are different silicon with different drivers, so the "shared library" premise cannot hold across the two tiers this platform must serve.
+- status: accepted (ratified in `docs/architecture/cross-tier-can-design.md`; recorded here for the graph).
+- change: "Cross-tier CAN drops python-can (LGPL-3.0) in favor of native-per-tier controllers (stdlib SocketCAN on Linux, ESP-IDF TWAI on ESP32); the unifier moves from a shared library to a ComposeBus namespace contract."
+- context_for_change:
+  - prior_state: "python-can (LGPL-3.0) was the CAN access layer for services/can_mqtt_bridge/bridge.py, listed by the MIT-readiness assessment (§2b/§2e/checklist P1-5) as the one copyleft dep in the publishable tree, with a keep-optional-noted fallback."
+  - reasoning: "bridge.py used only raw socketcan frames — a ~20-line stdlib socket wrapper — so python-can added an LGPL obligation for zero unique capability. Native-per-tier eliminates the obligation AND reduces the dependency count, taking the stronger reimplement-over-SocketCAN option the assessment already named."
+  - rejected_alternative: "Keep python-can isolated and noted (the assessment's fallback), or attempt a single shared CAN library across both tiers."
+  - counter_argument: "A shared CAN library would give one code path across tiers and less duplication."
+  - counter_response: "A shared library is impossible here: the ESP32 has no SocketCAN and no python-can — its controller is on-chip TWAI silicon with its own C driver. Any 'shared' layer would be two reimplementations behind one name; the honest model is one declarative decoder map with two evaluators crosschecked against one golden ([CXC-CAN-DECODER]), which is cleaner than a false-shared library."
+  - invalidating_assumption: "That a shared CAN library is worth an LGPL dep — false once the ESP32 tier proves no shared library is even possible (SocketCAN != TWAI silicon)."
+  - implication: "The unifier is the namespace contract ([CXC-CAN-CONTRACT]); readers are interchangeable producers; the MIT-readiness caution disappears ([CXC-CAN-LICENSE], strike P1-5); reader board and display board decouple over the bus."
+- see-also: [CXC-CAN-CONTRACT], [CXC-CAN-LICENSE], [CXC-CAN-DECODER]
+- part-of: [SPEC:CXC-CAN]
+
+### [DD-CAN-SPEC-HOME] Spec home — one cohesive .lts doc now; contract MAY relocate beside [BP-MSG-CAN] on migration (FLAGGED)
+
+- decision: where the namespace contract and the reader/decoder mechanics live. The design recommended the namespace contract live BESIDE the bus protocol (a `[BP-CAN-FOREIGN]` section under `spec/01-composeio-bus-protocol.smd`) with the reader/decoder mechanics in their own doc.
+- chosen: author ONE cohesive `.lts` document (this file, `corpora/platform-specs/52-composeux-cross-tier-can.lts`) capturing BOTH the contract (§1, [CXC-CAN-CONTRACT] realizing the `[BP-CAN-FOREIGN]` concept) AND the reader/decoder mechanics (§2-§7), in the `.lts` corpus, referencing [BP-MSG-CAN] / [BP-CAN-ID] as registered-prefix cross-doc refs.
+- rationale: the bus-protocol spec is still `.smd` (unmigrated); this corpus authors `.lts`, and this agent authors `.lts`. Splitting the contract INTO the `.smd` would fork the format from a `.lts`-authoring role and edit an unmigrated corpus. The split's benefit (contract frozen beside the protocol) is premised on the contract living in an EXISTING doc — moot while the protocol is `.smd`. The contract + mechanics are tightly coupled and both new, so one cohesive, ratify-once doc is cleaner. The contract node ([CXC-CAN-CONTRACT]) is demarcated so it can relocate beside [BP-MSG-CAN] if/when the bus protocol migrates to `.lts`.
+- alternatives: (a) edit the `.smd` bus protocol to add a `[BP-CAN-FOREIGN]` section (rejected: forks the format from a `.lts` role, touches an unmigrated corpus); (b) split into two new `.lts` docs, contract + mechanics (rejected: the split's rationale evaporates when the contract cannot sit beside the `.smd` protocol; two new docs to ratify instead of one, for no isolation gain).
+- invalidating_assumption: that the bus protocol remains `.smd`. If it migrates to `.lts`, [CXC-CAN-CONTRACT] SHOULD be revisited for relocation beside [BP-MSG-CAN], leaving the reader/decoder mechanics here.
+- status: proposed — flagged for the architect to ratify (home + the relocation-on-migration policy).
+- see-also: [CXC-CAN-CONTRACT], [BP-MSG-CAN]
+- part-of: [SPEC:CXC-CAN]
+
+### [DD-CAN-BOARD] The ESP32 board choice — CYD 2-pin budget vs a standalone ESP32/S3 CAN node (FLAGGED)
+
+- decision: whether the TWAI CAN reader lives on the CYD (consuming 2 of its 3 free P3 GPIOs) or on a standalone bare-ESP32 / qualia-S3 node.
+- chosen (recommended, pending ratify): a STANDALONE ESP32/S3 CAN reader publishing `fiat/*`, so the display board (CYD or RPi) stays a pure subscriber — maximal use of the contract's reader/display decoupling ([CXC-CAN-CONTRACT]). The CYD-hosted option remains viable for a fixed CAN dash where the two-pin budget is acceptable.
+- rationale: the CYD CAN host CAN (TWAI_TX=21, TWAI_RX=35, GPIO35 input-only forcing RX), but it consumes 2 of 3 free pins with everything else committed. A standalone node has GPIO headroom (transceiver enable, bus-off LED, a second bus) and the contract already decouples reader board from display board — so putting CAN on its own board costs nothing at the consumer and buys pin headroom.
+- alternatives: (a) CYD-hosted CAN (viable + cheapest for a permanent small-panel dash; tight on pins); (b) qualia-S3-hosted CAN (headroom, but pairs CAN to the heavier render tier when a bare ESP32 devkit suffices for a reader-only node).
+- invalidating_assumption: that the CAN node needs more than two GPIOs OR that the reader and display want to be separate boards. If the target is strictly a fixed two-gauge dash on one CYD, the CYD-hosted option is acceptable and cheapest.
+- status: proposed — flagged for the architect to ratify at Phase 2.
+- see-also: [CXC-CAN-BOARD], [CXC-CAN-TWAI]
+- part-of: [SPEC:CXC-CAN]
+
+---
+
+## Relationships
+
+### Semantic
+
+[SPEC:CXC-CAN] RELATED_TO [BP-MSG-CAN]
+[SPEC:CXC-CAN] RELATED_TO [BP-CAN-ID]
+[SPEC:CXC-CAN] DEPENDS_ON [SPEC:CXC-EMBED-REACTIVE]
+[SPEC:CXC-CAN] USES [SPEC:CXC-PATSUB]
+[CXC-CAN-TWO-CANS] RELATED_TO [BP-MSG-CAN]
+[CXC-CAN-CONTRACT] REALIZES [DX-NARROW-WAIST]
+[CXC-CAN-CONTRACT] RELATED_TO [BP-MSG-CAN]
+[CXC-CAN-RAW] UPHOLDS [CXC-CAN-JSON-RULE]
+[CXC-CAN-SIGNAL] UPHOLDS [CXC-PS-GRANULARITY]
+[CXC-CAN-SIGNAL] DEPENDS_ON [CXC-CAN-DECODER]
+[CXC-CAN-DECODER] DEPENDS_ON [CXC-CAN-DECODER-SCHEMA]
+[CXC-CAN-DECODER] UPHOLDS [CXC-CAN-JSON-RULE]
+[CXC-CAN-SOCKETCAN] DEPENDS_ON [DD-BPR-MOCK-CAN]
+[CXC-CAN-SOCKETCAN] USES [CXC-PS-CAN]
+[CXC-CAN-SOCKETCAN] DEPENDS_ON [CXC-CAN-HW-MCP2515]
+[CXC-CAN-SOCKETCAN] RELATED_TO [BP-MSG-CAN]
+[CXC-CAN-BRIDGE-MIGRATE] DEPENDS_ON [CXC-CAN-SOCKETCAN]
+[CXC-CAN-BRIDGE-MIGRATE] REALIZES [CXC-CAN-LICENSE]
+[CXC-CAN-TWAI] DEPENDS_ON [SPEC:CXC-EMBED-REACTIVE]
+[CXC-CAN-TWAI] USES [CXC-PS-CAN]
+[CXC-CAN-TWAI] DEPENDS_ON [CXC-CAN-HW-SN65HVD230]
+[CXC-CAN-TWAI] UPHOLDS [CXC-CAN-LOOPGUARD]
+[CXC-CAN-BOARD] RELATED_TO [CXC-CAN-CONTRACT]
+[CXC-CAN-DECODER] RELATED_TO [CXC-PS-CAN]
+[CXC-CAN-PHASE-0] DEPENDS_ON [CXC-CAN-CONTRACT]
+[CXC-CAN-PHASE-1] DEPENDS_ON [CXC-CAN-SOCKETCAN]
+[CXC-CAN-PHASE-1] REALIZES [CXC-CAN-LICENSE]
+[CXC-CAN-PHASE-2] DEPENDS_ON [CXC-CAN-TWAI]
+[CXC-CAN-OQ-CANDUMP] DEPENDS_ON [CXC-CAN-RAW]
+[CXC-CAN-OQ-CANDUMP] RELATED_TO [CXC-CAN-DECODER-SCHEMA]
+[CXC-CAN-VERIFY] RELATED_TO [CXC-CAN-CONTRACT]
+[DD-CAN-NATIVE-PER-TIER] DOCUMENTS [CXC-CAN-CONTRACT]
+[DD-CAN-NATIVE-PER-TIER] DOCUMENTS [CXC-CAN-LICENSE]
+[DD-CAN-SPEC-HOME] DOCUMENTS [CXC-CAN-CONTRACT]
+[DD-CAN-BOARD] DOCUMENTS [CXC-CAN-BOARD]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-08-04
+**Status**: Draft — Phase-0 deliverable formalizing `docs/architecture/cross-tier-can-design.md` (ratified design). The python-can drop is RATIFIED-IN-DESIGN and recorded with its change/context_for_change ([DD-CAN-NATIVE-PER-TIER]). Two decisions are DRAFTED + FLAGGED for the architect to ratify: the spec home ([DD-CAN-SPEC-HOME]) and the ESP32 board choice ([DD-CAN-BOARD]). OQ-1 (the Fiat 500e candump, [CXC-CAN-OQ-CANDUMP]) is the standing blocker on the REAL decoder map; the contract + schema + synthetic map ship and are testable now.

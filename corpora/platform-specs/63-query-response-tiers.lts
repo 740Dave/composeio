@@ -1,0 +1,194 @@
+---
+scope: "Why a query API's DIGEST tier must be DELIBERATELY INSUFFICIENT: the measured truncation on `lts_traverse` that triggered it, the digest/page/full tiering whose rule is `truncation is a lie, an error is a fact`, the include/exclude generator that keeps a digest from substituting for reading, and the symmetry that makes this an instance of [CXC-VISION-COMPACT-WIRE] rather than an ad-hoc API preference."
+audience: [the lts-engine maintainer; composeux-architect (ratifies the one open decision); any agent that calls lts_find / lts_node / lts_traverse; any designer about to add `just one summary field` to a digest; David, who ruled the insufficiency requirement 2026-08-13]
+elements: [CXC-TIER-*, DD-TIER-*]
+boundary: "IN: the measurement ([CXC-TIER-OBSERVATION]); the never-return-a-partial-result-that-looks-whole rule ([CXC-TIER-TRUNCATION-IS-A-LIE]); the three tiers and their per-tier contracts ([CXC-TIER-TIERS]); the deliberate-insufficiency requirement, its include/exclude generator and its acceptance test ([CXC-TIER-INSUFFICIENT]); the compact-wire symmetry and the corollary that binds both ends ([CXC-TIER-SYMMETRY]); the presentation-not-computation claim ([CXC-TIER-ALREADY-COMPUTED]); the two agent-bootstrap warnings and their retirement condition ([CXC-TIER-WARNING-NOT-FIX]); the one open decision ([DD-TIER-DEFAULT]). OUT: the implementation, which is `factlattice_engine/tiers.py` and is LIVE — this document records the DESIGN, and deliberately pins no constant that file owns; the wider query-layer contract, which is [LEC-QUERY]'s; the compact-wire pillar itself, which is [CXC-VISION-COMPACT-WIRE]'s and is CONSUMED here, not restated."
+not-this: "Not a build spec: the tier layer is already built and shipped (`factlattice_engine/tiers.py`, commit d2f3d4c), so nothing here dispatches a builder. Not a mirror of the implementation: this document states the DISCIPLINE and cites the module as its realization, because a corpus node that duplicates a constant becomes the stale half of a pair the moment the constant moves — measured during this document's own authoring, when `DIGEST_MAX_NODES` changed under two consecutive reads. Not a claim that the defect is closed: the tier is OPT-IN and the DEFAULT path still truncates ([DD-TIER-DEFAULT]). Not a sixth pillar of [SPEC:CXC-VISION] — see this document's `relationship-to-the-vision`."
+depends-on: [62-composeplatform-vision.lts, 44-lts-engine-consolidation.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+placement: UNRATIFIED — the FOURTH consecutive file in this directory to carry the flag; see [CXC-VISION-PLACEMENT]
+created: 2026-08-13
+---
+
+# Response tiers — a query API's cheap answer must ROUTE, never SATISFY [SPEC:LTS-TIER]
+
+> `lts_traverse` truncates against `token_budget`. Measured 2026-08-13 against [SPEC:CXC-VISION] at a budget of
+> 2,500: **4 of 10 nodes, `truncated: true`, and NOT ONE of the five pillars** — a root, two cited document roots
+> and a placement footnote, which is a coherent-looking vision containing none of what the vision is. The response
+> is honest at the PROTOCOL level (`truncated`, `cursor` and `total` are all present) and dishonest at the
+> ERGONOMIC level, because the easy path silently returns a fifth of the answer and callers do not read the flag.
+> The rule that falls out is **truncation is a lie; an error is a fact**: a `digest` that is always COMPLETE for
+> what it claims, a `page` whose window IS its claim, and a `full` that ERRORS at its ceiling rather than
+> truncating. And the subtle part, which is the whole note and is David's correction to the obvious design: **a
+> digest must be DELIBERATELY INSUFFICIENT.** The instinct to make it more useful with a summary or an excerpt is
+> precisely backwards — a summary is a partial answer wearing a complete answer's clothes, the same failure as
+> truncation packaged more attractively, and it trades an agent that KNOWS it is missing something for one that is
+> CONFIDENT it is not. It must answer *is there something here I need to read?* and must NOT answer *what does it
+> say?*. That is [CXC-VISION-COMPACT-WIRE] applied to a query API: the wire carries a fingerprint you cannot
+> decode and must resolve at the registry; the digest carries an id and a size you cannot reason from and must
+> resolve at the node. Both are compression that REFUSES TO BE SELF-SUFFICIENT BY DESIGN, and both carry the same
+> corollary in the same load-bearing way — the thing you are forced to go to must be trivially reachable, or a
+> size problem has merely been traded for an access problem.
+
+- what-this-is: A DESIGN NOTE recording why a query API's cheap tier must ROUTE rather than SATISFY, and why that discipline is the compact-wire pillar at a second scale. It is not implementable and dispatches no builder: the layer it describes is already built.
+- the-rule-in-one-line: Truncation is a lie; an error is a fact — and a digest rich enough to stop you reading is the same lie in better clothes.
+- build-status: BUILT and LIVE. `factlattice_engine/tiers.py` implements the three tiers and `find` / `node` / `traverse` are all wired to them (commit d2f3d4c, 2026-08-13). This document is the design record catching up to a build, not a proposal preceding one.
+- why-it-exists-as-a-corpus-node-at-all: The rationale currently lives ONLY in a Python module docstring, and the engine source cites `[LTS-TIER]` in ten places against a node id that resolved to NOTHING in any registered corpus until this document minted it. A design rule that code references and the graph cannot answer is unqueryable by every agent that reads through the corpus rather than the tree.
+- relationship-to-the-vision: SIBLING, not a sixth pillar. [SPEC:CXC-VISION] claims FIVE recurring patterns and stakes its value on that recurrence being CHECKABLE; it is also re-hydrated into two agent bootstraps at every session start, so anything added under it is paid for at every session boot. This note is a NEW APPLICATION of one pillar and links to it by declared edge instead.
+- evidence-base: ONE measurement, run live against the `intelligence-console` corpus on 2026-08-13 and reproduced at five budgets, plus one design ruling by David the same day. It is a single instance generalized into a rule, and the generalization rests on the argument at [CXC-TIER-TRUNCATION-IS-A-LIE], not on a population.
+- blast-radius: The rule constrains every response shape the QUERY layer serves, and [DD-TIER-DEFAULT] would change what every existing caller of `lts_traverse` receives. Treat a change here as a change to the tool surface, not to a document.
+- placement: UNRATIFIED. Written into `corpora/platform-specs/` because [LEC-QUERY] — the contract this extends — already lives here, and because `corpora/factlattice-parser/` is empty and deliberately UNPROFILED, so every profile-driven lint rule would be INERT there and a clean verdict would mean nothing. It is the FOURTH consecutive file in this directory flagged UNRATIFIED; see [CXC-VISION-PLACEMENT].
+- see-also: [CXC-VISION-COMPACT-WIRE], [SPEC:CXC-VISION], [SPEC:LTS-ENGINE-CONSOLIDATION], [LEC-QUERY], [CXC-VISION-RECOVERY], [CXC-VISION-PLACEMENT]
+
+---
+
+## 1. What was measured
+
+### [CXC-TIER-OBSERVATION] The measurement — 4 of 10 nodes, `truncated: true`, and not one of the five pillars
+- measured: `traverse(corpus='intelligence-console', start_node='CXC-VISION', max_depth=1, layers=['semantic'], direction='both', token_budget=2500)` returned 4 of 10 nodes with `truncated: true` and `cursor: 4`. Run live 2026-08-13.
+- what-came-back: [CXC-VISION], [CXC-HAL-DECLARE], [CXC-CONFIG-BUS], [CXC-VISION-PLACEMENT] — the root, the two document roots it cites, and its placement footnote. NOT ONE of the five pillars, which are the entire content the document exists to carry.
+- why-that-particular-shape-is-the-danger: The four returned nodes are internally coherent and read as a complete answer: a vision root plus its metadata. A caller has no cue that the pillars exist, because the thing that would have told them is the thing that was dropped.
+- reproduced-across-budgets: 500 -> 1 of 10; 1,000 -> 1 of 10; 2,500 -> 4 of 10; 5,000 -> 7 of 10; 8,000 -> 10 of 10, `truncated: false`. All five run live 2026-08-13; the shortfall is a smooth function of the budget, so there is no threshold a caller could learn to stay above.
+- honest-at-the-protocol-level: The response carries `truncated`, `cursor` and `total`. Every fact needed to detect the shortfall is present and correct, so the protocol is not lying and no protocol-level fix is available.
+- dishonest-at-the-ergonomic-level: The DEFAULT path silently returns a fraction, and callers do not read the flag. An interface whose correct use depends on a check nobody performs has moved the failure out of the protocol and into the ergonomics, which is where no amount of additional protocol honesty reaches it.
+- not-a-live-defect-on-the-default-budget: The ten nodes total 6,965 tokens against a 32,768 default — about 21% of budget — so nothing truncates on the default path today. Stated plainly because a note that overstates its own urgency gets discounted, and this one does not need to.
+- the-danger-is-prospective-and-arrives-silently: THREE independent paths reach truncation and none announces itself: the vision is designed to EVOLVE and will grow; a context-frugal agent LOWERS the budget deliberately, which is behaviour this project actively encourages, so ECONOMY IS THE TRIGGER; and raising `max_depth` pulls in the neighbourhood.
+- the-irony-worth-naming: The behaviour we reward — spend less context — is the behaviour that fires the defect. A guard that only holds while callers are profligate is not a guard.
+- why-record-it-before-it-bites: The failure is silent by construction, so the first instance will not present as a truncation. It will present as an agent reasoning confidently from a vision with no pillars, and at that point the evidence that anything was missing has already been discarded.
+- part-of: [SPEC:LTS-TIER]
+- see-also: [CXC-VISION-RECOVERY], [CXC-TIER-TRUNCATION-IS-A-LIE]
+
+---
+
+## 2. The rule, and the tiering that follows from it
+
+### [CXC-TIER-TRUNCATION-IS-A-LIE] Truncation is a lie; an error is a fact — never return a partial result that looks whole
+- claim: A query API MUST NEVER return a partial result SHAPED LIKE A COMPLETE ONE. Where the full answer does not fit, it returns something COMPLETE for a narrower claim, or it FAILS. It does not return the first N tokens of a wider claim.
+- why-a-flag-is-not-enough: `truncated: true` makes the shortfall DETECTABLE, not VISIBLE. Detectability puts the burden on every caller, forever, on the easy path — and this corpus has already measured what that costs elsewhere: 680 truncated property values that each parse cleanly, break no rule, and produce no finding of any kind ([CXC-LTW-MEASURED]).
+- the-generalizable-shape: The defect is an artifact that carries NO INTERNAL EVIDENCE OF ITS OWN INCOMPLETENESS, so the consumer's confidence is uncorrelated with its correctness. A truncated property value, a lossy parse compared against itself, and a digest with a summary in it are three surfaces of one failure.
+- why-an-error-is-strictly-better: An error names a ceiling, a measured cost, and a parameter to change; a truncation names nothing and reads as an answer. A refusal is actionable, a plausible degraded artifact is not — which is the same conclusion [CXC-LTW-EMIT-REFUSE] reached for the WRITE path, arrived at independently here on the READ path.
+- the-cost-this-accepts: Callers who would have been satisfied by an approximate answer now get an error and must choose a tier. That is a real cost paid on every over-broad query, and it is the correct trade only because the alternative failure is SILENT: a caller who sees an error loses a round trip, a caller who sees a truncation loses the finding.
+- what-would-falsify-this: A measured population of callers who read `truncated` reliably. The rule rests on the claim that they do not; a corpus of call sites showing otherwise would make the flag sufficient and this whole tier an over-correction.
+- part-of: [SPEC:LTS-TIER]
+- see-also: [CXC-TIER-OBSERVATION], [CXC-TIER-TIERS]
+
+### [CXC-TIER-TIERS] Three tiers — digest, page, full — and the property they share is that none of them truncates
+- tier-digest: ALWAYS COMPLETE for what it claims, and always cheap. It enumerates EVERY node in the result set and carries, per node, only what routes. It has no `offset` — a digest with an offset is a truncated subset with a polite name — and above its ceiling it REFUSES rather than trims, because at that size the count is itself the finding.
+- tier-page: Full node content, ONE explicit window: `offset` in, `next_offset` / `total` / `truncated` out. A page is not a truncation because THE WINDOW IS THE CLAIM — the response is complete for what it names itself.
+- tier-full: Full node content, COMPLETE. The caller has explicitly accepted the cost; exceeding the ceiling ERRORS and names the measured size, the ceiling, and the two tiers that would have answered. What the caller accepted is the cost, not a silent fraction of it.
+- the-invariant-across-all-three: The digest is complete because it claims little; the page is complete because it states its window; `full` refuses rather than truncates. There is no tier, and no parameter combination within a tier, under which a caller receives a silently shortened WIDER claim.
+- ceilings-must-be-sized-from-measurement: Every ceiling here is a BLAST-RADIUS guard, not a taste. It MUST be derived from a measured per-row cost against the live corpus and MUST carry that measurement and its date, or the number is a preference that will be argued with rather than a bound that can be re-derived. The live numbers belong to `tiers.py` and are deliberately not duplicated into this node.
+- independently-reproduced: A digest row over 916 live `intelligence-console` nodes measured 92.3 tokens by the engine's own estimator on 2026-08-13 — reproduced here against the implementation's own stated ~91, by a second party, on the same corpus. The agreement is what makes the ceiling re-derivable rather than inherited.
+- the-legacy-arm-is-part-of-the-contract: An omitted `tier` is the pre-tier path, byte-identical. That is what makes the layer ADDITIVE and shippable without a migration — and it is also exactly why the defect is not yet closed ([DD-TIER-DEFAULT]). A tier nobody selects is a tier that does not exist.
+- an-unknown-tier-must-error: A typo'd tier MUST NOT fall back to the legacy path. A silent fallback would serve the truncating path to a caller who explicitly asked not to be served it, which rebuilds the defect inside the fix.
+- part-of: [SPEC:LTS-TIER]
+- see-also: [CXC-TIER-INSUFFICIENT], [DD-TIER-DEFAULT], [LEC-QUERY]
+
+---
+
+## 3. The heart — the digest's insufficiency is the feature
+
+### [CXC-TIER-INSUFFICIENT] ⛔ THE DIGEST MUST BE DELIBERATELY INSUFFICIENT — a summary is a partial answer wearing a complete answer's clothes
+- ruling: ⛔ David, 2026-08-13, verbatim: "The issue with a digest is that it can't provide enough information that you think you've gotten it all and you don't need to read the full details. It should be enough to tell you if your query is returning data that you should read."
+- must: It MUST answer: is there something here I need to read?
+- must-not: It MUST NOT answer: what does it say?
+- the-instinct-that-is-exactly-wrong: Most API designers' reflex is to make a digest MORE USEFUL by adding a summary or an excerpt. That is precisely backwards. A summary is a partial answer wearing a complete answer's clothes — the same failure as truncation, packaged more attractively — and it trades an agent that KNOWS it is missing something for one that is CONFIDENT it is not. The second agent is strictly harder to correct, because nothing in its state disagrees with it.
+- the-generator-both-lists-come-from: INCLUDE what states the IDENTITY and the COST of reading. EXCLUDE anything DERIVED FROM THE BODY. Stated as a generator rather than only as two lists, because a list is a set of remembered cases and inherits the shape of the memory, while the generator decides the field nobody has thought of yet.
+- digest-includes:
+  - id — the address you fetch by; a row you cannot fetch from is not a routing aid
+  - title — a LABEL, and the boundary case; see `titles-are-the-boundary-case`
+  - token count — the COST of reading it, which is the caller's actual decision variable
+  - timestamp — currency; safe only because it is laundered to a date shape and is structurally incapable of carrying body text
+  - edge count — connectedness, as corpus degree rather than degree-within-this-result, so the number does not change meaning with the query that surfaced it
+  - property count — density
+  - source file, line range, content hash — address and identity, not content
+- digest-excludes:
+  - summary
+  - excerpt / first-N-characters
+  - "key properties"
+  - highlights
+  - anything else derived from the body, named or not — the generator, not this list, is the rule
+- the-acceptance-test: If an agent could plausibly write a paragraph on the subject FROM THE DIGEST ALONE, the digest is too rich. It is applicable by the designer, at review time, with no benchmark and no caller — which is what makes it survivable as a standing gate rather than a one-off audit.
+- titles-are-the-boundary-case: A title is necessary for routing and it does convey something, so the line is LABEL versus CLAIM: a label names the subject so you can decide whether to read; a claim states a finding you can then repeat without reading. Labels yes, claims no.
+- and-this-document-fails-its-own-line: Several titles in this corpus — including this node's own, and this document's — are CLAIMS, not labels: "the digest must be deliberately insufficient" is a finding a reader can repeat from the digest alone. The rule is stated as a design direction for the digest field set, and it is NOT satisfied by the corpus's current titling practice. Recorded rather than quietly excepted, because an unmet rule presented as met is the failure this whole document is about.
+- the-ordering-consequence: A digest that TEMPTS YOU TO STOP is WORSE than a hard cap, because a cap at least leaves you suspicious. That is a pairwise claim about those two, and it is deliberately not extended into a total ordering over every failure mode — the ranking that was ruled is the one recorded.
+- the-insufficiency-is-the-feature: Not a compromise reached under a size constraint, and not a stage on the way to a richer digest. Every future request to add one more field for usability is a request to convert this tier back into the thing it was built to replace, and the acceptance test above is the answer to it.
+- part-of: [SPEC:LTS-TIER]
+- see-also: [CXC-TIER-SYMMETRY], [CXC-TIER-TIERS], [CXC-TIER-ALREADY-COMPUTED]
+
+---
+
+## 4. Why this is not an ad-hoc rule
+
+### [CXC-TIER-SYMMETRY] This is [CXC-VISION-COMPACT-WIRE] applied to a query API — compression that refuses to be self-sufficient
+- claim: The digest rule is not an ad-hoc API preference. It is the compact-wire pillar at a second scale, and the correspondence is exact enough to be CHECKED rather than merely evoked.
+- correspondence-what-is-carried: The wire carries a 16-bit fingerprint, not the namespace. The digest carries an id and a size, not the content.
+- correspondence-what-you-cannot-do: You CANNOT decode a fingerprint — you must go to the registry. You CANNOT reason from a digest — you must go to the node.
+- correspondence-the-corollary: The registry MUST be discoverable. The node MUST be trivially reachable.
+- the-shared-generator: Both are COMPRESSION THAT REFUSES TO BE SELF-SUFFICIENT BY DESIGN, and the refusal is the mechanism rather than a side effect: a representation you COULD act on directly is one you WILL act on directly, and the authoritative source then stops being read at all.
+- the-corollary-is-load-bearing-in-both-directions: A fingerprint with an unreachable registry, and a digest with an awkward fetch, EACH TRADE A SIZE PROBLEM FOR AN ACCESS PROBLEM. On the wire that trade is the hand-typed `CAN_BRIDGE_REGISTER` failure [CXC-VISION-COMPACT-WIRE] names; on the query API it is a digest whose node fetch needs a different id form, a second corpus lookup, or a parameter the digest did not hand back. NEITHER COMPRESSION IS COMPLETE WITHOUT ITS RESOLUTION PATH, and specifying one without the other is the recurring way both fail.
+- what-this-does-and-does-not-establish: [SPEC:CXC-VISION] holds that a pattern at four levels is a spine and a pattern at one is an anecdote. This is the compact-wire pillar's SECOND level, so it raises that pillar's recurrence by exactly one. It does not on its own establish a new pillar and is not offered as one.
+- honest-limit-of-the-analogy: The forcing constraints differ in KIND. Classic CAN's eight data bytes are a hardware limit that cannot be renegotiated; a context budget is a policy an agent chooses and can raise. So the DISCIPLINE transfers but the INEVITABILITY does not — which is precisely why the digest needs a DEFAULT to carry it ([DD-TIER-DEFAULT]) and the wire needs none.
+- the-design-check-this-satisfies: [CXC-VISION-ANNOUNCE-BIND] states that a mechanism built for level N must be reusable at level N+1. The compact-wire split was built for an eight-byte frame and is here reused over a token budget, which is that check passing rather than being asserted.
+- part-of: [SPEC:LTS-TIER]
+- see-also: [CXC-VISION-COMPACT-WIRE], [CXC-VISION-ANNOUNCE-BIND], [SPEC:CXC-VISION]
+
+---
+
+## 5. Cost, mitigation, and what is still open
+
+### [CXC-TIER-ALREADY-COMPUTED] A presentation tier, not new computation — every field a digest needs is already in the response
+- claim: Nothing in the digest's field set requires a computation the engine does not already perform on every call. It is a PROJECTION over an existing response — no new index, no extra pass, no cached artifact.
+- verified-against-the-live-response: `lts_node` already returns `token_count`, `content_hash`, `line_range` and `source_file` per node, stamped at index build, plus per-layer forward and reverse edge lists; `property_count` is a `len()` over the property map and `edge_count` is a lookup in the adjacency cache the walk is already holding. Checked against a live `lts_node` response 2026-08-13.
+- the-one-field-that-is-not-index-metadata: `timestamp` is the single value read out of the property bag, and it is safe only because it is laundered through a date normalizer that can emit nothing but a date shape. A prose date yields a date, never the prose. The field is STRUCTURALLY incapable of carrying body text, and that structural incapacity — not the field's good behaviour — is the argument for including it.
+- measured-caveat-on-that-field: On the ten-node vision traverse, `timestamp` came back null on all ten rows, because the date property in play is a decision-family key that spec nodes do not carry. The field is present and empty here rather than wrong; a caller must not read a null timestamp as `undated` when it may mean `this family does not use that key`.
+- why-this-matters-to-the-argument: Cost is the usual reason a tier like this gets deferred, and here there is no cost to defer against. It also removes the temptation that produces a rich digest: a summary field would be the ONLY part of the row requiring derivation from the body, so `is it already computed?` and `is it body-derived?` happen to select the same set.
+- part-of: [SPEC:LTS-TIER]
+- see-also: [CXC-TIER-INSUFFICIENT]
+
+### [CXC-TIER-WARNING-NOT-FIX] A prompt warning is a mitigation; a digest default is a fix — and the warning can then be retired
+- in-place-today: A ⛔ warning in TWO agent bootstraps — `.claude/agents/composeux-architect.md` and `~/.claude/agents/composeio-hardware-architect.md` — telling the agent that `lts_traverse` truncates against `token_budget`, to check the flag, and listing the five pillars it SHOULD have received so a short answer is recognisable. Both verified present 2026-08-13.
+- what-the-warning-gets-right: Stating the EXPECTED RESULT is the strongest part of it: an agent that knows it should receive a root plus five named pillars can detect a shortfall without reading any flag. That is the one mechanism here that does not depend on discipline at the call site.
+- why-it-is-only-a-mitigation: It requires the agent to read the warning, retain it to the call site, and check a flag — three human-shaped steps inside a machine-shaped job. It also exists in TWO hand-maintained copies, which is the drift class [CXC-VISION-RECOVERY] exists to prevent: a copy that no longer matches the tool says nothing when it diverges.
+- a-measured-instance-of-that-drift: Both copies say the call returns ONE node at a small budget. Measured 2026-08-13: one node at 500 and 1,000, but FOUR at 2,500 and SEVEN at 5,000. The warning is true at the budget it was written against and understates the shortfall at every larger one, which is exactly how a prose copy of a measured behaviour goes quietly out of date.
+- retirement-condition: The warnings can be RETIRED when a digest DEFAULT lands ([DD-TIER-DEFAULT]), not when the tier merely exists — an opt-in tier leaves the default path unchanged and the warning still load-bearing. Recorded as a CONDITION rather than a plan so the retirement is a decision someone makes, rather than two stale paragraphs nobody removes.
+- the-standing-form-of-the-rule: A prompt warning is this project's cheapest instrument and its weakest. It is the right response to a defect just found and the wrong response to one whose fix has been specified — at that point it becomes a second, drifting statement of a rule the tool could enforce.
+- part-of: [SPEC:LTS-TIER]
+- see-also: [CXC-VISION-RECOVERY], [DD-TIER-DEFAULT]
+
+### [DD-TIER-DEFAULT] OPEN — should `digest` become the DEFAULT tier, given that until it does the defect remains live on the easy path?
+- decision: OPEN — NOT decided here, and a builder MUST NOT pick a branch and proceed. David's design claim names digest as "the DEFAULT for traverse"; the shipped layer resolves an ABSENT `tier` to the LEGACY path, so the default still truncates. What is unruled is whether the default flips on the existing tools, and if so how the flip is sequenced.
+- why-this-is-a-real-fork-and-not-a-formality: The whole argument of this document is that a tier nobody selects is a tier that does not exist ([CXC-TIER-TIERS]) and that a warning is not a fix ([CXC-TIER-WARNING-NOT-FIX]). Both conclusions land on the default. Until it flips, the layer is a correct mechanism guarding a path nobody is on.
+- what-makes-it-genuinely-hard: [CXC-VISION-RECOVERY] records the traverse call as a VERIFIED recovery query returning "10 nodes and 11 edges", and two agent bootstraps execute it at every session start. A digest default changes that response's SHAPE for a caller whose correctness was established against the current one — and the verification note would then be describing a call that no longer behaves that way, which is the same silent-drift class it was written to prevent.
+- alternatives: (a) FLIP THE DEFAULT ON THE EXISTING TOOLS. Closes the defect on the easy path immediately and needs no adoption campaign; its cost is that every caller written against the current shape breaks at once, including two bootstraps and the recovery query, and a breakage distributed across agent definitions is discovered one session at a time. (b) KEEP OPT-IN AND CAMPAIGN FOR ADOPTION. No breakage and no coordination; its cost is that it relies on every future caller choosing correctly, which is the mechanism this document argues does not work — and it leaves the two prompt warnings load-bearing indefinitely. (c) FLIP THE DEFAULT ONLY ABOVE A THRESHOLD — serve legacy while the complete result fits the budget and digest when it would truncate. Preserves every currently-passing call unchanged and converts exactly the failing case; its cost is a response whose SHAPE depends on corpus size, so a caller can be correct for months and then silently receive a different type as the corpus grows, which trades a loud breakage for a rarer and more confusing one.
+- rationale: Recorded UNRESOLVED on purpose. (a) and (c) both close the measured defect and differ in WHO absorbs the breakage and WHEN; (b) does not close it at all and is included because shipping additive was the right way to LAND the layer and is a defensible way to leave it only if someone decides so explicitly. The choice turns on how many callers exist and how they are discovered, which is a fact about the fleet rather than about the API, and is therefore not this document's to settle.
+- what-would-settle-it-cheaply: A census of call sites: how many callers of `find` / `node` / `traverse` exist outside the engine, how many are agent definitions rather than code, and how a change reaches them. (a) is cheap if the answer is small and enumerable; (c) becomes the only safe branch if it is not.
+- invalidating_assumption: That callers do not read `truncated`. Every branch here is an answer to that one premise. If a census of live call sites showed callers checking the flag and re-querying, the flag would be sufficient, (b) would be correct, and the default should not move at all.
+- status: raised
+- ratify-owner: David / composeux-architect. The status is the bare pipeline token `raised` so it stays a queryable enum; this line carries the qualifier that would otherwise have been appended to it and broken that. NO BUILDER MAY PICK A BRANCH while it reads `raised`.
+- part-of: [SPEC:LTS-TIER]
+- see-also: [CXC-TIER-TIERS], [CXC-TIER-WARNING-NOT-FIX], [CXC-VISION-RECOVERY]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-TIER-SYMMETRY] EXEMPLIFIES [CXC-VISION-COMPACT-WIRE]
+- [CXC-TIER-SYMMETRY] MIRRORS [CXC-VISION-COMPACT-WIRE]
+- [CXC-TIER-TIERS] EXTENDS [LEC-QUERY]
+- [CXC-TIER-INSUFFICIENT] UPHOLDS [CXC-TIER-TRUNCATION-IS-A-LIE]
+- [DD-TIER-DEFAULT] DOCUMENTS [CXC-TIER-TIERS]
+
+### Causal
+
+- [CXC-TIER-OBSERVATION] CAUSES [CXC-TIER-TRUNCATION-IS-A-LIE]
+- [CXC-TIER-TRUNCATION-IS-A-LIE] PRECONDITION_FOR [CXC-TIER-TIERS]
+- [CXC-TIER-WARNING-NOT-FIX] MITIGATES [CXC-TIER-OBSERVATION]
+
+---
+
+*LTS-TIER — the design record for the response-tier layer. The implementation is `factlattice_engine/tiers.py`; the pillar this instantiates is [CXC-VISION-COMPACT-WIRE]; the one open decision is [DD-TIER-DEFAULT].*

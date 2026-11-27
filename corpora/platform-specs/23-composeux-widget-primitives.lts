@@ -1,0 +1,398 @@
+---
+scope: "Six missing UI primitives — progress bar, slider, switch, dropdown, keyboard, number pad — delivered AS ComposeUX component composites (forkable defaults), not code Widget subclasses; plus the two small interaction seams the slider and dropdown require, and the ratified default aesthetic the family shares."
+audience: "ComposeUX widget authors, Composer users, render-engine developers"
+boundary: "IN: the six primitives as `components:` composites, their composition/bindings/params, the ratified design tokens, and two new interaction seams (drag-to-value, popup-list). OUT: new engine Widget subclasses (deliberately avoided — see [CXC-PRIM-WHY]); the DSL ([SPEC:CXC-DSL], reused); the component-expansion mechanism ([14-composer-components], reused)."
+not-this: "Not code widgets that lock a look; not a design system beyond the shared tokens; not a replacement for the existing power_toggle/checkbox/tab code widgets (those stay; these are the forkable composite family)."
+depends-on: [14-composer-components.lts, 16-composeux-bindings-behaviors.lts, 22-composeux-expression-dsl.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# ComposeUX Widget Primitives [SPEC:CXC-PRIM]
+
+> Six primitives, built as **components you fork**, not code widgets that lock the look. Each is a pixel-stack of existing primitives wired with bindings + the expression DSL, so it renders on every backend for free and its default `.compose.yaml` is the thing you clone and restyle. Pre-vis (ratified aesthetic): `ux/widget-primitives-previs.v1.html`.
+
+---
+
+## 1. Intent
+
+### [CXC-PRIM-WHY] Composites, Not Code Widgets
+
+- decision (David 2026-07-09): these six ship as reusable **components** (`components:` map + `{use: …}`, [14-composer-components]), NOT new engine `Widget` subclasses.
+- reasoning: David will *rarely* use the default look (e.g. BSG progress bars need a bespoke, consistent feel) — so the default's value is being **inspectable and forkable**. A component is an author-readable `.compose.yaml` composition you clone and restyle; a code widget hides its rendering in Python/C++ and locks the look. Composites also render on every backend for free (they compose primitives that already implement the Canvas contract) and reuse the binding/DSL/component systems already built.
+- consequence: the "default implementation" IS the deliverable artifact — seeing it is the point. Custom variants are forks that keep the shared tokens ([CXC-PRIM-TOKENS]) for family consistency and change the rest.
+- note: existing code widgets that overlap (`power_toggle` ≈ switch, `checkbox`, `tab`) are NOT retired; these composites are the forkable family beside them.
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 2. Ratified Default Aesthetic
+
+### [CXC-PRIM-TOKENS] The Shared Token Set (ratified from the pre-vis, David 2026-07-09)
+
+- surfaces: card/panel over an inset track; cool-biased neutrals.
+- accent = **the interactive/active state only** (fill, thumb, on-state, focus) — a single measured teal, deliberately not a neon pop. Dark `#34c3d0`; light `#159aa8`.
+- semantic (good/warn/crit) is a SEPARATE axis from the accent — a progress bar's `warn` color is a threshold binding, never the accent.
+- conventions: corner radius **4px**; thumbs are pill/circular; tracks **6–10px**; value labels in **mono**; both light+dark themed.
+- rule: a fork keeps these tokens for a consistent family and restyles the rest. The tokens are the contract that makes bespoke variants still look related.
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 3. The Catalog
+
+### [CXC-PRIM-CATALOG] Six Primitives
+
+Each is a `components:` entry (`params` + `defaults` + `widget` template); `{{param}}` resolves at load, `ns('…')`/`${ns}` at runtime.
+
+- **progress_bar** (pure composite): track rect + fill rect. `binds`: value → `fill.width = expr(clamp(ns('{{value_ns}}'),0,1)*{{W}})`. `params`: value_ns, height, radius, color, warn_at, show_label. Variants: determinate + indeterminate (a looping behavior).
+- **switch** (pure composite): bg pill + knob. `binds`: state (binary) ⇄ tap→toggle; `knob.x = expr(state ? on : off)`. `params`: state_ns, on_color, labels, momentary.
+- **numpad** (pure composite): grid of `button` components (0–9, CLR, ↵). `binds`: each key → publish char to a target text namespace. `params`: target_ns, allow_decimal, on_enter.
+- **keyboard** (pure composite): grid of `button` components (QWERTY + shift/backspace/space as param keys) editing a text namespace a `text_input` consumes. `params`: layout, target_ns, shift_mode, keycaps.
+- **slider** (composite + [CXC-PRIM-DRAGVAL]): track + fill + thumb. `binds`: value ⇄ drag; `thumb.x = expr(ns('{{value_ns}}')*{{W}})`. `params`: value_ns, min, max, step, orient, live_or_on_release.
+- **dropdown** (composite + [CXC-PRIM-POPUP]): closed field (label + chevron) + popup item list. `binds`: selected ⇄ item tap → publish + dismiss. `params`: selected_ns, options[], placeholder, max_visible.
+- **segment_bar** (composite + [CXC-PRIM-REPEAT], David 2026-07-09): an N-segment LED bargraph (the classic 10-segment look — discrete lit segments, zoned green/yellow/red). `binds`: value → each segment lit/dim + zoned color via one per-segment expression. `params`: value_ns, segments (N), green (count), yellow (count) [red = N−green−yellow], orient (horizontal/vertical), colors (green/yellow/red hex, defaulting to the semantic tokens), gap. Reference image: a 10-seg bar, 6 green / 2 yellow / 2 red, horizontal, on a dark bezel.
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-FADER] The Linear Fill / Fader — a READOUT, so a Code Style Mode
+
+- what: a linear FILL / FADER gauge — an inset track the bound value fills as a fraction of `[min_val, max_val]`. `orientation: vertical` (default) fills BOTTOM->TOP (a throttle lever / VU meter); `orientation: horizontal` fills LEFT->RIGHT (a level meter). It draws a bright level-cap line at the fill edge, a min/max scale, and a big raw-value readout; the fill warms teal->amber->red on `warning_threshold`/`danger_threshold` ([CXC-PRIM-TOKENS]: accent is the active fill, semantic is the separate threshold axis).
+- delivered AS: `style: "bar"` on the EXISTING `GaugeWidget` (`python/composeio/render/widgets/gauge.py`) — one more style MODE beside `dial` and `semicircle`, per [CXC-ICV-GAUGE]'s ratified "generalize, don't fork". NOT a new engine class; NOT a `components:` composite. API mirrors the dial exactly: `namespace`, `min_val`, `max_val`, `label`, `warning_threshold`/`danger_threshold`, plus `orientation`. Namespace binding, the `on_bus_state` float/dict hook, the registry entry, and the parser branch are all reused unchanged.
+- why a code widget here (and NOT one of the six [CXC-PRIM-WHY] composites): the six are INPUT primitives (slider/switch/dropdown/…) whose value IS being inspectable-and-forkable, because David will rarely use their default look. A fader is a READOUT in the gauge family (dial/semicircle/bar) — its value is a stable, `namespace:`-bound API, not a look to fork. Forking it as a rect-and-DSL composite is exactly the brittleness this fact retires (see the change record). So it earns the gauge's code style-mode, while the input primitives stay composites — the discipline splits on input-to-fork vs. readout-with-a-stable-API, not on "code vs. composite" as a blanket rule.
+- change: "The dual-throttle pot-calibration bar is a first-class namespace-bound widget (`gauge` `style: bar`), not a hand-composed scene fragment."
+- context_for_change:
+  - prior_state: "The throttle calibration view was a hand-authored `pixel_stack` of `rect` children whose fill HEIGHT was driven by inline `ns('throttle/left')`-style geometry expressions — a one-off per scene, brittle to DSL string-literal quoting, and not reusable."
+  - reasoning: "David asked whether the calibration bar 'should have its own namespace and be a real ComposeUX widget'. It should: a fill/fader is a readout gauge, and the gauge already carries the exact clean API (`namespace`/`min_val`/`max_val`/`label`/thresholds) plus its bus hook and cross-backend Canvas-contract draw. Adding `style: bar` reuses all of it and follows [CXC-ICV-GAUGE] ('generalize, don't fork'); the scene becomes two `namespace:`-bound widgets + a title with zero hand-wired `ns()` geometry."
+  - rejected_alternative: "A new `fader`/`bar` engine Widget subclass — rejected: it would duplicate the gauge's value/threshold/bus API for no gain and split a readout family across two classes. Also rejected: a `components:` composite in the [CXC-PRIM-CATALOG] family — that is the correct home for a FORKABLE input, but re-introduces the exact rect+DSL-geometry brittleness this change retires, for a widget whose value is its bound API, not its look."
+  - invalidating_assumption: "That a fader's default look will be forked as often as a slider's. If a scene needs a bespoke fader look, it forks the drawing (a gauge style variant) — the tokens ([CXC-PRIM-TOKENS]) still bind the family; the namespace API is unchanged."
+  - implication: "The gauge is now the single readout home for dial + semicircle + linear-fill; `orientation` is the fader's axis/origin selector. The demo scene is `render/examples/calib_throttle.compose.yaml`."
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-LEDBAR] The Segmented LED Level-Meter — a READOUT, so a Code Style Mode
+
+- what: an LM3914-style segmented LED bar-graph readout — a discrete row/column of `segments` LED elements on a near-black bezel, driven by a `namespace:`-bound value over `[min_val, max_val]`. Segment i (1..N) LIGHTS when `value >= min_val + (i/N)*(max_val - min_val)` (deciles for N=10); a lit segment glows its palette color, an unlit one is a dim (~16% luminance) HUE-TRUE version of the SAME color on the bezel, so an off-LED reads colored-but-dark, never black. The palette IS the zone coloring (default blue idle -> green cruise -> yellow caution -> red max, sampled from a real module), so `warning_threshold`/`danger_threshold` are IRRELEVANT here and untouched — contrast the fader ([CXC-PRIM-FADER]), whose fill warms on them.
+- delivered AS: `style: "led_bar"` on the EXISTING `GaugeWidget` (`python/composeio/render/widgets/gauge.py`, `_draw_led_bar`) — one more style MODE beside `dial`, `semicircle`, and `bar` ([CXC-PRIM-FADER]), per [CXC-ICV-GAUGE]'s "generalize, don't fork". NOT a new class; NOT the forkable `segment_bar` composite ([CXC-PRIM-CATALOG]). Same readout-with-a-stable-API discipline as the fader ([CXC-PRIM-FADER] change record): a segmented meter's value is a `namespace:`-bound API, not a look to fork — so it earns the gauge's code style-mode, while the INPUT primitives ([CXC-PRIM-WHY]) stay forkable composites.
+- reuse-by-reference (extends, never forks): the `namespace`/`min_val`/`max_val`/`label` API, the `on_bus_state` float/dict hook, the registry entry, the `measure`/`draw` style routing, and the `_frac`/`_hex_to_rgb` helpers are reused UNCHANGED. Built from `fill_round_rect`/`fill_circle` ONLY (R1: decompose to the Canvas contract, [CXC-R-DRAW-CONTRACT]) so it renders identically on Skia, the browser, and the CYD band renderer — the prerequisite that lets [CXC-PRIM-TIER-PARITY] be satisfiable by a mechanical back-end port. This node CONFIRMS the shipped baseline and ADDS five configuration params; it forks nothing and keeps the current render byte-identical at the defaults.
+
+**EXISTING params (already implemented — confirm/formalize, do NOT re-build):**
+
+| Param | Type | Default | Semantics |
+|-------|------|---------|-----------|
+| `segments` | int | `10` | LED count N; clamped `>= 1` (bad input -> 10). |
+| `segment_colors` | list[hex] | engine palette (`#0236FE` / `#01FF03`x4 / `#FFEB01`x3 / `#FE0002`x2) | per-LED color; a SHORT list REPEATS its last entry to length N; bad hex -> mid-grey (never breaks the screen). |
+| `orientation` | `"vertical"`\|`"horizontal"` | `"vertical"` | the AXIS the bar runs along: vertical = stacked column; horizontal = row. |
+| `reverse` | bool | `false` | flips which END is segment-1 / the fill origin ALONG the orientation axis. |
+| lit/unlit model | — | — | seg i lit iff `value >= min_val+(i/N)*range`; unlit = `color x 0.16` (`_LED_DIM_FACTOR`); lit gains a brighter inner lens core (`_LED_CORE_LIFT` 0.30). |
+
+**NEW params (the enhancement — TO ADD, David 2026-07-29). Defaults chosen backward-compatible:**
+
+| Param | Type | Default | Semantics | Compliance check |
+|-------|------|---------|-----------|------------------|
+| `segment_shape` | `"rectangular"`\|`"square"`\|`"round"` | `"rectangular"` | LED element geometry. `rectangular` = rounded rect (current impl); `square` = a square, side = `min(short,long)` slot extent, centered in its slot; `round` = a circle, diameter = `min` slot extent, centered. | each shape renders; `rectangular` is byte-identical to the pre-enhancement output. |
+| `segment_long_axis` | `"across"`\|`"along"` | `"across"` | RECTANGULAR ONLY. `across` (default) = the rect's LONG axis lies ACROSS the fill axis (wide LEDs stacked / tall LEDs in a row — current geometry). `along` = the rects' SMALL ends are adjacent, long axis ALONG the fill direction. Ignored for `square`/`round`. | with `along`, adjacent rects meet on their short edges; `across` reproduces current geometry. |
+| `segment_gap` | float px | `4.0` | space between adjacent LEDs along the fill axis (was the hardcoded `gap = 4.0`). `>= 0`. | `4` reproduces current spacing; `0` abuts segments; other values change the gap measurably. |
+| `padding` | float px | `8.0` | inset from the widget rect to the module bezel on ALL sides (was the hardcoded `pad = 8.0`). `>= 0`. | `8` reproduces current inset; larger shrinks the bezel symmetrically. |
+| `min_segment_size` | float px | `0.0` (disabled) | floor on the LED's SHORT-axis extent (rect short side / square side / circle diameter). `0` = no floor (backward-compatible). Overflow recovery when `>0` and the layout cannot give every segment `>=` this: (1) shrink `segment_gap` toward a 1px floor; (2) if still infeasible, reduce the RENDERED count to the largest `n'` with `(strip_extent - (n'+1)*gap)/n' >= min_segment_size`, rescaling the lit deciles + palette sampling to `n'`. NEVER render below the floor; NEVER overflow the rect. | at `0` output is unchanged; with a floor on an undersized rect, every rendered LED `>= floor` and the module stays within its rect. |
+
+- module flip (David's item d) — RECONCILED onto the existing two knobs; NO third module-mirror param exists or is needed:
+  - VERTICAL flip (mirror top<->bottom) of a column = `orientation: vertical` + toggle `reverse`.
+  - HORIZONTAL flip (mirror left<->right) of a row = `orientation: horizontal` + toggle `reverse`.
+  - Rotate the module 90 deg (change which axis it runs along) = change `orientation`.
+  - The PERPENDICULAR mirror (a column mirrored left<->right, or a row mirrored top<->bottom) is a visual IDENTITY (the strip is symmetric across that axis), so it needs no knob.
+  - Net: `orientation` picks the long axis, `reverse` picks the origin end; together they enumerate every distinct module presentation. Item (d) is satisfied by the existing knobs — the spec adds NO flip param. (Flagged for architect ratify.)
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 4. The Two New Interaction Seams
+
+### [CXC-PRIM-DRAGVAL] Drag-to-Value (the slider needs this)
+
+- gap: the engine already delivers `on_pan_start/on_pan/on_pan_end` to widgets ([CXC-RM-M1]) and publishes tap/long_press interactions, but there is no primitive that converts a drag into a **normalized value published to a namespace**.
+- contract: a small, reusable interaction behavior — a draggable region maps pointer position along its axis to a `[min,max]` value (respecting `step`) and publishes it to a namespace. Modes: **live** (publish on every `on_pan`) or **on_release** (publish once on `on_pan_end`). Deterministic + bus-native: an Intelligence can "drag" by publishing the value directly, identical to a finger.
+- reuse: this is the same "state on the bus, behavior in the widget" model; the slider's thumb position is a normal bound expression on the published value, so the visual is pure composite — only the *input* (pan→publish) is the new seam.
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-REPEAT] The `repeat` Generator (the segment_bar needs this; keyboard/numpad want it)
+
+- gap: the component expander ([14-composer-components]) substitutes `{{param}}` into a FIXED template — it cannot emit a *variable* number of children from a count param. An N-segment bargraph, and cleanly-generated key grids, need "clone this child N times, indexed."
+- decision: build a **code widget for this? NO** — that would be the first primitive to break define-once (needing a separate C++/CYD implementation) and would lock the look. Instead add a minimal **`repeat` construct** to the expander: a child carrying `repeat: <count> as: <name>` is unrolled at load into `count` concrete children, substituting the integer index token (`{{i}}`) 0..count-1 (and `{{count}}`). Nothing more — no load-time arithmetic engine.
+- key-insight (why it stays tiny): the **runtime DSL already exists** ([SPEC:CXC-DSL]), so ALL per-index logic lives in a normal bound expression, not the generator. The generator only substitutes the integer index as a literal; the expression does the math. A segment's color is one binding: `fill_color: { expr: "ns('{{value_ns}}') * {{count}} >= {{i}} + 1 ? ({{i}} < {{green}} ? '<greenhex>' : {{i}} < {{green}}+{{yellow}} ? '<yellowhex>' : '<redhex>') : '<dimhex>'" }` — lit/dim AND green/yellow/red zone in one expression, index/counts substituted as literals at load. (A `rect` binds `fill_color`, not `color` — the DSL result `'#RRGGBB'` is coerced to RGBA by the site since `fill_color ∈ COLOR_ATTRS`.) This is a direct dividend of building the DSL before the widgets.
+- reuse: `repeat` generalizes — keyboard/numpad key grids become generated rows rather than hand-listed (a follow-on refactor, not required now); tick marks, gauge ticks, any repeating structure.
+- composition: `repeat` runs in the same load-time expansion pass as `{{param}}`/`use:`; nested `repeat` and `repeat` inside a `use:` component must compose. Layout keys ([14] `_LAYOUT_KEYS`) on the repeated child apply per-copy so the container lays them out (a horizontal/vertical row of segments).
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-POPUP] Popup-List Overlay (the dropdown needs this)
+
+- gap: dropdown needs a transient overlay list with select + outside-dismiss. Overlay mechanics already exist (the Command arm-confirm + BusMonitor pop-out use `DialogWidget`); what's missing is a **list-select popup** as a reusable interaction.
+- contract: a popup surface anchored to the field, rendering an item list; an item tap publishes the selected value to a namespace and dismisses; an outside tap / escape dismisses without change. Reuse the existing dialog/overlay layer rather than inventing a second overlay system.
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 5. Tier Parity (David's durable ruling, 2026-07-29)
+
+### [CXC-PRIM-TIER-PARITY] A Capability Is Not Done Until It Renders on the Embedded Tier
+
+- principle: a UX capability built on the Python/Skia tier MUST ALSO be renderable on ESP32-class embedded devices, across the SAME narrow-waist Canvas contract ([CXC-R-DP-2]: rendering target is a transport-level detail; [CXC-R-DRAW-CONTRACT]), both back-ends. A widget or gauge style is NOT "done" as a platform capability until it renders on the embedded tier ([SPEC:CXC-EMBED-REACTIVE]) OR is EXPLICITLY scoped console-only with a recorded reason.
+- why: this is the render-engineer's "decompose to the contract, every backend gets it" (R1/R3) turned into a COMPLETION BAR. A capability drawn with ONLY Canvas-contract primitives is portable by construction; one that reaches past the contract (Skia-only calls, platform widgets) silently strands the embedded tier. Define-once ([CXC-PRIM-WHY]: composites render on every backend for free; the "define once, actuate many" discipline of [CXC-ER-HAL]) is the same idea; tier-parity makes it a GATE, not an aspiration.
+- motivating instance: `led_bar` ([CXC-PRIM-LEDBAR]) and the `bar`/fader gauge style ([CXC-PRIM-FADER]) shipped Python-only; the round Qualia dradis cannot use them until the C++ embedded-tier port lands ([SPEC:CXC-EMBED-REACTIVE] R-slices). Both are ALREADY contract-clean (built from `fill_round_rect`/`fill_circle`/`draw_line` only), so the port is a mechanical back-end pass, not a redesign — exactly the property tier-parity requires up front.
+- the bar (definition-of-done): each new UX capability carries a tier line — (a) renders on Python/Skia AND the C++ embedded back-end over the one Canvas contract, OR (b) an explicit `console-only:` scope with a reason. "Renders on Skia" alone is a DRAFT capability, not a landed platform one.
+- escape hatch: console-only is legitimate (some surfaces are desktop-console-specific), but it is DECLARED and REASONED, never a silent omission — the same preserve-and-flag discipline the format uses for a dangling edge.
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 6. The Carousel — a Touch Scale-Carousel (cover-flow)
+
+### [CXC-PRIM-CAROUSEL] The carousel widget — a continuous-position, touch-driven cover-flow
+
+- what: a horizontal SCALE-CAROUSEL (cover-flow) — a strip of tiles where a CENTER tile renders full-size and lifted above its neighbors, tiles to either side shrink toward `side_scale` with distance, and a horizontal touch-swipe scrolls the strip with snap-to-tile + edge rubber-band. It is the ComposePlatform equivalent of the CTk launcher's `CarouselView` (`/Maker/launcher/widgets/carousel.py`), re-expressed in the "state on the bus, behavior in the widget" model. A dot-indicator row below shows one dot per tile with the centered one highlighted.
+- name (generic, per generalize-names-back): the widget is `carousel` — NOT `launcher_carousel`. It is a general navigation/browse widget; a launcher is one caller. Its param/binding surface names positions and tiles, never apps.
+- the single source of truth is a continuous float `position` (`0.0` = the first tile centered; `1.0` = the second centered; fractional = mid-scroll). EVERYTHING renders from `position`: a tile's x, a tile's scale, the active dot, and `current_index = round(position)`. `position` lives on the bus (a widget-scoped namespace) so the render is a pure function of a bus value and the widget is drivable/observable headlessly — [CXC-PRIM-CAROUSEL-BIND].
+- delivered AS: a composite VISUAL (a `pixel_stack` strip of per-tile children whose `x`/scale are bound expressions on `position`, using the bindable pixel-stack geometry landed in [SPEC:CXC-BIND]) + ONE new interaction-controller seam — the **swipe-carousel controller** ([CXC-PRIM-CAROUSEL-TOUCH]) — that maps a horizontal pan to `position` with tap/drag discrimination, snap, and edge-elastic. This mirrors the slider's split ([CXC-PRIM-DRAGVAL]: the visual is a pure bound composite; only the input→publish is the new seam), extended with a snap ANIMATION (the drag-value seam publishes a value; the carousel controller additionally animates `position` toward a settled target).
+- why a seam (and not one of the pure composites [CXC-PRIM-WHY], nor a code Widget that locks a look): the carousel is an INPUT primitive whose value (`position`/`current_index`) IS a bus-observable API, and whose LOOK (tile size, scale falloff, dots, tokens) is meant to be forked — so it stays in the composite family. But its behavior (a drag/snap state machine + an ease-out animation loop) cannot live in a per-frame DSL expression, so it earns a small interaction-controller seam exactly as the slider earned [CXC-PRIM-DRAGVAL]. The seam is the ONLY new engine code; the drawing is contract-clean composite.
+- shared tokens: the dot indicator and any chrome keep [CXC-PRIM-TOKENS] — the active dot defaults to the accent, inactive to a dim neutral; a fork restyles the rest.
+- see-also: [CXC-PRIM-CAROUSEL-MODEL], [CXC-PRIM-CAROUSEL-TOUCH], [CXC-PRIM-CAROUSEL-TILES], [CXC-PRIM-CAROUSEL-SCALE], [CXC-PRIM-CAROUSEL-BIND], [CXC-PRIM-CAROUSEL-PARAMS], [CXC-PRIM-CAROUSEL-TIER], [CXC-PRIM-CAROUSEL-VERIFY]
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-CAROUSEL-MODEL] The position model + cover-flow geometry (the render is a pure function of `position`)
+
+- definition: given a continuous `position`, a spacing `S` (`spacing`, center-to-center px), a widget width `W`, and per-tile index `i` (0-based, list order), the widget MUST render tile `i` at:
+  - x (center of the tile): `x_i = W/2 + (i − position) * S`. The tile is drawn centered on `x_i`.
+  - scale (linear falloff with distance, CLAMPED): `scale_i = max(side_scale, center_scale − (center_scale − side_scale) * min(1, |i − position|))`. So the centered tile is `center_scale`; a tile a full pane or more away is `side_scale`; between, it interpolates linearly. Defaults `center_scale = 1.0`, `side_scale = 0.5` ([CXC-PRIM-CAROUSEL-PARAMS]).
+  - z-order: the tile nearest center (`round(position)`) MUST be lifted ABOVE its neighbors (it overlaps them at `center_scale`).
+  - culling: a tile whose scaled box lies entirely outside `[0, W]` MUST NOT be drawn (off-screen cull), an optimization that MUST NOT change any on-screen tile's x/scale.
+- `current_index`: `round(position)`. The dot row highlights `round(position)`; exactly one dot is active.
+- requirement (testable): a headless render at `position ∈ {0.0, 0.5, 1.0, 2.0}` MUST produce each on-screen tile's `x_i` and `scale_i` matching the two formulas above to within 0.5 px / 0.001 scale — this is the machine gate in [CXC-PRIM-CAROUSEL-VERIFY].
+- default clamp (no wrap): `position` and every snap target are clamped to `[0, n−1]` for `n` tiles; the carousel does NOT wrap. `wrap` is a param defaulting `false` ([CXC-PRIM-CAROUSEL-PARAMS]); the CTk source clamps, so `false` is the faithful default.
+- scenario:
+  - when: `n = 3`, `S = 425`, `W = 1080`, `position = 0.5`
+  - then: tile 0 sits at `x = 540 + (0−0.5)*425 = 327.5`, tile 1 at `540 + 212.5 = 752.5`, and both render at `scale = max(0.5, 1.0 − 0.5*min(1,0.5)) = 0.75`
+- see-also: [CXC-PRIM-CAROUSEL-SCALE]
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-CAROUSEL-TOUCH] The swipe-carousel controller — drag, tap-vs-drag, snap, elastic, state machine
+
+- definition: a reusable interaction controller (the new seam; the carousel analogue of `DragValueController`, [CXC-PRIM-DRAGVAL]) that consumes the engine's `on_pan_start`/`on_pan`/`on_pan_end` + tap ([CXC-RM-M1]) and drives the single `position` value. It reuses the "behavior in the widget, state on the bus" model: it only ever WRITES `position` (and publishes the settled index), so an Intelligence publishing a target index moves the carousel identically to a finger ([CXC-PRIM-CAROUSEL-BIND]).
+- drag tracks the finger 1:1: during a pan, `position = anchor_position + (−dx / S)` — dragging one full `S` of travel moves exactly one pane. The widget re-renders every pan event (the geometry of [CXC-PRIM-CAROUSEL-MODEL] recomputed at the live `position`).
+- tap vs drag (on release): a release is a TAP iff total drift `< tap_max_drift_px` (default 15 px) AND duration `< tap_max_duration_ms` (default 300 ms); a tap ACTIVATES the centered tile ([CXC-PRIM-CAROUSEL-BIND]). Otherwise the release is a SWIPE and runs the snap decision.
+- snap decision (on a swipe release): move to the ADJACENT tile in the swipe direction iff `|dx| > snap_threshold * S` (default `0.15`) OR `|velocity| > flick_velocity` (default 400 px/s); else snap BACK to the origin index. The new target is `round(base) ± 1` clamped to `[0, n−1]` (`base` = the committed pre-drag target).
+- NO momentum / inertia (load-bearing): a flick advances AT MOST ONE tile — velocity picks the DIRECTION, never the DISTANCE. There is no multi-tile fling. This is a deliberate divergence from OS carousels and MUST hold.
+- snap animation: `position` eases from its release value to the integer target over `snap_duration_ms` (default 300 ms) using `snap_easing` (default ease-out-cubic, `1 − (1−t)³`). On completion `position` is set EXACTLY to the integer target and the settled index is published.
+- edge elastic (rubber-band): while `position < 0` or `position > n−1` during a drag, the overshoot past the edge is multiplied by `elastic_factor` (default 0.30) so the strip resists past the first/last tile; on release it snaps back inside `[0, n−1]`.
+- state machine (mutually exclusive): the controller is in exactly one of `idle` / `dragging` / `snapping`. Invariants that MUST hold: a new `on_pan_start` CANCELS an in-flight snap (`snapping → dragging`); a snap runs only from `idle`/post-release; both a COMMITTED target-position (the last settled/target integer) and the LIVE continuous `position` are tracked, and the drag offset is always applied relative to the committed target, never the live mid-animation value.
+- OUT OF SCOPE (dropped secondary inputs, recorded so the omission is not silent): the CTk source also drives the carousel from a ROTARY ENCODER (`encoder_pulse`, pulses-per-pane tracking) and exposes `go_to`; the ComposePlatform widget specs TOUCH + the `position`/`goto` model ONLY. Keyboard arrow-nav is an OPTIONAL nicety a caller MAY wire to `goto_ns` (left/right = ∓1); the rotary encoder and any HA/hardware nav are DROPPED (not ported) — an encoder-driven variant, if ever wanted, publishes to `goto_ns` like any other peer and needs no widget change.
+- scenario:
+  - when: at rest on index 1, a finger drags 40 px left over 120 ms and releases (`S = 425`, so `|dx|=40 < 0.15*425 = 63.75`, low velocity)
+  - then: below threshold → snap BACK to index 1; `position` eases to `1.0`; `current_index` stays 1
+  - when: instead the finger flicks left 30 px in 40 ms at 900 px/s
+  - then: `|velocity| 900 > 400` → advance ONE to index 2 (never two, no momentum); `position` eases to `2.0`
+- see-also: [CXC-PRIM-CAROUSEL-MODEL], [CXC-PRIM-CAROUSEL-BIND]
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-CAROUSEL-TILES] Two tile kinds — a static image, or a LIVE child widget
+
+- definition: `tiles` is an ordered list; each entry is ONE of:
+  - an IMAGE tile — `{ image: <path/asset> }` — a static icon/picture, drawn scaled per the carousel.
+  - a LIVE-WIDGET tile — `{ widget: <use-ref or inline component> }` — a hosted, live child widget (the CTk `widget_factory` seam re-expressed). This is load-bearing: the ComposePlatform conversion renders a live `fiat_widget` and a `bsg_app` AS tiles, not stills — the tile's child keeps updating (bus-bound) while it sits in the carousel.
+  - either entry MAY also carry `target:` (the activate-intent target for a center-tap, [CXC-PRIM-CAROUSEL-BIND]) and `label:` (shown under the tile / used for the missing-image fallback).
+- requirement: a missing/unresolved image tile MUST fall back to its `label` on a neutral swatch and MUST be logged — never a blank tile (preserve-and-flag, mirroring [CXC-LB-TILE]). A live-widget tile that fails to construct renders the same labeled-swatch fallback.
+- requirement: image and live-widget tiles MUST occupy the SAME tile box (`tile_width` × `tile_height` at `center_scale`) and MUST scale by the SAME mechanism ([CXC-PRIM-CAROUSEL-SCALE]) — a caller MUST be able to mix image and live tiles in one carousel with no visual seam between the kinds.
+- default tile box: `tile_width = 500`, `tile_height = 500` px (the unscaled center extent; CTk's `ELEMENT_BASE_W/H`), overridable ([CXC-PRIM-CAROUSEL-PARAMS]).
+- see-also: [CXC-PRIM-CAROUSEL-SCALE]
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-CAROUSEL-SCALE] DESIGN DECISION — scale ALL tiles uniformly via the render engine's canvas scale transform
+
+- decision (architect, flagged for ratify): the ComposePlatform carousel scales EVERY tile — image AND live-widget — UNIFORMLY through the render engine's canvas SCALE TRANSFORM at draw time. A live `fiat_widget`/`bsg_app` tile shrinks at the sides EXACTLY like an image tile: one uniform cover-flow, one scale path, no image-swap hack.
+- chosen mechanism: at draw, the widget pushes a scale transform (`scale_i` about the tile's center, [CXC-PRIM-CAROUSEL-MODEL]) and draws the tile's content (an image, or the live child's own draw) under it, then pops. The engine already performs live per-frame transforms — the dradis `rotation`/`speed` bindings are the existing proof that a bound child is drawn under a live transform — so the carousel REUSES that capability rather than inventing scaling.
+- reuse-by-reference (extends, never forks): the tile x/scale are bound expressions on `position` over the bindable pixel-stack geometry ([SPEC:CXC-BIND]); the per-tile scale draws through the engine's existing transform path ([SPEC:CXC-RENDER]); the tile content is an ordinary image/child widget over the Canvas contract ([CXC-R-DRAW-CONTRACT]). No new drawing primitive is minted.
+- change: "The carousel scales live-widget tiles and image tiles by ONE uniform canvas scale transform, not by pre-rendering discrete image steps."
+- context_for_change:
+  - prior_state: "The CTk `CarouselView` fakes scale by PRE-RENDERING each image at 11 discrete steps (`SCALE_STEPS`, `SIDE_SCALE`..`CENTER_SCALE`) onto fixed-size canvases and SWAPPING to the nearest step per frame (`_nearest_scale_step`/`set_scale`) — an image-ONLY trick: it cannot scale a live child widget (the CTk build never scaled its `widget_factory` tiles), it quantizes scale to 11 steps, and it costs N×11 pre-rendered bitmaps."
+  - reasoning: "The render engine already draws bound children under live transforms (the dradis rotation/speed bindings), and every tile — image or live child — draws over the same Canvas contract. So a single canvas scale transform per tile gives CONTINUOUS (not 11-step) scale, works IDENTICALLY for image and live-widget tiles, and needs no pre-render cache. It is the 'generalize, don't fork' move ([CXC-PRIM-WHY] input-primitive family): one scale path for both tile kinds."
+  - rejected_alternative: "Port the CTk pre-render-11-steps-and-swap hack — rejected: it is image-only (cannot scale a live `fiat_widget`/`bsg_app` tile, the exact thing the conversion needs), quantizes to 11 steps, and duplicates a caching layer the engine's transform makes unnecessary. Also rejected: bind each tile's `w`/`h` to a scaled pixel size — that resizes an image fine but does NOT re-scale a live child's internal layout, so it would split image vs live tiles across two scale mechanisms (the seam this decision removes)."
+  - invalidating_assumption: "That the render engine's canvas scale transform composes correctly with a live child's own draw on EVERY target back-end. It holds on the Python/Skia tier (the dradis transforms prove it). If a back-end lacks a composable scale transform, that back-end falls back to the reduced image-only variant ([CXC-PRIM-CAROUSEL-TIER]) rather than forking the desktop mechanism."
+  - implication: "One scale path; continuous scale; image and live tiles are visually identical under motion. The `SCALE_STEPS`/pre-render machinery is not ported. This capability leans on the engine transform, which is why the tier position ([CXC-PRIM-CAROUSEL-TIER]) waives the embedded tier until that transform is confirmed on the C++ back-end."
+- see-also: [CXC-PRIM-CAROUSEL-TILES], [CXC-PRIM-CAROUSEL-TIER]
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-CAROUSEL-BIND] Bindings — `position`/index observable on the bus, center-tap fires a launch intent
+
+- definition: the carousel is bus-native. Three namespaces, all with STATED defaults (a builder MUST NOT guess):
+  - `index_ns` (state, PUBLISHED by the widget) — the centered tile's index (and, when the tile carries one, its `target` key/id) is published on every settle so peers know which tile is centered. Default `carousel/index`. SHOULD be set to a caller-meaningful namespace.
+  - `goto_ns` (command, CONSUMED by the widget) — publishing an integer index here commands the carousel to snap to that tile (clamped `[0,n−1]`), identical to a swipe. This is what makes the widget drivable headlessly and by an Intelligence (control-is-a-peer, [CXC-CREDO]): "go to tile 2" is a bus publish whether a finger or an Intelligence issues it. Default `carousel/goto`.
+  - the `position` float itself lives on a widget-scoped namespace the visual binds to (per [SPEC:CXC-BIND]); the controller ([CXC-PRIM-CAROUSEL-TOUCH]) writes it, the tile x/scale expressions read it.
+- center-tap intent: tapping the CENTERED tile ([CXC-PRIM-CAROUSEL-TOUCH] tap rule) fires that tile's activate intent. When a tile carries `target:`, the widget publishes `_app/<target>/open` at global scope — REUSING the launch-bar's intent convention verbatim ([SPEC:CXC-LAUNCHBAR] [CXC-LB-INTENT-BINDING]); it does NOT invent a new activate protocol. A tile with no `target:` publishes a generic `activate_ns` (default `carousel/activate`) carrying the centered index/id, for a non-launcher caller to consume.
+- requirement (control-is-a-peer): a human tapping the centered tile and an Intelligence publishing the identical `_app/<target>/open` (or `goto_ns` to first center it, then the activate) are PEERS — neither path is privileged. The widget publishes and returns; it does not itself spawn/launch (widget-owns-intent, [CXC-LB-CREDO]).
+- scenario:
+  - when: tile 1 (centered, `target: composer`) is tapped, OR an Intelligence publishes `_app/composer/open = true`
+  - then: the identical `_app/composer/open` global intent is on the bus; downstream cannot tell the finger from the Intelligence
+  - when: an Intelligence publishes `2` to `goto_ns`
+  - then: the carousel snaps to tile 2 (ease-out) and publishes `2` (+ tile 2's target) to `index_ns` on settle
+- see-also: [CXC-PRIM-CAROUSEL-TOUCH]
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-CAROUSEL-PARAMS] The full param surface — every knob, every default stated
+
+- definition: the carousel's configuration. Every value below has a STATED default so a builder never guesses; defaults reproduce the CTk `carousel.py` behavior faithfully where one exists.
+
+| Param | Type | Default | Semantics |
+|-------|------|---------|-----------|
+| `tiles` | list[tile] | — (required) | ordered tile list; each `{image:…}` or `{widget:…}` (+ optional `target:`, `label:`) — [CXC-PRIM-CAROUSEL-TILES]. Empty list renders an empty strip + no dots (not an error). |
+| `spacing` | float px | `425` | center-to-center distance `S` (CTk `ELEMENT_SPACING`). SHOULD be ≥ a scaled tile width to avoid center/side overlap the caller does not want; not enforced. |
+| `tile_width` | float px | `500` | unscaled (center) tile box width (CTk `ELEMENT_BASE_W`). |
+| `tile_height` | float px | `500` | unscaled (center) tile box height (CTk `ELEMENT_BASE_H`). |
+| `center_scale` | float | `1.0` | scale of the centered tile ([CXC-PRIM-CAROUSEL-MODEL]). |
+| `side_scale` | float | `0.5` | scale floor for tiles ≥ 1 pane away (CTk `SIDE_SCALE`). |
+| `snap_threshold` | float (0..1) | `0.15` | drag past this FRACTION of `spacing` advances one tile (CTk `SNAP_THRESHOLD`). |
+| `flick_velocity` | float px/s | `400` | release speed at/above which a flick advances one tile regardless of drift (CTk `velocity_threshold`). |
+| `snap_duration_ms` | int | `300` | snap-animation duration (CTk `SNAP_DURATION_MS`). |
+| `snap_easing` | enum | `ease_out_cubic` | snap curve `1−(1−t)³` (CTk `_ease_out_cubic`). |
+| `elastic_factor` | float (0..1) | `0.30` | edge overshoot multiplier past the first/last tile (CTk `ELASTIC_FACTOR`). |
+| `tap_max_drift_px` | float px | `15` | release drift below which (with duration) a release is a TAP not a swipe. |
+| `tap_max_duration_ms` | int | `300` | release duration below which (with drift) a release is a TAP. |
+| `wrap` | bool | `false` | clamp to `[0,n−1]` (CTk behavior) when false; toroidal wrap when true. |
+| `initial_index` | int | `0` | tile centered at load (`position = initial_index`). |
+| `show_dots` | bool | `true` | render the one-dot-per-tile indicator row below. |
+| `dot_active_color` | hex | accent (`#34c3d0` dark / `#159aa8` light, [CXC-PRIM-TOKENS]) | centered-dot color. (CTk used `#ffffff`; the token accent is the family-consistent default.) |
+| `dot_inactive_color` | hex | `#666666` | non-centered dot color (CTk `DOT_INACTIVE_COLOR`). |
+| `index_ns` | ns | `carousel/index` | where the centered index/id is published ([CXC-PRIM-CAROUSEL-BIND]). |
+| `goto_ns` | ns | `carousel/goto` | publish an index here to command a snap ([CXC-PRIM-CAROUSEL-BIND]). |
+| `activate_ns` | ns | `carousel/activate` | generic center-tap publish for a tile with no `target:` ([CXC-PRIM-CAROUSEL-BIND]). |
+
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-CAROUSEL-TIER] Tier position — WAIVER to console/desktop-tier, with a recorded reason + a reduced-embedded path
+
+- principle: per [CXC-PRIM-TIER-PARITY], a UX capability is not a landed PLATFORM capability until it renders on the ESP32 embedded tier ([SPEC:CXC-EMBED-REACTIVE]) OR is EXPLICITLY scoped console-only with a recorded reason. This node is that explicit scope + reason (the escape hatch), not a silent omission.
+- position (recommended): WAIVER — the carousel is scoped CONSOLE/DESKTOP-tier (Python/Skia), NOT embedded, in this spec.
+- reason: two independent reasons. (1) FIT: a horizontal touch swipe scale-carousel is a dubious interaction on a 720 px ROUND ESP32 dradis panel — a cover-flow strip wants width and a clear left/right axis a round face does not offer; the interaction, not just the render, is desktop-shaped. (2) MECHANISM: the uniform live-tile scaling ([CXC-PRIM-CAROUSEL-SCALE]) leans on the engine's canvas scale transform composing with a LIVE child's draw, which is proven on Skia (the dradis rotation/speed transforms) but NOT yet confirmed on the C++ embedded back-end. Scoping console-only now is honest; claiming embedded parity would be the silent-strand anti-pattern tier-parity exists to prevent.
+- reduced embedded variant (the escape-hatch's forward path, NOT a port): should an embedded carousel ever be wanted, it is a DISTINCT reduced capability — image-only tiles (no live-widget hosting), the pre-rendered discrete-scale-step trick the CTk build used ([CXC-PRIM-CAROUSEL-SCALE] prior_state) if the back-end lacks a composable scale transform, and a nav axis suited to the round face (e.g. dot-nav or a shorter fling). It would be its own tier-parity slice, not a mechanical back-end pass of this desktop widget.
+- upholds: [CXC-PRIM-TIER-PARITY]
+- see-also: [CXC-PRIM-CAROUSEL-SCALE]
+- part-of: [SPEC:CXC-PRIM]
+
+### [CXC-PRIM-CAROUSEL-VERIFY] Acceptance — machine signal + glass gate
+
+- definition: the carousel's two-tier verdict — a machine signal AND, because it is a human-perceptible touch surface, an explicit human/glass gate. A machine-green carousel that has never been dragged on real glass is not accepted.
+
+| ID | Requirement | verify.machine | verify.human (glass) |
+|----|-------------|----------------|----------------------|
+| CAR-V1 | Geometry is a pure function of `position` ([CXC-PRIM-CAROUSEL-MODEL]) | a headless render at `position ∈ {0.0, 0.5, 1.0, 2.0}` asserts each on-screen tile's `x_i = W/2+(i−position)*S` (±0.5 px) and `scale_i` = the clamped falloff (±0.001); center tile lifted above neighbors | on glass: the centered tile reads full-size and lifted; side tiles shrink smoothly toward half-size with distance |
+| CAR-V2 | Center-tap fires the activate intent, nothing else ([CXC-PRIM-CAROUSEL-BIND]) | a test taps the centered tile with an injected bus and asserts EXACTLY ONE publish of the tile's `_app/<target>/open` (or `activate_ns`), no spawn from the widget | on glass: tapping the centered tile launches/activates its target |
+| CAR-V3 | Swipe past threshold advances exactly one tile ([CXC-PRIM-CAROUSEL-TOUCH]) | a test drives a release with `dx > 0.15*S` OR `|v|>400` and asserts the target index moves by EXACTLY ±1 in the swipe direction, clamped `[0,n−1]`; `position` settles to the integer target | on glass: a firm swipe/flick advances one tile and snaps home; a flick never skips two |
+| CAR-V4 | Sub-threshold swipe snaps back ([CXC-PRIM-CAROUSEL-TOUCH]) | a test drives `|dx| < 0.15*S` AND `|v|<400` and asserts the index is UNCHANGED and `position` eases back to the origin integer | on glass: a small nudge springs back to the same tile |
+| CAR-V5 | Drag tracks 1:1; edge rubber-bands ([CXC-PRIM-CAROUSEL-TOUCH]) | a test asserts a pan of `S` px moves `position` by 1.0; past-edge overshoot = `overshoot*elastic_factor`; release snaps inside `[0,n−1]` | on glass: the strip tracks the finger 1:1; past the first/last tile it resists and springs back |
+| CAR-V6 | Control-is-a-peer: `goto_ns`/intent publish moves it identically ([CXC-PRIM-CAROUSEL-BIND]) | a test publishes an index to `goto_ns` and asserts the carousel snaps + republishes the settled index to `index_ns`, byte-identical to a swipe outcome | n/a (structural) |
+| CAR-V7 | State machine: a drag cancels an in-flight snap ([CXC-PRIM-CAROUSEL-TOUCH]) | a test starts a snap, injects `on_pan_start` mid-animation, and asserts the snap is cancelled and the drag takes over from the live `position` | on glass: grabbing the strip mid-snap immediately follows the finger |
+| CAR-V8 | Uniform scale for image AND live tiles ([CXC-PRIM-CAROUSEL-SCALE]) | a test renders a carousel mixing an image tile and a live-widget tile and asserts both draw at the same `scale_i` for the same distance (one transform path; no `SCALE_STEPS` cache) | on glass: a live `fiat_widget`/`bsg_app` tile shrinks at the sides EXACTLY like an image tile — continuous, no step-popping, no seam between the kinds |
+| CAR-V9 | Console-tier scope recorded, not silent ([CXC-PRIM-CAROUSEL-TIER]) | the spec carries the console/desktop-tier WAIVER node + reason and an UPHOLDS edge to [CXC-PRIM-TIER-PARITY] | n/a (structural) |
+
+- part-of: [SPEC:CXC-PRIM]
+
+---
+
+## 7. Compliance
+
+| ID | Requirement | Testable Criterion |
+|----|-------------|-------------------|
+| CXC-PRIM-C1 | Composites, not code widgets | Each primitive is a `components:` entry expanded by `expand_components`; no new engine `Widget` subclass is required for the four pure composites |
+| CXC-PRIM-C2 | Forkable | A demo `.compose.yaml` uses `{use: <name>, …}`; cloning the component and changing tokens restyles it with no engine change |
+| CXC-PRIM-C3 | Shared tokens | All six render in the ratified token set ([CXC-PRIM-TOKENS]); pre-vis is the visual reference |
+| CXC-PRIM-C4 | progress_bar | fill width tracks a bound value 0..1; warn threshold flips color via binding, not a new widget |
+| CXC-PRIM-C5 | switch | tap toggles a binary namespace; knob position is a bound expression on that state |
+| CXC-PRIM-C6 | slider | `on_pan` publishes a normalized value ([CXC-PRIM-DRAGVAL]); thumb tracks the published value; an Intelligence publish moves it identically |
+| CXC-PRIM-C7 | dropdown | item selection publishes + dismisses via the popup overlay ([CXC-PRIM-POPUP]); outside tap dismisses without change |
+| CXC-PRIM-C8 | numpad / keyboard | key presses edit a target text namespace a `text_input` consumes |
+| CXC-PRIM-C9 | Backends | Each composite renders via the Canvas contract with no per-backend widget code (define-once) |
+| CXC-PRIM-C10 | repeat generator | `repeat: N as: i` unrolls a child into N concrete children with `{{i}}` = 0..N−1 at load; composes with `{{param}}` and `use:`; no new per-backend code |
+| CXC-PRIM-C11 | segment_bar | An N-segment bar lights `floor`/threshold segments by a bound value, zoned green/yellow/red by count params, in horizontal or vertical orientation; all per-segment logic is one DSL expression |
+| CXC-PRIM-C12 | fill/fader ([CXC-PRIM-FADER]) | `gauge` `style: bar` fills a track by a `namespace:`-bound value's fraction of `[min_val,max_val]`; `orientation: vertical` fills bottom->top, `horizontal` left->right; the fill warms on `warning_threshold`/`danger_threshold`; the dial/semicircle rendering is byte-unchanged (a new style branch only) |
+| CXC-PRIM-C13 | led_bar readout ([CXC-PRIM-LEDBAR]) | `gauge` `style: led_bar` lights segment i when `value >= min_val+(i/N)*range`; an unlit segment is a 16%-luminance hue-true SAME-color; a short `segment_colors` repeats its last entry; `orientation`+`reverse` place the axis+origin (and fully express the module H/V flip, no third knob). Defaults (rectangular, `across`, gap 4, padding 8, `min_segment_size` 0) render byte-identical to the pre-enhancement output; dial/semicircle/bar branches unchanged |
+| CXC-PRIM-C14 | led_bar config params ([CXC-PRIM-LEDBAR]) | `segment_shape` ∈ {rectangular,square,round} draws the specified geometry; `segment_long_axis` ∈ {across,along} flips the rectangular long axis (rectangular only); `segment_gap`/`padding` measurably change spacing/inset; `min_segment_size` clamps the short-axis extent, recovering by gap-shrink then count-rescale — never rendering below the floor nor overflowing the rect |
+| CXC-PRIM-C15 | tier parity ([CXC-PRIM-TIER-PARITY]) | each new UX capability renders on Python/Skia AND the C++ embedded back-end over the one Canvas contract, OR carries an explicit `console-only:` scope + reason; a Skia-only capability is Draft, not landed. `led_bar`/`bar` are contract-clean (`fill_round_rect`/`fill_circle`/`draw_line` only), so their embedded port is a back-end pass |
+| CXC-PRIM-C16 | carousel geometry ([CXC-PRIM-CAROUSEL], [CXC-PRIM-CAROUSEL-MODEL]) | a headless render at `position ∈ {0.0,0.5,1.0,2.0}` yields each tile's `x=W/2+(i−position)*S` and clamped `scale=max(side,center−(center−side)*min(1,\|i−position\|))`; center tile lifted; off-screen tiles culled without changing on-screen x/scale ([CXC-PRIM-CAROUSEL-VERIFY] CAR-V1) |
+| CXC-PRIM-C17 | carousel touch model ([CXC-PRIM-CAROUSEL-TOUCH]) | drag moves `position` 1:1 (`S` px = 1 pane); release is a TAP iff drift<`tap_max_drift_px` and duration<`tap_max_duration_ms`; a swipe advances EXACTLY ±1 iff `\|dx\|>snap_threshold*S` OR `\|v\|>flick_velocity`, else snaps back; NO multi-tile momentum; snap eases `1−(1−t)³` over `snap_duration_ms`; edge overshoot ×`elastic_factor`; a drag cancels an in-flight snap ([CXC-PRIM-CAROUSEL-VERIFY] CAR-V3/V4/V5/V7) |
+| CXC-PRIM-C18 | uniform tile scale, image + live ([CXC-PRIM-CAROUSEL-SCALE], [CXC-PRIM-CAROUSEL-TILES]) | an image tile and a live-widget (`fiat_widget`/`bsg_app`) tile draw at the SAME `scale_i` for the same distance via ONE canvas scale transform (no `SCALE_STEPS` pre-render cache); mixing kinds shows no scale seam ([CXC-PRIM-CAROUSEL-VERIFY] CAR-V8) |
+| CXC-PRIM-C19 | carousel bindings / control-is-a-peer ([CXC-PRIM-CAROUSEL-BIND]) | the centered index/id publishes to `index_ns` on settle; publishing an index to `goto_ns` snaps identically to a swipe; a center-tap publishes the tile's `_app/<target>/open` (launch-bar convention, [CXC-LB-INTENT-BINDING]) or `activate_ns`, and nothing else ([CXC-PRIM-CAROUSEL-VERIFY] CAR-V2/V6) |
+| CXC-PRIM-C20 | carousel tier waiver ([CXC-PRIM-CAROUSEL-TIER]) | the carousel carries an explicit console/desktop-tier WAIVER + reason and an UPHOLDS edge to [CXC-PRIM-TIER-PARITY]; the embedded case is a distinct reduced variant, not a claimed port ([CXC-PRIM-CAROUSEL-VERIFY] CAR-V9) |
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-PRIM] USES [14-composer-components]
+[SPEC:CXC-PRIM] USES [SPEC:CXC-BIND]
+[SPEC:CXC-PRIM] USES [SPEC:CXC-DSL]
+[CXC-PRIM-DRAGVAL] EXTENDS [CXC-RM-M1]
+[CXC-PRIM-POPUP] REUSES [CXC-R-DIALOG]
+[CXC-PRIM-FADER] REALIZES [CXC-ICV-GAUGE]
+[CXC-PRIM-LEDBAR] REALIZES [CXC-ICV-GAUGE]
+[CXC-PRIM-LEDBAR] RELATED_TO [CXC-PRIM-FADER]
+[CXC-PRIM-LEDBAR] USES [CXC-R-DRAW-CONTRACT]
+[CXC-PRIM-LEDBAR] UPHOLDS [CXC-PRIM-TIER-PARITY]
+[CXC-PRIM-TIER-PARITY] UPHOLDS [CXC-R-DP-2]
+[CXC-PRIM-TIER-PARITY] RELATED_TO [SPEC:CXC-EMBED-REACTIVE]
+[CXC-PRIM-TIER-PARITY] RELATED_TO [CXC-PRIM-WHY]
+[CXC-PRIM-CAROUSEL] DEPENDS_ON [SPEC:CXC-RENDER]
+[CXC-PRIM-CAROUSEL] USES [SPEC:CXC-DSL]
+[CXC-PRIM-CAROUSEL] USES [SPEC:CXC-BIND]
+[CXC-PRIM-CAROUSEL] RELATED_TO [CXC-PRIM-WHY]
+[CXC-PRIM-CAROUSEL-TOUCH] RELATED_TO [CXC-PRIM-DRAGVAL]
+[CXC-PRIM-CAROUSEL-TILES] USES [SPEC:CXC-RENDER]
+[CXC-PRIM-CAROUSEL-SCALE] USES [SPEC:CXC-RENDER]
+[CXC-PRIM-CAROUSEL-SCALE] USES [CXC-R-DRAW-CONTRACT]
+[CXC-PRIM-CAROUSEL-SCALE] RELATED_TO [CXC-PRIM-WHY]
+[CXC-PRIM-CAROUSEL-BIND] USES [CXC-LB-INTENT-BINDING]
+[CXC-PRIM-CAROUSEL-BIND] REALIZES [CXC-CREDO]
+[CXC-PRIM-CAROUSEL-BIND] RELATED_TO [SPEC:CXC-LAUNCHBAR]
+[CXC-PRIM-CAROUSEL-TIER] UPHOLDS [CXC-PRIM-TIER-PARITY]
+[CXC-PRIM-CAROUSEL-TIER] RELATED_TO [SPEC:CXC-EMBED-REACTIVE]
+
+---
+
+**Version**: 0.5
+**Created**: 2026-07-09
+**Status (0.5, 2026-07-30, [CXC-PRIM-CAROUSEL])**: DRAFT — spec-only, not yet built. Adds the **carousel** — a touch-driven horizontal scale-carousel (cover-flow), the ComposePlatform equivalent of the CTk launcher's `CarouselView` (`/Maker/launcher/widgets/carousel.py`), authored as nine nodes ([CXC-PRIM-CAROUSEL] + -MODEL/-TOUCH/-TILES/-SCALE/-BIND/-PARAMS/-TIER/-VERIFY). The widget renders entirely from a continuous `position` float on the bus; its VISUAL is a pure bound composite (tile x/scale = bound expressions on `position`), its BEHAVIOR is ONE new interaction-controller seam (the swipe-carousel controller — drag/tap/snap/elastic state machine, the carousel analogue of [CXC-PRIM-DRAGVAL]). TWO tile kinds (static image + live child widget, the CTk `widget_factory` seam). RATIFIED DESIGN DECISION to confirm — [CXC-PRIM-CAROUSEL-SCALE]: scale ALL tiles (image AND live-widget) UNIFORMLY via the render engine's canvas scale transform (the dradis rotation/speed transforms are the proof), NOT the CTk pre-render-11-discrete-steps image-only hack (`change`/`context_for_change` recorded). TIER — [CXC-PRIM-CAROUSEL-TIER]: recommended WAIVER to console/desktop-tier with a two-part reason (a swipe cover-flow is a dubious fit on a 720px round ESP32; the live-tile scale transform is unconfirmed on the C++ back-end), the embedded case scoped as a distinct reduced image-only variant, not a port. Bindings reuse the launch-bar's `_app/<target>/open` center-tap intent ([CXC-LB-INTENT-BINDING]) and publish the centered index to `index_ns` (+ a `goto_ns` command ns, control-is-a-peer). Full param surface with stated defaults ([CXC-PRIM-CAROUSEL-PARAMS], defaults faithful to `carousel.py`). Awaiting architect ratify (esp. the scale mechanism + the tier waiver) + build (Python/Skia seam + composite).
+
+**Status (0.4, 2026-07-29, [CXC-PRIM-LEDBAR] + [CXC-PRIM-TIER-PARITY])**: DRAFT — spec-only, not yet built. Formalized the segmented LED level-meter as `gauge` `style: "led_bar"` ([CXC-PRIM-LEDBAR], the fourth gauge style beside dial/semicircle/bar): CONFIRMS the shipped baseline (`segments`, `segment_colors`, `orientation`, `reverse`, the lit / 16%-dim hue-true model in `gauge.py:_draw_led_bar`) and ADDS five config params — `segment_shape` (rectangular|square|round) + `segment_long_axis` (across|along, rectangular-only), `segment_gap` (was hardcoded 4px), `padding` (was hardcoded 8px), and `min_segment_size` (short-axis floor, default 0/disabled = backward-compatible). Item (d) "flip the whole module H/V" reconciled onto the existing `orientation`+`reverse` knobs — NO third module-mirror param. Also ratifies [CXC-PRIM-TIER-PARITY] (David's durable ruling): a UX capability is not "done" until it renders on the ESP32 embedded tier over the one narrow-waist Canvas contract ([SPEC:CXC-EMBED-REACTIVE]), or is explicitly `console-only:` with a reason. Defaults keep the current render byte-identical. Awaiting architect ratify + build (Python enhancement, then the C++ embedded-tier port).
+
+**Status (0.3, 2026-07-28, [CXC-PRIM-FADER])**: the linear fill/fader readout landed as `gauge` `style: "bar"` (+ `orientation: vertical|horizontal`) — NOT a new class, NOT a composite — reusing the gauge's namespace/threshold/bus API and Canvas-contract draw. It retires the hand-wired `pixel_stack`+`rect`+`ns()`-geometry throttle calibration fragment: `render/examples/calib_throttle.compose.yaml` is now two `namespace:`-bound bars (throttle/left|right, continuous_0_255) + a title, zero hand-wired geometry exprs. 11 unit tests (`tests/render/test_gauge_bar.py`: fill-fraction monotonicity + ~half-at-midpoint, vertical bottom-up + horizontal left-right origin, threshold warming, measure/style routing, and the calib-scene namespace binding driven over the bus). Pixel proof: `captures/calib_throttle/` (scene at L/R = 0/0, 128/64, 255/200; a 0/128/255 fill strip; a horizontal level meter). Full render suite green (2094 passed; the one failure — `test_agents_skills::test_publisher_reads_real_repo_set` expecting a `console-up` skill — is a pre-existing `.claude` skill-registry drift, orthogonal to this change). Opus tier (composition, not render-systems depth); Fable correctly not used.
+
+**Status (0.2, 2026-07-09)**: OPERATIONAL. All seven composites landed (`render/examples/components/{progress_bar[,_indeterminate],switch,numpad,keyboard,slider,dropdown,segment_bar}.compose.yaml`) — Sonnet built the four pure composites, Opus built slider/dropdown + segment_bar/repeat. **633 tests green macOS**, zero regressions (`test_primitives_composites.py` 20, `test_primitives_interactive.py` 13, `test_component_repeat.py` 14, `test_segment_bar.py` 8). Aesthetic ratified from the pre-vis; Fable correctly not used.
+
+Engine seams REALIZED (each earned its keep, ratified 2026-07-09):
+- **[CXC-PRIM-DRAGVAL]** → `render/engine/drag_value.py` (`DragValueController` + declarative `drag_value:` block; base-`Widget` pan delegation). Publish-only, deterministic: dragging to a value and *directly publishing* it land the thumb at the identical pixel (Intelligence "drags" byte-identically to a finger).
+- **[CXC-PRIM-POPUP]** → `DialogWidget` list-select mode (`options` + `select_namespace` + `anchor`); reuses the existing overlay, no second system.
+- **[CXC-PRIM-REPEAT]** → `render/engine/components.py` (`repeat: N as: i` unrolls at load; composes with `{{param}}`/`use:`/nesting via a `known`-scope token rule that leaves un-owned tokens intact). Generalizes to keyboard/numpad key grids (a queued follow-on refactor).
+- **NEW — bindable pixel-stack geometry** (promote into [SPEC:CXC-BIND]): `x/y/w/h` are now bindable (→ `stack_x/y/w/h`), and a *bound* geometry value resolves as ABSOLUTE PIXELS (not the `0..1⇒fraction` shorthand) — this is what makes the slider's visual a pure bound composite.
+- **orient vocabulary**: `build_node` now aliases `horizontal→row`, `vertical→column` (`_DIRECTION_ALIASES`), so every primitive accepts David's `horizontal|vertical` terms; segment_bar's param carries that spelling.
+
+Reconciliations / findings:
+- spec sketch's `color:` corrected to `fill_color:` (a `rect` has no bindable `color`).
+- **string-accumulation gap** (numpad/keyboard): a key publish is last-key-wins, not append — the DSL has no string-concat and there is no read-modify-write publish site outside headless `outputs:` ticks. Per [CXC-BIND-BOUNDARY], a companion bus workload / Intelligence is the intended text accumulator (documented in both configs). A harvested need — candidate for a future text-accumulate site or a DSL string op.
+- **binary-engine convention gap** (pre-existing, found via the switch): `publish_value: toggle` hardcodes numeric `0/1`, which the binary state engine's `['off','on']` domain rejects. Worked around (discrete-literal pills); the underlying `toggle`↔binary mismatch is flagged for a runtime fix, not addressed here.
+- theme: only dark tokens wired (engine `design.theme` isn't runtime-switchable yet); light hex noted in comments.
+
+## A widget must be able to say "this number is OLD" — staleness is a presentation primitive, not a per-widget afterthought [CXC-PRIM-STALE]
+
+- requirement: Every widget bound to a bus namespace renders a STALENESS TREATMENT when the receiver's verdict is not fresh. ⛔ The treatment is OPT-OUT, not opt-in: `Widget.staleness_treatment` defaults to `"auto"`; a widget declines with `"none"` or renders its own with `"self"`, and declares it as `staleness:` in `.compose.yaml`. It is drawn in `engine/layout.draw_child` — the same choke point the opacity/rotate/scale transforms compose through — so there is exactly ONE path that dims.
+- why-opt-out-not-opt-in: MEASURED 2026-08-15: 53 widget classes implement `on_bus_state`, and 22 wrapped a coercion in a handler that swallowed the unknown identically — `try: self.value = float(value) except (TypeError, ValueError): pass`, where `UnknownValueError` subclasses `TypeError`, so the handler CATCHES IT AND PASSES. 22 silent swallowers is the measured cost of a mechanism each author must remember. Opt-out makes the default correct and lets a widget deliberately decline.
+- the-failure-this-prevents: ⛔ NOT a blank and NOT a zero — SILENT RETENTION OF THE STALE NUMBER, which is strictly worse than either because the display is confidently wrong and nothing anywhere reports it. Measured on a live GaugeWidget: publisher alive sends 3 -> gauge.value 3.0; publisher DEAD, receiver correctly says UNKNOWN -> gauge.value STILL 3.0. Field instance the same day: a Dradis console showed `contacts: 3 threats: 0` from a publisher that had stopped. The number was TRUE when written; the display had no way to say it was old.
+- presentation-three-cues-never-a-blank: RETAIN the last value, DIM it (0.30-0.45), HATCH it at 45 degrees surface-anchored, BADGE it. ⛔ NEVER BLANK: a blanked bar gauge reads as ZERO and a blanked LED reads as OFF — a viewer's default reading of an empty instrument is a MEASUREMENT, so blanking converts "confidently wrong" into "confidently wrong AND alarming", and discards the most useful thing a dead channel can say: it was 3, forty seconds ago. Each cue alone FAILS: dimming is a cue of DEGREE and a glance does not read degree; a hatch alone reads as decoration on a dense card; a badge alone is what a scanning eye skips.
+- badge-must-degrade-not-vanish: ⛔ The badge degrades to a 7px corner wedge when the widget is too small for a pill. "Too small for the badge" must never become "silently untreated" — that is this entire defect class reappearing at small sizes.
+- four-verdicts-not-two: STALE (amber, single hatch, WITH age) — one publisher died. NODE_SILENT (red CROSS-hatch, NO age) — a board died; cross-hatch so the distinction survives a colour-blind operator, and no age because a namespace's age proves nothing about a quiet namespace. NO_SIGNAL (slate, no age) — never arrived, may be booting. NO_DATA (blue-grey, sparse, DELIBERATELY THE GENTLEST) — the publisher is alive and honestly does not know; an alarm here trains the operator to ignore alarms. ⛔ They look different because their REMEDIES differ.
+- undeclared-authorises-no-verdict: ⛔ A namespace with no declared cadence renders UNTREATED, byte-identical to its live frame. This is deliberate and load-bearing: without it, adding this mechanism would have hatched every widget in every existing scene overnight. The question was never asked, so it is not answered.
+- quiet-by-design-must-not-be-treated: ⛔ The inverse defect is as real as the original. A namespace declared `quiet_by_construction` — the throttle's "quiet-bus by construction" — renders BYTE-IDENTICAL after 100,000 s of silence. A treatment that fires here marks the fleet's most-watched namespace dead seconds after the operator releases the lever. Both directions require a negative control.
+- absorb-private-freshness-notions-only-where-they-are-transport-age: `link_health` hand-rolled a monotonic stamp and a 12 s threshold — the freshness receiver rebuilt inside one widget — and was ABSORBED. ⛔ `lts_engine_rail` and `decisions_summary` were NOT, correctly: their `fresh` comes from the PUBLISHED PAYLOAD (index currency, newest decision session stamp) — a CONTENT fact, not a transport age. Conflating them would make "index up to date" and "message arrived recently" the same word. Both now get the transport half free from the default treatment, which incidentally fixed a second latent bug: a dead lts-engine would have left a frozen "UP FRESH".
+- two-defects-only-eyes-found: The badge first read `NODE DOWN 0s` — the NAMESPACE's age, precisely the number that proves nothing about a quiet namespace. And `fill_path` with tuple-shaped commands matches NO case in the Skia backend's structural `match` and draws an empty path SILENTLY — the corner wedge was not painting at all while the test passed on the hatch alone. ⛔ Neither was visible to any machine signal; both were found by looking at pixels.
+- implementation: python/composeio/render/freshness_view.py; python/composeio/render/engine/layout.py:draw_child; python/composeio/render/widget.py:staleness_treatment
+- status: built (Python render tier) — ⛔ MECHANISM SUPERSEDED 2026-08-15, rework to bindings OWED. The visual language is ratified and stands; the `draw_child` code path and the `staleness_treatment` widget attribute are the wrong form and must not be copied. Read `mechanism-superseded-2026-08-15` on this node BEFORE implementing anything from it.
+- verify: [CXC-PRIM-STALE-TESTS]
+- cpp-tier-is-a-named-followon: ⛔ `cyd/src/compose_scene.cpp` does NOT draw this. The treatment uses only existing Canvas-contract primitives so the narrow waist is NOT widened — this is a BACKEND extended to meet the contract, not a widget forked to a backend — but until ported, an embedded panel shows the same stale number this node exists to end.
+- part-of: [SPEC:CXC-PRIM]
+- see-also: [CXC-PRIM-COMPOSITES], [DEC-A-FRESHNESS-VERDICT-IS-STATE-NOT-A-HANDLER], [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER]
+- mechanism-superseded-2026-08-15: ⛔ THE VISUAL LANGUAGE BELOW STANDS; THE PLUMBING IT DESCRIBES IS THE WRONG FORM AND MUST NOT BE COPIED. As first authored, this node specified the treatment as CODE drawn from `engine/layout.draw_child` with an opt-out `Widget.staleness_treatment` attribute — an O(1) base-class hook. David ruled that design wrong the same day: "we shouldn't have to PROGRAM for that, it should just HAPPEN because a new state has been emitted." The freshness verdict is published ONCE as STATE on the internal bus, and every reaction — a dimmed widget, an LED, a relay failing safe — is an ORDINARY BINDING over that namespace. The correct amount of new reaction code is ZERO. See [DEC-A-FRESHNESS-VERDICT-IS-STATE-NOT-A-HANDLER] and [DX-A-NEW-FACT-IS-STATE-NEVER-A-HANDLER], which names O(1) "the seductive wrong answer" because it passes every DRY review and is still code, and code lives in ONE TIER. WHAT SURVIVES UNCHANGED: four verdicts, never-blank, retain-dim-hatch-badge, the badge degrading to a wedge, undeclared-authorises-no-verdict, and quiet-by-construction. Those are presentation decisions and they were right. WHAT DIES: `staleness_treatment` as a widget attribute, the `draw_child` choke point as the single dimming path, and the `on_stale:` actuator vocabulary (withdrawn). THE TELL THAT PROVED IT: the O(1) fix had already generated its own named follow-on — a C++ port — and under O(0) there is nothing to port, because the embedded tier already consumes state. Empirically confirmed: `ns()` reads any namespace, an expression's parse-time namespace list IS its subscription list, colour swap / `visible` / `led.state` / `text` all bind today, and an unset namespace reads falsy so it fails safe. ONE GENUINE GAP: no opacity/brightness attribute on the leaf, so "dim" is a colour swap there. Reason through dusk gift P13 before implementing.

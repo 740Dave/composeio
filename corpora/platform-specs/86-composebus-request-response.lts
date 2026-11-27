@@ -1,0 +1,154 @@
+---
+scope: "The platform's FIRST request/response-over-pub/sub idiom: a requester publishes a query to a namespace, a responder answers on a per-requester result namespace, correlated by a request_id. Specified once as a REUSABLE PATTERN (the namespaces, the correlation/addressing rule, the ordering discipline, the validation rules), then applied concretely to document_store — its `_doc/{collection}/query` -> `_doc/{collection}/result/{src}` bus face, additive to the existing HTTP API. Carries its own PRE-INTEGRATION questions (answered — a design pass) and its own POST-INTEGRATION evidence slots (LANDED `852a56f`, evidenced by `tests/test_document_store_bus.py` + `tests/test_document_store_bus_over_mqtt.py`, both as first-class queryable properties per [DX-SPEC-CARRIES-ITS-EVIDENCE])."
+audience: "The ComposeUX/ComposeIO architect ruling on placement; composeio-expert implementing document_store's bus face and any FUTURE query service copying this idiom; any Intelligence asking by QUERY whether a request/response namespace pair has ever run."
+boundary: "IN: the generic request/response-over-pub/sub idiom (namespace shape, correlation, addressing, ordering discipline, responder statelessness, validation rules) as a reusable pattern; document_store's concrete application (topics, val grammar, HTTP-stays, implementation shape); the ratifying decision (D3). OUT: any other query service's future application of this idiom; document_store's binary blob write-path containment (already specified at [SPEC:CXC-DOCSTORE], 82-document-store-containment.lts) and its JSON single-doc put/get/delete surface (unspecified, pre-existing, unaffected); a change to document_store's existing HTTP query semantics (unchanged, this is additive)."
+not-this: "Not a bring-up recipe. Every property below is a DESIGN decision or a named evidence slot — the evidence slots are now FILLED against landed code (`852a56f`) and cite the real test files, not a bare present-tense build claim. Not a decision about WHICH future service adopts this idiom next — that is each service's own spec."
+depends-on: [62-composeplatform-vision.lts, 82-document-store-containment.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+lifecycle-position: spec-authored
+created: 2026-08-24
+---
+
+# The bus request/response idiom: query and source-addressed result [SPEC:CXC-BUS-QUERY]
+
+> **[PLACEMENT UNRATIFIED].** Written into `corpora/platform-specs/` because that is where its
+> neighbours live (`82-document-store-containment.lts`, `83-print-services.lts`), not because the
+> placement was ruled — see [CXC-VISION-PLACEMENT] for the standing note on this directory's
+> unratified filename numbering. Filename `86-composebus-request-response.lts` is the first
+> non-colliding slot after `85-composeserver-plugin-contract.lts`; provisional. Placed here rather
+> than in the (currently empty) `document-store` corpus deliberately: David's dispatch named this as
+> the platform's FIRST request/response idiom that other query services will copy, so the reusable
+> PATTERN belongs at platform scope with document_store as its first application — not filed as if
+> it were document_store-only. If the `document-store` corpus is later populated as document_store's
+> own spec home, [CXC-BUS-QUERY-DOCSTORE] (the application, not the pattern) is the node most likely
+> to move there; [CXC-BUS-QUERY-IDIOM]/[-ORDERING]/[-VALIDATION] should stay platform-level regardless.
+
+- lifecycle-position: spec-authored
+- placement: UNRATIFIED (directory convention only — corpus id `intelligence-console` was given explicitly for this dispatch)
+- see-also: [plt.cio:SPEC:DP-CIO-6], [CXC-VISION-ANNOUNCE-BIND], [CXC-VISION-COMPACT-WIRE], [DX-SPEC-CARRIES-ITS-EVIDENCE]
+
+---
+
+## [CXC-BUS-QUERY-IDIOM] The shape — two namespaces, one correlation id, addressing by envelope `src`
+
+- part-of: [SPEC:CXC-BUS-QUERY]
+- provenance: architect-synthesis
+- lifecycle-position: spec-authored
+- claim: A requester publishes a query EVENT to `{root}/{resource}/query`; the responder that owns `{resource}` answers on `{root}/{resource}/result/{src}`, where `{src}` is the REQUESTER's own bus identity — so the answer is addressed back to whoever asked, not broadcast to every subscriber of `{resource}/query`. Both `query` and `result` are EVENTS (transient, not retained): a retained result would let a late subscriber read a stale answer to a question nobody is still asking, and request/response is inherently a point-in-time exchange, never durable state. This generalizes the platform's existing envelope, not a new one.
+- correlation-field: every request `val` carries `request_id` (an opaque string, requester-chosen, unique enough for the requester's own outstanding-request bookkeeping — this idiom does not mandate a format). The responder ECHOES `request_id` verbatim in its result `val`, on success AND on error, so the requester can always resolve a response to the request that produced it even when several are outstanding at once.
+- addressing-reuses-the-envelope-not-a-duplicate-field: David's sketch named `source` as a payload field the requester supplies. REFINEMENT (flagged, not a silent substitution): the ComposeIO wire envelope every peer already speaks ([print_services/bus.py], `transport.py`/`transport_mqtt.py`) carries `src` on EVERY message as the publisher's own bus identity — `BusClient._envelope()` sets `env["src"] = self.source` on every publish, and a subscriber's callback receives it in the raw envelope dict. Putting `source` a second time inside `val` would create two fields that are supposed to agree and can drift (exactly the class of self-inconsistent-field failure this project's own epistemics catalogue warns about, [CXC-VISION-EPISTEMICS] `rule-self-verification`). The responder reads the requester's address from the envelope's `src`, not from a payload field. `val` therefore carries `request_id` plus the query parameters only — never a redundant `source`.
+- why-per-source-not-per-request: the result namespace is `.../result/{src}`, addressed by REQUESTER IDENTITY, not by `request_id` — a requester subscribes ONE namespace (its own) for the lifetime of its session and correlates multiple in-flight requests locally via `request_id`, rather than subscribing a fresh namespace per query. This mirrors [CXC-REPOINT-PAYLOAD]'s `bus=<name> ...` addressing-by-identity shape and keeps the responder from needing to mint or track per-request topics.
+- responder-is-stateless-per-request: the responder does not queue, retry, deduplicate, or remember outstanding requests across its own restarts. It answers what it can answer, once, from whatever `val` accompanied THIS event, and forgets it immediately after publishing the result. This is what makes the idiom cheap to implement identically in every future query service — see [CXC-BUS-QUERY-ORDERING] for what that statelessness pushes onto the requester.
+- reception-needs-both-hooks-over-mqtt: ⛔ BUILD FINDING (verified in the build of `services/document_store/bus.py`, 2026-08-24) — a responder that registers ONLY `bus.on_message(...)` for its `{root}/{resource}/query` reception is sufficient IN-PROCESS (`LocalTransport` delivers every local send to every monitor) but NOT sufficient over a REAL MQTT broker: `on_message` is a bus-level monitor hook, it does not itself open a broker-level subscription, and `transport_mqtt.py`'s `_on_connect` only issues MQTT `SUBSCRIBE` for registered namespaces, registered patterns, and `_bus/#`. A responder relying on `on_message` alone is DEAF to peer query traffic once it sits behind a real broker. The reception mechanism therefore requires BOTH hooks together: `bus.subscribe_pattern("{root}/*")` to OPEN the transport-level broker subscription for the pattern (its own bus-level callback is a deliberate STATE-only no-op here, per [CXC-BUS-QUERY-DOCSTORE] `topic-to-collection-without-a-second-parse`) PLUS `bus.on_message(...)` filtered to `MessageType.EVENT` and the query namespace, since `on_message` is the only hook that exposes `BusMessage.source`. This is a property of the IDIOM's reception mechanism, not a document_store peculiarity — it applies to ANY bus request/response responder built against this pattern.
+- evidence-reception-over-mqtt: LANDED `852a56f` (origin/main) — independently verified by `composeio-first-bringup` against a REAL ephemeral mosquitto broker, not the in-process LocalTransport (`tests/test_document_store_bus_over_mqtt.py`, 7-test suite). `test_round_trip_over_real_mqtt_broker` confirms a peer's `_doc/{coll}/query` is received and answered on `_doc/{coll}/result/{src}` over the actual wire. `test_negative_control_without_subscribe_pattern_widening_nothing_arrives` disables ONLY `subscribe_pattern` and shows the docstore bus stays "connected" in its log but receives NOTHING — the NEGATIVE CONTROL that proves the widening is load-bearing, not decoration. This turns `reception-needs-both-hooks-over-mqtt` above from a present-tense build-time assertion into an EVIDENCED claim.
+- design-check-per-announce-bind: `[CXC-VISION-ANNOUNCE-BIND]`'s `design-check` property requires a mechanism built at one scale to be reusable at the next. This idiom is deliberately NOT a fifth "announce-bind" level — it answers "how do I ASK something and get an answer back", which announce-bind does not cover (announce-bind is unsolicited, periodic, one-to-many; this is solicited, on-demand, one-to-one). Recorded so the two are not later conflated as the same mechanism wearing different names.
+- generalizes-from: David's D3 ratification (`[DEC-PHASE1-DSD-CALLS-SETTLED]`, 2026-08-24) naming document_store's `_doc/{collection}/query -> _doc/{collection}/result/{src}` header comment as "the platform's first request/response namespace idiom, which other query services will copy" — see [CXC-BUS-QUERY-DOCSTORE] for the concrete first application.
+- see-also: [CXC-BUS-QUERY-ORDERING], [CXC-BUS-QUERY-VALIDATION]
+
+---
+
+## [CXC-BUS-QUERY-ORDERING] Subscribe before publish — and timeout/retry is the REQUESTER's job, never the responder's
+
+- part-of: [SPEC:CXC-BUS-QUERY]
+- provenance: architect-synthesis
+- lifecycle-position: spec-authored
+- rule: a requester MUST subscribe to its own `{root}/{resource}/result/{src}` namespace BEFORE publishing the query that might answer it. Because `result` is a transient EVENT and not retained state, a responder that answers faster than the requester's subscribe completes produces an answer nobody was listening for — and it is gone; nothing catches up a late subscriber the way a retained STATE does. Subscribe-then-publish is the whole defense, and it is cheap: the requester already knows its own `src` and its own `resource` before it has anything to ask.
+- test: if a requester's query-then-subscribe ordering (rather than subscribe-then-query) ever produces a missed answer under load, the ordering rule was violated, not the idiom.
+- timeout-and-retry-is-the-requesters: because the responder is stateless per request ([CXC-BUS-QUERY-IDIOM] `responder-is-stateless-per-request`), it never resends, and a lost or dropped query produces silence, not an error. The REQUESTER owns detecting that silence (a timeout against its own outstanding-`request_id` table) and owns the retry policy (if any) — republish a fresh query event, optionally with a fresh or the same `request_id` at the requester's discretion. This idiom does not specify a default timeout or backoff; a concrete application MAY (document_store does not need one for its v1 synchronous-answer scope — see [CXC-BUS-QUERY-DOCSTORE]).
+- why-pushed-to-the-requester-not-the-responder: keeping the responder stateless is what lets [CXC-BUS-QUERY-IDIOM] be copied by a future query service with no request-tracking machinery to build. A responder that had to track "have I answered this `request_id`" or "should I resend" would be carrying session state for an idiom explicitly designed to need none.
+- see-also: [CXC-VISION-ANNOUNCE-BIND] `announcement-must-be-periodic` — a different mechanism solving an analogous problem (silence is ambiguous between absent and unheard) by making the PUBLISHER periodic; this idiom instead makes the REQUESTER responsible for its own timeout, because a query response is inherently one-shot rather than a standing fact worth re-announcing.
+
+---
+
+## [CXC-BUS-QUERY-VALIDATION] What the responder does when the request is malformed or unaddressable
+
+- part-of: [SPEC:CXC-BUS-QUERY]
+- provenance: architect-synthesis
+- lifecycle-position: spec-authored
+- src-must-be-topic-safe: `{src}` becomes a literal MQTT topic segment in the result namespace, which is a STRICTER constraint than being merely an envelope field — a topic segment must not contain `/`, `+`, `#`, or a NUL byte. A responder MUST validate the envelope's `src` against this before constructing the result namespace.
+- unaddressable-src-is-log-and-drop-not-error-reply: if `src` is not topic-safe, the responder CANNOT construct a valid result namespace to answer on — there is nowhere to put an error. The responder MUST log the rejection (collection/resource, the offending `src`, the `request_id` if present) and publish NOTHING. This is a documented limitation, not a silent failure: the log line is the only signal, and any requester publishing a non-topic-safe `src` gets no response and must diagnose from its own side (it published; nothing answered).
+- missing-or-malformed-request_id-still-gets-a-response: unlike an unaddressable `src`, a missing/malformed `request_id` does NOT prevent addressing the result namespace (`src` is still valid) — the responder MUST still answer, echoing `request_id` as `null` (or whatever malformed value was given, at minimum echoing what it received) and logging a warning. Silently dropping a request whose `src` we CAN address, over a correlation-field problem the requester can fix, would leave the requester hanging with no signal at all.
+- unknown-resource-is-not-an-error: querying a namespace or collection that does not exist returns a well-formed empty answer (`ok`/success semantics with zero results), never an error — this MUST match whatever the responder's non-bus (e.g. HTTP) query surface already does for the same condition, so the same query does not behave differently by transport. See [CXC-BUS-QUERY-DOCSTORE] `unknown-collection-matches-http` for document_store's concrete instance of this rule.
+- generalizes: [plt.cio:SPEC:DP-CIO-6]'s test — "a message that works on one transport must produce identical behaviour on another" — applied here one layer up, to a responder's TWO surfaces (bus and HTTP) rather than to two wire transports of the same surface. The same query producing a different verdict depending on which surface answered it is the failure this rule exists to prevent.
+
+---
+
+## [CXC-BUS-QUERY-DOCSTORE] document_store's bus query face — the first application
+
+- part-of: [SPEC:CXC-BUS-QUERY]
+- provenance: architect-synthesis
+- lifecycle-position: spec-authored
+- the-model: document_store gains a bus query face ADDITIVE to its existing HTTP API (`/api/v1/collections/{coll}/...`), which is UNCHANGED — per D3, blobs and external clients stay on HTTP; this spec adds a bus-native path for fleet peers, it replaces nothing. `collection` is the `{resource}` of [CXC-BUS-QUERY-IDIOM]: request namespace `_doc/{collection}/query`, result namespace `_doc/{collection}/result/{src}`. Scope `global` on both — document_store serves the whole fleet, and results stay targeted by the `{src}` address regardless of which subnet the requester sits on.
+- reuses-the-existing-http-query-grammar-exactly: `_doc/{collection}/query`'s `val` is the SAME body shape already accepted by the shipped HTTP endpoint `POST /api/v1/collections/{coll}/query` (`services/document_store/server.py` `_route`, `doc_id == "query"`), plus `request_id`. This is a deliberate design choice, not an oversight: it lets the implementation dispatch the bus path through the identical `_store.query(...)` / `_store.compact_query(...)` calls the HTTP path already uses, with no second query grammar to design, document, or keep in sync.
+  - compact mode: `val` is `{request_id, compact: "<query_str>"}`. Unlike the HTTP body, a bare compact string with no wrapping object is NOT accepted over the bus — `val` is always a JSON object here so `request_id` has somewhere to live; the HTTP handler's bare-string shorthand stays HTTP-only. `query_str` is `_store.compact_query`'s existing syntax: `field=value,field>value,...`, optional `@field` result-field selector. Intended for a payload-budget-conscious requester (an edge MCU reached via a bridge) — see `open-question-can-edge-mcu-scope` below for why that path is NOT built in this pass.
+  - structured mode: `val` is `{request_id, where?, fields?, limit?, order_by?, order?}` — the exact keyword set `_store.query()` already accepts, same defaults (`limit` 100, `order` `"asc"`).
+  - mode-selection: identical to the HTTP handler's own dispatch rule — `val` is compact mode if it contains a `compact` key, else structured mode. No third field says which mode; reusing the HTTP handler's existing `"compact" in body` check keeps the two paths from drifting.
+- result-val-shape: mirrors the HTTP responses exactly, plus the correlation echo. Compact mode: `{request_id, result: "<comma-joined string>"}` (matches HTTP's `{"result": ...}`). Structured mode: `{request_id, results: [...], count: N}` (matches HTTP's `{"results":..., "count":...}`). Error (malformed `val`, e.g. neither `where`/`fields`/... nor `compact` present, or `val` is not a JSON object): `{request_id, error: "<message>"}` — no `results`/`result`/`count` key present, so a requester can branch on `"error" in val`.
+- unknown-collection-matches-http: `_store.query()` already returns `[]` for a collection with no table yet (never an error) — the bus face preserves that: `{request_id, results: [], count: 0}`, not `{request_id, error: ...}`. This is the concrete instance of [CXC-BUS-QUERY-VALIDATION] `unknown-resource-is-not-an-error`.
+- topic-to-collection-without-a-second-parse: the responder registers ONE listener via `bus.on_message(callback)` — `composeio.bus.ComposeIOBus`'s full-message monitor hook, the only place a raw `BusMessage` (carrying `.namespace`, `.source`, `.type`, `.data`) surfaces to a subscriber — and filters for `msg.type == MessageType.EVENT and msg.namespace.startswith("_doc/") and msg.namespace.endswith("/query")` (collections are created dynamically on first write, unlike a fixed-backend service such as print_services, so a per-collection subscribe list is wrong here). `collection` is read by splitting `msg.namespace`, never by re-parsing a raw MQTT topic string, and the mechanism is IDENTICAL over MQTT, CAN or in-process because `BusMessage.namespace`/`.source` are populated by the bus layer (`composeio/transport.py` `BusMessage`), not by any one transport. `bus.subscribe_events(ns, cb)` is NOT used here: its per-namespace callback (`composeio/namespace.py` `NamespaceState.subscribe_events`) is `(namespace, event_type, data)` — no `source` — and `bus.subscribe_pattern()` only fires on STATE publishes (`_notify_pattern_subs` runs inside `publish_state`, never `publish_event`), not the EVENT type this idiom requires.
+- implementation-shape: ⛔ CORRECTED 2026-08-24 (architect-ruled, superseding the original draft below). document_store's bus face rides the COMPOSEIO TRANSPORT SEAM — it does NOT get a private client. The original draft specified `services/document_store/bus.py` as a deliberate COPY of `services/print_services/bus.py`'s `BusClient` (raw paho-MQTT, MQTT v5, a hand-rolled `{ns,type,src,ts,scope,seq,val}` envelope its own header comment says is "kept in sync by hand"). THAT WAS WRONG: `BusClient` IS the DP-CIO-6 offender — `[CXC-CBK-MQTT-INDEPENDENT]` names "print_services raw-paho" explicitly as one of the fragmented per-service self-connects the ComposeBus-kernel consolidation is collapsing away from, and it is the sole remaining red-gate violation currently being ported OFF this exact path. Copying it into document_store would mint a SECOND raw-paho offender — precisely what the transport seam exists to prevent. `[CXC-DOCSTORE-CONTAINMENT]`'s `not-shared-with-bus_storage` precedent means "do not couple document_store to bus_storage's OWN application code" — it does NOT mean "copy the transport client": the transport is a SHARED PLATFORM contract every peer reuses BY REFERENCE (the narrow waist), not by fork. THE CORRECTED SHAPE, following the precedent already live at `services/bus_storage/change_notify.py` (`AssetChangeNotifier.from_env`, bus-native via `source_bus.acquire_bus` + `ComposeIOBus.publish_state`): acquire a bus with `composeio.source_bus.acquire_bus(mqtt_url, label="document_store")`, which builds the transport through `composeio.transport_registry` (an unknown `type:` RAISES; a known type whose broker is merely unreachable degrades LOUDLY to local-only) rather than constructing `MQTTTransport`/paho directly — NO `paho` import in `document_store` at all. Register the query listener via `bus.on_message(...)` (see `topic-to-collection-without-a-second-parse`); publish a result via `bus.publish_event(f"_doc/{collection}/result/{src}", "result", data=response, source="document_store")`, `declare()`-ing each dynamic result namespace `Scope.GLOBAL` on first use via `composeio.source_bus.declare` — mirroring the lazy-declare pattern `self_publisher`/`transcript_publisher` already use for a namespace set not known at startup (`Scope.AUTO` is forbidden here for the same reason `source_bus.py` forbids it everywhere: its "local if a local subscriber exists" heuristic already produced [DEC-COMPOSER-SEND-GLOBAL-SCOPE]'s bug once). Net effect: no `paho` import, no hand-rolled envelope, and NO second copy to keep in sync by hand — one wire format, owned by the platform, reused by reference, exactly like `bus_storage`'s own asset-change producer.
+- config: MQTT broker from environment, matching the `change_notify.py` precedent's OWN variable names exactly rather than inventing a third naming convention: `COMPOSEUX_MQTT_BROKER` (host) + `COMPOSEUX_MQTT_PORT` (default 1883). With `COMPOSEUX_MQTT_BROKER` unset the query listener is INERT — logged ONCE at startup, exactly as `AssetChangeNotifier.from_env()` already does for asset-change events — and document_store keeps serving HTTP unaffected; a missing broker silences the bus face, it never blocks or breaks the storage service. `label`/`source` default to `"document_store"`.
+- keeps-http-verbatim: `POST /api/v1/collections/{coll}/query` is unchanged byte-for-byte; this spec adds no new HTTP route and modifies no existing one.
+- open-question-can-edge-mcu-scope: `server.py`'s own header comment already says "compact bus-native query for edge MCUs" — pre-existing design intent from before this dispatch, not something this spec invented. THIS SPEC DOES NOT WIRE A CAN OR UART PATH: document_store connects to ComposeBus directly over MQTT (a WiFi-capable host service, not a CAN leaf — the same "this part can pick the easy transport" reasoning as [DEC-RACK-TRIPLE-GAUGE-IS-A-WIFI-PEER]), and nothing in D3 or this dispatch asks for a bridge-mediated CAN/UART path to be built now. The compact-mode grammar is included because it is CHEAP to also accept (it is already `_store.compact_query`, unmodified) and keeps the door open for a `can_mqtt_bridge`-relayed MCU requester later without a second design pass — but whether/how an MCU actually reaches `_doc/{collection}/query` through a bridge (payload budget against [CXC-REPOINT-PAYLOAD]'s ~100-byte/256-byte guideline; whether the bridge itself constructs `src` safely) is UNRESOLVED and flagged here for the architect rather than silently assumed. Not a blocker for the MQTT-only v1 scope this spec covers.
+- evidence-first-publish: LANDED `852a56f` — `tests/test_document_store_bus.py::test_R1_control_no_face_no_answer` (LocalTransport, 12-test suite) is the negative control establishing the face's first publish has teeth: with the bus face NOT started, no result is published at all; only with the face registered does the responder's first `publish_event` occur. Read together with `evidence-request-response-roundtrip` below.
+- evidence-request-response-roundtrip: LANDED `852a56f` — `tests/test_document_store_bus.py::test_R1_structured_query_round_trips_with_request_id_echo` (LocalTransport) AND `tests/test_document_store_bus_over_mqtt.py::test_round_trip_over_real_mqtt_broker` (real broker, 7-test suite) both confirm `_doc/{collection}/query` -> `_doc/{collection}/result/{src}` round-trips with `request_id` echoed verbatim.
+- evidence-concurrent-requesters-distinct-src: LANDED `852a56f` — `tests/test_document_store_bus.py::test_concurrent_requesters_distinct_src` (LocalTransport) plus `tests/test_document_store_bus_over_mqtt.py::test_result_reaches_requester_not_a_different_peer` (real broker) confirm each result is addressed to the requesting peer's own `src`, never cross-delivered to a concurrent requester.
+- evidence-unknown-collection-empty-not-error: LANDED `852a56f` — `tests/test_document_store_bus.py::test_V1_unknown_collection_is_empty_not_error` (LocalTransport) confirms `{request_id, results: [], count: 0}` for an unknown collection, never an error — matching [CXC-BUS-QUERY-VALIDATION] `unknown-resource-is-not-an-error`.
+- evidence-malformed-request_id-still-answers: LANDED `852a56f` — `tests/test_document_store_bus.py::test_V2_missing_request_id_still_answered` (LocalTransport) confirms a missing/malformed `request_id` still gets a response, with `request_id` echoed as received — matching [CXC-BUS-QUERY-VALIDATION] `missing-or-malformed-request_id-still-gets-a-response`.
+- evidence-unaddressable-src-log-and-drop: LANDED `852a56f` — `tests/test_document_store_bus.py::test_V3_unaddressable_src_is_dropped` (LocalTransport) confirms a non-topic-safe `src` is logged and NOTHING is published — matching [CXC-BUS-QUERY-VALIDATION] `unaddressable-src-is-log-and-drop-not-error-reply`.
+- evidence-http-path-unaffected: LANDED `852a56f` — the HTTP API is UNCHANGED: `services/document_store/server.py`'s only change is purely additive, a `try/except`-wrapped `_bus_face = DocumentStoreBusFace.from_env(_store)` call in `main()` whose own failure can only log-and-continue, never stop or alter HTTP dispatch. The 21 pre-existing `tests/test_document_store.py` HTTP tests pass unmodified on the landed tree.
+- see-also: [SPEC:CXC-DOCSTORE], [CXC-BUSSTORE-CONTAINMENT], [CXC-REPOINT-PAYLOAD], [DEC-DOCSTORE-BUS-QUERY-FACE], [CXC-CBK-MQTT-INDEPENDENT]
+
+---
+
+## [DEC-DOCSTORE-BUS-QUERY-FACE] Decision — document_store gets a bus query face, additive to HTTP
+
+- part-of: [SPEC:CXC-BUS-QUERY]
+- lifecycle-position: decided
+- provenance: david-ruling
+- dsd-source: docs/composeserver/DECISIONS-phase1-plan.md
+- dsd-decision: D3
+- decision: build the `_doc/*/query -> _doc/*/result/{src}` request/response idiom as the platform's reference pattern; document_store's blob and external-client surface stays on HTTP. Bus query face is ADDITIVE, not a replacement.
+- rationale: David ratified Phase-1 DSD D3 (see `[DEC-PHASE1-DSD-CALLS-SETTLED]`) accepting the architect's recommendation over the two alternatives offered — bus-only (forces every current HTTP client, e.g. `resolve.py`, to migrate at once; risk to a live ~27-day dependency) and leave-HTTP-only (no new vocabulary, but document_store never becomes a bus peer). "Bus query face + keep HTTP" was lean, additive, and low-risk to a live service, and it is the option that actually establishes the reference idiom other query services need to copy — the other two either force a risky migration or never produce the vocabulary at all.
+- dsd-text: "**Why it matters:** it introduces the platform's first **request/response** namespace idiom (a query namespace answered on a per-source result namespace) — a vocabulary decision that other query services will copy."
+- alternatives-rejected: bus-only (D3 option table, rejected — forces `resolve.py` and other live HTTP clients to migrate at once); leave-HTTP-only (rejected — no new vocabulary, document_store never joins the bus).
+- see-also: [SPEC:CXC-BUS-QUERY], [CXC-BUS-QUERY-DOCSTORE]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-BUS-QUERY-IDIOM] PART_OF [SPEC:CXC-BUS-QUERY]
+- [CXC-BUS-QUERY-ORDERING] PART_OF [SPEC:CXC-BUS-QUERY]
+- [CXC-BUS-QUERY-VALIDATION] PART_OF [SPEC:CXC-BUS-QUERY]
+- [CXC-BUS-QUERY-DOCSTORE] PART_OF [SPEC:CXC-BUS-QUERY]
+- [DEC-DOCSTORE-BUS-QUERY-FACE] PART_OF [SPEC:CXC-BUS-QUERY]
+- [CXC-BUS-QUERY-DOCSTORE] REALIZES [CXC-BUS-QUERY-IDIOM]
+- [CXC-BUS-QUERY-ORDERING] RELATED_TO [CXC-BUS-QUERY-IDIOM]
+- [CXC-BUS-QUERY-VALIDATION] RELATED_TO [CXC-BUS-QUERY-IDIOM]
+- [CXC-BUS-QUERY-VALIDATION] RELATED_TO [plt.cio:SPEC:DP-CIO-6]
+- [CXC-BUS-QUERY-IDIOM] RELATED_TO [CXC-VISION-ANNOUNCE-BIND]
+- [CXC-BUS-QUERY-DOCSTORE] RELATED_TO [SPEC:CXC-DOCSTORE]
+- [CXC-BUS-QUERY-DOCSTORE] RELATED_TO [CXC-REPOINT-PAYLOAD]
+- [DEC-DOCSTORE-BUS-QUERY-FACE] RESOLVES [CXC-BUS-QUERY-DOCSTORE]
+- [DEC-DOCSTORE-BUS-QUERY-FACE] RESOLVES [SPEC:CXC-BUS-QUERY]
+- [SPEC:CXC-BUS-QUERY] UPHOLDS [DX-SPEC-CARRIES-ITS-EVIDENCE]
+
+---
+
+**Version**: 0.2 — 2026-08-24. Initial authoring: the generic request/response-over-pub/sub idiom
+([CXC-BUS-QUERY-IDIOM], [CXC-BUS-QUERY-ORDERING], [CXC-BUS-QUERY-VALIDATION]) plus document_store's
+concrete application ([CXC-BUS-QUERY-DOCSTORE]) and the ratifying decision
+([DEC-DOCSTORE-BUS-QUERY-FACE], D3). `[PLACEMENT UNRATIFIED]` on the directory/filename convention
+only. Code LANDED at `852a56f` (origin/main) and independently verified by
+`composeio-first-bringup`: [CXC-BUS-QUERY-IDIOM] carries `evidence-reception-over-mqtt` (real-broker
+round-trip + the subscribe_pattern negative control); every `evidence-*` slot on
+[CXC-BUS-QUERY-DOCSTORE] is `filled`, citing `tests/test_document_store_bus.py` (12, LocalTransport),
+`tests/test_document_store_bus_over_mqtt.py` (7, real broker) and the unmodified
+`tests/test_document_store.py` (21, HTTP) — three gap-analyzer evidence-hygiene findings closed per
+[DX-SPEC-CARRIES-ITS-EVIDENCE].
+**Status**: Draft — spec-authored; bus query face BUILT and evidenced, not yet ratified as deployed.

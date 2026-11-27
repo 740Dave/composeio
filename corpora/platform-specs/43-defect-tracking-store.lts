@@ -1,0 +1,135 @@
+---
+scope: "The defect-investigation store: a two-part record of what the defect-investigator agent finds. (1) A SQLite-PRIMARY aggregate table (`defect_investigations` in the retrospective metrics.db) whose by-root-cause histogram is the process-improvement signal. (2) An LTS-COMPLEMENT convention — a [DEFECT-*] node shape in the decision corpus for significant/recurring defects, carrying the typed edges RELATES_TO / SUPERSEDES / EXEMPLIFIES that form the recurrence GRAPH a flat table cannot express."
+audience: "The architect (reviews the defect-investigator's bounded diff, then records the aggregate row + authors the [DEFECT-*] node); the defect-investigator agent (.claude/agents/defect-investigator.md, whose final-text deliverable this store persists); whoever surfaces the process-improvement histogram."
+boundary: "IN: the `defect_investigations` table schema + recorder/rollup API; the [DEFECT-*] node shape + prefix + its three typed edges; how the two halves divide the work (aggregate vs recurrence-graph). OUT: the retrospective metrics store as a whole (spec 39 CXC-RETRO, extended here, not owned); the defect-investigator PROCESS (the agent def owns that); the FactLattice engine (consumed)."
+not-this: "NOT a scoring/blame system — the same SUPPORTIVE frame as CXC-RETRO §0 (the subject of improvement is the ENVIRONMENT: a tall under-spec bar says 'spec-first harder', not 'the instance is careless'). NOT a replacement for the git history (git is the mechanical record; this is the SEMANTIC one — which defects, why they recurred, what they exemplify). NOT the full DELTA machinery (§8.3) — a lighter, domain-specific node shape."
+depends-on: [ux_composer/specs/39-session-retrospective.lts, decisions/decision-graph-composeux-architect.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# Defect-Tracking Store [SPEC:CXC-DEFECT-STORE]
+
+> The persistence layer for defect investigations. Born 2026-07-23 from the subagent-chip bug that was
+> "fixed" twice ([DEC-SUBAGENT-CHIP-FORK-DIVERGENCE]) and the agent built to stop that
+> ([DEC-DEFECT-INVESTIGATOR-AGENT]). The lesson: a defect that recurs is a PROCESS signal, and a process
+> signal needs a durable, QUERYABLE home — one that answers "how often is the root cause under-spec vs a
+> fork?" (an aggregate) AND "has THIS defect happened before, and what does it exemplify?" (a graph). Those
+> are two different data shapes, so the store is deliberately two-part: SQLite-primary + LTS-complement.
+
+- part-of: [SPEC:CXC-RETRO]
+- pinned-to: [DEC-DEFECT-TRACKING-STORE]
+- status: draft — David 2026-07-23 (live), spec-first per [DEC-SUBAGENT-CHIP-FORK-DIVERGENCE]'s lesson
+- premise: David — SQLite-primary for the aggregate signal, LTS-complement for the recurrence graph. The
+  histogram of root causes is the loudest process lever (it says which discipline to tighten); the recurrence
+  relationships are what a table cannot hold (a defect SUPERSEDES a prior fix, EXEMPLIFIES a decision/wart).
+
+### [CXC-DS-SPLIT] Why two stores — the shapes are different
+- The AGGREGATE question ("what fraction of defects are under-spec? is fork-divergence trending down after we
+  started de-forking?") is a `GROUP BY` over uniform rows — SQLite's native shape, cheap to roll up, cheap to
+  chart. Every investigation writes exactly one such row.
+- The RECURRENCE question ("has this exact defect been fixed before; what earlier fix did it invalidate; what
+  decision/wart does it exemplify") is a GRAPH — typed edges between named nodes. A flat table cannot express
+  "[DEFECT-A] SUPERSEDES the fix asserted in [DEFECT-B]" without inventing join tables; the decision-LTS
+  already does typed edges natively. So significant/recurring defects ALSO get a [DEFECT-*] node.
+- Division of labour: EVERY investigation -> one SQLite row (even trivial ones — the histogram wants them all).
+  SIGNIFICANT or RECURRING ones ALSO get a [DEFECT-*] node (the graph stays curated, not noisy). The SQLite
+  row's `prior_fix_ref` / `spec_added` are pointers; the [DEFECT-*] node is where the reasoning lives.
+
+### [CXC-DS-SQLITE] The SQLite-primary table — `defect_investigations` (in the retrospective metrics.db)
+- Lives in the SAME `intelligence/retrospective/data/metrics.db` as the other capture-types (one store, one
+  connect()), added ADDITIVELY alongside `away_watch` etc. Columns mirror the defect-investigator agent's
+  final-text deliverable, one row per run:
+  - `id` — PK autoincrement. `ts` — epoch seconds of the investigation.
+  - `symptom` — the SHORT expected-vs-observed (step 1 CHARACTERIZE). `area` — the area/file the defect lives in.
+  - `root_cause_class` — the taxonomy (step 5), normalized to exactly one of
+    `under-spec | oversight | fork-divergence | spec-drift | other` (the agent's `implementation-oversight`
+    collapses to `oversight`; unknown -> `other`, conservative, never dropped).
+  - `recurrence` (0/1) + `prior_fix_ref` — the loudest signal (step 2): was this "fixed" before, and where.
+  - `under_spec` (0/1), `fork` (0/1) — the two structural traps (steps 3/4), kept as flags so the rollup can
+    slice on them independently of the single root_cause_class.
+  - `spec_added` — a reference to the spec node/file the fix added (the harvest-signal spec-defect route).
+  - `test_added` (0/1) — did the fix carry the enforcing test that closes the CLASS, not just the instance.
+  - `resolution` — a short human summary. `branch` — the `defect/<slug>` branch the proposal lives on.
+- API (in `intelligence/retrospective/db.py`): `record_defect_investigation(...)` (APPEND — each investigation
+  is a distinct event like `token_spikes`, returns the new row id); `list_defect_investigations(since=None)`;
+  and `defects_by_root_cause(since=None)`.
+- `defects_by_root_cause(since)` is THE process-improvement signal: a `{root_cause_class: count}` histogram
+  ordered count-desc (tallest bar first). A tall `under-spec` bar says "spec-first harder"; a tall
+  `fork-divergence` bar says "de-fork by reference". `since` windows it to a recent arc so improvement is
+  visible over time. This is a RAW TALLY, no verdict — consistent with the metrics store's hard boundary.
+
+### [CXC-DS-LTS] The LTS-complement — the `[DEFECT-*]` node shape + its typed edges
+- A `[DEFECT-*]` node lives in the decision corpus (`decisions/decision-graph-composeux-architect.lts`, or a
+  dedicated `decisions/defects.lts` as the corpus grows) and captures ONE significant/recurring defect the way
+  [DEC-SUBAGENT-CHIP-FORK-DIVERGENCE] captured the chip bug — the reasoning, not just the fact.
+- PREFIX: `DEFECT-` — a new registered prefix in this domain (ComposeUX Composer, CXC- corpus). A `[DEFECT-*]`
+  node is a defect INSTANCE record (distinct from a `[DEC-*]` decision node and a `wart` note). Slug convention:
+  `[DEFECT-<AREA>-<SHORT>]`, e.g. `[DEFECT-SUBAGENT-CHIP-PRUNE]`.
+- Node properties (mirroring the decision-node shape): `lifecycle-position` (investigated | fixed | verified),
+  `investigated-in-session`, `importance`, `symptom`, `root-cause-class` (same taxonomy as the column),
+  `recurrence` (bool), `resolution`, `branch`, `enforcing-test` (the test that closes the class).
+- THE THREE TYPED EDGES (this is what the table cannot hold):
+  - `relates-to` -> **RELATES_TO**: the neighbouring decisions/specs/other defects in the same area (the
+    same edge the decision corpus already uses; RELATED_TO in the FactLattice model).
+  - `supersedes` -> **SUPERSEDES**: the PRIOR fix this defect's investigation invalidated. A recurrence
+    ALWAYS carries a `supersedes` edge to the earlier [DEFECT-*] (or the commit's decision node) whose fix
+    didn't hold — that edge IS the recurrence chain, walkable to see how many times an area has re-broken.
+  - `exemplifies` -> **EXEMPLIFIES**: the general decision / pattern / wart this defect is a concrete instance
+    of (e.g. a fork-divergence defect EXEMPLIFIES [DX-NARROW-WAIST]'s "reuse by reference, never fork", and
+    EXEMPLIFIES the wart in [DEC-SUBAGENT-CHIP-FORK-DIVERGENCE]). This is the edge that turns a pile of bugs
+    into evidence FOR a principle — the histogram says "how much", the EXEMPLIFIES edges say "of what".
+
+### [CXC-DS-EXAMPLE] Canonical shape — the chip bug as a [DEFECT-*] node (illustrative)
+- The 2026-07-22 chip bug, already captured as the DECISION [DEC-SUBAGENT-CHIP-FORK-DIVERGENCE], is the
+  reference for the INSTANCE shape. A [DEFECT-*] node for it would read:
+```
+### [DEFECT-SUBAGENT-CHIP-PRUNE] Done-chips didn't disappear — recurred (2nd fix) via un-spec'd + forked prune
+- lifecycle-position: fixed
+- investigated-in-session: 2026-07-22
+- importance: high
+- symptom: completed subagent chips remained on the console instead of pruning after done.
+- root-cause-class: fork-divergence
+- recurrence: true
+- resolution: de-fork the prune to one shared subagent-chip model both widgets consume by reference.
+- branch: defect/subagent-chip-prune
+- enforcing-test: cross-widget acceptance parametrized over whatever renders self/subagents.
+- supersedes: [COMMIT-20856df]        # the morning fix on subagent_ledger that didn't hold (fork A)
+- exemplifies: [DX-NARROW-WAIST], [DEC-SUBAGENT-CHIP-FORK-DIVERGENCE]
+- relates-to: [DEC-INTELLIGENCE-WIDGET-CONSOLIDATION], [CXC-ICV-SUBAGENTS]
+```
+- Recording that SAME defect in SQLite is one `record_defect_investigation(symptom="done-chips don't
+  disappear", area="intelligence/console/intelligence_card.py", root_cause_class="fork-divergence",
+  recurrence=True, prior_fix_ref="20856df", under_spec=True, fork=True, spec_added="[CXC-ICV-SUBAGENTS]",
+  test_added=True, branch="defect/subagent-chip-prune")` — the row feeds the histogram; the node holds the why.
+
+### [CXC-DS-DECISION] Why this shape — the reasoning to preserve
+- change: Adopt a two-part defect store (SQLite-primary aggregate + LTS-complement [DEFECT-*] graph) rather
+  than a single store of either kind.
+- context_for_change:
+    prior_state: "Defects were captured ad hoc — a code comment, at best a one-off [DEC-*] node like the chip
+      bug. No queryable aggregate; no consistent recurrence edge. The chip bug recurred partly because its
+      first fix left no durable, findable record that it had been a spec/fork problem."
+    reasoning: "The two questions defects must answer have different shapes. 'What class of defect dominates?'
+      is an aggregate GROUP BY — SQLite. 'Has this recurred, and what does it exemplify?' is a typed graph —
+      the decision-LTS. Forcing both into one store cripples one of them: a table can't walk a recurrence
+      chain; a hand-authored graph can't be charted or windowed cheaply and would drown in trivial defects."
+    rejected_alternative: "LTS-only (a [DEFECT-*] node for EVERY defect) — drowns the curated graph in noise
+      and makes the histogram a manual count. SQLite-only — loses the SUPERSEDES/EXEMPLIFIES recurrence graph,
+      re-creating the exact blindness that let the chip bug recur."
+    counter_argument: "Two stores risk drift — a defect in SQLite with no node, or a node with no row."
+    counter_response: "Accepted and bounded: EVERY investigation writes the SQLite row (cheap, mandatory);
+      only significant/recurring ones ALSO get a node (curated). The row's prior_fix_ref/spec_added are the
+      pointers back; the node is authored during the same architect review that records the row."
+    invalidating_assumption: "That defect volume stays low enough for the [DEFECT-*] graph to be hand-curated.
+      If defects become high-volume, revisit: auto-generate skeleton nodes from the SQLite rows, or promote
+      to the full DELTA machinery (SPEC §8.3)."
+    implication: "db.py gains defect_investigations + record/list/rollup APIs (additive); the DEFECT- prefix
+      is registered for the CXC- corpus; the defect-investigator agent's write-back targets both halves."
+- relates-to: [DEC-DEFECT-TRACKING-STORE], [DEC-DEFECT-INVESTIGATOR-AGENT], [DEC-SUBAGENT-CHIP-FORK-DIVERGENCE]
+
+### [CXC-DS-OPEN] Open / glass
+- The [DEFECT-*] write-back (who authors the node, and whether the defect-investigator drafts a skeleton the
+  architect ratifies) is wired by David — this spec defines the SHAPE, not the automation.
+- A surfaced process-improvement view (the histogram over time, per-area recurrence chains) is a later
+  ComposeUX surface, deferred; the rollup API is the seam it will read.

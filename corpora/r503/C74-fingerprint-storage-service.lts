@@ -1,0 +1,193 @@
+---
+scope: "The fingerprint_service and the enrollment station/editor: the superset authority that holds every template keyed by LOGICAL identity (person, ordinal) and never by slot, cast and subset selection, the RBAC that rides to the device, roster-push origination and reconciliation-by-subscription, and the UI-to-service enrollment surface. This is the layer C73 (the device bus contract) deliberately excludes: it originates the push and orchestrates enrollment, but it never calls a sensor and never names a physical slot."
+audience: "The author of services/fingerprint_service; the author of the enrollment station and editor UI; the author of the service-side acceptance tests; the architect ratifying the station/editor seam."
+boundary: "IN: the superset store, logical identity, cast selection, RBAC delivery, push origination, reconciliation, the station/editor API, enroll orchestration, person and casting CRUD, and the total-delete retention rule. OUT: the sensor electricals (C70), the identity model primitives it builds on (C71), the HAL (C72), and the on-the-wire message shapes it emits (C73). This document says WHAT the service does; C73 says HOW its messages look on the bus."
+not-this: "Not a sensor contract and not an RPC surface onto a device. The service and station are ordinary bus clients: they originate the semantic push and the semantic enroll command, and they subscribe to device state. Person CRUD, casting, and enroll orchestration are a UI-to-service API, never sensor bus RPC."
+domain: plt.cux
+status: draft
+created: 2026-08-18
+artifact-readiness: design-review
+confidentiality: internal-only
+---
+
+# Fingerprint Service And Enrollment Station [SPEC:CXC-FPSVC]
+
+> fingerprint_service is the superset authority: it holds every template keyed by a logical identity, it
+> selects the cast, it originates the push, and it never names a physical slot. The station and editor are
+> its enrollment UI. Every obligation is one node with one id, so a service test cites exactly one of them.
+
+---
+
+## The superset authority
+
+### [CXC-FPSVC-SUPERSET-AUTHORITY] The service holds every template, keyed by logical identity
+
+- definition: fingerprint_service is the single authority that holds every enrolled template for the whole population. Each template is keyed by a LOGICAL identity, (person, ordinal), and belongs to the person. The service is the superset; a device's cast is a subset it pushes.
+- constraint: The store MUST key templates by (person, ordinal). It MUST NOT hold or assign a physical slot index, because a slot is one sensor's storage model and the service serves any fingerprint device. A vendor swap re-enrols everyone; the superset is where those re-enrolments land.
+- status: draft
+- part-of: [SPEC:CXC-FPSVC]
+
+### [CXC-FPSVC-LOGICAL-IDENTITY-ONLY] A physical slot index appears nowhere in the service
+
+- constraint: No physical slot index appears anywhere in the service: not in the store key, not in a push payload, not in an enroll command, not in a readback. The service works in (person, ordinal) end to end. The device owns physical allocation and the slot-to-person bridge — [CXC-FPID-SLOT-ALLOCATION-OWNER], [CXC-FPID-DEVICE-BRIDGE].
+- rationale: An agnostic service that handed out integer slot indices would bake the R503's addressing into the layer meant to serve any device. The tell that this was violated is a slot field on any service record or outbound message.
+- status: draft
+- part-of: [SPEC:CXC-FPSVC]
+
+## Cast, RBAC, and the push
+
+### [CXC-FPSVC-CAST-SELECTION] The cast is chosen by casting, and the whole cast is enrolled on every device
+
+- definition: The service selects a device's cast from castings: a casting is (module, person, character). Choosing a module and casting its players yields the working set. The whole cast is enrolled on every device; differentiation is in RBAC, not in who is enrolled.
+- constraint: Every device in scope for a module receives the SAME cast, so the subset pushed to each device is identical. Physical reachability plus the one capability a device gates does the scoping, not a per-device roster.
+- status: draft
+- part-of: [SPEC:CXC-FPSVC]
+
+### [CXC-FPSVC-RBAC-RIDES-TO-DEVICE] The service ships the role per entry and the small global role table
+
+- constraint: The service delivers RBAC to the device in the push: each entry carries its character's role, and the push as a whole carries the small global role-to-capability table. The service does NOT pre-evaluate the gate and does NOT ship a per-entry yes/no.
+- rationale: The device holds the full role-to-capability table and evaluates its own gate on match — RULED, [DD-FPID-RBAC-EVAL-LOCUS]. The service's job is to author and deliver the RBAC, not to decide access; keeping the decision on the device keeps the service out of the authentication path.
+- status: draft
+- part-of: [SPEC:CXC-FPSVC]
+
+### [CXC-FPSVC-PUSH-ORIGINATION] The service originates the roster push — uuid, entry_count, role table, ordered entries, no hash
+
+- constraint: The service originates the push as {template_set_uuid, entry_count, role_capability_table, ordered entries of (person, ordinal, character, rbac, template)}. Identity of the set is its UUID; completeness is its entry_count. There is NO hash of the roster or of any template. The entries are ordered, and the service names no slot; the device assigns slots by install order.
+- rationale: The service mints a fresh UUID whenever the desired set changes, so a genuine change resets the device's authentication counter and an idempotent re-push of the same UUID does not. The push message shape is [CXC-FPBUS-PUSH-SEQUENCE].
+- artifact: services/fingerprint_service/roster_push.py
+- acceptance-machine: Call the push origination with a cast of three persons at two templates each and assert the emitted message carries a UUID, entry_count of six, the role table, and six ordered entries none of which carries a slot. The test runs in the service process against a mock bus; no device is contacted.
+- status: draft
+- part-of: [SPEC:CXC-FPSVC]
+
+#### [CXC-FPSVC-SCEN-PUSH-CARRIES-NO-SLOT] The push names no slot
+
+- when: the service originates a roster push for a cast
+- then: the message carries the uuid, entry_count, role table, and ordered logical entries
+- and-then: no entry and no envelope field carries a physical slot index
+- part-of: [CXC-FPSVC-PUSH-ORIGINATION]
+
+### [CXC-FPSVC-RECONCILE-BY-SUBSCRIPTION] The service learns each device's held set by subscription, not by query
+
+- constraint: The service determines which set every device holds by subscribing to fingerprint_ready, which carries the device's template_set_uuid. It MUST NOT query a device for occupancy or a roster stamp. A device whose held UUID differs from the desired set, or which emits fingerprint_push_needed, is re-pushed.
+- rationale: Reconciliation is a subscription because the device announces its own state on a cadence. The service cannot call the HAL (the device owns it), so the announce and the heartbeats are its only window, and they are sufficient.
+- artifact: services/fingerprint_service/roster_push.py
+- acceptance-machine: Feed the reconciler a mock stream of fingerprint_ready messages carrying a stale UUID and assert it schedules a re-push to that device; feed it a matching UUID and assert it does not. The test runs in the service process against a mock bus.
+- status: draft
+- part-of: [SPEC:CXC-FPSVC]
+
+### [CXC-FPSVC-PUSH-TRIGGER] Starting a game triggers the push
+
+- definition: Starting a game is the moment the cast is decided, so the service originates the push then. The trigger is a service-level event, not an operator remembering to sync.
+- status: draft
+- part-of: [SPEC:CXC-FPSVC]
+
+## The station and editor
+
+### [CXC-FPSVC-STATION-EDITOR] The enrollment station and editor — two processes over a UI-to-service API
+
+- definition: Enrollment has two processes: an EDITOR (the human-facing UI that binds a person to a character and a role and drives the ceremony) and a STATION (the device-adjacent process at the sensor where the finger is presented). They talk over the service API, and the station issues the device-addressed enroll command on the bus. This resolves the station/editor seam left open by the device contract.
+- constraint: Person CRUD, casting, and enroll orchestration are a UI-to-service API, never sensor bus RPC. The only sensor-facing messages are the semantic enroll command and the push; everything else is service-internal. The editor may be remote from the station, which is why they are two processes rather than one.
+- rationale: Two processes let an Intelligence or a remote operator drive the editor end while a person stands at the station. One process would chain the editor to the sensor's location and foreclose that. RULED in the original as editor-and-station-are-two.
+- status: ruled
+- part-of: [SPEC:CXC-FPSVC]
+
+### [CXC-FPSVC-ENROLL-ORCHESTRATION] The station orchestrates an enrollment and uploads the template to the superset
+
+- definition: To enrol, the editor binds a person to up to two templates, a character, and the character's role, and the station issues a device-addressed enroll {person, ordinal, request_id}. The device runs the capture ceremony, allocates its own slot, and stores the template; the captured template is then read back and uploaded into the superset keyed by (person, ordinal).
+- constraint: The station names only the logical identity. It never picks or reads a physical slot. The upload into the superset is keyed by (person, ordinal), never by slot. The enroll command shape is [CXC-FPBUS-MSG-ENROLL]; the readback shape is proposed at [DD-FPBUS-ENROLL-READBACK-SHAPE].
+- acceptance-machine: Drive the station against a mock device through a full two-template enrollment for one person and assert the superset gains two templates keyed by (person, 1) and (person, 2), that the enroll commands carried no slot, and that no slot appears in the uploaded records. The test runs against a mock device; no fingertip and no hardware.
+- status: draft
+- part-of: [SPEC:CXC-FPSVC]
+
+#### [CXC-FPSVC-SCEN-ENROLL-KEYS-BY-LOGICAL] Enrollment stores by logical identity
+
+- when: the station drives an enrollment for a person and ordinal against a device
+- then: the device allocates its own slot and the captured template is uploaded to the superset keyed by (person, ordinal)
+- and-then: no physical slot index appears in the enroll command or the uploaded record
+- part-of: [CXC-FPSVC-ENROLL-ORCHESTRATION]
+
+### [CXC-FPSVC-PERSON-CRUD] Person and casting management lives in the service
+
+- definition: Creating, reading, updating, and deleting persons and castings is a service operation over the UI-to-service API. A person owns templates; a casting binds (module, person, character). None of this touches a device except through the push.
+- status: draft
+- part-of: [SPEC:CXC-FPSVC]
+
+## Retention
+
+### [DD-FPSVC-DELETE-IS-TOTAL] At six months of inactivity, totally delete the templates and the person record
+
+- decision: RULED by David — at six months of inactivity, totally delete both the templates AND the person record. The bytes are actually removed; nothing is marked, flagged, or tombstoned. Honors [DD-FPID-DELETE-IS-TOTAL].
+- constraint: The service MUST remove the template bytes and the person record on the retention trigger, and MUST NOT retain a tombstone. Biometric PII leaves no residue.
+- open-question: What starts the six-month inactivity clock is proposed at [DD-FPSVC-INACTIVITY-CLOCK].
+- status: ruled
+- part-of: [SPEC:CXC-FPSVC]
+
+## Open decisions
+
+### [DD-FPSVC-INACTIVITY-CLOCK] What starts the six-month inactivity clock — RULED
+
+- decision: RULED by David (2026-08-18): the clock is the time since the person's last RECOGNIZED authentication — any auth_event carrying that player (granted or denied). An unrecognized outcome carries no player and does NOT reset the clock (it is not attributable to a person). A person enrolled but never recognized starts the clock at enrollment. Ties retention to actual biometric use, not an administrative record's age.
+- refinement-note: the earlier lean said "last authentication attempt"; David's wording is "authenticated", so it is sharpened to a RECOGNIZED match — an unrecognized attempt is not that person authenticating.
+- captured-with: [CXC-FPSVC-TEMPLATE-STORE-POSTURE]
+- status: ruled
+- part-of: [SPEC:CXC-FPSVC]
+
+### [DD-FPSVC-READBACK-REQUIRED] Enrollment requires a readback-capable device — proposed
+
+- decision: NOT MADE. Proposed for the architect. Falls out of the enroll-and-upload flow.
+- lean: Enrollment must run on a device whose capabilities().supports_readback is True, because the captured template must be uploaded to the superset. A device that cannot read back cannot feed the superset, so it can hold a pushed cast but cannot be an enrollment station. Designate readback-capable devices as stations.
+- status: proposed
+- part-of: [SPEC:CXC-FPSVC]
+
+## The template store's at-rest posture and retention [CXC-FPSVC-TEMPLATE-STORE-POSTURE]
+
+- constraint: The template superset lives in a DEDICATED fingerprint_template_store (a separate service, :8423, never bus_storage :8420 nor coordination_relay :8422 — reached via the fingerprint:// reference scheme). Its at-rest posture is TOY-EXPERIENTIAL: no encryption at rest, the :8423 endpoint is LAN-open (no auth), no key custody. This is a home game for the author and friends, not a commercial game room or a security surface, and the protection is calibrated to exactly that — NOT under-built for a threat model it does not have.
+- retention: A person's templates are PURGED from the superset after a rolling 6-month window with NO recognized authentication. The clock is per-person and RESETS on any auth_event carrying that player (a recognized match — granted OR denied; an unrecognized outcome carries no player and refreshes nobody). Rationale (David): a player returning within the window must never have to re-enroll; a player absent six months is garbage-collected rather than hoarded indefinitely.
+- deployment: RULED placement (David 2026-08-19, REVISING the 2026-08-18 NODERED_HOST call): deploy the fingerprint_template_store to COMPOSEIO_MQTT_BROKER:8423 — its LONG-TERM home (port :8422 was already coordination_relay on COMPOSEIO_MQTT_BROKER's pre-existing storage stack: :8420 bus_storage, :8421 document_store, :8422 coordination_relay). Rationale: the whole Compose*/BSG stack migrates from NODERED_HOST to COMPOSEIO_MQTT_BROKER shortly, so a NEW service is birthed directly in its destination rather than deployed to NODERED_HOST and migrated twice. The deploy is Haven-Deployer's boundary (shared host). ⚠ TRANSITION NUANCE: the live MQTT bus is STILL NODERED_HOST:1883 until the migration, so during the interim a device fetches templates from COMPOSEIO_MQTT_BROKER:8423 while its bus is NODERED_HOST:1883 — two independent endpoints, both on the (a private address, not published) LAN and both reachable from the device's WiFi. Keep COMPOSEIO_TEMPLATE_STORE_URL config-driven; the code default flips to COMPOSEIO_MQTT_BROKER:8423. ⛔ DEPLOYED + cross-machine-verified 2026-08-19 via the composebus-deployer agent: bare-Python at /opt/composeio-services/fingerprint_template_store/ on COMPOSEIO_MQTT_BROKER (PID setsid-detached), PUT/GET/DELETE round-trip clean from a second host, ADDITIVE — the existing :8420/8421/8422 stack was byte-for-byte untouched.
+- provenance: RULED by David 2026-08-18 in the at-rest-posture discussion (handled as a discussion, not a DSD — a single framing-gated area whose only real mechanism, retention, fell out of the framing).
+- status: ruled
+- part-of: [SPEC:CXC-FPSVC]
+- see-also: [DD-FPID-DELETE-IS-TOTAL], [DD-FPID-TEMPLATE-REF-IS-SERVICE-PRIVATE]
+- why-at-rest-is-low-risk: The concrete basis for skipping encryption-at-rest, not mere convenience (David 2026-08-18): the R503 template FILE FORMAT is proprietary to the R503 and used NOWHERE else — a stolen template cannot be replayed into an iPhone, an Android, or any other biometric system, only into another R503. So even in the near-zero event of a template theft off a LAN-only home store, the blast radius is a device nobody else owns. The odds and the consequence are both negligible; the posture is calibrated to a real (tiny) threat model, not left under-built for a big one.
+
+---
+
+## Relationships
+
+### Semantic
+
+- [CXC-FPSVC-LOGICAL-IDENTITY-ONLY] PART_OF [CXC-FPSVC-SUPERSET-AUTHORITY]
+- [CXC-FPSVC-SUPERSET-AUTHORITY] IMPLEMENTS [CXC-FPID-FINGERPRINT-STORAGE-SERVICE]
+- [CXC-FPSVC-CAST-SELECTION] DEPENDS_ON [CXC-FPID-ENTITY-CASTING]
+- [CXC-FPSVC-CAST-SELECTION] DEPENDS_ON [CXC-FPID-ENROLL-EVERYWHERE]
+- [CXC-FPSVC-RBAC-RIDES-TO-DEVICE] DEPENDS_ON [DD-FPID-RBAC-EVAL-LOCUS]
+- [CXC-FPSVC-PUSH-ORIGINATION] IMPLEMENTS [CXC-FPBUS-PUSH-SEQUENCE]
+- [CXC-FPSVC-PUSH-ORIGINATION] DEPENDS_ON [CXC-FPSVC-CAST-SELECTION]
+- [CXC-FPSVC-PUSH-ORIGINATION] DEPENDS_ON [CXC-FPSVC-RBAC-RIDES-TO-DEVICE]
+- [CXC-FPSVC-RECONCILE-BY-SUBSCRIPTION] DEPENDS_ON [CXC-FPBUS-MSG-FINGERPRINT-READY]
+- [CXC-FPSVC-STATION-EDITOR] DEPENDS_ON [CXC-FPSVC-SUPERSET-AUTHORITY]
+- [CXC-FPSVC-ENROLL-ORCHESTRATION] PART_OF [CXC-FPSVC-STATION-EDITOR]
+- [CXC-FPSVC-ENROLL-ORCHESTRATION] DEPENDS_ON [CXC-FPBUS-MSG-ENROLL]
+- [CXC-FPSVC-ENROLL-ORCHESTRATION] DEPENDS_ON [DD-FPBUS-ENROLL-READBACK-SHAPE]
+- [CXC-FPSVC-PERSON-CRUD] PART_OF [CXC-FPSVC-STATION-EDITOR]
+- [DD-FPSVC-DELETE-IS-TOTAL] IMPLEMENTS [DD-FPID-DELETE-IS-TOTAL]
+- [CXC-FPSVC-LOGICAL-IDENTITY-ONLY] DEPENDS_ON [CXC-FPID-SLOT-ALLOCATION-OWNER]
+- [DD-FPSVC-INACTIVITY-CLOCK] PART_OF [DD-FPSVC-DELETE-IS-TOTAL]
+- [DD-FPSVC-READBACK-REQUIRED] PART_OF [CXC-FPSVC-ENROLL-ORCHESTRATION]
+
+### Causal
+
+- [CXC-FPSVC-PUSH-TRIGGER] CAUSES [CXC-FPSVC-PUSH-ORIGINATION]
+- [CXC-FPSVC-RECONCILE-BY-SUBSCRIPTION] CAUSES [CXC-FPSVC-PUSH-ORIGINATION]
+- [CXC-FPSVC-ENROLL-ORCHESTRATION] CAUSES [CXC-FPSVC-SUPERSET-AUTHORITY]
+
+### Temporal
+
+- [CXC-FPSVC-ENROLL-ORCHESTRATION] BEFORE [CXC-FPSVC-PUSH-ORIGINATION]
+- [CXC-FPSVC-CAST-SELECTION] BEFORE [CXC-FPSVC-PUSH-ORIGINATION]
+- [CXC-FPSVC-PUSH-ORIGINATION] BEFORE [CXC-FPSVC-RECONCILE-BY-SUBSCRIPTION]
+
+---
+
+**Version**: 1.0
+**Status**: Draft — first pass to unblock the build. The service is the superset authority in LOGICAL identity only; no slot ever appears in it. Push origination carries uuid, entry_count, the role table, and ordered logical entries, with no hash. Station and editor are two processes over a UI-to-service API (ruled), and enroll orchestration uploads the captured template to the superset keyed by (person, ordinal). Total-delete retention is ruled; the inactivity clock and the readback-station requirement are proposed for the architect.

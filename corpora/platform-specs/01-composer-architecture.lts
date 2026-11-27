@@ -1,0 +1,391 @@
+---
+scope: "System architecture of the ComposeIO Composer — dual-bus topology, module decomposition, rendering pipeline, and bus bridging for live hardware testing"
+audience: "Composer developers, ComposeIO platform architects"
+boundary: "Architecture and module boundaries; module implementation contracts in 03-composer-modules.lts; internal bus namespace registry in 02-composer-internal-bus.lts"
+not-this: "Not the ComposeIO bus protocol itself (see ../spec/01-composeio-bus-protocol.smd); not serialization format details (see 04-composer-serialization.lts)"
+depends-on: ["00-composer-design-principles.lts", "../spec/00-composeio-design-principles.smd", "../spec/01-composeio-bus-protocol.smd"]
+confidentiality: internal-only
+artifact-readiness: system-design
+domain: plt.cux
+---
+# ComposeIO Composer Architecture [SPEC:CXC-ARCH]
+
+> System architecture for the ComposeIO Composer — a visual UX layout tool built as a ComposeIO bus application with dual-bus topology: an internal tool bus for editor plumbing and a live design bus connected to real ComposeIO infrastructure for in-situ widget testing.
+
+---
+
+## 1. Dual-Bus Topology [CXC-DUAL-BUS]
+
+The Composer operates two distinct ComposeIO bus instances simultaneously. This is the foundational architectural decision.
+
+### [CXC-BUS-INTERNAL] Internal Tool Bus
+
+- role: Carries all editor-level communication between Composer modules (palette, canvas, property editor, binding editor, history, bus inspector).
+- scope: Local only. Never leaves the Composer process.
+- bus-id: `composer-internal`
+- transport: In-process (`LocalTransport`).
+- namespace-prefix: `composer/` — all internal namespaces live under this prefix.
+- lifetime: Created at Composer startup. Destroyed at shutdown.
+
+### [CXC-BUS-DESIGN] Design Bus (Live)
+
+- role: The real ComposeIO bus that designed widgets connect to. This is the same bus that physical hardware, MQTT brokers, CAN networks, and service hubs participate in.
+- scope: Local, global, or remote — depending on available transports.
+- bus-id: Inherited from connection target (e.g., `ftl-simulator`, `workshop-main`).
+- transport: Any combination — in-process for offline design, MQTT/CAN/UART for live hardware.
+- namespace-prefix: None — these are the user's real application namespaces (`ftl_arm`, `sublight_engines`, etc.).
+- lifetime: Connected/disconnected independently of Composer lifecycle. The Composer functions in offline mode (in-process-only design bus) when no external bus is available.
+
+### [CXC-BUS-BRIDGE] Bus Separation Rules
+
+| Rule | Rationale |
+|---|---|
+| Internal bus and design bus are separate `ComposeIOBus` instances | A canvas selection event must never appear on the hardware bus |
+| No namespace may exist on both buses simultaneously | Prevents accidental cross-contamination |
+| The `composer/` prefix is reserved for the internal bus | Design bus namespaces never start with `composer/` |
+| Modules that touch both buses (e.g., preview module) hold references to both but never bridge messages between them | The preview module subscribes to internal bus for layout changes AND to design bus for widget state — but these are separate subscription sets |
+
+### [CXC-BUS-CONNECT] Design Bus Connection Modes
+
+| Mode | Transport | When | Use Case |
+|---|---|---|---|
+| Offline | In-process only | No external bus available | Pure layout design, prototyping |
+| Simulator | In-process with simulated modules | `--simulator` flag or simulator panel | Testing bindings and state engines without hardware |
+| MQTT | MQTT transport added to design bus | Broker URL configured | Live testing against networked ComposeIO devices |
+| UART | UART transport added to design bus | Serial port configured | Direct connection to physical module (CH32V003, ESP32) |
+| CAN | CAN transport added to design bus | CAN interface configured | Wired bus testing |
+| Hybrid | Multiple transports simultaneously | Complex setups | Some modules simulated, some physical |
+
+- connection-lifecycle: The builder connects/disconnects the design bus at runtime via a connection panel. Connecting adds transports. Disconnecting removes them. The design bus always exists (at minimum as in-process) — transport connections are additive.
+- auto-discovery: When a transport connects, the design bus receives `discovery` messages from existing modules. The Composer's namespace registry updates to show hardware-reported namespaces alongside designer-defined ones.
+- conflict-detection: If a hardware module publishes to a namespace the builder has defined in their design, the Composer flags the conflict (duplicate publisher). The builder resolves by renaming, merging, or accepting shared publication.
+
+---
+
+## 2. Module Decomposition [CXC-MOD-DECOMP]
+
+Every visible panel in the Composer is an autonomous module — a `CTkFrame` subclass that communicates exclusively via bus messages. Modules subscribe to the namespaces they need and publish to the namespaces they affect.
+
+### [CXC-MOD-REGISTRY] Module Registry
+
+| Module | Internal Bus Role | Design Bus Role | Description |
+|---|---|---|---|
+| **Palette** | Publishes `composer/palette/*` | None | Widget catalog; user selects a widget type to place |
+| **Canvas** | Subscribes + publishes `composer/canvas/*` | None | Visual layout surface; spatial arrangement of widget slots |
+| **Property Editor** | Subscribes `composer/selection/*`, publishes `composer/config/*` | None | Edits properties of selected widget/module/binding |
+| **Binding Editor** | Subscribes `composer/selection/*`, publishes `composer/binding/*` | None | Visual binding creation and editing |
+| **Namespace Inspector** | Subscribes `composer/namespace/*` | Subscribes all (read-only) | Shows all namespaces, state engines, publishers, subscribers |
+| **Bus Monitor** | Optional: subscribes `composer/` (for debugging Composer itself) | Subscribes all messages | Live message stream from design bus |
+| **Preview** | Subscribes `composer/canvas/*`, `composer/config/*`, `composer/binding/*` | Subscribes + publishes (full participant) | Live widget rendering connected to design bus |
+| **History** | Subscribes `composer/command/*` | None | Undo/redo command stack |
+| **Connection** | Publishes `composer/connection/*` | Manages transport lifecycle | Bus connection/disconnection UI |
+| **Toolbar** | Publishes `composer/tool/*` | None | Mode switching, file operations, undo/redo triggers |
+
+### [CXC-MOD-LIFECYCLE] Module Lifecycle
+
+```
+1. Composer startup
+2. Internal bus created (composer-internal)
+3. Design bus created (in-process, offline mode)
+4. Modules instantiated in layout order
+5. Each module receives both bus references in constructor
+6. Each module subscribes to its required internal bus namespaces
+7. Modules that interact with design bus subscribe to design bus namespaces
+8. Composer is operational
+```
+
+- hot-swap: Modules can be added/removed at runtime. Adding a module subscribes it to relevant namespaces. Removing a module unsubscribes and destroys the frame. Other modules are unaffected (they never held a reference).
+- module-config: Each module's initial state (position, size, visibility, collapsed/expanded) is itself a ComposeIO config loaded at startup. The Composer bootstraps from its own output format.
+
+### [CXC-MOD-ISOLATION] Module Isolation Contract
+
+Every module MUST:
+1. Accept `internal_bus: ComposeIOBus` and `design_bus: ComposeIOBus` in its constructor.
+2. Communicate with other modules ONLY via `internal_bus` messages.
+3. Never import another module's class.
+4. Never hold a reference to another module's instance.
+5. Be instantiable with a mock bus for isolated testing.
+6. Declare its subscriptions and publications in a class-level `MODULE_MANIFEST` dict.
+
+```python
+class PaletteModule(ctk.CTkFrame):
+    MODULE_MANIFEST = {
+        "subscribes": ["composer/tool/mode"],
+        "publishes": ["composer/palette/selected", "composer/palette/drag_start"],
+        "design_bus": False,  # Palette does not touch the design bus
+    }
+```
+
+---
+
+## 3. Data Flow Architecture [CXC-DATA-FLOW]
+
+### [CXC-FLOW-SELECTION] Widget Selection Flow
+
+```
+User clicks widget on canvas
+  → Canvas publishes: composer/selection/widget_selected {widget_id, module_id, widget_type}
+  → Property Editor subscribes: populates property fields for selected widget
+  → Binding Editor subscribes: shows bindings involving selected widget's namespace
+  → Namespace Inspector subscribes: highlights selected widget's namespace
+```
+
+### [CXC-FLOW-PLACEMENT] Widget Placement Flow
+
+```
+User selects widget type in Palette
+  → Palette publishes: composer/palette/selected {widget_type}
+User clicks/drags on Canvas
+  → Canvas publishes: composer/canvas/widget_added {widget_id, widget_type, module_id, position, size}
+  → Canvas publishes: composer/command/execute {type: "add_widget", params: {...}, undo_params: {...}}
+  → History subscribes: pushes command to undo stack
+  → Preview subscribes: instantiates real widget at position
+  → Namespace Inspector subscribes: registers widget's default namespace (if any)
+```
+
+### [CXC-FLOW-BINDING] Binding Creation Flow
+
+```
+User creates binding in Binding Editor (or drag-connects on canvas)
+  → Binding Editor publishes: composer/binding/created {binding_config}
+  → Binding Editor publishes: composer/command/execute {type: "add_binding", ...}
+  → Preview subscribes: installs binding on design bus
+  → Namespace Inspector subscribes: updates publisher/subscriber links
+  → Canvas subscribes: draws binding visualization (line/arrow between widgets)
+```
+
+### [CXC-FLOW-LIVE-TEST] Live Hardware Testing Flow
+
+```
+User connects MQTT transport via Connection module
+  → Connection publishes: composer/connection/transport_added {type: "mqtt", broker: "..."}
+  → Design bus: adds MQTTTransport
+  → Design bus receives: discovery messages from physical modules
+  → Namespace Inspector subscribes: merges hardware-reported namespaces
+  → Preview: widgets now receive real state from hardware
+  → Bus Monitor: shows live hardware messages
+
+User presses physical button on hardware module
+  → Hardware module publishes on design bus: ftl_arm state=on
+  → Preview module's ButtonWidget receives state change, updates LED indicator
+  → Bound GaugeWidget receives dependent state change, animates
+  → Bus Monitor shows the message stream
+  → Builder sees real hardware behavior in the Composer
+```
+
+### [CXC-FLOW-CONFIG] Property Change Flow
+
+```
+User edits property in Property Editor (e.g., changes led_behavior from follow_state to blink_500ms)
+  → Property Editor publishes: composer/config/changed {widget_id, property: "led_behavior", old: "follow_state", new: "blink_500ms"}
+  → Property Editor publishes: composer/command/execute {type: "property_change", ...}
+  → Canvas subscribes: updates widget slot annotation (shows "blink" icon)
+  → Preview subscribes: reconfigures live widget with new property
+  → History subscribes: pushes to undo stack
+```
+
+---
+
+## 4. Rendering Pipeline [CXC-RENDERING]
+
+### [CXC-RENDER-CANVAS] Canvas Rendering
+
+The canvas is NOT a widget preview. It is a schematic layout view showing:
+- Widget slots as labeled rectangles with type icon and namespace annotation
+- Module boundaries as grouped containers with headers
+- Binding connections as directed lines/arrows between widget slots
+- Grid lines, snap indicators, and alignment guides
+- Selection handles for move/resize
+
+The canvas uses `CTkCanvas` (or raw `tk.Canvas`) for drawing. Widget slots are lightweight canvas items, not instantiated CTk widgets. This keeps the canvas fast and avoids the complexity of managing real widget lifecycle during drag operations.
+
+### [CXC-RENDER-PREVIEW] Preview Rendering
+
+The preview panel instantiates real widgets on a real design bus. It is a separate rendering context from the canvas.
+
+| Renderer | Target | Implementation |
+|---|---|---|
+| CTk Preview | Desktop UX | Real CTkFrame widgets instantiated in preview panel, connected to design bus |
+| LVGL Preview | Embedded UX (CYD, ESP32) | `LVGLCanvas` widget rendering pixel-accurate LVGL output via cffi |
+| Split Preview | Side-by-side | CTk left, LVGL right — identical design bus, visual comparison |
+
+- rebuild-trigger: Preview rebuilds when any `composer/canvas/*`, `composer/config/*`, or `composer/binding/*` message is received on the internal bus.
+- rebuild-strategy: Incremental when possible (property change updates one widget). Full rebuild on structural changes (widget added/removed, binding changed).
+- bus-continuity: The design bus is NOT restarted on preview rebuild. State is preserved. A gauge that was at 75% stays at 75% after a layout change.
+
+### [CXC-RENDER-DUAL] Dual-Bus Rendering Detail
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Composer Application (CTk root window)                     │
+│                                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────┐  │
+│  │ Palette  │  │ Canvas   │  │ Property │  │ Binding   │  │
+│  │ Module   │  │ Module   │  │ Editor   │  │ Editor    │  │
+│  │          │  │          │  │          │  │           │  │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └─────┬─────┘  │
+│       │              │              │               │        │
+│  ═════╪══════════════╪══════════════╪═══════════════╪════    │
+│       │    INTERNAL BUS (composer-internal)         │        │
+│  ═════╪══════════════╪══════════════╪═══════════════╪════    │
+│       │              │              │               │        │
+│  ┌────┴──────────────┴──────────────┴───────────────┴────┐  │
+│  │  Preview Module                                       │  │
+│  │  ┌─────────────────┐  ┌─────────────────────────────┐ │  │
+│  │  │  CTk Preview    │  │  LVGL Preview (LVGLCanvas)  │ │  │
+│  │  │  [real widgets] │  │  [pixel-accurate embedded]  │ │  │
+│  │  └────────┬────────┘  └──────────────┬──────────────┘ │  │
+│  │           │                          │                 │  │
+│  │  ═════════╪══════════════════════════╪═════════════    │  │
+│  │           │  DESIGN BUS (live)       │                 │  │
+│  │  ═════════╪══════════════════════════╪═════════════    │  │
+│  │           │                          │                 │  │
+│  └───────────┼──────────────────────────┼─────────────────┘  │
+│              │                          │                    │
+└──────────────┼──────────────────────────┼────────────────────┘
+               │                          │
+        ┌──────┴──────┐           ┌───────┴───────┐
+        │ MQTT/CAN/   │           │ Simulated     │
+        │ UART to     │           │ Modules       │
+        │ Hardware    │           │ (offline)     │
+        └─────────────┘           └───────────────┘
+```
+
+---
+
+## 5. State Model [CXC-STATE]
+
+### [CXC-STATE-DESIGN] Design Document State
+
+The design document is the source of truth. It is a structured object containing:
+
+```
+Design
+├── metadata (name, version, target_platform, bus_config)
+├── modules[]
+│   ├── module_id
+│   ├── module_type (e.g., "button_panel", "gauge_panel", "custom")
+│   ├── layout (grid position, size, weight within design)
+│   ├── config (role, scope, authority — maps to ComposeIO module YAML)
+│   └── widgets[]
+│       ├── widget_id
+│       ├── widget_type (e.g., "ButtonWidget", "GaugeWidget")
+│       ├── namespace
+│       ├── properties (input_type, led_behavior, state_engine, label, etc.)
+│       └── layout (position within module, grid row/col)
+├── namespaces[]
+│   ├── name
+│   ├── state_engine
+│   ├── scope
+│   ├── authority
+│   └── label
+├── bindings[]
+│   ├── type (simple, compound, event_triggered)
+│   └── config (per binding type — see [SPEC:CIO-CONFIG-SCHEMA])
+└── connections[]
+    └── transport configs for design bus
+```
+
+- authority: The design document is modified ONLY through bus commands. No module mutates it directly. The history module captures every mutation for undo/redo.
+- persistence: The design document serializes to ComposeIO YAML (see 04-composer-serialization.lts). The in-memory representation and the YAML are isomorphic.
+
+### [CXC-STATE-SELECTION] Selection State
+
+| Namespace | State Engine | Description |
+|---|---|---|
+| `composer/selection/primary` | `enum: [none, widget, module, binding, namespace]` | What type of object is selected |
+| `composer/selection/widget_id` | string | Currently selected widget (empty if none) |
+| `composer/selection/module_id` | string | Currently selected module |
+| `composer/selection/multi` | list | Multi-selection widget IDs |
+
+- single-select: Default. Clicking a widget selects it and deselects all others.
+- multi-select: Shift+click or drag-select. Multiple widgets selected. Property editor shows common properties.
+- module-select: Clicking a module header selects the module. Property editor shows module-level config.
+
+### [CXC-STATE-TOOL] Tool Mode State
+
+| Namespace | State Engine | Description |
+|---|---|---|
+| `composer/tool/mode` | `enum: [select, place, connect, pan]` | Current interaction mode |
+| `composer/tool/place_type` | string | Widget type being placed (when mode=place) |
+
+---
+
+## 6. File Structure [CXC-FILES]
+
+```
+composeio/ux_composer/
+├── specs/                          # This specification directory
+│   ├── 00-composer-design-principles.lts
+│   ├── 01-composer-architecture.lts
+│   ├── 02-composer-internal-bus.lts
+│   ├── 03-composer-modules.lts
+│   ├── 04-composer-serialization.lts
+│   └── 05-composer-preview-system.lts
+├── src/
+│   └── composer/
+│       ├── __init__.py
+│       ├── app.py                  # Top-level CTk application, bus creation, module layout
+│       ├── buses.py                # Dual-bus factory and connection management
+│       ├── design.py               # Design document state model
+│       ├── modules/
+│       │   ├── __init__.py
+│       │   ├── palette.py          # Widget catalog module
+│       │   ├── canvas.py           # Visual layout canvas module
+│       │   ├── property_editor.py  # Property editing module
+│       │   ├── binding_editor.py   # Binding creation/editing module
+│       │   ├── namespace_inspector.py  # Namespace registry viewer
+│       │   ├── bus_monitor.py      # Live bus message viewer
+│       │   ├── preview.py          # Live preview module (CTk + LVGL)
+│       │   ├── history.py          # Undo/redo command stack
+│       │   ├── connection.py       # Design bus transport management
+│       │   └── toolbar.py          # Mode switching, file operations
+│       ├── widgets/
+│       │   ├── __init__.py
+│       │   ├── registry.py         # Widget type registry and discovery
+│       │   ├── builtin.py          # Built-in ComposeIO widget type definitions
+│       │   └── plugins/            # Plugin directory for custom widget types
+│       └── canvas/
+│           ├── __init__.py
+│           ├── items.py            # Canvas item rendering (widget slots, module frames)
+│           ├── handles.py          # Selection handles, resize grips
+│           ├── grid.py             # Grid snap, alignment guides
+│           └── connections.py      # Binding visualization (arrows, lines)
+├── configs/
+│   └── composer_layout.yaml        # The Composer's own layout — dogfooded
+└── tests/
+    ├── test_modules/               # Per-module tests with mock bus
+    ├── test_integration/           # Multi-module integration tests via bus
+    └── test_serialization/         # Round-trip YAML tests
+```
+
+---
+
+## 7. Technology Stack [CXC-TECH]
+
+| Layer | Technology | Rationale |
+|---|---|---|
+| GUI framework | CustomTkinter | Consistent with ComposeIO ecosystem; dark mode; the widgets being designed are CTk widgets |
+| Bus | `composeio.bus.ComposeIOBus` | Dogfooding; real bus semantics |
+| Canvas drawing | `tk.Canvas` via CTk | Lightweight item-based rendering; proven drag/resize handling |
+| Serialization | PyYAML + custom emitter | ComposeIO YAML output; round-trip fidelity |
+| Testing | pytest + mock `ComposeIOBus` | Per-module isolation; bus-driven integration tests |
+
+---
+
+## Relationships
+
+### Causal
+- [DP-CXC-1] CAUSES [CXC-DUAL-BUS] — dogfooding requires real bus instances
+- [DP-CXC-4] CAUSES [CXC-BUS-DESIGN] — live preview requires real design bus
+- [DP-CXC-5] CAUSES [CXC-MOD-ISOLATION] — decomposition requires strict module boundaries
+
+### Semantic
+- [CXC-DUAL-BUS] RELATED_TO [DP-CIO-5] — local/global/remote scope model
+- [CXC-BUS-CONNECT] RELATED_TO [DP-CIO-6] — transport is implementation detail
+
+---
+
+**Version**: 0.1
+**Created**: 2026-03-27
+**Status**: Draft

@@ -1,0 +1,255 @@
+---
+scope: "The console-owned harness that instantiates N parallel carried-identity peer intelligences, and the keystone it stands on: 5a, the `self/*` → `self/<id>/*` carried-identity migration that fixes the singleton-namespace wart; the IntelligenceHost contract (IntelligenceSpec / IntelligenceHandle / spawn / list / stop) built over the launcher machinery; the instance-keyed-home isolation invariant; the console fleet affordance; and the Option-A proof-of-concept that proves the spawn."
+audience: "the ComposeUX architect; the builder implementing `intelligence/host/`; David, who owns the console/glass affordance and the identity-parameterization call"
+boundary: "IN: the 5a carried-identity namespace rule, its migration status, its deliberately-bare intent/config boundary and its CI consistency guard; the IntelligenceHost contract and lifecycle on the bus; instance-keyed homes and the fleet-mode enforcement guard; the PoC scope and its acceptance; the decompositional edges this realizes. OUT: the fleet UI, interactive-attach, channel multiplexing, and the full scene-binding migration of every `self/*` widget — all explicitly NOT in the PoC (David's glass / a later slice); the launcher itself, which is generalized by reference, never forked."
+not-this: "Not a fork of `intelligence/launcher/launcher.py` — the Host GENERALIZES it, reusing `build_claude_args` + the `INTELLIGENCE_ID` env by reference. Not a new seam for interactive-vs-headless: mode is the TRANSPORT detail ([DX-COLLAPSE-TRANSPORT]), and the IntelligenceSpec contract + `self/<id>/*` identity is the seam that survives. Not an additive legacy alias for the `self/*` migration — a hard switch, deliberately, because an alias reintroduces the singleton it exists to retire."
+elements: CXC-IH-*
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+---
+# IntelligenceHost — the console spawns carried-identity peer intelligences [SPEC:CXC-INTELLIGENCE-HOST]
+
+- status: draft
+- status-note: the Option-A design (David 2026-07-22, away watch); 5a is the keystone, a PoC proves the spawn
+- pinned-to: [DEC-INSIGHT-SELF-IS-NOT-YET-A-PEER], [DEC-INPROCESS-SOURCES]
+- premise: David — "the first step of consolidating the harness and the console is the ability for the console
+  to spawn the composeIO-builder agent so they persist in PARALLEL to me — copy my harness into the console and
+  use it to run the build agent — in an ENCAPSULATED/REPEATABLE fashion so MANY intelligences can be instantiated."
+- thesis: this COMPLETES the platform's own decomposition. Every other participant is a co-equal carried-identity
+  peer; the observing Intelligence was the last singleton. 5a gives each intelligence a carried `self/<id>/*`
+  identity; the Host gives the console the machinery to instantiate them. Together = Intelligence-as-peer, realized.
+
+> The console-owned harness that instantiates N parallel intelligences.
+
+---
+
+### [CXC-IH-5A] Keystone: `self/*` → `self/<id>/*` carried identity (fixes the singleton wart)
+- problem: `self/context_pct`, `self/registered`, `self/memory`, `self/projects`, `self/away_watches`, `self/rate_limit`
+  are SINGLETON namespaces. Two consoles/intelligences publishing them CLOBBER each other on the shared bus. The
+  session-transcript half of the wart is already fixed (`data_sources.resolve_session_jsonl` pins by explicit
+  `COMPOSEIO_SESSION_JSONL`, no more `ls -t` guess); the NAMESPACE half is not.
+- rule: every `self/*` reading is published under `self/<id>/*` where `<id>` = the publisher's `INTELLIGENCE_ID`
+  (already threaded as `--id` into self_publisher / the in-process sources — it is CARRIED, never guessed). The id
+  is assigned at spawn (the architect is `self/architect/*`; a spawned builder is `self/builder-1/*`).
+- consumers: a widget bound to ITS OWN identity subscribes `self/<my-id>/<reading>` (the console's own id, from its
+  env). The FLEET view subscribes the wildcard `self/+/<reading>` to see every live intelligence at once — this is
+  what makes the multi-intelligence console possible (haven-hud fleet view, generalized onto the bus).
+- migration: a HARD switch (additive alias tempting but reintroduces the singleton). The primary console's scene
+  bindings move `self/context_pct` → `self/architect/context_pct` etc.; the fleet view uses `self/+/*`. Small,
+  mechanical, and it is the whole point — do not half-do it with a legacy alias.
+- migration-status: DONE for the architect console (2026-07-23). The per-instance PUBLISHERS scope by carried id
+  and the architect console's SCENE + chat client bind the id-scoped topics. Concretely: (1) `self_publisher` and
+  `transcript_publisher` both take `--namespace-by-id` (mirrored flag; the rewrite is ONE shared helper
+  `self_publisher.scope_namespace`, generalized to any family — `self` for the sensor set, `self`+`thread` for the
+  transcript feeds — so the two publishers can never drift on the scheme); (2) both console launch paths opt the
+  architect in (`console/data_sources.py` in-process sources AND `start-console-daemons.sh` headless fallback,
+  each passing `--id <id> --namespace-by-id`); (3) `console.compose.yaml` binds every per-instance feed under
+  `self/architect/*` / `thread/architect/*` — the six non-param `intelligence_card` subscriptions via a new
+  `self_prefix` scene param (default `self` preserves legacy, so a NON-migrated console is byte-unchanged and the
+  id never leaks into the shared render engine); (4) `chat.py` narration topic is `thread/<id>/narration`.
+- migration-boundary: the console→intelligence INTENT/CONFIG channels stay BARE/global on purpose —
+  `self/model/select`, `self/account/signin`, and the already-id-scoped `intelligence/<id>/{in,out,compose,
+  channel/alive,config/*}`. A widget must reach the intelligence at a stable topic; scoping a directive would
+  break actuation. The rewrite helper enforces this with a `keep_bare` set so a directive can never be scoped even
+  if routed through a publisher. FLAGGED as still-bare cross-instance vectors (separate daemons / out of this
+  slice, do-not-guess per the migration rule): `self/deliverables` (deliverable_publisher), `self/meta`
+  (meta_publisher + config surface — ambiguous per-instance-vs-shared), `self/away_watches`, `self/projects`.
+- fleet-payoff: with per-instance feeds under `<family>/<id>/*`, a fleet/roster view subscribes the wildcards
+  `self/+/context_pct` / `thread/+/narration` to see EVERY live intelligence at once — the multi-intelligence
+  console ([CXC-IH-CONSOLE]) becomes a pure subscription, no new publisher.
+- consistency-guard: `intelligence/console/test_id_scoping.py` parses the real scene and FAILS naming any
+  subscribed `self/*`/`thread/*` namespace that is neither id-scoped nor in the explicit bare allowlist — so a
+  future added-but-unscoped per-instance binding (a fresh MERGE vector) is caught in CI, not in David's glass.
+- tell-you-drew-it-wrong: a spawned builder's context gauge overwriting the architect's — that is the singleton
+  clobber still present.
+- change: "[CXC-IH-5A] hard-switch EXECUTED for the architect console — per-instance feeds now publish and bind
+  under `self/architect/*` / `thread/architect/*`; intent/config channels stay global. This fixes a CONFIRMED
+  LIVE defect: a separate `provisionio` intelligence on the shared broker (COMPOSEIO_FW_DOCUMENT_STORE_URL) was publishing bare
+  global `thread/narration` / `self/activity` / `self/*` gauges that the architect console MERGED into its own
+  thread and gauges."
+- context_for_change:
+  - prior_state: "`transcript_publisher` published `thread/narration` / `self/activity` / `self/subagents` /
+    `self/avatar/expression` to BARE global topics with no id-scoping; `self_publisher` did the same for the
+    `self/*` gauge set by default (its `--namespace-by-id` scheme existed but was opt-in/off so the legacy console
+    kept working). Two intelligences on one broker therefore clobbered/merged onto identical topics."
+  - reasoning: "The singleton-namespace half of the wart (the NAMESPACE half; the session-transcript half was
+    already fixed by `resolve_session_jsonl` pinning) had to be closed for the architect to stop ingesting
+    provisionio's feeds. The scheme already existed in `apply_self_id_namespace`; this reuses it BY REFERENCE
+    (generalized to any family) rather than inventing a parallel one, and does the coordinated publisher +
+    launch + subscriber + chat move so the console binds exactly what the publishers now emit."
+  - rejected_alternative: "(a) A legacy additive ALIAS (publish BOTH bare and scoped) — rejected: it reintroduces
+    the singleton and defeats the point (the spec's own `migration` guidance). (b) Subscribing the console to the
+    fleet wildcard `self/+/*` — rejected: that RE-MERGES every instance, the exact defect being fixed; wildcards
+    are for a fleet view, not a single-instance console. (c) Hardcoding `architect` into the shared render engine
+    (`parser.py`/widgets) — rejected: it would poison every console (incl. provisionio's) with the architect's id;
+    instead a `self_prefix` scene param keeps the engine generic and pushes the id into config (SDR credo)."
+  - counter_argument: "A hard switch with no alias breaks any consumer still bound to the bare topics the instant
+    it lands."
+  - counter_response: "The ONLY architect consumer of these topics is this console + `chat.py`, both migrated in
+    the same slice; the publishers default OFF so any NON-architect / non-migrated console is byte-for-byte
+    unchanged (provisionio needs no change and must not be touched — the architect deploys + verifies live).
+    Proven: self_publisher (7/7) + transcript_publisher (13/13) + data_sources (17/17) selftests green, the full
+    intelligence module suite (20/20 selftests) + pytest (69) green, the scene parses + headless-renders, and a
+    consistency guard test locks the invariant."
+  - invalidating_assumption: "That this console's identity is fixed as `architect` and that the per-instance vs
+    intent classification of the FLAGGED bare channels (`self/deliverables`, `self/meta`, `self/away_watches`,
+    `self/projects`) holds. If the console should PARAMETERIZE its id (read `INTELLIGENCE_ID` into the scene rather
+    than hardcode `architect`), or if `self/meta`/`self/deliverables` are decided to be per-instance, reopen and
+    scope those next (the publishers + guard already generalize to any id)."
+  - implication: "The IntelligenceHost PoC ([CXC-IH-POC]) can now spawn `builder-1` and see `self/builder-1/*`
+    coexist with `self/architect/*` on the wire with no overwrite; the fleet console is a subscription away."
+- part-of: [SPEC:CXC-INTELLIGENCE-HOST]
+
+### [CXC-IH-HOST] The IntelligenceHost — a console-owned, repeatable spawner over the launcher machinery
+- what: a module the CONSOLE owns (`intelligence/host/`) that instantiates intelligences. It GENERALIZES
+  `intelligence/launcher/launcher.py` — the same `build_claude_args` + `INTELLIGENCE_ID` env + spawn, lifted from a
+  one-shot script into a reusable, parameterized API. Reuse by reference; do NOT fork launcher.py's logic.
+- the contract (the encapsulation David asked for):
+    IntelligenceSpec { id: str, mode: "interactive"|"headless", agent_type: str|None,
+                       task: str|None, resume_session: str|None, model: str|None,
+                       instance_home: str|None, additional_dirs: list|None }
+    IntelligenceHost(enforce_isolated_homes: bool = False).spawn(spec)
+        -> IntelligenceHandle { id, pid, mode, started_ts, status() }
+    IntelligenceHost.list() -> [handle...]     # the live roster
+    IntelligenceHost.stop(id) -> bool          # graceful terminate
+  (instance_home / additional_dirs / enforce_isolated_homes realize [CXC-IH-HOMES] — the isolation
+  invariant; see that node.)
+- id-carrying: spawn sets `INTELLIGENCE_ID=<spec.id>` (and `COMPOSEIO_SESSION_JSONL` when known) in the child env,
+  so the spawned intelligence's in-process sources publish `self/<id>/*` automatically — 5a and the Host meet here.
+- mode is the TRANSPORT detail, not a new seam ([DX-COLLAPSE-TRANSPORT]):
+    * interactive — the launcher's `pty.fork` model (a human can attach; this is how the architect itself runs).
+    * headless — `claude -p "<task>" --agent <agent_type>` as an autonomous builder that runs a scoped slice and
+      exits, publishing progress to `self/<id>/*` + its channel while it lives. This is the "persist in parallel
+      to you" builder.
+- lifecycle on the bus: the Host publishes the roster to `self/hosts/<console-id>/roster` (or the fleet reads
+  `self/+/status`); a spawned builder is a first-class bus peer from birth (it has an id, it publishes, it is
+  discoverable) — not a hidden subprocess.
+- encapsulated/repeatable: `spawn(spec)` is called N times with N ids; nothing about the Host is singleton. This
+  is the literal realization of the platform thesis for the observer node.
+- part-of: [SPEC:CXC-INTELLIGENCE-HOST]
+
+### [CXC-IH-HOMES] Instance-keyed homes — one instance, one home; transcripts + memory never co-locate
+- pinned-to: [DEC-INSTANCE-KEYED-HOMES], [DEC-MEMORY-SCOPING-BY-CWD], [INSIGHT-CWD-IS-THE-SCOPE-LEVER]
+- exemplifies: [DEC-INSTANCE-KEYED-HOMES], [DEC-MEMORY-SCOPING-BY-CWD]
+- invariant: (LOAD-BEARING) for the fleet of intelligences on one machine, EACH instance boots from its
+  OWN identity-keyed home dir, and NO TWO distinct instances share a home. Because the harness keys a
+  session's PROJECT DIR — where its transcript `.jsonl` AND its memory store live (also its statusline
+  + agent/skill scope) — off the ABSOLUTE cwd ([INSIGHT-CWD-IS-THE-SCOPE-LEVER]), distinct homes ⇒
+  distinct project dirs ⇒ transcripts + memory that CANNOT co-locate. This is the ROOT cure; the
+  read-time band-aid [CXC-IC-SELF-IDENTITY] (pin `COMPOSEIO_SESSION_JSONL`, refuse to `ls -t`-guess)
+  only disambiguates AFTER co-location has already happened. Root over symptom: retire the ambiguity
+  at its source so "which transcript is mine?" cannot arise, THEN keep the band-aid as defense-in-depth.
+- why-co-location-happens: (the failure being cured) N intelligences launched from a HOME-ish cwd (`~`)
+  all resolve to ONE project dir (`~/.claude/projects/-Users-<user>/`), so their transcripts
+  and memory pool into one shared pile — the live 2026-07-24 leak where the architect console rendered
+  a sibling (provisionIO) instance's messages + its context meter. cwd is the scope lever; home is the
+  wrong default.
+- failure-modes: (it sits between two — the key must be keyed RIGHT, not just isolated)
+    * TOO COARSE (co-location) — a shared home collapses N instances into one project dir. This is
+      ComposePlatform's bug. The cure is a MORE-specific cwd.
+    * TOO FINE (fragmentation) — a per-SESSION home (a timestamp in the path, e.g. Haven's
+      `~/haven/sessions/<role>-<UTCstamp>/`) mints a NEW project dir every session, so an instance's
+      own memory scatters across dozens of dirs and never accumulates. The cure is a STABLE cwd.
+  The correct key is the INSTANCE's ROLE/IDENTITY — stable across sessions AND across every project it
+  touches — NOT the project (re-fragments the moment it cds between Compose* repos, [DEC-INSTANCE-
+  KEYED-HOMES]) and NOT the session (fragments across time). Home = `~/compose-instances/<role>/`.
+- projects-reachable: the Compose* repos mount as ADDITIONAL working dirs
+  (`--add-dir` per `additional_dirs`; `additionalDirectories` in `<home>/.claude/settings.json` for a
+  resumed session) so ONE identity-keyed instance edits every project while keeping one home.
+- realization-spawn: (`intelligence/host/host.py`, done) `IntelligenceSpec.instance_home`
+  (identity-keyed cwd) + `additional_dirs` (→ `--add-dir`); `spawn()` runs the child with
+  `cwd=spec.home_dir`; `project_dir` is a deprecated back-compat alias. `IntelligenceHost(
+  enforce_isolated_homes=True)` (fleet mode) makes the invariant a HARD guard: it REFUSES a managed
+  instance with no home (would inherit the shared pile) and REFUSES two distinct ids resolving to the
+  same project key (`project_dir_key`, the harness cwd→dir sanitization, single-sourced in launcher.py
+  so host + launcher never fork the rule). Same-id re-spawn into its own home is allowed (it IS that
+  instance, not a co-location).
+- realization-resume: (`intelligence/launcher/transport.sh` + `launcher.py`) opt-in
+  `INSTANCE_HOME` cds the launcher to the instance home before `claude --resume`; `_derive_jsonl_path`
+  now derives the transcript from `project_dir_key(cwd)` (home-aware) instead of a hardcoded shared-
+  home key — reducing to the identical value when cwd is `~`, so the live architect's resume is byte-
+  unchanged. THE RESUME CAVEAT: `claude --resume` re-pins to the project dir the session was CREATED
+  in, so this RE-KEYS only a session COLD-STARTED in the instance home; a legacy home-created session
+  (the current architect) stays home-keyed until DELIBERATELY re-created from its home + its memory
+  store migrated. That cutover is DAVID'S trigger (a cold start carries no context) — the mechanism is
+  ready and safe (opt-in, default = prior behavior), not auto-applied.
+- enforcement: `intelligence/host/test_instance_keyed_homes.py` — anchors `project_dir_key` against
+  REAL on-disk `~/.claude/projects/` dirs (so a harness sanitization drift is caught, not assumed) and
+  asserts the fleet Host refuses both co-location shapes + allows distinct homes / same-id re-spawn.
+- tell-you-drew-it-wrong: a booting instance has to ask "which transcript is mine?" at all — that
+  question only exists because two instances share a project dir; instance-keyed homes make it moot.
+- change: "[CXC-IH-HOMES] promoted from the [DEC-INSTANCE-KEYED-HOMES] decision + the host.py
+  implementation into a LOAD-BEARING spec invariant, and the half-built machinery completed: the
+  launcher transcript derivation made home-aware (`project_dir_key`, single-sourced), and a fleet-mode
+  enforcement guard + enforcing test added. Supersedes [CXC-IC-SELF-IDENTITY] as the ROOT fix for
+  transcript/memory co-location; the band-aid remains as defense-in-depth."
+- context_for_change:
+  - prior_state: "The isolation intent lived only as a decision node ([DEC-INSTANCE-KEYED-HOMES]) + an
+    ad-hoc .md, and host.py already carried instance_home/home_dir/additional_dirs, but the SPEC
+    ([CXC-IH-HOST]) never stated the invariant, nothing ENFORCED it (a homeless or home-sharing spawn
+    was silently accepted), and launcher.py's `_derive_jsonl_path` hardcoded the shared-home project
+    key `-Users-<user>` — so the resume path still assumed one shared home. The only guard
+    against the co-location leak was the read-time band-aid [CXC-IC-SELF-IDENTITY]."
+  - reasoning: "The band-aid closes the LEAK but not the ROOT: multiple intelligences still co-locate
+    in one project dir, so the 'which is mine?' ambiguity EXISTS and is only disambiguated after the
+    fact. David (DSD D10, 2026-07-24) directed the structural cure BEFORE ever direct-invoking a
+    long-running instance (e.g. composeux-render-engineer) that needs its own home. Enforcing the
+    invariant BY CONSTRUCTION (a fleet Host that refuses to co-locate) + a home-aware launcher
+    derivation + the spec statement retires the ambiguity at its source. `project_dir_key` is single-
+    sourced in launcher.py and imported by host.py so the harness cwd→dir rule is never forked
+    ([INSIGHT-FORK-DIVERGENCE-IS-A-CLASS])."
+  - rejected_alternative: "(a) Key homes by PROJECT dir (the first D6 framing) — rejected: an instance
+    spans many Compose* repos, so it re-fragments the moment it cds between them (same shared-cwd bug,
+    new dress). (b) Key by SESSION (a timestamp per launch, Haven's shape) — rejected: it over-
+    isolates, scattering an instance's own memory across dozens of dirs (fragmentation). (c) Keep only
+    the read-time band-aid — rejected: it launders the co-location instead of preventing it, and a new
+    launch path that forgets to pin re-opens the leak. (d) Make enforcement default-ON in the Host —
+    rejected for now: the homeless stub-child PoC/selftest path depends on the permissive default, so
+    fleet mode is opt-in (`enforce_isolated_homes=True`), which the console spawner sets."
+  - counter_argument: "Enforcing isolated homes could block a legitimate case where two cooperating
+    intelligences deliberately want to share a workspace."
+  - counter_response: "Sharing a WORKSPACE (files) is served by `additional_dirs` / `--add-dir` — many
+    instances can mount the same repos. What must never be shared is the HOME (the cwd the harness
+    keys transcript+memory off), because that is exactly the co-location the invariant forbids. The
+    guard targets the home key, not file access, so cooperation is unaffected."
+  - invalidating_assumption: "That the harness keys the project dir off cwd via the `[^A-Za-z0-9]→-`
+    sanitization `project_dir_key` models. If Claude Code changes that derivation (a different sanitize
+    rule, or keying off something other than cwd), the enforcing test's on-disk anchor fails and the
+    mechanism is re-verified — by design, loud over silently-wrong."
+  - implication: "A long-running direct instance (composeux-render-engineer, a widget-builder) can be
+    booted into `~/compose-instances/<role>/` with the Compose* repos mounted, and its transcript +
+    memory are isolated from every peer BY CONSTRUCTION — the precondition David set for direct-
+    invoking such an instance."
+- part-of: [SPEC:CXC-INTELLIGENCE-HOST]
+
+### [CXC-IH-CONSOLE] The console affordance (beyond the PoC — flagged for David's glass)
+- a fleet surface: the Collaboration/rail area lists live intelligences (`self/+/status`), each a card with its
+  id + context gauge + status; a "spawn builder" control opens a small form (agent_type + task) → `host.spawn`.
+- clicking a live intelligence focuses/attaches it (interactive) or shows its progress stream (headless).
+- OPEN for glass: the exact UI, the roster card design, attach-vs-observe for interactive children, and how a
+  spawned builder's channel multiplexes into the console. NOT built in the PoC.
+- part-of: [SPEC:CXC-INTELLIGENCE-HOST]
+
+### [CXC-IH-POC] The Option-A proof-of-concept (what gets BUILT this watch)
+- scope (deliberately minimal, reviewable, non-irreversible):
+    1. 5a landed for at least the architect + one builder id: publish `self/architect/*` and `self/builder-1/*`;
+       prove they DON'T clobber (both visible on the bus simultaneously under distinct topics).
+    2. `intelligence/host/` with `IntelligenceHost.spawn/list/stop` over the launcher machinery (headless mode
+       is enough for the PoC).
+    3. a driver that spawns ONE headless builder (`id=builder-1`, agent_type=composeio-expert, a tiny scoped
+       task) and shows its `self/builder-1/*` appearing on the bus in parallel with the architect's.
+- acceptance: a test/proof that (a) `self/architect/context_pct` and `self/builder-1/context_pct` coexist on the
+  bus without overwrite, (b) `host.spawn` starts a child carrying `INTELLIGENCE_ID=builder-1`, (c) `host.list`
+  shows it and `host.stop` ends it. Headless proof (no human), witnessed on the wire.
+- NOT in the PoC (David's glass / a later slice): the fleet UI, interactive-attach, channel multiplexing, the
+  full scene-binding migration of every `self/*` widget (the PoC migrates only what it needs to prove no-clobber).
+- part-of: [SPEC:CXC-INTELLIGENCE-HOST]
+
+### [CXC-IH-EDGES] Decompositional edges this realizes (for the DX corpus)
+- [DX-SESSION-OWNED-VS-DISTRIBUTED]: an intelligence is a genuinely-distributed peer — carried id, own namespace.
+- [DX-COLLAPSE-TRANSPORT]: interactive-PTY vs headless-subprocess is transport; the IntelligenceSpec contract +
+  `self/<id>/*` identity is the seam that survives.
+- [DX-LEAF-OWNS-BEHAVIOR]: the Host owns spawn/lifecycle; each intelligence owns its own reasoning + publishes
+  semantic self-state up — the console never reaches into a child's mechanism.
+- part-of: [SPEC:CXC-INTELLIGENCE-HOST]

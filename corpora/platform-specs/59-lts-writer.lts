@@ -1,0 +1,580 @@
+---
+scope: "The `.lts` WRITER — one library, two components, two different binding invariants. (A) THE EMITTER: structured content -> `.lts` text, for authoring NEW content, bound by `parse(emit(x)) == x` and required to FAIL CLOSED rather than emit a best effort. (B) THE REWRITER: existing `.lts` text -> canonical `.lts` text, for migrating the legacy corpus, bound by `parse(rewrite(f)) >= parse(f)` (superset, never subset) and FORBIDDEN from being implemented as `emit(parse(f))`. Also: the transformation set and its per-transformation opt-in, the two-level verification (graph superset AND text-level line accounting), byte-level idempotence, the per-file receipt, the encoding-shape rules the emitter honours, and the absorption of `composeio.decision_ops`' byte-format writer plus `project_validator.render_registry_lts` into the one library."
+audience: [the builder implementing the writer library, factlattice-maintainer, the operators of `decision_ops` / `defect_ops` / `project_validator` whose emitters are absorbed, factlattice-editor (a caller, and the agent that hand-types today), composeux-architect (ratifies before dispatch; no decision point in this document is open any longer), David (ruled the two-component split, the anti-round-trip prohibition, the emitter's input type and the no-reorder rule, all 2026-08-11), anyone who later asks why the rewriter was not simply parse-then-emit, why the emitter's input type is not a richer authoring model, or why the migration does not produce a canonical byte form]
+elements: [CXC-LTW-*, DD-LTW-*]
+boundary: "IN: the emitter and its round-trip invariant ([CXC-LTW-EMITTER]); the emitter's refusal contract ([CXC-LTW-EMIT-REFUSE]); the rewriter and its superset invariant ([CXC-LTW-REWRITER]); the PROHIBITION on implementing the rewriter as parse-then-emit, with the 18% measurement that is its evidence ([CXC-LTW-NO-ROUNDTRIP]); the two-level verification that a lossy parse forces ([CXC-LTW-VERIFY]); the five named transformations ([CXC-LTW-TRANSFORMS]); per-transformation opt-in ([CXC-LTW-OPTIN]); byte-level idempotence ([CXC-LTW-IDEMPOTENT]); the per-file receipt and the leave-untouched rule ([CXC-LTW-RECEIPT]); the encoding-shape rules ([CXC-LTW-SHAPE]) and the derive-do-not-invent rule for canonical form ([CXC-LTW-CANONICAL-DERIVED]); one library and its four callers ([CXC-LTW-ONE-WRITER], [CXC-LTW-CALLERS]); the parser dependency that gates implementation ([CXC-LTW-PARSER-DEP]); the error matrix and the two-tier acceptance bar. OUT: the corpus-wide migration campaign itself — this specs the TOOL, not the rollout ([CXC-LTW-OUT-OF-SCOPE]); any change to the parser, which is being fixed concurrently and is this spec's DEPENDENCY, not its content; any change to the document-root and `elements` rules, which are [SPEC:LTS-DOC-ROOT]'s and are CONSUMED here unchanged."
+not-this: "Not a second emitter. The corpus already has two live ones — `composeio.decision_ops.core.render_node` and `intelligence/tools/project_validator.py::render_registry_lts` — and adding a third beside them is the fork-divergence class this corpus keeps paying for; both are ABSORBED ([CXC-LTW-ONE-WRITER]). Not a formatter with a house style: the canonical form is DERIVED from what conformant files already do, with `29-composeux-embedded-reactive.lts` as the exemplar, because a writer that reformats 72 files to a new taste produces a diff nobody can review ([CXC-LTW-CANONICAL-DERIVED]). Not `emit(parse(f))` — that implementation is the obvious one and it is catastrophic, and the prohibition at [CXC-LTW-NO-ROUNDTRIP] is the single most important requirement in this document. Not implementable today: the parser fix for wrapped continuations and ID tables MUST land first, or the emitter encodes today's truncation as intent ([CXC-LTW-PARSER-DEP]). Not a richer authoring model: David ruled 2026-08-11 that the emitter's input type is the PARSER'S NODE MODEL, because that makes `parse(emit(x)) == x` a literal equality rather than an equality-after-projection, and a projection is a step where a loss can hide ([DD-LTW-INPUT-TYPE]). Not a canonicalizing rewriter: the rewriter transforms IN PLACE and does not reorder, because reordering cannot be undone once the pre-reorder byte layout and its blame history are gone, and a reordering diff defeats the human review gate on the very first run over 72 files ([DD-LTW-REORDER]). Both decision points are CLOSED; what still gates DISPATCH is the parser fix alone ([CXC-LTW-PARSER-DEP])."
+depends-on: [58-document-root-and-element-inflation.lts, 44-lts-engine-consolidation.lts, 29-composeux-embedded-reactive.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-08-11
+---
+# The `.lts` Writer — a deterministic emitter and a text-targeted rewriter [SPEC:CXC-LTS-WRITER]
+
+> Authoring `.lts` is hand-typed prose today, and it goes wrong in ways nobody sees. Measured on the live
+> corpus 2026-08-11: 680 of 8,366 properties wrap onto a continuation line and the parser keeps only the
+> first physical line — about 148,847 characters dropped from parsed values; five documents declared their
+> id on a bare line and minted no root node at all; three authored edges in one node reached no parser
+> branch. Every one of those is an AUTHORING error, and every one of them is impossible for a deterministic
+> emitter to make. So this spec builds the writer — but it builds TWO things, and the whole document turns
+> on keeping them apart. The EMITTER turns structured content into text and is bound by round-trip fidelity:
+> `parse(emit(x)) == x`, fail closed, never a best effort. The REWRITER turns existing text into canonical
+> text and is bound by a superset: `parse(rewrite(f))` must contain everything `parse(f)` contained. The
+> obvious implementation of the second is the first composed with a parse — and it is catastrophic, because
+> parse is the LOSSY step for legacy files. Round-tripping spec 57 through parse-then-emit would produce a
+> file containing 18% of its authored bytes while every check passed, because the graph before and the graph
+> after would match perfectly. **The two things that agreed would both be wrong.** The rewriter therefore
+> operates on TEXT with targeted transformations and uses parse only to VERIFY, never as its intermediate
+> representation. This document also dogfoods its own first rule: every property value below is on ONE
+> physical line, so none of the 680-property loss class occurs in the spec that names it.
+
+---
+
+## 0. What is broken, measured
+
+### [CXC-LTW-THESIS] Authoring is the one unguarded write path, and every silent loss measured this session entered through it
+
+- premise: the corpus has a guarded READ path and an unguarded WRITE path. `lts_lint`, `lts_preview`, the freshness kernel and the coverage classifiers all inspect a document AFTER it exists; nothing stands between an author's keystrokes and a file that parses to something other than what was written.
+- key-insight: the losses measured this session are not parser bugs discovered in the wild — they are AUTHORING errors that a reader happened to expose. A wrapped property value, a bare-line document id and a bracketed key are all things a human types and a machine would never type, because a machine emitting from structured content has no reason to wrap, no reason to put the id anywhere but the h1, and no key that is not a key.
+- requirement: the remedy is therefore a WRITER, not a wider reader. A wider reader accepts more spellings of the same construct and installs the two-conventions problem [SPEC:LTS-DOC-ROOT] spent a day removing; a writer emits ONE spelling and makes the others unreachable from the tool path.
+- consequence: the writer's value is measured in defects it makes IMPOSSIBLE, not in defects it detects. That is why the emitter's binding property is a round trip rather than a lint pass — a lint pass says "no rule was broken", a round trip says "what I wrote is what will be read", and only the second forecloses a silent loss.
+- criticality: high
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-MEASURED] The census: 680 wrapped properties, 148,847 characters, 5 rootless documents, 3 unreached edges
+
+- census: all `.lts` files under `corpora/` were measured 2026-08-11 against the live parser, not against the grammar.
+
+| # | Defect | Measured | Consequence today |
+|---|--------|----------|-------------------|
+| A1 | a property value wrapping onto a continuation line | **680 of 8,366 properties (8.1%)** | the parser keeps only the FIRST physical line; **~148,847 characters** never reach a parsed value |
+| A2 | a document id declared on a bare line rather than in the h1 | **5 documents** | no root node exists; document-level properties attach to nothing ([SPEC:LTS-DOC-ROOT]) |
+| A3 | an authored edge in a shape no parser branch reaches | **3 edges, all in one node** | `edges: {}`, `edge_total: 0`, and zero lint findings — a node that exists to declare three edges declares none |
+| A4 | the worst single file, by share of its own authored bytes | `57-substrate-agnostic-subscription-filtering.lts` — **18% of its authored bytes are captured into properties** | the file that makes the anti-round-trip prohibition concrete ([CXC-LTW-NO-ROUNDTRIP]) |
+
+- the decisive property of this table, and it is why one tool answers all four: A1, A2 and A3 are three different SHAPES of one act — a human typing a construct in a form the parser does not reach. None is a disagreement about meaning; all three are an author who knew exactly what they meant and encoded it in a spelling the reader does not have.
+- corroboration, independently derived: A2's five documents are named from a separate corpus scan in the `.lts` domain profile's [GUIDANCE-UNTAGGED-H1] note and again in [SPEC:LTS-DOC-ROOT]'s census — three derivations, one set of five files.
+- what A1 costs that is NOT visible as a lint finding: a truncated property value is a VALID property. It has a key, it has a value, it parses. There is no rule for it to break, so the 680 produce no finding of any kind — which is why the number was unknown until it was measured directly against the parser rather than inferred from a linter's silence.
+- provenance: David and the composeux-architect, 2026-08-11, measured against the live engine.
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+---
+
+## 1. The two components, and the trap of conflating them
+
+### [CXC-LTW-TWO-COMPONENTS] Two components, two binding invariants — and they are not the same tool wearing two hats
+
+- definition: the library ships exactly two entry points, and each is bound by a DIFFERENT invariant because each has a different relationship to the truth.
+
+| Component | Signature | Binding invariant | For |
+|-----------|-----------|-------------------|-----|
+| **EMITTER** | structured content -> `.lts` text | `parse(emit(x)) == x` — equality, a round trip | authoring NEW content |
+| **REWRITER** | existing `.lts` text -> canonical `.lts` text | `parse(rewrite(f)) ⊇ parse(f)` — superset, never subset | migrating the LEGACY corpus |
+
+- key-insight (the reason this node exists before either component is specified): the emitter's input is TRUSTWORTHY and its output is under construction, so equality is achievable and is the right bar. The rewriter's input is a file whose authored content EXCEEDS what the parser can currently read, so equality against the parse is not merely unachievable — asserting it would certify the loss. The invariants differ because the epistemic position differs, and a builder who does not internalize that difference will write one tool with a flag.
+- requirement: the two components MUST NOT share an intermediate representation. They may share the canonical-form rules ([CXC-LTW-SHAPE]), the receipt format ([CXC-LTW-RECEIPT]) and the verification harness ([CXC-LTW-VERIFY]); they MUST NOT share a pipeline stage in which the rewriter's input has been reduced to the emitter's input type ([CXC-LTW-NO-ROUNDTRIP] states why in full).
+- error-case: a proposed API in which `rewrite(f)` is expressible as `emit(parse(f))` — by any composition, including one hidden behind a "canonicalize" helper — MUST be refused at review, not fixed at test time. It cannot be caught by test: the test that would catch it compares the graph before and after, and that is precisely the comparison the defect satisfies.
+- see-also: [CXC-LTW-EMITTER], [CXC-LTW-REWRITER], [CXC-LTW-NO-ROUNDTRIP]
+- criticality: high
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-EMITTER] The emitter — `parse(emit(x)) == x`, checked on every call, not on a test suite
+
+- definition: `emit(content) -> text` takes structured content (a document root, its frontmatter, its element nodes, their properties, its relationship triples) and produces the `.lts` bytes that encode it.
+- requirement: `content`'s TYPE is the PARSER'S OWN NODE MODEL — nodes, properties, edges and frontmatter shaped exactly as `factlattice.parse()` returns them. RULED by David 2026-08-11 ([DD-LTW-INPUT-TYPE]); a builder MUST NOT introduce a richer authoring model and MUST NOT insert a lowering or projection step, because `parse(emit(x)) == x` is then a LITERAL structural equality between two values of one type rather than an equality-after-projection, and every projection is a step where a loss can hide. Format extension is therefore a PARSER-FIRST path: a new construct is taught to the parser, is then in the model, and only then can the writer emit it.
+- requirement (the binding invariant): for every call, `parse(emit(x))` MUST equal `x` on the compared surface — the node set with ids and titles, the property map per node with values compared as FULL STRINGS, the edge set with source, target, type and layer, the document tag, and the frontmatter key set. Equality is over the ABSTRACT graph, not over bytes; two texts that parse to the same graph are the same emission.
+- requirement: the round-trip check runs INSIDE `emit`, on every call, against the live parser — not as a test over fixtures. A test certifies the inputs a test author imagined; an in-call check certifies the input actually presented, which is the only one whose loss matters.
+- rationale (why this specific invariant and not "the output lints clean"): a clean lint means no rule was broken. It does not mean the value survived — the 680 truncated properties at [CXC-LTW-MEASURED] are each a VALID property that lints clean and carries a fraction of what was written. The round trip is the only formulation under which a truncation is a FAILURE rather than a well-formed shorter value, because a truncated value is not equal to the value that was given.
+- consequence, stated because it is the whole return on the invariant: the emitter cannot author a silent loss. Not "is unlikely to" — cannot, because a loss is by construction a round-trip failure, and a round-trip failure is a refusal ([CXC-LTW-EMIT-REFUSE]).
+- default (STATED): the comparison is EXACT on property values, including leading and trailing whitespace after the single normalization the emitter is permitted — collapsing an internal newline run to a single space, which is the transformation `decision_ops._format_value` already performs and which MUST be applied to the INPUT before comparison so the equality is honest rather than arranged.
+- requirement: the emitter is PURE — same input, same bytes, on any machine, in any order. No timestamp, no hostname, no dictionary-iteration order leaking into output. Property order within a node is a declared canonical order ([CXC-LTW-SHAPE]), not the caller's dict order.
+- scenario:
+  - when: a caller passes a property value containing an embedded newline and a value longer than any line-length preference
+  - then: the emitter writes the value on ONE physical line with the newline collapsed to a space, `parse` reads back the identical string, the round trip holds, and the emission succeeds — the line is long and that is correct
+- see-also: [CXC-LTW-EMIT-REFUSE], [CXC-LTW-SHAPE]
+- criticality: high
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-EMIT-REFUSE] The refusal contract — FAIL CLOSED, name the part that failed, never write a best effort
+
+- requirement: when the round-trip check fails, `emit` MUST refuse. It MUST NOT write the file, MUST NOT return the text, and MUST NOT return a partial result with a warning attached.
+- requirement: the refusal MUST name WHICH PART failed, at the granularity a caller can act on: the node id, the property key, the expected value, the value that came back from the parse, and the byte offset at which they first diverge. A refusal that says "round trip failed" moves the diagnosis to the caller and is not compliant.
+- rationale: a best-effort write is worse than a refusal for exactly the reason A1 is worse than a parse error. A parse error is loud and gets fixed; a well-formed file carrying 82% of its content is indistinguishable from a correct one, and the corpus has 680 measured instances of what that costs. A refusal is actionable; a plausible degraded artifact is not.
+- requirement: a refusal MUST be a distinct, catchable error type carrying the divergence detail as structured fields, not a formatted message a caller has to re-parse.
+- error-case: a round trip that fails because the PARSER cannot yet represent the content — the case [CXC-LTW-PARSER-DEP] gates on, and the case branch (b) of [DD-LTW-INPUT-TYPE] would have made routine before that branch was REJECTED on 2026-08-11 — MUST refuse with a distinguishable reason code so the caller can tell "your content is malformed" from "this content is not yet expressible in the format". Collapsing those two into one error makes the second look like the caller's fault and is how a builder concludes the invariant is too strict and relaxes it.
+- requirement: because [DD-LTW-INPUT-TYPE] closed in favour of the parser's node model, the REFUSAL LOG is now load-bearing rather than incidental — it is the corpus's only measured record of what authors are trying to express and cannot, and the ruling explicitly rests on that record being read. Every refusal MUST therefore be emitted as a structured event to `{corpus}/events/quality.jsonl` alongside the receipts ([CXC-LTW-RECEIPT]), carrying its reason code, so the set is aggregable without re-parsing prose. A refusal that is only raised in-process and never recorded leaves the ruling's `invalidating_assumption` untestable.
+- error-case: an emitter that is asked to write content whose id is already present in the target corpus MUST refuse rather than mint a duplicate. A duplicate id is not a merge — the first definition wins and every downstream traversal to the loser is silently wrong.
+- error-case: an emission whose round trip passes but which would introduce a NEW dangling reference into the target corpus is NOT a refusal by default; it is REPORTED on the receipt. A half-written spec with a forward reference is a legitimate authoring state, and refusing it would make the writer unusable for the authoring it exists to support. The `decision_ops` guard's stricter rule — refuse a NEW forward dangle, roll back — remains available as a caller-selected mode, and is the mode `decision_ops` itself keeps ([CXC-LTW-CALLERS]).
+- testability: every clause above is table-drivable against a fixture whose expected outcome is a REFUSAL. A test suite that contains only successful emissions measures nothing about the contract this node specifies.
+- see-also: [CXC-LTW-EMITTER]
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-REWRITER] The rewriter — `parse(rewrite(f)) ⊇ parse(f)`, on TEXT, with parse used only to verify
+
+- definition: `rewrite(text, transformations) -> text` takes an existing `.lts` file and an EXPLICIT set of transformations, and returns the file with exactly those transformations applied.
+- requirement (the binding invariant): the graph AFTER MUST contain everything the graph BEFORE contained, plus whatever the transformation recovers. Node set, edge set and per-node property KEY set are supersets; per-node property VALUES are equal-or-longer, never shorter, never different-prefixed. Never a subset, ever, on any axis.
+- requirement (the implementation constraint that follows, and it is not optional): the rewriter operates on TEXT. Each transformation is a targeted edit to specific lines — unwrap a continuation into its property, move a bare-line id into the h1, insert a frontmatter block, append a `part-of` — leaving every byte it did not target exactly where it was. Parse is called BEFORE and AFTER to VERIFY the invariant; it is never the intermediate representation the output is generated from ([CXC-LTW-NO-ROUNDTRIP]).
+- rationale (why line-level text editing is the CORRECT surface here and not a shortcut): this is the same conclusion `composeio.decision_ops.core` already reached and documented for the same reason — "line-level editing that matches the corpus's own observed byte format exactly and is verified afterward by re-running the REAL parser is the smallest correct surface for a mutating tool; it is not a second parser." That module has been running against the live decision graph since 2026-08-06. The rewriter generalizes a proven surface rather than inventing one.
+- requirement: a transformation MUST NOT reflow, re-indent, re-wrap or re-order anything outside its own target lines. It MUST NOT reorder WITHIN its scope either: [DD-LTW-REORDER] was CLOSED by David on 2026-08-11 in favour of transform-in-place, so the NO a builder was told to assume is now the ratified answer with no pending fork behind it. There is no `reorder` transformation and adding one is a spec amendment, not a configuration ([CXC-LTW-TRANSFORMS]).
+- requirement: the rewriter is ATOMIC per file. Either every requested transformation is applied and verified, or the file is left byte-identical to how it was found ([CXC-LTW-RECEIPT] states the reporting obligation).
+- default (STATED): with an EMPTY transformation set, `rewrite(f)` returns `f` byte-identical. There is no implicit clean-up pass, no default set, and no "and also tidy up" behaviour.
+- see-also: [CXC-LTW-NO-ROUNDTRIP], [CXC-LTW-VERIFY], [CXC-LTW-TRANSFORMS]
+- criticality: high
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-NO-ROUNDTRIP] ⛔ THE REWRITER MUST NOT BE `emit(parse(f))` — and this prohibition is the most important sentence in this document
+
+- requirement (LOAD-BEARING, and it outranks every convenience argument that will be made against it): the rewriter MUST NOT be implemented as `emit(parse(f))`, nor as any composition equivalent to it, nor as a pipeline in which the file's content is reduced to the emitter's input type at any stage. This is the obvious implementation. It is catastrophic. A builder who reaches for it has not understood the difference between the two components and MUST re-read [CXC-LTW-TWO-COMPONENTS] before writing a line.
+- the evidence, measured 2026-08-11, and it is the whole argument: **`57-substrate-agnostic-subscription-filtering.lts` captures 18% of its authored bytes into properties.** Parse is the LOSSY step for a legacy file — the other 82% is content the current parser does not carry into the graph, most of it the tail of the 680 wrapped property values at [CXC-LTW-MEASURED]. Round-tripping that file through parse-then-emit would produce a file containing 18% of the original.
+- **and every check would pass.** The graph before and the graph after would match perfectly, because both are the output of the same lossy parse over the same content. A superset assertion would hold. A node-count assertion would hold. An edge-count assertion would hold. `lts_lint` would return zero findings, exactly as it returns zero findings on all 680 truncations today. **The two things that agree would both be wrong**, and they would agree precisely BECAUSE they were derived through the step that dropped the content.
+- key-insight (the generalizable form, worth more than the specific prohibition): a verification is only worth what its two sides INDEPENDENTLY know. Comparing `parse(before)` with `parse(after)` where `after` was GENERATED from `parse(before)` compares a value with itself and returns agreement in every case, including total loss. Any check whose two sides share the lossy step certifies nothing, and it certifies nothing most confidently in exactly the cases it was built for.
+- consequence (what this forces, stated so the constraint is constructive rather than only prohibitive): because parse cannot be the intermediate representation, TEXT is. Each transformation must know how to find its target in the raw lines and how to edit those lines in place. That is more work than a round trip and it is the work; the alternative is not cheaper, it is wrong.
+- consequence (what it forces on VERIFICATION): because `parse(before)` is itself lossy, the superset check over parses is NECESSARY BUT NOT SUFFICIENT. A second, text-level check is required, and it is specified at [CXC-LTW-VERIFY]. A build that implements only the graph superset check has implemented the half of the verification that the prohibited implementation would also pass.
+- change: "The rewriter is FORBIDDEN from being implemented as emit(parse(f)). Ruled by David 2026-08-11 with the 18% measurement on spec 57 as its evidence. The rewriter operates on TEXT with targeted transformations; parse is used only to VERIFY."
+- context_for_change:
+    prior_state: "The natural design — and the one a builder proposes within an hour of reading the emitter section — is that once an emitter exists with a proven round trip, canonicalizing a legacy file is free: parse it, emit it, done. One code path, one canonical form, no per-transformation machinery, and the emitter's own invariant appears to carry the guarantee across."
+    reasoning: "Parse is lossy for exactly the files the rewriter exists to fix. Spec 57 parses to 18% of its authored bytes; the 680 wrapped properties across the corpus lose ~148,847 characters at parse time. The emitter's round-trip invariant is `parse(emit(x)) == x`, which holds perfectly when x is already the lossy parse — the invariant is satisfied by the destruction rather than violated by it, because the content that was lost never entered x."
+    rejected_alternative: "Implement `rewrite = emit . parse` and rely on the emitter's round-trip invariant plus a graph-superset assertion. Its genuine strength is that it yields a truly canonical form for free, needs no per-transformation targeting code, and cannot produce an output the emitter would not have produced — which is exactly the property that makes the output look trustworthy while carrying a fraction of the input."
+    counter_argument: "Fix the parser first and the losslessness objection disappears — a non-lossy parse makes parse-then-emit correct by construction, and it is a far smaller and more general body of work than a text-transformation engine."
+    counter_response: "Two answers, and the second is the one that decides it. First, the parser fix is already this spec's blocking dependency ([CXC-LTW-PARSER-DEP]) and covers the known classes — wrapped continuations and ID tables — not the unknown ones; the rewriter runs against a corpus whose UNMEASURED loss classes are by definition not yet fixed. Second and decisively, correctness would then rest on a claim about the parser that no check in the pipeline can test, because the only available test compares two values that both passed through it. A design whose safety property is unfalsifiable by its own harness is not safe, it is unmeasured — and this corpus has already shipped a green selfcheck over three silently dropped edges."
+    invalidating_assumption: "That parse is lossy with respect to the AUTHORED BYTES of the files being rewritten. If the parser ever becomes provably total over a file — every authored byte accounted for as content, property value, structure or deliberately-ignored whitespace, with the accounting itself machine-checked per file rather than asserted — then parse ceases to be the lossy step for that file and `emit(parse(f))` becomes defensible FOR THAT FILE. The proof obligation is per-file and mechanical, never a general claim about the parser; the moment it is a general claim, this prohibition is back in force."
+    implication: "The rewriter needs targeted per-transformation text editing ([CXC-LTW-TRANSFORMS]), a text-level line-accounting check on top of the graph-superset check ([CXC-LTW-VERIFY]), and per-transformation opt-in so an operator can read one pass's diff on its own ([CXC-LTW-OPTIN]). None of those three would exist under the rejected design, which is a fair measure of how much of this spec the prohibition is load-bearing for."
+- criticality: high
+- see-also: [CXC-LTW-VERIFY], [CXC-LTW-TWO-COMPONENTS]
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-VERIFY] Two-level verification — the graph superset is necessary, the line accounting is what makes it sufficient
+
+- requirement: every rewrite is verified at TWO independent levels, and a build that implements only the first has implemented the level the prohibited design would also pass ([CXC-LTW-NO-ROUNDTRIP]).
+- **level 1, GRAPH SUPERSET** — parse before, parse after, assert: every node id present before is present after; every edge (source, target, type, layer) present before is present after; every property key present before is present after on the same node; every property VALUE after is equal to, or a strict extension of, the value before. Necessary. Not sufficient, because both sides passed through the lossy step.
+- **level 2, TEXT LINE ACCOUNTING** — the check the first cannot make, and the one that catches a loss the parse never saw. Every non-blank physical line of the INPUT text MUST be accounted for in the output under exactly one disposition:
+
+| Disposition | Meaning | Permitted for |
+|-------------|---------|---------------|
+| `retained` | the line appears in the output byte-identical | any transformation |
+| `merged` | the line's content appears, verbatim, inside another output line | `unwrap-property` only |
+| `relocated` | the line's content appears, verbatim, on a different output line | `hoist-root-id` only |
+| `added` | an output line with no input antecedent | `add-frontmatter`, `add-part-of` only |
+| `dropped` | the line's content appears nowhere in the output | **NEVER PERMITTED — a `dropped` line is a failed rewrite** |
+
+- requirement: `merged` and `relocated` are proved by SUBSTRING containment of the input line's stripped content in the claimed output line, not by a similarity score, not by a diff heuristic. If the content cannot be located verbatim, the disposition is `dropped` and the rewrite fails.
+- requirement: a single `dropped` line MUST fail the rewrite, and the failure MUST name the file, the input line number and the line's content. There is no threshold, no percentage, and no "acceptable loss" setting.
+- rationale (why substring containment and not a diff): a diff answers "how different are these", which is the wrong question. The question is "is this specific authored content still present", and containment answers it exactly, cheaply and without a tunable. The corpus has already paid for one widened matcher fabricating edges from prose; a fuzzy accounting check would fabricate reassurance the same way.
+- worked consequence, stated because it is what makes the level-2 check earn its cost: run the PROHIBITED implementation against spec 57 and level 1 passes cleanly while level 2 reports roughly 82% of the file's non-blank lines as `dropped`. Level 2 is the only check in this spec that can see the defect the prohibition exists to prevent — which is why the prohibition and this node are inseparable.
+- requirement: the two levels are reported SEPARATELY on the receipt with separate verdicts ([CXC-LTW-RECEIPT]). Collapsing them into one pass/fail loses the information that level 1 passed and level 2 did not, which is the exact signature of the prohibited implementation.
+- testability: the level-2 check is directly testable by feeding it a deliberately truncating transformation and asserting it fails — and that test MUST exist, because a verification harness that has never rejected anything has not been shown to be able to.
+- criticality: high
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+---
+
+## 2. The transformation set, opt-in, idempotence, receipts
+
+### [CXC-LTW-TRANSFORMS] The five named transformations — each targeted, each independently runnable
+
+- requirement: the rewriter's transformation set is CLOSED and NAMED. A caller selects from this set by name; there is no free-form transformation parameter, and adding a sixth is a spec amendment, not a configuration.
+
+| Name | Targets | Does exactly | MUST NOT |
+|------|---------|--------------|----------|
+| `unwrap-property` | a `- key: value` line followed by one or more indented continuation lines | joins the continuation content onto the property line, separated by a single space, producing ONE physical line ([CXC-LTW-SHAPE]) | touch an indented line that is a nested-mapping sub-key, a nested list item, or part of a fenced/indented code block — those are structure, not continuation |
+| `hoist-root-id` | a column-0 bracketed `[TAG:ID]` line following a bracketless `h1` | moves the id into the `h1` as `# Title [TAG:ID]`, and moves the bare line's trailing description into the blockquote summary immediately after the `h1` | rename the id, invent a tag, or discard the trailing description ([SPEC:LTS-DOC-ROOT] fixes all three) |
+| `add-frontmatter` | a file with no `---` frontmatter block | inserts a block carrying the required keys with values supplied BY THE CALLER | invent a `scope`, `audience` or `boundary`; an absent caller value is a refusal, not a placeholder |
+| `add-part-of` | an element heading with no `part-of` property, in a file with a minted root | appends `- part-of: [ROOT-ID]` as the last property of that node | add `part-of` to the root itself, or to a heading that is a bracketless section divider |
+| `suggest-elements` | a file with no `elements` frontmatter key | **SUGGESTS ONLY — returns a proposed value and DOES NOT WRITE IT** | write a derived value silently; see the requirement below |
+
+- requirement (LOAD-BEARING, and it is inherited, not invented here): `suggest-elements` MUST NOT write. [SPEC:LTS-DOC-ROOT]'s [DRI-ELEMENTS-INTENT] rules that the `elements` declaration expresses AUTHORED INTENT and MUST NOT be derived from the nodes a file currently mints — a derived declaration is a control fitted to its own result, under which the inflation check reports zero on the corpus it was written for. A rewriter that auto-populated `elements` would perform that fitting across all 72 files in one run and destroy the only evidence the check was ever going to find.
+- requirement: `suggest-elements` MUST present its suggestion together with the statement that the author must WIDEN it to cover ids they intended but which did not mint. The suggestion and that statement are one output; emitting the value alone is non-compliant.
+- requirement: each transformation is INDEPENDENT. Running `unwrap-property` alone MUST produce a file differing from the input only in unwrapped properties. No transformation may depend on another having run, and the result MUST NOT depend on the order in which a selected set is applied — a set applied in any order produces byte-identical output, and that is testable directly by permutation.
+- error-case: two selected transformations targeting the SAME line MUST be a refusal naming the line and both transformations, never a silent precedence. In the current set the only reachable case is `hoist-root-id` and `unwrap-property` over a bare-line root with a wrapped description; picking a winner silently is how one of the two edits vanishes without a finding.
+- error-case: `unwrap-property` encountering an indented line it cannot classify as either continuation or structure MUST leave the property untouched and REPORT it as unclassified, not guess. An unwrap that guesses wrong merges a nested sub-key into a scalar and produces a valid property carrying corrupt content — the A1 defect with extra steps.
+- see-also: [CXC-LTW-OPTIN], [CXC-LTW-SHAPE]
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-OPTIN] Per-transformation opt-in — there is no "fix everything", and one pass makes one reviewable diff
+
+- requirement: `rewrite` takes an EXPLICIT set of transformation names. There is no default set, no `all`, no `auto`, and no severity-driven selection. An empty set is legal and returns the input byte-identical ([CXC-LTW-REWRITER]).
+- requirement: an operator MUST be able to run exactly `unwrap-property` across the whole corpus and nothing else, and read that diff on its own.
+- rationale: a migration diff is reviewed by a human once, and the review is the only gate between a bulk edit and 72 changed files. A diff that mixes an unwrap, a root hoist, a frontmatter insertion and a `part-of` append is a diff nobody can review — the reviewer cannot tell which change came from which rule, so a wrong rule is indistinguishable from a right one applied to a surprising file. One transformation per pass makes each diff a single hypothesis with a single shape.
+- rationale (the second reason, which is about the tool rather than the review): a mixed pass that fails verification cannot tell the operator WHICH transformation broke the file without re-running the subsets. Per-transformation passes make the attribution free.
+- requirement: the selected set MUST be recorded on the receipt for every file, including files the pass left unchanged ([CXC-LTW-RECEIPT]). A receipt that does not name what was requested cannot be replayed and cannot be audited.
+- error-case: an unrecognized transformation name MUST be a refusal listing the five valid names. It MUST NOT be silently ignored — an ignored name means an operator believes a pass ran that did not, and a corpus that looks migrated is worse than one that looks untouched.
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-IDEMPOTENT] `rewrite(rewrite(f)) == rewrite(f)`, byte-identical — a migration you cannot safely re-run is one you cannot trust
+
+- requirement: for every file and every transformation set, applying the rewrite to its own output MUST produce byte-identical text. Not graph-identical: BYTE-identical.
+- rationale: a corpus migration is run in stages, interrupted, resumed, re-run on a subset after a fix, and run again by someone who does not know it already ran. If the second run is not a no-op, none of those is safe, and the operator's only defence is bookkeeping that is itself unverified. Byte-level idempotence makes re-running free and therefore makes the migration resumable.
+- rationale (why byte and not graph): graph-level idempotence permits a second run that reflows whitespace, reorders properties, or re-indents — each of which produces a diff, and a diff on a re-run is indistinguishable from a change on a re-run for the human reading it. The value of idempotence is entirely in the EMPTY DIFF.
+- requirement: idempotence MUST be checked as part of every run, not only in tests: after a successful rewrite, the rewriter re-applies the same set to its own output and asserts byte equality, recording the result on the receipt. The cost is one extra pass over a text file; the alternative is discovering non-idempotence during a corpus migration.
+- error-case: a transformation that is not idempotent MUST fail its own pass and leave the file untouched, naming the transformation and the first differing byte offset between run 1 and run 2. It MUST NOT be resolved by running to a fixed point — a transformation that needs more than one application to stabilize is under-specified, and iterating hides that.
+- testability: directly testable per transformation and per file, and it is the cheapest strong gate in the spec.
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-RECEIPT] Every run emits a receipt — and a file whose `⊇` cannot be proved is left UNTOUCHED and reported
+
+- requirement: every run emits a machine-readable receipt with one record PER FILE TOUCHED OR CONSIDERED, including files left unchanged. A run that reports only its successes cannot be audited.
+- required fields, per file:
+
+| Field | Content |
+|-------|---------|
+| `file` | absolute path |
+| `transformations_requested` | the explicit selected set ([CXC-LTW-OPTIN]) |
+| `transformations_applied` | the subset that found a target in this file |
+| `nodes_before` / `nodes_after` | node counts from the level-1 parses |
+| `edges_before` / `edges_after` | edge counts from the level-1 parses |
+| `properties_before` / `properties_after` | property counts from the level-1 parses |
+| `characters_recovered` | total parsed-property-value length after minus before — the direct measure of A1 repair |
+| `line_accounting` | counts per disposition: `retained`, `merged`, `relocated`, `added`, `dropped` ([CXC-LTW-VERIFY]) |
+| `verdict_level_1` | graph superset: `pass` / `fail` / `not-run`, with the failing axis named on `fail` |
+| `verdict_level_2` | line accounting: `pass` / `fail` / `not-run`, with every `dropped` line named on `fail` |
+| `idempotent` | `true` / `false` from the mandatory re-application ([CXC-LTW-IDEMPOTENT]) |
+| `written` | whether the file on disk changed |
+
+- requirement (the rule that makes the receipt more than telemetry): a file whose `⊇` cannot be PROVED — either verdict failing, either verdict `not-run`, or idempotence failing — MUST be left byte-identical on disk, and the receipt MUST record `written: false` with the reason. There is no override flag.
+- requirement: `not-run` MUST be a distinct verdict from `pass`. A check that reports green while skipped is the defect class this whole family of work exists to close, and the corpus has already measured one.
+- requirement: the receipt is emitted as JSONL, one object per file, appended to `{corpus}/events/quality.jsonl` alongside the existing quality events, so a migration's evidence lands where the corpus's other quality evidence already is rather than in a report file nobody re-reads.
+- requirement: the run-level summary MUST include the total `characters_recovered` across all files. That number is the migration's headline result and is directly comparable to the 148,847-character baseline at [CXC-LTW-MEASURED] — a run that recovers far fewer characters than its file set should have has silently skipped something.
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+---
+
+## 3. The canonical form — derived from the corpus, never invented
+
+### [CXC-LTW-SHAPE] The encoding-shape rules the emitter honours, all measured this session
+
+- requirement: the emitter honours exactly these shape rules, and each exists because a measured defect at [CXC-LTW-MEASURED] is impossible under it.
+
+| # | Rule | Closes | Note |
+|---|------|--------|------|
+| S1 | a property value NEVER wraps — one property, one physical line, however long | A1 (680 properties, ~148,847 characters) | internal newline runs collapse to a single space; this is `decision_ops._format_value`'s existing behaviour, absorbed rather than re-derived |
+| S2 | the document id lives in the `h1`, as `# Title [TAG:ID]`, and on no other line | A2 (5 rootless documents) | the rule is [SPEC:LTS-DOC-ROOT]'s and is CONSUMED here, not restated as a second authority |
+| S3 | `audience` and `elements` are REQUIRED frontmatter keys | the standing ratified rule plus [DRI-ELEMENTS-DECL] | `elements` is caller-supplied, never derived ([CXC-LTW-TRANSFORMS]) |
+| S4 | every element node carries `- part-of: [ROOT-ID]` | orphaned elements | the root itself does not; a bracketless section divider is not an element |
+| S5 | a relationship is a `## Relationships` triple or a relationship-bearing property — never a bracketed KEY | A3 (3 unreached edges) | the emitter has no code path that could produce `- [ID]: description`, which is what makes the shape unreachable rather than discouraged |
+
+- requirement: property ORDER within a node is a declared canonical order, so two emissions of the same content are byte-identical ([CXC-LTW-EMITTER] purity). The order is `decision_ops.CANONICAL_FIELD_ORDER` extended to the spec families, with unknown keys appended in call order — the existing rule, widened, not replaced.
+- requirement: S1 has NO line-length limit and MUST NOT acquire one. A limit is the mechanism that reintroduces wrapping, and wrapping is A1. A long line is correct; `.lts` is machine-read and the extension is deliberately unmapped on developer machines.
+- dogfooding: this document is authored under S1 — every property value in it is on one physical line, including the long ones and including the `context_for_change` sub-keys. It is therefore free of the A1 defect class it specifies, and it is a live 23-node example the first implementation can round-trip against that is not one of its own fixtures.
+- error-case: content that cannot be expressed under these rules MUST be a refusal ([CXC-LTW-EMIT-REFUSE]), never a shape the emitter improvises. An improvised shape is a sixth convention, authored by a tool, that no reader was taught.
+- see-also: [CXC-LTW-CANONICAL-DERIVED]
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-CANONICAL-DERIVED] The canonical form is DERIVED from the conformant corpus — a writer with a house style is a diff nobody can review
+
+- requirement: the canonical form is derived from what CONFORMANT files already do, with `29-composeux-embedded-reactive.lts` as the exemplar for document shape ([SPEC:LTS-DOC-ROOT] names the same exemplar, and naming a second would be the fork this spec exists to avoid).
+- requirement: for every canonical-form choice — heading level per element, blank-line placement, the position of `part-of` in the property block, list punctuation, table style — the builder MUST cite the conformant-corpus evidence for the choice. A choice with no cited evidence is an invented house style and MUST be refused at review.
+- rationale: a writer that reformats the corpus to a new taste produces a diff nobody can review, and an unreviewable diff means the migration ships on trust. Derivation also means the emitter's output is indistinguishable from the corpus's existing best files, so nothing in the tree acquires a machine-authored look that authors then feel obliged to match by hand.
+- requirement (the falsifiable form of the rule, so it is a gate rather than an aspiration): running the emitter over the structured content of an ALREADY-CONFORMANT file MUST reproduce that file with only shape-rule differences — differences attributable to a numbered rule in [CXC-LTW-SHAPE]. Any other difference is an invented style and fails.
+- default (STATED): where the conformant corpus is genuinely SPLIT on a choice, the emitter takes the form with the higher observed count, records the count in a comment in the writer's own source, and does not rewrite the minority — the minority stays as authored, because a cosmetic rewrite is a diff with no defect behind it.
+- error-case: a choice on which the corpus is split roughly evenly, where the split MATTERS to a consumer, MUST be raised as a decision rather than settled by a count. None is known today; the rule exists so the first one is escalated rather than absorbed.
+- see-also: [CXC-LTW-SHAPE]
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+---
+
+## 4. One library, N consumers
+
+### [CXC-LTW-ONE-WRITER] `decision_ops`' byte-format writer is ABSORBED, not paralleled — no second emitter anywhere in the tree
+
+- requirement: there is ONE writer library. `composeio.decision_ops.core.render_node`, `_format_value`, `find_node_span`, the splice helpers and `_apply_with_guard` MOVE into it and are consumed by reference from their current home. `decision_ops` keeps its API and its behaviour; what changes is where the bytes come from.
+- requirement: `intelligence/tools/project_validator.py::render_registry_lts` is the SECOND live emitter and is absorbed in the same move. It renders `### [ID] title` plus flat `- key: value` nodes independently of `decision_ops`, which is the fork already in the tree.
+- measured, and it is the case for absorbing rather than adding: `composeio.defect_ops.core` already imports `render_node`, `find_node_span`, `_apply_with_guard`, `_split` and `_join` from `decision_ops.core` VERBATIM and says so in its module docstring. One of the three consumers already solved this by reaching across a package boundary into a sibling's private surface. The library is the seam that reach was asking for.
+- requirement (the prohibition, stated so it survives a busy week): no module in this tree may contain a second `.lts` emitter. A function that formats a `- key: value` line, a `### [ID] Title` heading, a frontmatter block or a Relationships triple belongs to the writer library. A build that adds one is refused at review, and the grep that finds them is an acceptance criterion ([CXC-LTW-ACCEPT], LTW-C12).
+- rationale: `decision_ops` works, and it works because it was derived from the corpus's observed byte format and verified against the real parser. That is the correct writer; it is simply domain-scoped. A general writer BESIDE it is two writers, and two writers is the fork-divergence class this corpus keeps paying for — the profile's own [GUIDANCE-YAML-RETIRED] note records 71 live findings that existed for exactly as long as two vocabularies did.
+- change: "The general writer ABSORBS composeio.decision_ops' byte-format writer and project_validator's render_registry_lts rather than sitting beside them. Ruled by David 2026-08-11."
+- context_for_change:
+    prior_state: "decision_ops is a domain-specific writer that emits decision nodes in the graph's exact byte format and has been the corpus's only deterministic writer since 2026-08-06. The safe-looking move is to leave a working, in-production module alone and build the general writer as a new library beside it."
+    reasoning: "Two emitters is the fork the corpus keeps paying for, and the fork is already partly real: defect_ops reaches into decision_ops.core's private surface for five symbols because there was no library to import, and project_validator carries an independent third rendering of the same node shape. Building beside would make it three, with the newest one having no production mileage and the oldest one having all of it."
+    rejected_alternative: "Build the general library fresh and leave decision_ops untouched, migrating it later or never. Its real strength is risk isolation — decision_ops writes David's live decision graph, and a regression there is expensive and immediately visible. Deferring the migration keeps that path on code with months of mileage."
+    counter_argument: "Absorption puts a working production writer behind a new abstraction on day one, for a benefit — no second emitter — that is architectural rather than functional."
+    counter_response: "The absorption is a MOVE, not a rewrite: render_node, _format_value, find_node_span and the splice/guard helpers relocate with their behaviour intact, and decision_ops' own test suite is the regression gate on the move. The risk is a relocation risk, which is bounded and testable, rather than a divergence risk, which is unbounded and only detectable long after the two implementations have drifted."
+    invalidating_assumption: "That decision_ops' byte format and the general canonical form CAN be one form. They agree today because both were derived from the same corpus. If the decision graph's shape is deliberately specialized away from the spec corpus's — a different heading level, a different required-field set, a genuinely different node grammar — then one library serving both becomes a library with a mode switch, and a mode switch is two emitters wearing one name. At that point the right answer is one library with a declared per-family profile, and this node needs re-deciding rather than re-affirming."
+    implication: "decision_ops, defect_ops, project_validator and factlattice-editor become the four callers ([CXC-LTW-CALLERS]); defect_ops' cross-package private import dissolves into a normal library import; and the no-second-emitter grep becomes an acceptance criterion rather than a convention."
+- criticality: high
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-CALLERS] The four callers, and what each needs from the library
+
+| Caller | Uses | Needs specifically | Migration |
+|--------|------|--------------------|-----------|
+| `composeio.decision_ops` | emitter + splice/guard | `render_node` behaviour byte-identical to today; the STRICT guard mode that refuses a NEW forward dangle and rolls back ([CXC-LTW-EMIT-REFUSE]) | the source of the absorbed code; its existing test suite is the regression gate on the move |
+| `composeio.defect_ops` | emitter + splice/guard | the same five symbols it already imports from `decision_ops.core` | a pure import-path change; it is already a consumer, just of the wrong module |
+| `project_validator.render_registry_lts` | emitter | flat `### [ID] title` + `- key: value` node rendering; it already round-trips render -> parse -> validate in its own selftest | the second live emitter, replaced by a library call; its existing round-trip selftest becomes a conformance test for the library |
+| `factlattice-editor` (agent) | emitter + rewriter | to STOP hand-typing: compose structured content, call `emit`, get a refusal instead of a plausible file when the round trip fails | the largest behavioural change and the one with no code to migrate — the agent's compose step becomes a library call |
+
+- requirement: the STRICT guard mode is a caller-selected parameter, not a global default ([CXC-LTW-EMIT-REFUSE] sets the default to report-not-refuse for new dangles). `decision_ops` selects strict; `factlattice-editor` composing a spec with forward references does not, because a half-written spec with a forward reference is a legitimate authoring state.
+- requirement: `factlattice-editor`'s adoption is what closes the loop this spec opens — the agent is currently the largest hand-typing author in the pipeline, and every defect at [CXC-LTW-MEASURED] is reachable from its keyboard. A library that ships without that caller migrated has fixed the tools and left the author.
+- error-case: a caller that needs a shape the library does not emit MUST raise it as a spec amendment. It MUST NOT format the line itself and MUST NOT post-process the library's output — a post-processing step outside the round-trip check is an unverified emitter with extra steps ([CXC-LTW-ONE-WRITER]).
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+---
+
+## 5. Sequencing and scope
+
+### [CXC-LTW-PARSER-DEP] Implementation WAITS for the parser fix — an emitter written against today's reader would encode the truncation as intent
+
+- requirement (a BLOCKING dependency, stated explicitly rather than left implied): implementation of this spec MUST NOT begin until the concurrent parser fix — wrapped continuations and ID tables — has landed. The SPEC is written now and is ratifiable now; the BUILD waits.
+- rationale, and it is a sharp one: the emitter's binding invariant is `parse(emit(x)) == x` against the LIVE parser. Written against today's parser, the invariant is satisfied by an emitter that truncates its own output to the first physical line, because the parse it is compared against truncates identically. The round trip would hold. The emitter would be certified. And the certification would encode the current truncation as the format's intent, in the one component whose whole purpose is to make that truncation impossible.
+- key-insight: this is the same defect shape as [CXC-LTW-NO-ROUNDTRIP] one layer up — a check whose two sides share the lossy step agrees in every case, including total loss. There it is the rewriter comparing two parses; here it is the emitter comparing its output to a parse of that output. The prohibition and the dependency are the same insight applied to the two components, which is why neither is negotiable.
+- requirement: the first act of implementation is a fixture asserting the parser fix is PRESENT — a wrapped-continuation fixture whose full value survives a parse — and the build MUST NOT proceed past a failure of it. A version check on the engine is not sufficient: the assertion must be behavioural, because a version number is a claim and a parse is a measurement.
+- change: "Implementation of the .lts writer is BLOCKED on the concurrent parser fix (wrapped continuations, ID tables). The spec is authored now; the build waits. Stated as an explicit dependency by David 2026-08-11 rather than left implied."
+- context_for_change:
+    prior_state: "The natural sequencing is to build the writer immediately, since the authoring defects it prevents are live and costing bytes every session, and to let it improve as the parser improves."
+    reasoning: "The emitter's invariant is defined against the live parser, so building first would certify an emitter whose round trip holds only because both sides truncate. The certification would then be cited as evidence the emitter is correct, and the citation would be wrong in exactly the class the emitter exists to close."
+    rejected_alternative: "Build now against a FROZEN local model of the corrected parser, and swap to the live one when the fix lands. Genuinely defensible — it parallelizes the work and the model is small. Its cost is that the invariant is then checked against a second implementation of the grammar, which SPEC section 2.5 names as a silent-drop mechanism: a hand-derived reader agrees with the writer and both disagree with the parser, which is how a domain profile's verbs came to be honoured by a reporting tool and ignored by the parser."
+    counter_argument: "Waiting leaves the corpus accruing the A1 defect at its current rate for the duration of the parser work, and the rewriter could be recovering those characters in the meantime since it operates on text and does not depend on the parser fix for its transformations."
+    counter_response: "Partly conceded, and it is the one seam worth taking: the REWRITER's transformations are text-level and could in principle run early. But its level-1 verification parses, so an unwrap verified against the truncating parser would report a superset while proving nothing about the recovered tail — level 2 would carry the entire verification alone, with no independent corroboration. Running the recovery pass with half its verification disabled, over the whole corpus, in one bulk edit, is not a saving."
+    invalidating_assumption: "That the parser fix is IMMINENT and BOUNDED — the two known classes, landing on a timescale where waiting is cheaper than building twice. If it slips indefinitely, or if it grows into an open-ended parser programme, the calculus inverts: the cost of the live A1 rate exceeds the cost of a staged build, and the rewriter-first path with level-2-only verification becomes the right trade rather than a false saving."
+    implication: "The spec is ratifiable now and dispatch is gated on one external event. The parser-fix fixture (LTW-C0) becomes the build's first and blocking acceptance criterion."
+- criticality: high
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [CXC-LTW-OUT-OF-SCOPE] What this spec does NOT cover — the rollout, and the parser
+
+- out: the corpus-wide MIGRATION CAMPAIGN. This spec specifies the TOOL. Which files are rewritten, in what order, by whom, under what review, and against which baseline is a separate piece of work with a separate ratify. The per-transformation opt-in ([CXC-LTW-OPTIN]) and the receipt ([CXC-LTW-RECEIPT]) exist so that campaign is possible; running it is not this document.
+- out: any change to the PARSER. The parser fix is this spec's blocking DEPENDENCY ([CXC-LTW-PARSER-DEP]), not its content. A builder who finds a parser defect while implementing the writer raises it there; a writer that works around a parser defect has encoded that defect into the corpus's write path.
+- out: the document-root form, the `elements` declaration, the inflation check and the bracketed-key verdict. Those are [SPEC:LTS-DOC-ROOT]'s and are CONSUMED here unchanged. Where this spec references them ([CXC-LTW-SHAPE] S2/S3/S5, [CXC-LTW-TRANSFORMS]) it is a citation, never a second statement of the rule — restating a rule in two documents is how the two copies diverge.
+- out: a `.lts` DELETER. The writer adds, unwraps, hoists and annotates; nothing in this spec removes a node or an edge. Deletion by tool is a separate decision with a separate risk profile, and the sibling writers' established answer is that removal is an ANNOTATION, never a delete.
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+---
+
+## 6. The two decision points — CLOSED, ruled by David 2026-08-11
+
+### [DD-LTW-INPUT-TYPE] What is the emitter's INPUT TYPE — the parser's node model, or a richer model that can express what the parser cannot yet represent?
+
+- decision: CLOSED — RULED by David 2026-08-11: **branch (a), THE PARSER'S NODE MODEL.** `content`'s type is the nodes, properties, edges and frontmatter exactly as `factlattice.parse()` returns them. A builder does NOT introduce a richer authoring model and does NOT add a lowering step.
+- context: `emit(content) -> text` needs a type for `content`. Branch (a) mirrors the parser's node model — a dict or dataclass of nodes, properties, edges and frontmatter, shaped exactly as `factlattice.parse()` returns them. Branch (b) is a richer authoring model that can carry constructs the parser cannot yet represent, lowering them to the current format on emit and refusing what cannot be lowered.
+- rationale: `parse(emit(x)) == x` is the tool's entire reason to exist, and against the parser's own model it is a LITERAL equality — one type, one structural comparison, nothing standing between the two sides. A richer authoring model turns it into equality-AFTER-PROJECTION, and **the projection is a step where a loss can hide.** That is precisely the class of defect this whole session has spent itself finding: [CXC-LTW-NO-ROUNDTRIP]'s prohibited implementation, the 680 truncated properties, the three unreached edges — each one is a transformation step that ended up agreeing with itself. Choose the invariant you can check EXACTLY, and put no step inside it that has to be trusted.
+- rationale: the richer model's real benefit is obtainable WITHOUT weakening the invariant. Its value was stated in the alternatives as "the refusal set becomes a measured list of what authors are trying to say and cannot" — and the REFUSAL LOG already yields exactly that dataset. [CXC-LTW-EMIT-REFUSE] requires every fail-closed refusal to record WHAT was refused, at node-id and property-key granularity, as structured fields on a typed error; aggregating those refusals produces the same list, gathered as EVIDENCE rather than designed in on SPECULATION. A benefit obtainable by reading a log the spec already obliges us to write is not a reason to weaken the one invariant everything else rests on.
+- rationale: (b)'s speculative headroom is measurably smaller than it looked when this fork was opened. One of the three constructs cited in its favour — an untyped edge, contingent on [DD-DRI-BRACKET-KEY-VERDICT] — was ruled out the SAME DAY: that decision closed as FLAG, do not mint, expressly to keep the untyped-edge state OUT of the model.
+- alternatives: **(a) MIRROR THE PARSER'S NODE MODEL.** The round-trip invariant becomes a straight structural equality between two values of the same type — cheap to write, cheap to read, impossible to get subtly wrong, and it makes `parse(emit(x)) == x` literally an equality check rather than a projection. Callers already hold parse output, so `decision_ops` and `project_validator` migrate with almost no translation. Its cost is that the emitter can never express anything the parser cannot already read, so every format extension becomes a coordinated change to the parser, the model and the writer, and the writer can never be the place a new construct is authored first. **(b) A RICHER AUTHORING MODEL.** Genuinely more future-proof: an author expresses intent (a typed relationship the format has no verb for, a structured value with real nesting, an untyped edge if [DD-DRI-BRACKET-KEY-VERDICT] goes that way) and the emitter lowers it, refusing with a distinguishable reason code when a construct cannot be lowered ([CXC-LTW-EMIT-REFUSE]). That refusal set is itself valuable — it is a measured, machine-generated list of what authors are trying to say and cannot. Its cost is real and immediate: the round trip stops being an equality and becomes an equality-after-projection, and every projection is a place a loss can hide. It is also more work, and the extra work lands on the component whose correctness the whole spec rests on.
+- consequence: the emitter's input type is settled BY THE PARSER, so this document needs no further statement about it beyond the requirement now stated at [CXC-LTW-EMITTER]; the format-extension path is explicitly a PARSER-FIRST path (a new construct is taught to the parser, then it is in the model, then the writer can emit it); and callers already holding parse output — `decision_ops`, `project_validator` — migrate with almost no translation ([CXC-LTW-CALLERS]). [CXC-LTW-EMIT-REFUSE]'s not-yet-expressible reason code stays an ERROR CASE rather than becoming a first-class outcome, and it is the raw material of the refusal log this ruling leans on. LTW-C20 is the acceptance criterion.
+- consequence: had (b) been ratified instead, [CXC-LTW-EMITTER]'s invariant would have been restated as `project(x) == parse(emit(x))` with `project` specified explicitly and tested independently; [CXC-LTW-EMIT-REFUSE] would gain the not-yet-expressible reason code as a first-class outcome rather than an error case; and the refusal set would become a reported corpus measurement. The accepted cost of (a) is that a future move to (b) is a BREAKING change to every caller's call site rather than an additive one.
+- change: "RULED — the emitter's input type is the PARSER'S NODE MODEL (branch a). The rejected branch is a richer authoring model that lowers to the current format on emit. Ruled by David 2026-08-11."
+- context_for_change:
+    prior_state: "OPEN, not proposed and not defaulted, with the spec forbidding a builder from picking a branch and proceeding. Branch (a) mirrored the parser's node model; branch (b) was a richer authoring model able to carry constructs the parser cannot yet represent, lowering them on emit and refusing with a distinguishable reason code what cannot be lowered."
+    reasoning: "`parse(emit(x)) == x` is the tool's entire reason to exist. Against the parser's own model it is a LITERAL equality between two values of one type. A richer model makes it equality-after-projection, and the projection is a step where a loss can hide — which is exactly the defect class this session has been finding all day, from the prohibited `emit(parse(f))` to the 680 truncated properties to the three unreached edges, each of them a step that agreed with itself. The invariant you can check exactly is the one to choose, and (b) buys expressiveness by putting a trusted step inside the only check that certifies the component everything else depends on."
+    rejected_alternative: "(b) A RICHER AUTHORING MODEL, at full strength: it makes UNSAYABLE THINGS SAYABLE — a typed relationship the format has no verb for, a structured value with real nesting — so the writer becomes the place a new construct can be authored FIRST rather than last, and it future-proofs the library against format growth instead of making every extension a coordinated three-way change to parser, model and writer. Its refusal set is a genuinely valuable artifact in its own right: a measured, machine-generated list of what authors are trying to say and cannot, which is a dataset this corpus has no other systematic way to collect."
+    counter_argument: "Choosing (a) buys a cheap invariant today and pays for it later at the worst possible moment: the move to (b) is a BREAKING change to every caller's call site rather than an additive one, and if the format gains constructs during the writer's build horizon then (a)'s ceiling is hit DURING the build rather than after it — at which point (b)'s extra work would have bought something immediately rather than speculatively."
+    counter_response: "Conceded on the shape of the cost, denied on the price. (b)'s headline benefit — the measured list of what authors cannot say — is already obtainable: [CXC-LTW-EMIT-REFUSE] obliges every refusal to name the node, the property and the divergence as structured fields, so aggregating the REFUSAL LOG yields the same dataset as EVIDENCE rather than on speculation, and at no cost to the invariant. And the direction of travel decides the rest: widening the input type later is REVERSIBLE, weakening the invariant is not. One of (b)'s three cited constructs — the untyped edge — was itself ruled out the same day at [DD-DRI-BRACKET-KEY-VERDICT], so the speculative headroom being paid for is smaller than it looked."
+    invalidating_assumption: "That the refusal log actually GETS READ. The whole substitute for (b) is that the refusal set — the measured list of what authors are trying to say and cannot — arrives for free from the fail-closed refusals we are already obliged to record. That only happens if somebody AGGREGATES and READS them. If refusals accumulate unexamined, the cheap path to the same data never materialises, the argument for the richer model returns — and by then it returns with real numbers behind it, which is a stronger case than it has today. Note also the direction of travel: widening the input type later is reversible, weakening the invariant is not, which is what makes (a) the safe end to start from rather than merely the cheap one."
+    implication: "[CXC-LTW-EMITTER] gains one explicit requirement naming the input type, so a builder reading that node alone is not sent here. [CXC-LTW-EMIT-REFUSE]'s not-yet-expressible reason code stays an error case. LTW-C20 becomes the acceptance criterion that the input type IS the parser's model with no adapter and no projection in the call path. And a standing obligation lands on whoever operates the writer: the refusal log must be periodically read and reported, because that reading is the only thing standing between this ruling and (b)'s argument returning unmeasured."
+- status: decided
+- invalidating_assumption: "That the refusal log actually GETS READ. The whole substitute for (b) is that the refusal set — the measured list of what authors are trying to say and cannot — arrives for free from the fail-closed refusals we are already obliged to record. That only happens if somebody AGGREGATES and READS them. If refusals accumulate unexamined, the cheap path to the same data never materialises, the argument for the richer model returns — and by then it returns with real numbers behind it, which is a stronger case than it has today. Note also the direction of travel: widening the input type later is reversible, weakening the invariant is not, which is what makes (a) the safe end to start from rather than merely the cheap one."
+- documents: [CXC-LTW-EMITTER]
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+### [DD-LTW-REORDER] May the rewriter REORDER properties and sections, or only transform in place?
+
+- decision: CLOSED — RULED by David 2026-08-11: **TRANSFORM IN PLACE. No reordering.** Branch (b). This RATIFIES the spec's existing default at [CXC-LTW-REWRITER] rather than changing it — the NO a builder was already required to assume is now the answer, with no pending fork behind it. `reorder` does not enter the closed transformation set at [CXC-LTW-TRANSFORMS], and `reordered` does not enter the disposition table at [CXC-LTW-VERIFY].
+- context: the emitter emits properties in a canonical order ([CXC-LTW-SHAPE]), so emitted documents are canonically ordered by construction. Legacy documents are not. The question is whether `rewrite` is permitted to bring them into that order.
+- rationale: the asymmetry already recorded in this node is decisive, and it is an asymmetry in REVERSIBILITY rather than in preference. (b) can become (a) later with a single additional pass over an already-migrated corpus; (a) cannot be undone, because the pre-reorder byte layout and its `git blame` history are GONE. One branch keeps its option, the other spends it, and the two are not priced the same.
+- rationale: the first migration run is gated by a HUMAN READING A DIFF, and a reordering diff is unreadable. A reordering pass moves every property line in the corpus, so the reviewer cannot distinguish a correct reorder from a dropped line — which defeats the gate at exactly the moment it matters most, on the very first run over 72 files, before the tool has a single receipt behind it. That review is the only thing standing between a bulk edit and 72 changed files; a design whose first act is to blind it is not paying for canonical form, it is borrowing against it.
+- alternatives: **(a) REORDER PERMITTED.** This is what makes the output genuinely CANONICAL — after a full pass, a legacy file and a freshly emitted file with the same content are byte-identical, which makes byte comparison a valid equality test across the whole corpus, makes the emitter's output indistinguishable from a migrated file, and removes an entire class of "same content, different bytes" confusion from every downstream diff. Without it there are permanently two shapes in the tree and the canonical form is canonical only for new content. **(b) IN-PLACE ONLY.** Every migration diff shows exactly the lines a transformation changed and nothing else. That matters most on the FIRST run, which is the one a human actually reads and the only gate between a bulk edit and 72 changed files — a reordering pass moves every property line in the corpus, and a reviewer facing that diff cannot distinguish a correct reorder from a dropped line, which is precisely the failure the review exists to catch. It also keeps `git blame` intact across the migration, which is the corpus's only remaining record of why a given property line says what it says.
+- consequence: [CXC-LTW-REWRITER]'s existing requirement stands unchanged and is now RATIFIED rather than provisional — a transformation MUST NOT reflow, re-indent, re-wrap or re-order anything outside its own target lines, and MUST NOT reorder within its scope either. [CXC-LTW-TRANSFORMS] stays at FIVE named transformations and gains no `reorder`; [CXC-LTW-VERIFY]'s line accounting stays at five dispositions and gains no `reordered`; [CXC-LTW-BOUNDARIES] row 28 states the refusal; `git blame` survives the migration intact; and LTW-C19 is the acceptance criterion.
+- consequence: had (a) been ratified instead, reordering would have had to be its own named transformation ([CXC-LTW-TRANSFORMS]) so it could be run and reviewed alone under [CXC-LTW-OPTIN] — which recovers most of (b)'s review argument at the cost of one more pass; and [CXC-LTW-VERIFY]'s line accounting would gain a `reordered` disposition proved by verbatim containment exactly as `relocated` is, since reordering is the disposition under which a dropped line is easiest to miss. The ACCEPTED COST of (b), stated plainly because it is real: the corpus carries two property orders indefinitely, byte comparison between an emitted file and a migrated file is not a valid equality test, and any future canonicalization is a separate decision made with the migration already behind it.
+- change: "RULED — the rewriter TRANSFORMS IN PLACE and MUST NOT reorder properties or sections. This ratifies [CXC-LTW-REWRITER]'s existing default rather than changing it. The rejected branch is reordering to a genuinely canonical form. Ruled by David 2026-08-11."
+- context_for_change:
+    prior_state: "OPEN, not proposed and not defaulted, with the spec instructing a builder to assume NO until it closed. The emitter emits properties in a canonical order ([CXC-LTW-SHAPE]) so emitted documents are canonically ordered by construction; legacy documents are not, and the question was whether `rewrite` may bring them into that order."
+    reasoning: "Two arguments, and both point one way. First, REVERSIBILITY: (b) becomes (a) later with one additional pass over an already-migrated corpus, while (a) cannot be undone because the pre-reorder byte layout and its blame history are gone — one branch keeps its option and the other spends it. Second and decisively, the FIRST migration run is gated by a human reading a diff, and a reordering pass moves every property line in the corpus; the reviewer facing that diff cannot distinguish a correct reorder from a dropped line, which defeats the gate at exactly the moment it matters most — the first bulk run over 72 files, before the tool has any receipts to be trusted on."
+    rejected_alternative: "(a) REORDER PERMITTED, at full strength: it yields a genuinely CANONICAL form, and that is not a cosmetic property. It makes byte comparison a VALID EQUALITY TEST across the whole corpus, makes idempotence trivial to prove rather than something to check on every run, makes an emitted file and a migrated file with the same content indistinguishable, and removes an entire class of same-content-different-bytes confusion from every downstream diff forever. Without it the canonical form is canonical only for NEW content and the tree stays permanently bi-modal."
+    counter_argument: "The review objection is answerable WITHOUT giving up canonical form: make reordering its own named transformation under [CXC-LTW-OPTIN], run it in its own pass, and the reviewer reads a diff that is entirely reorder and nothing else — a readable diff of a single hypothesis, which is exactly what the per-transformation opt-in rule exists to produce."
+    counter_response: "That is the strongest form of (a) and it still loses on the first run. A pass that is entirely reorder is readable only in the sense that its SHAPE is uniform; the reviewer must still satisfy themselves that no line was dropped inside a wholesale re-permutation of every property block in every file, and the only thing that could tell them is verbatim-containment accounting — which is MACHINE verification, not the human gate. The human gate's whole value is that it is INDEPENDENT of the harness, and a reorder diff makes it dependent on the harness. Deferring costs one extra pass at some later date; taking it now costs the independent gate on the one run where the tool has no track record at all."
+    invalidating_assumption: "That a HUMAN REVIEWS the first run's diff. That is the entire force of (b): the review is the gate, and an unreadable diff removes it. If the rewriter ever becomes trusted enough to run UNREVIEWED — proven by receipts accumulated over many migrations, not asserted — then the readability argument evaporates and canonical form becomes the better choice. Equivalently: if the first run comes to be gated by [CXC-LTW-VERIFY]'s two levels plus [CXC-LTW-RECEIPT] alone, with no human diff review because those are trusted to be sufficient, then (b)'s advantage largely goes with it and (a)'s permanent canonical form is the better buy."
+    implication: "Nothing in the spec changes shape: [CXC-LTW-REWRITER]'s in-place requirement loses its provisional clause, [CXC-LTW-TRANSFORMS] stays closed at five, [CXC-LTW-VERIFY] stays at five dispositions. What is ADDED is the refusal ([CXC-LTW-BOUNDARIES] row 28) and its machine signal (LTW-C19), so a builder cannot reach reordering by omission. The canonicalization question is not dead — it is deferred to a decision that will be made with the migration already behind it and with the blame history still intact."
+- status: decided
+- invalidating_assumption: "That a HUMAN REVIEWS the first run's diff. That is the entire force of (b): the review is the gate, and an unreadable diff removes it. If the rewriter ever becomes trusted enough to run UNREVIEWED — proven by receipts accumulated over many migrations, not asserted — then the readability argument evaporates and canonical form becomes the better choice. Equivalently: if the first run comes to be gated by [CXC-LTW-VERIFY]'s two levels plus [CXC-LTW-RECEIPT] alone, with no human diff review because those are trusted to be sufficient, then (b)'s advantage largely goes with it and (a)'s permanent canonical form is the better buy."
+- documents: [CXC-LTW-REWRITER]
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+---
+
+## 7. Error and boundary matrix
+
+### [CXC-LTW-BOUNDARIES] Every condition a builder would otherwise have to invent an answer for
+
+| # | Condition | Required behaviour |
+|---|-----------|--------------------|
+| 1 | `emit` round trip holds | write; report on the receipt |
+| 2 | `emit` round trip fails on a property value | REFUSE; name node id, property key, expected value, parsed value, first divergent byte offset ([CXC-LTW-EMIT-REFUSE]) |
+| 3 | `emit` round trip fails because the content is not expressible in the current format | REFUSE with a DISTINGUISHABLE reason code — never collapsed into the malformed-content error |
+| 4 | `emit` asked to write an id already present in the target corpus | REFUSE; a duplicate id is never a merge |
+| 5 | `emit` output would introduce a NEW dangling reference | REPORT on the receipt, do not refuse — unless the caller selected STRICT guard mode, which refuses and rolls back ([CXC-LTW-CALLERS]) |
+| 6 | `emit` given a value containing embedded newlines | collapse each newline run to ONE space, emit on one physical line, compare the round trip against the COLLAPSED input ([CXC-LTW-SHAPE] S1) |
+| 7 | `emit` given a value longer than any line-length preference | emit it on one line; there is no line-length limit and one MUST NOT be added |
+| 8 | `emit` called twice with the same content | byte-identical output; no timestamp, hostname or dict-order leakage ([CXC-LTW-EMITTER]) |
+| 9 | `rewrite` with an EMPTY transformation set | return the input byte-identical; no implicit clean-up |
+| 10 | `rewrite` with an unrecognized transformation name | REFUSE listing the five valid names; never silently ignore |
+| 11 | `rewrite` where two selected transformations target the same line | REFUSE naming the line and both transformations; never a silent precedence |
+| 12 | `rewrite` level-1 graph superset fails | leave the file byte-identical; receipt `written: false`, `verdict_level_1: fail` with the failing axis named |
+| 13 | `rewrite` level-1 passes and level-2 line accounting fails | leave the file byte-identical; receipt names EVERY `dropped` line — this is the prohibited-implementation signature ([CXC-LTW-NO-ROUNDTRIP]) |
+| 14 | either verdict cannot be computed | verdict is `not-run`, NEVER `pass`; file left untouched |
+| 15 | `rewrite(rewrite(f)) != rewrite(f)` | FAIL the pass, leave the file untouched, name the transformation and the first differing byte offset; never iterate to a fixed point ([CXC-LTW-IDEMPOTENT]) |
+| 16 | `unwrap-property` meets an indented line it cannot classify as continuation or structure | leave the property untouched; REPORT as unclassified; never guess |
+| 17 | `unwrap-property` meets an indented block that is a nested mapping, a nested list, or a code block | not a target; leave it entirely alone |
+| 18 | `hoist-root-id` meets a bare-line id whose tag is unregistered | REFUSE; a repair MUST NOT invent a tag ([SPEC:LTS-DOC-ROOT]) |
+| 19 | `hoist-root-id` meets a bare line with a trailing description | the description becomes the blockquote summary after the h1; discarding it is a `dropped` line and fails level 2 |
+| 20 | `add-frontmatter` with no caller-supplied `scope` / `audience` / `boundary` | REFUSE; never invent a value, never write a placeholder |
+| 21 | `suggest-elements` | SUGGEST ONLY, never write; emit the suggestion together with the widen-it statement ([DRI-ELEMENTS-INTENT]) |
+| 22 | a corpus run in which `suggest-elements` values were written automatically | treat the run as UNVALIDATED, not clean — a control fitted to its own result |
+| 23 | `add-part-of` on the document root, or on a bracketless section divider | not a target; leave alone |
+| 24 | a caller needs a shape the library does not emit | raise a spec amendment; never format the line locally, never post-process library output ([CXC-LTW-ONE-WRITER]) |
+| 25 | a second `.lts` emitter appears anywhere in the tree | refused at review; the grep is an acceptance criterion (LTW-C12) |
+| 26 | implementation begins before the parser fix has landed | BLOCKED; the behavioural parser-fix fixture (LTW-C0) must pass first, and a version check is not a substitute ([CXC-LTW-PARSER-DEP]) |
+| 27 | any proposal to implement `rewrite` as `emit(parse(f))`, by any composition | REFUSED at review, not at test — the test that would catch it is the test the defect satisfies ([CXC-LTW-NO-ROUNDTRIP]) |
+| 28 | a caller asks the rewriter to REORDER properties or sections, by name or by flag | REFUSE — `reorder` is not a member of the closed transformation set; David ruled transform-in-place 2026-08-11 ([DD-LTW-REORDER]) and adding it is a spec amendment, not a configuration |
+| 29 | a caller passes `content` in anything other than the parser's node model — a richer authoring type, or a type requiring a lowering step | REFUSE at review; the input type is the parser's model and there is no projection in the call path ([DD-LTW-INPUT-TYPE], [CXC-LTW-EMITTER]) |
+| 30 | `emit` refuses for any reason | the refusal is emitted as a structured event with its reason code to `{corpus}/events/quality.jsonl`; an unrecorded refusal leaves [DD-LTW-INPUT-TYPE]'s `invalidating_assumption` untestable ([CXC-LTW-EMIT-REFUSE]) |
+
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+---
+
+## 8. Acceptance — two tiers, machine and glass
+
+### [CXC-LTW-ACCEPT] Every requirement has a machine signal; every operator-facing surface has a glass gate
+
+- rule: a machine signal certifies the emission, the transformation and the verdict. Anything whose value is an OPERATOR reading a diff or a receipt also needs a glass gate, because a migration that is technically verified and practically unreviewable is how a bulk edit ships unread.
+
+| ID | Requirement | `verify.machine` | `verify.human` (glass) |
+|----|-------------|------------------|------------------------|
+| LTW-C0 | **BLOCKING — the parser fix is present, measured behaviourally** ([CXC-LTW-PARSER-DEP]) | `tests/test_lts_writer_deps.py::test_wrapped_continuation_survives_parse` — a fixture whose wrapped property value parses back in FULL; the build MUST NOT proceed past a failure, and a version check is not a substitute | — |
+| LTW-C1 | **`parse(emit(x)) == x` holds on every emission** ([CXC-LTW-EMITTER]) | `tests/test_lts_emitter.py::test_round_trip_property_based` — property-based over generated content including long values, embedded newlines, unicode, every registered edge verb, and every frontmatter key | — |
+| LTW-C2 | **A round-trip failure REFUSES and names the part** ([CXC-LTW-EMIT-REFUSE]) | `::test_refusal_names_node_key_expected_actual_offset` — inject a truncating stub; assert no file is written, no text returned, and all five fields present on a typed error | an operator shown one refusal can locate the offending content without opening the writer's source |
+| LTW-C3 | Not-yet-expressible is DISTINGUISHABLE from malformed ([CXC-LTW-EMIT-REFUSE]) | `::test_inexpressible_has_distinct_reason_code` — assert the two refusals carry different codes | — |
+| LTW-C4 | The emitter is PURE ([CXC-LTW-EMITTER]) | `::test_emission_is_byte_stable` — same content emitted 100 times under shuffled dict order yields one distinct output | — |
+| LTW-C5 | **`parse(rewrite(f)) ⊇ parse(f)` on every rewritten file** ([CXC-LTW-REWRITER]) | `tests/test_lts_rewriter.py::test_graph_superset_over_whole_corpus` — every `.lts` under `corpora/`, every transformation, asserting nodes, edges, property keys and value-lengths never shrink | — |
+| LTW-C6 | **⛔ THE GATE — the prohibited implementation FAILS level 2** ([CXC-LTW-NO-ROUNDTRIP], [CXC-LTW-VERIFY]) | `::test_parse_then_emit_passes_level_1_and_fails_level_2` — implement `emit(parse(f))` AS A FIXTURE, run it on `57-substrate-agnostic-subscription-filtering.lts`, assert level 1 PASSES and level 2 reports the dropped lines. A harness that cannot fail this way cannot detect the defect this spec exists to prevent | the architect reads the level-2 report for that fixture and confirms it names the lost content rather than a count |
+| LTW-C7 | Line accounting admits NO `dropped` ([CXC-LTW-VERIFY]) | `::test_dropped_line_fails_rewrite` — a deliberately truncating transformation is rejected, the file is unchanged, and the finding names the input line number and content | — |
+| LTW-C8 | `merged` and `relocated` are proved by VERBATIM containment | `::test_disposition_requires_verbatim_containment` — a near-miss (one character changed) is `dropped`, not `merged`; no similarity score anywhere in the path | — |
+| LTW-C9 | **Byte-level idempotence, checked in every RUN not only in tests** ([CXC-LTW-IDEMPOTENT]) | `::test_idempotent_over_whole_corpus` — every file, every transformation, byte equality on the second application; plus `::test_run_performs_its_own_idempotence_check` asserting the receipt carries the field | — |
+| LTW-C10 | Per-transformation independence and order-freedom ([CXC-LTW-TRANSFORMS]) | `::test_transformations_commute` — every permutation of every selected subset yields byte-identical output; `::test_single_transformation_touches_only_its_targets` | an operator runs `unwrap-property` alone over the corpus and the diff contains only unwrapped properties |
+| LTW-C11 | **`suggest-elements` NEVER writes** ([CXC-LTW-TRANSFORMS], [DRI-ELEMENTS-INTENT]) | `::test_suggest_elements_does_not_write` — assert the file is byte-identical and the suggestion is returned with the widen-it statement in the same output | — |
+| LTW-C12 | **No second emitter anywhere in the tree** ([CXC-LTW-ONE-WRITER]) | `tests/test_one_writer.py::test_no_second_emitter` — grep the tree for `.lts` line-formatting outside the library (`### [`, `- {k}: `, `---` frontmatter assembly, Relationships triple assembly) and assert the only hits are the library and its tests | — |
+| LTW-C13 | The absorption is behaviour-preserving ([CXC-LTW-ONE-WRITER]) | `decision_ops`' and `defect_ops`' existing suites pass UNCHANGED against the library, and `project_validator`'s render -> parse -> validate selftest passes against the library call | David's live decision graph takes a real write through the migrated path and reads back correctly |
+| LTW-C14 | The receipt is complete and auditable ([CXC-LTW-RECEIPT]) | `::test_receipt_has_every_field_for_every_file` — including files left unchanged; assert `not-run` is never serialized as `pass`; assert the JSONL lands in `{corpus}/events/quality.jsonl` | an operator reads one receipt and can answer what was requested, what was applied, what was recovered and why a skipped file was skipped |
+| LTW-C15 | An unprovable `⊇` leaves the file UNTOUCHED ([CXC-LTW-RECEIPT]) | `::test_unproven_file_is_not_written` — for each of the four failure modes, assert the file bytes are unchanged and the receipt records `written: false` with the reason; assert no override flag exists | — |
+| LTW-C16 | Canonical form is DERIVED, not invented ([CXC-LTW-CANONICAL-DERIVED]) | `tests/test_canonical_form.py::test_emitter_reproduces_conformant_file` — round-trip `29-composeux-embedded-reactive.lts` through the emitter and assert every difference is attributable to a numbered rule in [CXC-LTW-SHAPE] | a reviewer diffs an emitted file against a hand-authored conformant one and cannot tell which is which |
+| LTW-C17 | This document round-trips ([CXC-LTW-SHAPE] dogfooding) | `::test_spec_59_round_trips` — parse this file, emit it, assert graph equality and that no property value in the emitted output spans more than one physical line | — |
+| LTW-C18 | The corpus recovery is MEASURED against the baseline ([CXC-LTW-RECEIPT]) | `::test_corpus_unwrap_recovers_expected_characters` — a full `unwrap-property` pass reports total `characters_recovered` within a stated tolerance of the 148,847-character baseline; a much smaller number means files were silently skipped | David reads the run summary and confirms the headline number against the census |
+| LTW-C19 | **The rewriter does NOT reorder** ([DD-LTW-REORDER], [CXC-LTW-REWRITER]) | `tests/test_lts_rewriter.py::test_no_transformation_reorders` — for every file and every transformation other than `hoist-root-id`, assert the input line numbers of the `retained` and `merged` output lines form a STRICTLY INCREASING sequence; plus `::test_no_reorder_transformation_exists` asserting the transformation registry has exactly the five names and that an explicit `reorder` request is REFUSED, not ignored | an operator diffs a full migration pass and every hunk is attributable to a named transformation's target lines; `git blame` on an unrelated property line is unchanged |
+| LTW-C20 | **The emitter's input type IS the parser's node model** ([DD-LTW-INPUT-TYPE], [CXC-LTW-EMITTER]) | `tests/test_lts_emitter.py::test_input_type_is_parser_node_model` — assert `emit` accepts the object `factlattice.parse()` returns with NO adapter and NO lowering step, and that the round-trip comparison in the call path is a direct structural equality with no projection function between the two sides | — |
+| LTW-C21 | Refusals are RECORDED, not merely raised ([CXC-LTW-EMIT-REFUSE], [DD-LTW-INPUT-TYPE]) | `::test_refusal_is_emitted_as_a_quality_event` — assert every refusal appends one JSONL event carrying its reason code to `{corpus}/events/quality.jsonl`, and that the set is aggregable by reason code without parsing prose | David or the architect reads the accumulated refusal set periodically — this reading is the named condition on which [DD-LTW-INPUT-TYPE] rests, and its absence is what would reopen that decision |
+
+- requirement: **LTW-C0, LTW-C6, LTW-C9 and LTW-C15 are the gates.** LTW-C0 is blocking and external — a build that starts without it certifies the truncation as intent. **LTW-C6 is the criterion that protects every other measurement in this spec**: it requires the harness to demonstrate, on the real file, that it can DETECT the prohibited implementation, and a harness that cannot fail that way is one that will report clean on a corpus reduced to 18% of itself. A build failing LTW-C9 has produced a migration that cannot be safely re-run. A build failing LTW-C15 has produced a tool that writes files it could not verify, which is the hand-typing it replaced with a machine's confidence attached.
+- part-of: [SPEC:CXC-LTS-WRITER]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-LTS-WRITER] DEPENDS_ON [SPEC:LTS-DOC-ROOT]
+- [SPEC:CXC-LTS-WRITER] DEPENDS_ON [SPEC:LTS-ENGINE-CONSOLIDATION]
+- [SPEC:CXC-LTS-WRITER] RELATED_TO [SPEC:CXC-EMBED-REACTIVE]
+- [SPEC:CXC-LTS-WRITER] RELATED_TO [SPEC:CXC-SUBFILTER]
+- [CXC-LTW-MEASURED] DEPENDS_ON [CXC-LTW-THESIS]
+- [CXC-LTW-TWO-COMPONENTS] DEPENDS_ON [CXC-LTW-THESIS]
+- [CXC-LTW-TWO-COMPONENTS] DEPENDS_ON [CXC-LTW-MEASURED]
+- [CXC-LTW-EMITTER] DEPENDS_ON [CXC-LTW-TWO-COMPONENTS]
+- [CXC-LTW-EMIT-REFUSE] DEPENDS_ON [CXC-LTW-EMITTER]
+- [CXC-LTW-REWRITER] DEPENDS_ON [CXC-LTW-TWO-COMPONENTS]
+- [CXC-LTW-REWRITER] CONTRAST_WITH [CXC-LTW-EMITTER]
+- [CXC-LTW-NO-ROUNDTRIP] DEPENDS_ON [CXC-LTW-REWRITER]
+- [CXC-LTW-NO-ROUNDTRIP] DEPENDS_ON [CXC-LTW-MEASURED]
+- [CXC-LTW-NO-ROUNDTRIP] UPHOLDS [CXC-LTW-TWO-COMPONENTS]
+- [CXC-LTW-VERIFY] DEPENDS_ON [CXC-LTW-NO-ROUNDTRIP]
+- [CXC-LTW-VERIFY] UPHOLDS [CXC-LTW-REWRITER]
+- [CXC-LTW-TRANSFORMS] DEPENDS_ON [CXC-LTW-REWRITER]
+- [CXC-LTW-TRANSFORMS] DEPENDS_ON [SPEC:LTS-DOC-ROOT]
+- [CXC-LTW-OPTIN] DEPENDS_ON [CXC-LTW-TRANSFORMS]
+- [CXC-LTW-IDEMPOTENT] UPHOLDS [CXC-LTW-REWRITER]
+- [CXC-LTW-RECEIPT] DEPENDS_ON [CXC-LTW-VERIFY]
+- [CXC-LTW-RECEIPT] DEPENDS_ON [CXC-LTW-OPTIN]
+- [CXC-LTW-SHAPE] DEPENDS_ON [CXC-LTW-MEASURED]
+- [CXC-LTW-SHAPE] USES [SPEC:LTS-DOC-ROOT]
+- [CXC-LTW-EMITTER] USES [CXC-LTW-SHAPE]
+- [CXC-LTW-CANONICAL-DERIVED] UPHOLDS [CXC-LTW-SHAPE]
+- [CXC-LTW-CANONICAL-DERIVED] USES [SPEC:CXC-EMBED-REACTIVE]
+- [CXC-LTW-ONE-WRITER] DEPENDS_ON [CXC-LTW-EMITTER]
+- [CXC-LTW-ONE-WRITER] GENERALIZES [CXC-LTW-SHAPE]
+- [CXC-LTW-CALLERS] DEPENDS_ON [CXC-LTW-ONE-WRITER]
+- [CXC-LTW-CALLERS] REUSES [CXC-LTW-EMITTER]
+- [CXC-LTW-PARSER-DEP] UPHOLDS [CXC-LTW-EMITTER]
+- [CXC-LTW-PARSER-DEP] RELATED_TO [CXC-LTW-NO-ROUNDTRIP]
+- [CXC-LTW-OUT-OF-SCOPE] RELATED_TO [CXC-LTW-PARSER-DEP]
+- [CXC-LTW-BOUNDARIES] DEPENDS_ON [CXC-LTW-EMIT-REFUSE]
+- [CXC-LTW-BOUNDARIES] DEPENDS_ON [CXC-LTW-TRANSFORMS]
+- [CXC-LTW-BOUNDARIES] DEPENDS_ON [CXC-LTW-VERIFY]
+- [CXC-LTW-ACCEPT] DEPENDS_ON [CXC-LTW-BOUNDARIES]
+- [CXC-LTW-ACCEPT] DEPENDS_ON [CXC-LTW-PARSER-DEP]
+- [DD-LTW-INPUT-TYPE] DOCUMENTS [CXC-LTW-EMITTER]
+- [DD-LTW-INPUT-TYPE] DEPENDS_ON [DD-DRI-BRACKET-KEY-VERDICT]
+- [DD-LTW-INPUT-TYPE] UPHOLDS [CXC-LTW-EMIT-REFUSE]
+- [DD-LTW-REORDER] DOCUMENTS [CXC-LTW-REWRITER]
+- [DD-LTW-REORDER] UPHOLDS [CXC-LTW-OPTIN]
+- [CXC-LTW-NO-ROUNDTRIP] EXEMPLIFIES [CXC-LTW-THESIS]
+- [CXC-LTW-ONE-WRITER] EXEMPLIFIES [CXC-LTW-THESIS]
+- [CXC-LTW-VERIFY] EXEMPLIFIES [CXC-LTW-THESIS]
+
+### Entity
+
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-THESIS]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-MEASURED]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-TWO-COMPONENTS]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-EMITTER]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-EMIT-REFUSE]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-REWRITER]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-NO-ROUNDTRIP]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-VERIFY]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-TRANSFORMS]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-OPTIN]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-IDEMPOTENT]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-RECEIPT]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-SHAPE]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-CANONICAL-DERIVED]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-ONE-WRITER]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-CALLERS]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-PARSER-DEP]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-OUT-OF-SCOPE]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [DD-LTW-INPUT-TYPE]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [DD-LTW-REORDER]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-BOUNDARIES]
+- [SPEC:CXC-LTS-WRITER] CONTAINS [CXC-LTW-ACCEPT]
+
+### Temporal
+
+- [CXC-LTW-PARSER-DEP] BEFORE [CXC-LTW-EMITTER]
+- [CXC-LTW-PARSER-DEP] BEFORE [CXC-LTW-REWRITER]
+- [CXC-LTW-EMITTER] BEFORE [CXC-LTW-ONE-WRITER]
+- [CXC-LTW-ONE-WRITER] BEFORE [CXC-LTW-CALLERS]
+- [CXC-LTW-VERIFY] BEFORE [CXC-LTW-TRANSFORMS]
+- [CXC-LTW-TRANSFORMS] BEFORE [CXC-LTW-RECEIPT]
+- [CXC-LTW-RECEIPT] BEFORE [CXC-LTW-ACCEPT]
+- [DD-LTW-INPUT-TYPE] BEFORE [CXC-LTW-EMITTER]
+- [DD-LTW-REORDER] BEFORE [CXC-LTW-TRANSFORMS]
+
+### Causal
+
+- [CXC-LTW-MEASURED] CAUSES [CXC-LTW-SHAPE]
+- [CXC-LTW-MEASURED] CAUSES [CXC-LTW-NO-ROUNDTRIP]
+- [CXC-LTW-EMITTER] PREVENTS [CXC-LTW-THESIS]
+- [CXC-LTW-EMIT-REFUSE] PREVENTS [CXC-LTW-THESIS]
+- [CXC-LTW-NO-ROUNDTRIP] CAUSES [CXC-LTW-VERIFY]
+- [CXC-LTW-NO-ROUNDTRIP] CAUSES [CXC-LTW-TRANSFORMS]
+- [CXC-LTW-VERIFY] PRECONDITION_FOR [CXC-LTW-RECEIPT]
+- [CXC-LTW-OPTIN] ENABLES [CXC-LTW-RECEIPT]
+- [CXC-LTW-IDEMPOTENT] ENABLES [CXC-LTW-OUT-OF-SCOPE]
+- [CXC-LTW-PARSER-DEP] PRECONDITION_FOR [CXC-LTW-ACCEPT]
+- [CXC-LTW-CANONICAL-DERIVED] PREVENTS [CXC-LTW-OPTIN]
+- [CXC-LTW-ONE-WRITER] PREVENTS [CXC-LTW-THESIS]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-08-11
+**Status**: Draft — BOTH DECISION POINTS CLOSED; dispatch now gated on ONE external event only. (1) **[DD-LTW-INPUT-TYPE] is CLOSED — the emitter's input type is THE PARSER'S NODE MODEL** (branch a). `parse(emit(x)) == x` is the tool's entire reason to exist, and against the parser's own model it is a LITERAL equality; a richer authoring model makes it equality-AFTER-PROJECTION, and the projection is a step where a loss can hide — which is exactly the defect class this session spent itself finding. The richer model's real benefit was "the refusal set becomes a measured list of what authors are trying to say and cannot", and the REFUSAL LOG already yields that dataset as evidence rather than on speculation; LTW-C21 now requires refusals to be RECORDED so that substitute is real, because the ruling's `invalidating_assumption` is that the log actually gets read. The rejected branch is kept at full strength in the node. (2) **[DD-LTW-REORDER] is CLOSED — TRANSFORM IN PLACE, no reordering** (branch b), which RATIFIES the spec's existing default rather than changing it. In-place can become canonical later with one more pass; reordering CANNOT be undone, because the pre-reorder byte layout and its blame history are gone — and the first migration run is gated by a human reading a diff, which a reordering diff defeats at exactly the moment it matters most, on the very first run over 72 files. The rejected branch — a genuinely canonical form making byte comparison a valid equality test and idempotence trivial to prove — is kept at full strength, and its `invalidating_assumption` names the condition that would reopen it: a rewriter trusted enough to run unreviewed, proven by receipts. (3) The remaining gate is NOT a decision: implementation is BLOCKED on the concurrent parser fix for wrapped continuations and ID tables ([CXC-LTW-PARSER-DEP]) — an emitter written against today's reader would encode the truncation as intent, because its round trip would be satisfied by both sides truncating identically. The spec is ratifiable now; the build waits, and LTW-C0 is the blocking behavioural fixture that proves the dependency landed. The central requirement of this document is [CXC-LTW-NO-ROUNDTRIP]: the rewriter MUST NOT be `emit(parse(f))`, evidenced by `57-substrate-agnostic-subscription-filtering.lts` capturing 18% of its authored bytes into properties — round-tripping it would yield a file containing 18% of the original while every check passed, because both sides of the comparison would have passed through the lossy step. That prohibition forces the two-level verification at [CXC-LTW-VERIFY], and LTW-C6 is the acceptance criterion that requires the harness to demonstrate it can DETECT the prohibited implementation on the real file. One follow-up outside this document: the element prefix `CXC-LTW-` resolves to the registered first segment `CXC` ([PREFIX-CXC]) and needs no profile change, but the family is new and its sub-family line in that node's `definition` should gain `CXC-LTW-` when the profile is next touched.
+**Intelligence**: composed by `factlattice-editor` from David's ratified design narrative, 2026-08-11. Grounded against `python/composeio/decision_ops/core.py` (the absorbed byte-format writer — `render_node`, `_format_value`, `find_node_span`, `_apply_with_guard`, `CANONICAL_FIELD_ORDER`), `python/composeio/defect_ops/core.py` (which already imports five of those symbols verbatim across a package boundary), `intelligence/tools/project_validator.py::render_registry_lts` (the second live emitter, with its existing render -> parse -> validate selftest), the exemplar `29-composeux-embedded-reactive.lts`, the sibling contract `58-document-root-and-element-inflation.lts`, the measured worst case `57-substrate-agnostic-subscription-filtering.lts`, and the `.lts` domain profile `corpora/intelligence-console/platform-composeio-profile.lts` for every relationship verb used above. Authored under its own rule S1: every property value in this document is on one physical line.

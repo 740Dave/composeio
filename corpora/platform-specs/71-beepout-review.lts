@@ -1,0 +1,147 @@
+---
+scope: "The beep-out delivery endpoint: `send_beepout_for_human_review` as THE path by which a BARE-BOARD falsification sheet reaches the human — a sheet DERIVED from the fabricated `.kicad_pcb`, provenance-gated, staleness-gated, and returned as a receipt naming the netlist it is true of. The sibling of [SPEC:CXC-HKR], separated from it because the refusal predicates are disjoint."
+audience: [composeux-architect, David, any Intelligence delivering a bare-board test sheet]
+boundary: "IN: the derive-not-author ruling, the provenance and staleness refusals, the three-state row vocabulary, the fault injectors that falsify the deriver, and the seam that keeps this endpoint separate from the hookup one. OUT: the row-derivation rules themselves (`composeio/maker/beepout/derive.py`), the s-expression netlist reader (`netlist.py`), the sheet markdown layout (`render.py`), and the `.claude/skills/create-beepout-sheet` SKILL text (architect-owns)."
+not-this: "Not a hookup guide and not a replacement for one — a hookup guide says CONNECT THESE, a beep-out sheet says PROBE THESE TWO PADS AND EXPECT THIS. Not a proposal to retire `mutate.py`: those injectors are deliberately KEPT and public, because they are the only thing that can prove the deriver reads the board."
+placement: "⛔ [PLACEMENT UNRATIFIED] — this file's home in the corpus is not yet ruled ([CXC-VISION-PLACEMENT]); it sits beside [SPEC:CXC-HKR] because it is that endpoint's peer, not because the directory has been decided."
+depends-on: [70-hookup-review.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-08-15
+---
+# Beep-Out Review — the Delivery Gate for the Sheet That Falsifies a BARE Board [SPEC:CXC-BPO]
+
+> A beep-out sheet is a falsification instrument, and BARE is the only window in which it works: once parts are on, a fab defect and a solder defect are indistinguishable, so a short that could have been found in ten minutes with a meter becomes hours of rework against a board behaving inexplicably. That window is why the sheet must be DERIVED from the fabricated file rather than typed from intent — a hand-typed pad pair is a claim, and a claim is exactly what a falsification instrument may not contain. ⛔ [PLACEMENT UNRATIFIED] — this document's home in the corpus has not been ruled.
+
+---
+
+## 1. What the sheet is, and where its rows come from
+
+### [CXC-BPO-DERIVE-NOT-AUTHOR] Rows are derived from the fabricated `.kicad_pcb`, NEVER from the generator script
+- definition: every row's pad pair, net identity, geometry and expected meter reading is read out of the fabricated `.kicad_pcb` — the artifact the fab actually built from. `generate_pcb.py` is a SOURCE that produced a board once; it is not the board.
+- premise: a hand-typed or script-inferred pad pair is a CLAIM. A netlist-derived one is a MEASUREMENT of the file that became copper. The sheet exists to falsify the board, so a row that merely restates the author's intent falsifies nothing.
+- evidence: measured on rack_triple_gauge 2026-08-15 — `generate_traces()` (`generate_pcb.py:871` / `:880`) draws copper labelled SDA out of the header pin its own pad table assigns to GND, and SCL out of the pin assigned to +5V. A sheet built from the script would have sent a human probing for I2C on a power rail.
+- evidence: decisively, the script's net-id space is NOT the board's — the script reserves sparse ranges while the fabricated file uses a dense `1..52`, so script net 50 is `LED1_GPIO` and file net 50 is `GPIO9`. The two artifacts cannot be reconciled by inspection; they can only be told apart by reading the one that shipped.
+- constraint: the `.kicad_pcb` is an EXTERNAL, READ-ONLY source. Nothing in this surface writes it, and nothing derives a row from any other file.
+- implementation: `composeio/maker/beepout/netlist.py` (s-expression reader) and `derive.py` (row rules); one deriver, and the review endpoint calls it rather than reimplementing it.
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE]
+- part-of: [SPEC:CXC-BPO]
+
+### [CXC-BPO-MCP] `send_beepout_for_human_review` is the beep-out sheet's delivery path
+- definition: the caller generates a sheet from a fabricated board, then calls `send_beepout_for_human_review(sheet_path)` on the decision-ops MCP surface. The endpoint resolves the path inside the repo, reads the sheet's provenance, re-derives from the named netlist, compares, and returns a receipt carrying `rows_by_category` and the netlist sha256.
+- requirement: the argument is the GENERATED SHEET — a repo `.md`. The `.kicad_pcb` is NAMED BY the sheet's provenance block and read from there; it is never passed as an argument, because the sheet must be true of a specific file and the caller must not get to choose which file it is checked against.
+- requirement: it MUST appear on BOTH surfaces — `mcp_server.TOOLS` and the `DecisionOpsMcp.dispatch` handler map. Registering one and not the other is the regression [CXC-DSDV-REGISTER] already named, and `tests/test_decision_ops_beepout.py` guards both.
+- constraint: it is deliberately EXCLUDED from `_GRAPH_TOOLS` — the endpoint is graph-independent, so requiring a loaded decision graph would make a board check fail for a reason that has nothing to do with the board.
+- implementation: `python/composeio/decision_ops/beepout_review.py`; derivation engine at `python/composeio/maker/beepout/`.
+- reuse-by-reference: `dsd_review.resolve_dsd` is IMPORTED, exactly as `hookup_review` imports it — ONE containment guard for the whole decision-ops surface, never a second copy. And `composeio.maker.beepout` itself is imported: the review module contains NO derivation logic, it re-runs the engine and compares, and a test pins that anti-fork property.
+- scope-boundary: DISCHARGED 2026-08-15 — the intent leg is now PUBLISHED, because its consumer landed in the same change ([CXC-BPO-LAUNCHER]). The endpoint declared `INTENT_NS = "_app/beepout/open"` and deliberately did NOT publish to it while no party consumed it, on the rule "the intent leg lands WITH its launcher or not at all" — publishing into a namespace nobody consumes reports success while doing nothing, which is what the DSD save-close notice did at `_app/dsd/notice`. That condition no longer holds: `intelligence/tools/beepout_viewer_launcher.py` subscribes the namespace and is registered in `intelligence/console/data_sources.py`, so the refusal was DISCHARGED rather than merely lifted.
+- see-also: [SPEC:CXC-HKR]
+- part-of: [SPEC:CXC-BPO]
+
+---
+
+## 2. The gates — the reason this is a gate and not a transport
+
+### [CXC-BPO-PROVENANCE-GATE] A sheet that cannot prove it was derived is REFUSED
+- definition: every generated sheet carries a machine-readable `BEEPOUT-PROVENANCE` JSON block written as an HTML comment — invisible when the sheet is printed and taken to the bench, exact when a validator reads it. It records the netlist's absolute path, that netlist's sha256, and the row counts by category.
+- requirement: the endpoint REFUSES four classes. (1) NO PROVENANCE BLOCK — the sheet was hand-authored, so its rows are claims. (2) ROWS THAT DO NOT MATCH A FRESH RE-DERIVATION — the sheet was hand-edited after generation, which is the same defect wearing a generated sheet's clothes. (3) ZERO ROWS — a document that cannot fail is not an instrument. (4) A PATH OUTSIDE THE REPO — resolved through the one shared containment guard.
+- constraint: any validation failure publishes nothing and returns a clean `success=false` with a message naming the remedy. A partial send, a warning attached to a bad sheet, or a receipt that omits the failure would all put an unfalsifiable document in a human's hand at a bench.
+- rationale: the refusal is on PROVENANCE rather than on content quality because content quality is not checkable — a plausible wrong row and a correct row read identically. What IS checkable is whether the rows came from the file the fab built.
+- see-also: [CXC-VISION-EPISTEMICS]
+- part-of: [SPEC:CXC-BPO]
+
+### [CXC-BPO-STALE-GATE] The endpoint re-hashes the netlist and refuses a sheet the board has outrun
+- definition: at send time the endpoint hashes the `.kicad_pcb` named in the provenance block and compares it to the sha256 the sheet recorded. A mismatch is a refusal naming both digests: the sheet describes a board revision that no longer exists.
+- requirement: the check runs on EVERY send, not on a schedule and not on request. A sheet is only ever delivered together with proof that its source has not moved under it.
+- payoff: this ENFORCES what [PCB-CORPUS-PLACEMENT] records as a mere CONVENTION, whose residual risk that node states plainly — "the trigger is a CONVENTION, not an enforced check — nothing runs shasum on a schedule today. An edit to the source will not announce itself." Now it does, at the one moment it matters: when a human is about to act on the document.
+- constraint: the digest is of the NETLIST, not of the sheet. Hashing the sheet would only prove the sheet was not edited, which the provenance gate already covers; hashing the source is what detects the board moving.
+- see-also: [PCB-CORPUS-PLACEMENT]
+- part-of: [SPEC:CXC-BPO]
+
+---
+
+## 3. The row vocabulary
+
+### [CXC-BPO-THREE-STATES] DERIVED / UNVERIFIED / BLOCKED — because two states cannot say "I looked and could not tell"
+- definition: DERIVED — the expectation follows from the netlist or the geometry, and is falsifiable by construction: mutate the source and the row changes.
+- definition: UNVERIFIED — a REAL and NECESSARY check that the board file cannot settle. Which physical part you actually bought; whether a designator is genuinely printed on the silkscreen. These rows are EMITTED, NEVER OMITTED, and marked unverified-by-construction.
+- definition: BLOCKED — a check that cannot even be STATED from this source. A net with a single pad has no second probe point, so there is no pair to put a meter across. "There is nothing to test here" is a FINDING, and it is reported as one.
+- premise: a two-state vocabulary forces every unsettleable check into either a false clean or a silent omission. The descriptor-parity checker had exactly that shape and an unprobed pin produced SILENCE — neither clean nor reserved, and therefore indistinguishable from a pin nobody had thought about.
+- constraint: state is a property of the ROW, not of the sheet. A sheet mixing all three is the normal case, and a sheet that is 100% DERIVED is not a better sheet — it is a sheet whose unsettleable checks went missing.
+- implementation: `RowState` in `composeio/maker/beepout/derive.py`; the state is carried into `rows_by_category` in the endpoint's receipt.
+- see-also: [CXC-VISION-EPISTEMICS]
+- part-of: [SPEC:CXC-BPO]
+
+---
+
+## 4. The negative control
+
+### [CXC-BPO-NEGATIVE-CONTROL] Fault injectors ship public, because a deriver that can only pass is not a deriver
+- premise: grounded in [CXC-VISION-EPISTEMICS] `rule-negative-control` — an instrument that can only report SUCCESS is not an instrument. The deriver's whole claim is that it READS THE BOARD; the only way to test that claim is to change the board and require the sheet to change with it.
+- requirement: the injectors live in `composeio/maker/beepout/mutate.py`, PUBLIC on purpose, mirroring how the hookup surface deliberately keeps the label-dropping `svgdom_rasterize` public as its fault injector. Deleting them would make the deriver unfalsifiable; a synthetic stand-in would test a story about the defect instead of the defect.
+- control-nc1: merge +5V into GND (a simulated dead short) — every isolation row naming +5V disappears. PASSING 2026-08-15.
+- control-nc2: remove one pad from a 2-pad net — that net's row moves DERIVED -> BLOCKED, proving BLOCKED is produced by the source and not by a hardcoded list. PASSING 2026-08-15.
+- control-nc3: remove an extreme pad of a 24-pad net — the longest-run probe pair MOVES, and the run shortens 70.3mm -> 63.8mm. PASSING 2026-08-15.
+- control-nc4: displace a pad by 25mm — its adjacency rows drop, 106 -> 105, proving adjacency is read from GEOMETRY and not from net names. PASSING 2026-08-15.
+- cross-check: the netlist reader also carries an INDEPENDENT internal check — pad positions agree with the copper endpoints written by a different code path in the same file: 130/130, 156/156 and 92/92 across the three boards. Two writers of the same file agreeing is evidence the reader is reading, not guessing.
+- see-also: [CXC-VISION-EPISTEMICS]
+- part-of: [SPEC:CXC-BPO]
+
+---
+
+## 5. The seam
+
+### [CXC-BPO-SEAM] A NEW endpoint, not a mode flag on `send_hookup_for_human_review`
+- reason-disjoint-predicates: the refusal predicates are DISJOINT and operate over different artifact classes. Hookup gates on `hookup_svg.label_ink_report`, a same-rasterizer differential proving a PICTURE's labels became ink; a beep-out sheet is printable text with no raster at all, so that gate is not merely unnecessary, it is inapplicable. One endpoint carrying two disjoint predicates selected by a flag is [DX-ENGINE-VS-POLICY]'s tell.
+- reason-contradictory-inputs: the input contracts CONTRADICT. Hookup takes a `.compose.yaml` and REFUSES images with a message naming `.compose.yaml` as the remedy — pinned by its test H2. Beep-out takes a `.md` derived from a `.kicad_pcb`. A merged endpoint would have to refuse and accept the same argument shape depending on a flag.
+- reason-distinct-receipts: the receipts differ. Hookup returns `labels{in_svg, ink_px, ratio, sparse}`; beep-out returns `rows_by_category` plus the netlist sha256. A union-typed receipt keyed on a mode flag merges two peers' identities, which [DX-COLLAPSE-TRANSPORT] names as exactly the thing never to collapse.
+- reason-leaf-ownership: per [DX-LEAF-OWNS-BEHAVIOR], a beep-out endpoint can FULLY own the question "are these rows netlist-derived?". The hookup endpoint could only own it by importing netlist knowledge it has no other reason to have.
+- constraint: separation is of the POLICY, never of the shared primitives — `dsd_review.resolve_dsd` and `composeio.maker.beepout` are reused BY REFERENCE and never forked. A second containment guard or a second deriver would be the fork this seam exists to prevent.
+- see-also: [SPEC:CXC-HKR]
+- part-of: [SPEC:CXC-BPO]
+
+---
+
+## 6. Evidence carriage
+
+### [CXC-BPO-EVIDENCE] Pre-integration questions and post-integration evidence
+- pre-integration-question: does a sheet that passes every gate actually find a fault on a real bare board, or only prove it is derivable? EMPTY — no fabricated board has been probed against a generated sheet yet.
+- pre-integration-question: do UNVERIFIED rows get acted on at the bench, or skipped as noise? EMPTY — awaiting first bench session.
+- post-integration-evidence-controls: four fault injectors NC1-NC4, all PASSING as of 2026-08-15, plus the reader's independent pad/copper agreement at 130/130, 156/156 and 92/92.
+- post-integration-evidence-bench: EMPTY — no bench run has been performed against a fabricated board.
+- post-integration-evidence-refusals: EMPTY — the gates are covered by `tests/test_decision_ops_beepout.py`, but no live refusal of a genuinely stale sheet has occurred in normal use.
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE]
+- part-of: [SPEC:CXC-BPO]
+
+### The `_app/beepout/open` consumer lands in the SAME change as the endpoint's publish leg [CXC-BPO-LAUNCHER]
+
+- requirement: `intelligence/tools/beepout_viewer_launcher.py` subscribes `_app/beepout/open` and is REGISTERED in `intelligence/console/data_sources.py`. The endpoint's `INTENT_PUBLISHED` flipped to True in the SAME commit that added both — never before, and never without them.
+- rationale: an intent nobody subscribes is an intent published into the void — the DSD notify leg already shipped exactly that defect at `_app/dsd/notice`, and every notice went into the void while the publisher reported success. Built-tested-never-registered is a named class here ([DEC-BUILT-TESTED-NEVER-REGISTERED-IS-A-CLASS]), so the endpoint and its consumer are one change.
+- definition: the window is the composeio DOC VIEWER, not a new viewer. David ruled it 2026-08-15: *"the viewer can be the composeio doc viewer."* A beep-out sheet is printable markdown and `markdown_viewer` ([CXC-MDV]) already renders the exact block set the sheet uses — ATX headings, pipe tables, bullets, blockquotes, rules.
+- reuse-by-reference: the launcher holds NO viewer, NO window-lifecycle tracker, NO scene builder and NO spawn of its own. `doc_viewer_launcher.DocViewerLauncher` is imported and INSTANTIATED, so the per-open scene bake, the `spawned_windows` same-path dedupe, the [DEC-LAUNCH-PLACEMENT] bbox placement and the detached `runtime` spawn are all that module's code, called. Forking any of them would fork the doc window's geometry key, dedupe policy and placement contract three ways — the divergence `spawned_windows` was de-forked to end ([DX-NARROW-WAIST]).
+- constraint: the intent leg uses `subscribe_pattern`, not an exact subscribe. Re-sending the SAME sheet is the NORMAL case here because the staleness gate makes people regenerate and resend, and `Namespace.publish_state` notifies exact subscribers only when the value CHANGED ([CXC-SOB-SUBSCRIBE]) — an exact subscribe would swallow the second send with no error at all.
+- why-a-peer-namespace-not-the-doc-one: `_app/beepout/open` is a PEER of `_app/doc/open`, never a mode of it — the [CXC-BPO-SEAM] argument held one layer down. The intent carries `netlist`, `sha256` and the row counts as provenance passengers, and a generic doc-open intent has nowhere to put them; a consumer keyed on this namespace can name the board and the netlist in its log where a doc consumer can only say `.md`.
+- accepted-limitation-no-ticking: ⚠ ROWS CANNOT BE TICKED ON GLASS. `markdown_viewer` is READ-ONLY BY CONSTRUCTION — no caret, no text entry, no write path; the only interaction is vertical scroll. This is the SAME limit that made the read-only viewer unsuitable for DSD fill-in slots, and it is ACCEPTED here rather than worked around: a human at a bench has a probe in each hand and no third hand for a mouse. The `☐` column and the `____________` ACTUAL column are for a PEN.
+- accepted-limitation-no-print: ⚠ THE WINDOW CANNOT PRINT — the ComposeUX runtime has no print path. The glass is for READING and REVIEW; paper still comes from the `.md` by any ordinary route. Printability is a property of the SHEET, which is markdown, and it is not lost by this window existing.
+- measured-glyph-gap: ⛔ MEASURED ON GLASS 2026-08-15, and NO machine signal reports it: `U+2610 ☐` BALLOT BOX is ABSENT from every bundled IBM Plex face (Sans-Regular, Sans-Bold, Mono-Regular), so the tick column of all three sheets — 489 rows across rack_triple_gauge / button_matrix_4x4 / lego_dots — renders as `.notdef` tofu. `U+26D4 ⛔` is absent too and substitutes as `Ø`. `U+2713 ✓` IS present, which is why the column HEADER renders and the column BODY does not. The launcher, the intent, the scene load and the table parse are all green; only eyes find this ([CXC-VISION-EPISTEMICS]).
+- evidence-consumer-received: the consumer was stood up against the live broker at mqtt://COMPOSEIO_FW_DOCUMENT_STORE_URL:1883 and observed ACTING on intents published by the real endpoint from a SEPARATE process: `rack_triple_gauge-BEEPOUT.md` (175 rows) and `lego_dots-BEEPOUT.md` (131 rows) each opened exactly one doc-viewer window, with board, row count, netlist sha and correlation id carried through. NEGATIVE CONTROL in the same run: a non-existent sheet and an outside-repo path were both REFUSED with ZERO spawns, and a publish to the sibling `_app/doc/open` was correctly IGNORED as not-ours.
+- implementation: `intelligence/tools/beepout_viewer_launcher.py`; registered in `intelligence/console/data_sources.py`; publish leg in `python/composeio/decision_ops/beepout_review.py`.
+- see-also: [SPEC:CXC-HKR]
+- part-of: [SPEC:CXC-BPO]
+
+---
+
+## Relationships
+
+### Semantic
+- [CXC-BPO] RELATED_TO [CXC-HKR] — peer delivery endpoints on the one decision-ops surface, deliberately NOT merged
+- [CXC-BPO-MCP] DEPENDS_ON [CXC-BPO-DERIVE-NOT-AUTHOR] — the endpoint's whole receipt is meaningless if the rows are authored
+- [CXC-BPO-STALE-GATE] PART_OF [CXC-BPO-PROVENANCE-GATE] — the staleness check is the provenance block's second use
+- [CXC-BPO-NEGATIVE-CONTROL] PART_OF [CXC-BPO-DERIVE-NOT-AUTHOR] — the injectors are what make "derived" a falsifiable claim
+- [CXC-BPO-THREE-STATES] DEPENDS_ON [CXC-BPO-DERIVE-NOT-AUTHOR] — BLOCKED and UNVERIFIED are only meaningful about a derived sheet
+- [CXC-BPO-SEAM] RELATED_TO [CXC-HKR-MCP] — the endpoint this one is deliberately not a mode of
+- [CXC-BPO-SEAM] RELATED_TO [CXC-HKR-FAULT-INJECTOR] — the same keep-the-injector-public discipline, one surface over
+- [CXC-BPO-MCP] DEPENDS_ON [CXC-BPO-LAUNCHER] — the endpoint's publish leg is only legitimate BECAUSE a consumer exists; without it the publish is the into-the-void defect the scope-boundary refused
+- [CXC-BPO-LAUNCHER] RELATED_TO [CXC-HKR-LAUNCHER] — the sibling consumer, same lands-with-the-endpoint rule, different viewer choice
+- [CXC-BPO-LAUNCHER] DEPENDS_ON [CXC-MDV] — the window IS the read-only markdown doc viewer, reused by reference and not forked

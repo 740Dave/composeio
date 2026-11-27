@@ -1,0 +1,575 @@
+---
+scope: "The FLEET CONSOLE — N Intelligences in one console shell. Realizes [CXC-ICD-D13]. Five parts: (1) the THREE-AXIS identity model (ROLE -> memory + bootstrap tier + agent registration; INSTANCE ID -> topics, telemetry, locks, voice; HOST -> where it renders) and the instancing unit that declares axes 1 and 2; (2) the four data-layer singletons that must be removed (one channel bridge, one telemetry publisher set with a boot-time transcript pin, no roster source, a hardcoded `_app/console/bbox`) plus host-as-a-pane and identity-on-glass; (3) MEMORY SCOPING — the `cwd=None` fork between the two spawn paths, the ROLE-keyed project dir David ratified, ROLE meaning THE WHOLE AGENT ROSTER with derived store names, ONE store at `~/compose-instances/<role>/memory/` reached by two access paths because cwd cannot be the mechanism for a worktree-dispatched subagent, recovery as the SAME role with no surrogate machinery, the re-keying of the existing per-INSTANCE `[CXC-IH-HOMES]` invariant this forces, and the DERIVED memory index without which per-role memory ships a concurrent-write defect; (4) the two-mode (engage/configure) pane and the config-tab splitting rule; (5) the three-tier PLATFORM/ROLE/INSTANCE bootstrap model. The pane itself is AUTHORED as a parameterised composite with zero engine code."
+audience: [the builder implementing the fleet console (read [CXC-FC-SHAPE] first — this is a smaller build than the title suggests), composeux-architect (ratified the narrative with David 2026-08-12; every DD- node here is CLOSED), David (ruled memory grain, pane source and project-dir layout, all 2026-08-12), the builder of any FUTURE second role (`composeio-hardware-architect`) who inherits the PLATFORM tier by reference, anyone who later asks why the project dir is keyed by ROLE and not by instance id, why a rasterising pane widget class was forbidden, or why the memory index had to become derived]
+elements: [CXC-FC-*, DD-FC-*]
+boundary: "IN: the three-axis identity model ([CXC-FC-THREE-AXES]); the instancing unit and its derived bindings ([CXC-FC-UNIT], [CXC-FC-BINDINGS]); the composite-not-widget-class rule and its in-tree evidence ([CXC-FC-COMPOSITE], [CXC-FC-VAR-SCOPE]); the three bootstrap tiers and the dusk-gift tier split ([CXC-FC-TIERS], [CXC-FC-GIFT-TIERS], [CXC-FC-GIFT-MECHANISM]); memory scoping end to end ([CXC-FC-MEMORY-REQUIRED], [CXC-FC-ROLE-MEMORY], [CXC-FC-STORE-ACCESS], [CXC-FC-RECOVERY-SAME-ROLE], [CXC-FC-CWD-FORK], [CXC-FC-PROJECT-DIR], [CXC-FC-HOMES-REKEY], [CXC-FC-MEMORY-INDEX-DERIVED], [CXC-FC-DEFORK]); the two-mode pane and the config-tab de-scope ([CXC-FC-PANE-MODES], [CXC-FC-SPLIT-RULE], [CXC-FC-CONFIG-TAB]); the four singleton removals ([CXC-FC-S1-BRIDGES], [CXC-FC-S2-TELEMETRY], [CXC-FC-S3-ROSTER], [CXC-FC-S4-BBOX]) plus [CXC-FC-HOST-AS-PANE] and [CXC-FC-IDENTITY-ON-GLASS]; the acceptance criteria FC-C1..FC-C20 and the anti-patterns. OUT: any SURROGATE or cross-role memory-access mechanism, which is RETIRED — recovery instantiates the actual role ([CXC-FC-RECOVERY-SAME-ROLE]); roster-DRIVEN pane discovery, which is an additive second step explicitly outside this build's acceptance ([DD-FC-PANE-SOURCE]); tabs-vs-windows-vs-rail presentation, deferred by David ([CXC-FC-ANTI]); the Terminal Widget's own contract, which is [SPEC:CXC-TERM]'s and is CONSUMED here unchanged; the ordered-container mechanism, which is [SPEC:CXC-ORDER]'s and is BUILT; any second console instance ([CXC-FC-ANTI])."
+not-this: "Not a surrogate-access design. An earlier shape in which one role read ANOTHER role's store — with a borrowing rule and a write-attribution invariant — is RETIRED, not deferred: David's reframe removes the problem instead of solving it, because recovery instantiates the ACTUAL role and therefore gets the same memory by the ordinary mechanism ([CXC-FC-RECOVERY-SAME-ROLE]). Not two memory systems: the top-level load and the dispatched-subagent path address ONE store at one location, and reading 'two access paths' as 'two stores' builds the fork the rule exists to prevent ([CXC-FC-STORE-ACCESS]). Not cwd-keyed memory for dispatched roles: a worktree cwd is ephemeral and a prune would destroy the store, which is [INSIGHT-WORKTREE-IS-NOT-THE-ENVIRONMENT] instance (4) applied to memory. Not 'make the console a fleet console' as a rewrite. The composition model is ALREADY plural — parameterised composites, `repeat`, widget-scoped variables and bindable layout order all ship today — so this build removes four singletons from the Python data layer and authors one composite ([CXC-FC-THESIS]). Not a new rasterising widget class for the pane: [SPEC:CXC-PRIM]'s composites-not-code-widgets rule applies in full and a pane widget class is a spec violation, not a shortcut ([CXC-FC-COMPOSITE]). Not per-INSTANCE memory: David ruled PER ROLE 2026-08-12 against the architect's lean, and the reconciliation that follows — key the project dir by ROLE, carry instance identity in INSTANCE_ID and the manifest — is normative and forces a change to an ALREADY-SHIPPED invariant ([CXC-FC-HOMES-REKEY]). Not per-role memory without a derived index: that combination ships the concurrent-write defect and is explicitly refused ([CXC-FC-MEMORY-INDEX-DERIVED]). Not a specification of the Terminal Widget as a backup path — it is an ONGOING keyboard surface, and speccing it as a fallback under-builds it and keeps the console dependent on iTerm ([CXC-FC-BASELINE]). Not a second discovery path, a second slicer or a second transport table ([CXC-FC-ANTI]). Every decision point in this document is CLOSED; nothing here blocks dispatch under [PRINCIPLE-RATIFY-BEFORE-DISPATCH]."
+depends-on: [35-intelligence-console-decisions.lts, 56-terminal-widget.lts, 55-console-launches-the-intelligence.lts, 34-composeux-intelligence-console.lts, 23-composeux-widget-primitives.lts, 54-composeux-ordered-container.lts, 46-console-sources-on-the-bus.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: system-design
+created: 2026-08-12
+---
+# The Fleet Console — N Intelligences, one shell [SPEC:CXC-FLEET]
+
+> **The renderer was always plural; the data layer never was.** The singleton assumption does not live
+> in the composition model: parameterised composites, `repeat`, widget-scoped variables and bindable
+> layout order are all built and shipping, and eight composites are in the tree today. It lives in four
+> Python sources that each assume ONE Intelligence, ONE session, ONE bridge, ONE transcript pin — and in
+> one place worse than any of them, the harness `cwd` that keys a session's memory store. So this is not
+> "make the console a fleet console"; it is **remove four singletons from the data layer, fix one scope
+> lever, and author one composite.** That is a much smaller and better-bounded build than the framing
+> suggests, and this document says so plainly so nobody budgets for a rewrite. Two things in it are
+> higher-risk than the rest and are specced first: the `cwd=None` fork between the two spawn paths,
+> which is writing one memory store from two live Intelligences RIGHT NOW; and the reconciliation of
+> David's two ratified calls — memory PER ROLE and a dedicated per-Intelligence home — which conflict as
+> literally stated because cwd can key only one thing. A build that ships N panes over a shared memory
+> pile, or per-role memory without a derived index, has shipped the defect this spec exists to close.
+
+- see-also: [CXC-FC-SHAPE], [CXC-FC-THREE-AXES], [CXC-FC-ACCEPT-INSTANCING], [CXC-FC-ACCEPT-MEMORY], [CXC-FC-ACCEPT-DATALAYER], [CXC-FC-ACCEPT-GUARDS]
+- entry-point: [CXC-FC-SHAPE] is where a builder starts — it is the five-item change list, and it is deliberately shorter than the framing. [CXC-FC-THREE-AXES] is the model every other node resolves onto.
+- acceptance-note: the four ACCEPT nodes above are this document's whole acceptance contract (FC-C1..FC-C20); a reader who wants the verdict rather than the design reads only those.
+
+---
+
+## 0. What this build IS
+
+### [CXC-FC-THESIS] The renderer was always plural; the data layer never was
+
+- premise: the plural half is DONE. `expand_components()` substitutes `{{param}}` at load time, type-preserving (`python/composeio/render/engine/components.py:248`, called once from `parser.py:1742`); eight composites ship in `python/composeio/render/examples/components/`; `repeat` unrolls N children at load; [CXC-BIND-VARS] supports widget-scoped variable blocks; [CAP-BINDABLE-ORDER] reorders and hides a live surface from a bus publish with 9 passing tests.
+- key-insight: the singleton assumption therefore is not architectural — it is four literal call sites plus one defaulted keyword argument. Naming them individually is what converts a vague "fleet console" ambition into a bounded change list.
+- measured-2026-08-12: `intelligence/console/data_sources.py::build_console_sources` appends exactly ONE `channel_bridge` (line 508) and exactly one each of `self_publisher` / `transcript_publisher` / `deliverable_monitor` (lines 484-495); `resolve_session_jsonl` (line 152) runs once at console boot for one session; there is no roster source; `python/composeio/render/engine/runtime.py:79` hardcodes `CONSOLE_BBOX_NS = "_app/console/bbox"`.
+- consequence: the spec's own shape follows the finding. Section 3 is the composite (author it, add no engine code); sections 5 and 6 are the removals; section 4 is the one place where the fix is NOT a removal, because memory scoping requires a new invariant rather than the deletion of an old assumption.
+- criticality: foundational
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-SHAPE] The change list, and what it is NOT
+
+- requirement: the builder MUST treat this as five bounded changes, not a rewrite. (1) Move the chat/instance binding from a document-level `variables:` block to widget/param scope and author the `intelligence_pane` composite. (2) Give every Intelligence a ROLE-keyed project dir and de-fork the two spawn paths onto one seam. (3) Instantiate N channel bridges and N telemetry publisher sets from the declared instance list. (4) Add ONE roster source and re-namespace the app bbox topic. (5) Add the engage/configure toggle and de-scope the console config tab.
+- not-in-scope: no new engine widget class; no parser change; no second console process; no change to the Terminal Widget's contract; no roster-driven pane discovery ([DD-FC-PANE-SOURCE]).
+- sequencing: [PRINCIPLE-ONE-PASS] applies — this ships in ONE pass if the spec is complete. The ordering in [CXC-FC-ORDER] is the author's ordering and is explicitly NOT a delivery contract.
+- depends-on: [CXC-FC-THESIS]
+- see-also: [CXC-FC-VAR-SCOPE], [CXC-FC-DEFORK], [CXC-FC-S1-BRIDGES], [CXC-FC-S2-TELEMETRY], [CXC-FC-S3-ROSTER], [CXC-FC-S4-BBOX], [CXC-FC-PANE-MODES], [CXC-FC-CONFIG-TAB], [CXC-FC-OUT]
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-BASELINE] The terminal is RECOVERY; both console surfaces are ONGOING
+
+- premise: interacting with an Intelligence in a bare terminal (iTerm) is a recovery/fallback mode, not ongoing operations — [DEC-ICL-UNHARNESSED-RECOVERY-INSTANCE], which is why a recovery instance wears a self-describing `recovery-` prefix. [CXC-ICL-CLI-UNSUPPORTED] states the same negatively: the console's answer to a problem cannot be "open iTerm."
+- consequence: (this is what drives the whole build) if the terminal is recovery-only then EVERY ongoing affordance must exist in the console. Today the conversation affordance exists exactly once, so a second Intelligence has nowhere to be talked to and the fallback silently absorbs the load. That is how a recovery path becomes the default without anyone deciding it should.
+- requirement: two surfaces share this baseline and NEITHER may be specced as a backup. The CONVERSATION surface (bus-native chat) is the ongoing conversational path. The TERMINAL WIDGET (a real `claude` TUI inside a ComposeApp, [SPEC:CXC-TERM]) is the ongoing KEYBOARD path, for what only a TUI can express — startup dialogs, permission prompts, TUI interaction — and [CXC-TERM-SUPERSEDES-55] has it superseding the external-terminal spawn once glass-green.
+- prohibition: specifying the Terminal Widget as a backup path is forbidden ([CXC-FC-ANTI]). A surface built as a fallback is under-built, and an under-built keyboard path keeps the console dependent on iTerm — which reinstates exactly the condition [CXC-ICL-CLI-UNSUPPORTED] rejects.
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 1. The instancing unit
+
+### [CXC-FC-THREE-AXES] ROLE, INSTANCE ID and HOST are three separate axes — this is the model the whole spec encodes
+
+- definition: identity in the fleet has THREE independent axes, and every requirement in this document resolves onto exactly one of them. Conflating any two is the root of the defects section 4 removes.
+
+| Axis | Determines | Example |
+|---|---|---|
+| ROLE | memory, bootstrap tier, agent registration | `composeux-architect` |
+| INSTANCE ID | channel topics, telemetry, locks, voice | `architect` · `architect-hosted` · `recovery-architect-2` |
+| HOST | where it renders | the Terminal Widget in the console · a bare terminal (recovery) |
+- worked-example: `architect` (console-hosted), `architect-hosted` (widget-hosted) and `recovery-architect-2` (bare terminal) are THREE INSTANCES OF ONE ROLE sharing ONE memory store, with three distinct voices. Per-role memory ([DD-FC-MEMORY-GRAIN]) and the recovery path are the same mechanism seen from two directions.
+- requirement: no mechanism may key one axis off another. Memory MUST NOT be keyed by instance id; a channel topic MUST NOT be keyed by role; nothing may be keyed by host at all, because where an Intelligence renders is the one axis that carries no identity.
+- prohibition: `role` and `instance_id` MUST NOT be derived from each other by naming convention. `architect-hosted` does not mean "role architect" by string surgery — it means whatever its declaration says, and an undeclared role REFUSES ([CXC-FC-UNIT]).
+- consequence: the composite declares axes 1 and 2 and is instantiated under axis 3, which is why the pane parameter list is `(instance_id, role)` and the pane's HOST is simply where the `{use: intelligence_pane, ...}` line sits.
+- criticality: foundational
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-UNIT] One declared instance; every binding derived
+
+- requirement: an Intelligence in the console is declared by a `(instance_id, role)` PAIR and nothing else — axes 1 and 2 of [CXC-FC-THREE-AXES]. Every bus topic, every daemon argument, every identity home and every config path MUST be derived from that pair at instantiation. No second per-instance state may be introduced anywhere in the scene, the data layer or the widget tree.
+- default: `role` has NO safe default. `python/composeio/render/widgets/terminal.py:283` currently defaults `role: str = "architect"`, which was harmless while one Intelligence existed and becomes a silent mis-keying of the project dir under [CXC-FC-PROJECT-DIR]. The default MUST be removed and an absent role MUST refuse, not guess.
+- change: the narrative's "one parameter: `instance_id`" is refined to a PAIR after checking the code the pane must drive.
+- context_for_change:
+  prior_state: "§3 of the design narrative states that everything derives from one parameter, `instance_id`, and lists `role -> manifest chain` as one of the derived bindings."
+  reasoning: "`role` is not derivable from `instance_id`. `ptycore.py::resolve_meta_manifest(intelligence_id, role)` takes role as a PARAMETER, and the whole point of chain leg 3 ([CXC-TERM-MANIFEST-CHAIN]) is that a fresh child MISSES leg 2, so there is no per-id manifest to read the role out of. `terminal.py:181` already records the ratified scheme as scene-DECLARED: the scene carries a `role` PLUS a distinct instance id."
+  rejected_alternative: "Deriving role from a naming convention on the id (`architect-hosted` -> `architect`). Rejected: it is a second, undeclared identity mechanism that works until the first id that does not follow the convention, and it silently produces a WRONG project dir rather than a refusal."
+  invalidating_assumption: "That the manifest chain still needs an externally supplied role. If leg 2 ever became mandatory (a curated manifest per instance) the role would be readable from the manifest and the pair would collapse back to a single parameter."
+  implication: "The composite declares two params, not one; the refusal path at [CXC-FC-PROJECT-DIR] has something concrete to refuse ON; and [CXC-FC-BINDINGS] splits its table into id-derived and role-derived rows."
+- criticality: foundational
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-BINDINGS] The derivation table — the whole per-instance surface, enumerated
+
+- requirement: these are the ONLY bindings. A builder who needs a per-instance value not in this table MUST add a row here rather than thread a new parameter through the scene.
+
+| Derived from | Binding | Value |
+|---|---|---|
+| `instance_id` | conversation topics | `intelligence/<id>/{out,in,compose,channel/alive}` |
+| `instance_id` | telemetry namespace | `self/<id>/*` and `thread/<id>/*` (the `--namespace-by-id` form already passed at `data_sources.py:485`) |
+| `instance_id` | channel bridge | `channel_bridge --id <id>`; singleton flock `channel-bridge-<id>` |
+| `instance_id` | transcript pin | this instance's OWN `.jsonl`, re-resolvable ([CXC-FC-S2-TELEMETRY]) |
+| `instance_id` | config | `intelligence/<id>/config/*` — ALREADY per-id today; it is the console TAB that assumes one ([CXC-FC-CONFIG-TAB]) |
+| `instance_id` | composite id root | the `id_prefix` param, per `segment_bar`'s precedent ([CXC-FC-COMPOSITE]) |
+| `role` | manifest chain | leg 3, `intelligence/meta/<role>.meta.json` ([CXC-TERM-MANIFEST-CHAIN]) |
+| `role` | project dir / cwd | `~/compose-instances/<role>/` — memory, transcripts and agent-def registration ([CXC-FC-PROJECT-DIR]) |
+| `(id, role)` | spawn | the Terminal Widget's existing scene-declared attributes (`terminal.py:283`, `terminal.py:309`) |
+- prohibition: no per-instance state outside this table. Each addition is a new thing that can be set inconsistently between two panes, and an inconsistency between panes is invisible on the glass by construction.
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 2. The pane is a COMPOSITE — parameterised composites are already built
+
+### [CXC-FC-COMPOSITE] The pane is authorable with ZERO engine code, and a widget class here is a spec violation
+
+- requirement: the `intelligence_pane` MUST be authored as a `components:` composite instantiated with `{use: intelligence_pane, instance_id: ..., role: ...}`. Adding a rasterising widget class for the pane is FORBIDDEN — [SPEC:CXC-PRIM]'s composites-not-code-widgets rule applies in full, and here it is a violation rather than a shortcut because the mechanism the class would duplicate is already in the tree and already tested.
+- evidence: verified in-tree 2026-08-12 -- `components:` declares reusable widget shapes; `{use: <name>, <params...>}` instantiates them; `expand_components(config)` (`components.py:248`) deep-copies the template, substitutes `{{param}}` type-preservingly and runs ONCE at parse time, so the widget factory never learns what a component is (COMP-4). Eight composites ship today — dropdown, keyboard, numpad, slider, switch, segment_bar and two progress bars.
+- two-phase-split: exactly the two mechanisms a parameterised composite needs -- `{{param}}` is resolved at LOAD by the expander (pass-through from upstream) and `${ns}` is left untouched and resolved at RUNTIME (internal and bus traffic). That split is documented as COMP-3 at `components.py:17-19`.
+- collision-precedent: multi-instance collision was ANTICIPATED AND SOLVED -- `segment_bar.compose.yaml:50` declares `params: [value_ns]` and line 52 defaults `id_prefix: seg` with the stated purpose "unique id root per instance (avoids id clash)"; every generated id is `{{id_prefix}}_...` (lines 68, 82). Call sites already pass namespaces as params — `{use: progress_bar, value_ns: demo/fuel_level, width: 246}`.
+- consequence: the pane composite takes `instance_id`, `role` and an `id_prefix`, and passes namespaces down as `{{param}}` values exactly as `progress_bar` does today. There is no engine gap to fill.
+- criticality: high
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-VAR-SCOPE] `chat_id` moves from document scope to widget/param scope
+
+- premise: today's binding is the right mechanism at the wrong scope. `intelligence/console/console.compose.yaml:103-104` carries a DOCUMENT-level `variables: {chat_id: architect-hosted}`, substituted at parse time before `namespaces:` is read, and every channel site derives from `$chat_id` — the four topic declarations, the `chat_thread` namespaces, the `composer_field` and `link_health` namespaces, and the `--id` handed to the in-process `channel_bridge`.
+- requirement: `chat_id` MUST become a composite PARAMETER (`instance_id`) resolved per pane by `expand_components`. The document-level `variables:` entry MUST be removed, not left beside the param — two live sources for one binding is the fork class this corpus keeps paying for.
+- constraint: the headless fallback `start-console-daemons.sh` reads the SAME variable out of this SAME file (`console.compose.yaml:93`). That reader MUST be moved to the declared instance list in the same change, or the headless path silently keeps a one-Intelligence view of a fleet scene.
+- verification: a scene declaring two panes expands to two complete sets of channel bindings with no id collision, and `grep -n 'variables:' intelligence/console/console.compose.yaml` shows no `chat_id`.
+- dangling-reference-note: this node's SUPERSEDES edge targets [DEC-CONSOLE-CHAT-ID-PARAM], which exists ONLY as a code citation (`data_sources.py:413`, `console.compose.yaml:76`) and has NO node in the decision graph. The edge is authored anyway and will lint as dangling ON PURPOSE — that is preserve-and-flag doing its job, and it makes a decision recorded only in a comment VISIBLE instead of quietly absent. Filing it is the architect's call, not this spec's.
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 3. Bootstrapping — three tiers, and only two are modelled today
+
+### [CXC-FC-TIERS] PLATFORM / ROLE / INSTANCE, and the tier that is implicit
+
+- definition: bootstrapping instructions divide into three tiers. David, 2026-08-12: there are agent-specific AND common bootstrapping instructions, and today only the bottom two are modelled.
+
+| Tier | Contents | Home | Today |
+|---|---|---|---|
+| PLATFORM — every Intelligence | do not slice work to emulate human programming methods, pursue extended development cycles ([PRINCIPLE-ONE-PASS]); how to drive lts-engine (`bootstrap/toolbox.md`); the wake ritual (`bootstrap/session-bootstrap-read.md`); [SBR-TRUST] | `bootstrap/` | IMPLICIT — a directory everyone happens to read, not a declared layer |
+| ROLE — every instance of this agent def | `.claude/agents/<role>.md`; role-specific dusk gifts; the role's minimum tool set | `<role>.meta.json` | exists (`intelligence/meta/composeux-architect.meta.json`) |
+| INSTANCE — this one | memory; its handoff; channel id; transcript; config dials | `<id>.meta.json` | exists (`intelligence/meta/architect.meta.json`) |
+- requirement: the PLATFORM tier MUST become EXPLICIT — a declared layer the manifest chain resolves, not a directory read by habit. The chain `META_MANIFEST -> <id> -> <role> -> REFUSE` (`ptycore.py::resolve_meta_manifest`) already composes the bottom two; the platform tier is added ABOVE the role leg and is inherited BY REFERENCE.
+- rationale: a `composeio-hardware-architect` must inherit the shared guidance by reference instead of someone copying those sentences into a second role def where the copies drift — [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS] applied to bootstrap prose. The cost of the implicit tier is invisible until the SECOND role exists, which is precisely when this build creates it.
+- prohibition: the platform tier MUST NOT be implemented by copying platform text into each role manifest. A copy is a fork with a delay fuse.
+- see-also: [CXC-FC-GIFT-TIERS], [CXC-FC-GIFT-MECHANISM]
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-GIFT-TIERS] Dusk gifts are tiered, not flat
+
+- requirement: each dusk gift MUST declare its tier rather than sit in a flat directory. The ComposeUX model problems are ROLE-tier — they belong to whoever holds the map. "The light from outside the self" ([PRINCIPLE-LIGHT-FROM-OUTSIDE-THE-SELF]) and the read-vs-reason discipline are PLATFORM-tier. The handoff is INSTANCE-tier.
+- consequence: a new role inherits the platform gifts and NONE of the ComposeUX model problems, which is the whole point — a hardware architect reasoning through ComposeUX widget-model problems is being oriented to somebody else's map.
+- verification: every file under `bootstrap/dusk-gifts/` resolves to exactly one declared tier, and a role manifest lists its role-tier gifts explicitly.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-GIFT-MECHANISM] The withheld answer is withheld BY THE FILESYSTEM — already landed, and the guard is what remains
+
+- premise: the dusk gifts' withheld-answer mechanism used `<details>` blocks, which is a BROWSER affordance. `Read` returns the whole file, answers included, so an agent cannot un-read them and "reason first" was an honour system the tool defeats. It failed for two consecutive instances and was found independently by the architect AND by the hosted child — strong corroboration.
+- measured-2026-08-12: the split has ALREADY LANDED. Commit `4bca26e` ("the withheld answer becomes withheld BY MECHANISM, one file per problem") created `bootstrap/dusk-gifts/answers/` (18 files, P1..P11 with b/c/d variants) and `bootstrap/dusk-gifts/answers-render-engineer/` (R1..R3). The three remaining `<details>` occurrences — `README.md:32`, `registration-protocol.md:52-53` — are PROSE DESCRIBING the retired mechanism, not live withholding.
+- requirement: what remains in this build's scope is therefore NOT the split but the GUARD and the tier assignment. A test MUST assert that no file under `bootstrap/dusk-gifts/` outside `answers*/` contains an answer inside a `<details>` block, so the mechanism cannot silently regress the next time a gift is authored.
+- change: the narrative scoped the filesystem split into this build; measurement moved it to DONE and narrowed the remaining requirement to a regression guard plus [CXC-FC-GIFT-TIERS].
+- context_for_change:
+  prior_state: "§5 of the design narrative lists the `<details>` fix as a platform-tier bootstrap change belonging in this build's scope."
+  reasoning: "The narrative was written 2026-08-12 and the fix landed the same day at 11:51. Specifying work that is already done wastes a builder's pass and, worse, invites a second implementation of it beside the first."
+  rejected_alternative: "Restating the split as a requirement anyway, on the grounds that a spec should describe the target state. Rejected: this spec is a work order for one build, and an already-satisfied requirement with no guard reads identically to an unimplemented one."
+  invalidating_assumption: "That commit 4bca26e is the whole fix. If a gift store exists outside `bootstrap/dusk-gifts/` — a role-tier gift set under `.claude/agents/`, for instance — the split has not been applied there and the requirement reopens for that store."
+  implication: "Acceptance criterion FC-C17 tests the GUARD and the tier assignment, not the split."
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 4. Memory scoping — the highest-risk content in this build
+
+### [CXC-FC-MEMORY-REQUIRED] Memory MUST be scoped per Intelligence, and today it is not — this is live
+
+- requirement: David, 2026-08-12 — "local claude memory MUST be unique per intelligence/agent def'n." The scope UNIT is the ROLE ([DD-FC-MEMORY-GRAIN]) and "role" means EVERY role in the roster, not only top-level Intelligences ([CXC-FC-ROLE-MEMORY]); the requirement is that memory is never scoped to the REPO.
+- measured-2026-08-12: (measured, not inferred) `python/composeio/ptycore.py:233` carries the comment `cwd: None -> the host's cwd -> THE REPO`. `ptycore.py::project_dir_key` (line 393) documents the consequence exactly — "distinct cwds -> distinct project keys -> transcripts + memory that never co-locate; a SHARED cwd collapses N instances into one key." The child spawned by the Terminal Widget on 2026-08-12 inherited the repo as cwd, so its transcript landed under `~/.claude/projects/-Users-<user>-Dropbox-Maker-composeio/` — the SAME project key as its host. There is one memory store for that key. Host and child are writing the same `MEMORY.md` right now.
+- consequence: the defect is not "two instances share a store". It is that the store is keyed by THE REPO, so every Intelligence that ever runs with the repo as cwd — any role, any purpose — lands in one pile. Fixing the grain to ROLE ([CXC-FC-PROJECT-DIR]) is what makes the sharing deliberate and bounded instead of accidental and unbounded.
+- criticality: foundational
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-ROLE-MEMORY] "Role" means the WHOLE agent roster; store names are DERIVED, never chosen
+
+- requirement: EVERY role in the roster gets a memory store, not only top-level Intelligences. `composeux-render-engineer`, `composeio-expert`, `git-expert` and `defect-investigator` each get one, exactly as `composeux-architect` does.
+- rationale: today every dispatch starts COLD, which is why briefs must re-state hazards those same roles already discovered. Role memory gives a dispatched role continuity ACROSS dispatches, and briefs shrink as the store grows. This is the payoff that makes per-role the right grain rather than merely the cheaper one.
+- requirement: store names are DERIVED, never chosen. A role's name is ratified as the BASENAME OF ITS ROLE DESCRIPTOR ([CXC-TERM-MANIFEST-CHAIN]'s same rule), so the store set is computed from `.claude/agents/*.md` plus the FactLattice agent pool. Measured 2026-08-12: 6 descriptors in `.claude/agents/` and 12 in `factlattice-deployment/agents/`.
+- default: a store is created LAZILY on first write. A role that has never written a fact has no directory, so an empty store and a never-used role are the same observable state and neither needs provisioning.
+- prohibition: no hand-maintained list of stores. A list is a second source of truth beside the descriptor set, and it goes stale the first time a role is added — which is the fork class [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS] names.
+- verification: a test asserts the derived store-name set equals the descriptor basenames on disk, so adding a role descriptor is the ONLY act needed to give that role a store.
+- criticality: high
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-STORE-ACCESS] ONE store, TWO access paths — and cwd CANNOT be the mechanism for a dispatched role
+
+- premise: ⚠ cwd is the lever for a TOP-LEVEL Intelligence and is UNAVAILABLE for a dispatched subagent. Dispatched agents run in worktrees under `~/.cache/claude-worktrees/…` — a DIFFERENT cwd, and an EPHEMERAL one. Role memory keyed by cwd would materialise INSIDE a worktree and be destroyed by a routine prune.
+- evidence: this is [INSIGHT-WORKTREE-IS-NOT-THE-ENVIRONMENT] instance (4) DURABILITY applied to memory — full success reported, deliverable silently gone. That instance is recorded as having NO structural fix, so the hazard is live, not hypothetical, and a cwd-keyed design would walk straight into it.
+- requirement: there is exactly ONE store per role, at `~/compose-instances/<role>/memory/`, outside every worktree and therefore prune-proof. It is reached by TWO ACCESS PATHS: a top-level Intelligence loads it AUTOMATICALLY because its cwd IS the role home; a dispatched subagent addresses it BY PATH, stated in its role descriptor, and reads/writes it with ordinary file tools.
+- prohibition: this MUST be built as ONE store. Same bytes, same location; only the LOADING MECHANISM differs by caller. A builder who reads "two access paths" as "two memory systems" has built the fork this rule exists to prevent — and the two would diverge invisibly, because each caller would only ever see its own.
+- verification: a test asserts a subagent-written fact is visible to the top-level Intelligence of the same role WITHOUT any sync step, and that the path named in the role descriptor resolves to the same directory the top-level load resolves to. One assertion, both directions, or the fork is untested.
+- criticality: foundational
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-RECOVERY-SAME-ROLE] Recovery instantiates the ACTUAL role — there is no surrogate mechanism to build
+
+- requirement: the emergency case needs NO cross-role access mechanism. David, 2026-08-12: "in an emergency, we should instantiate composeux-architect OUTSIDE the console widget." Recovery instantiates the ACTUAL ROLE, merely hosted elsewhere — same role descriptor, same manifest chain, same role home, therefore THE SAME MEMORY by the ordinary mechanism.
+- prohibition: no cross-role read, no borrowing, no surrogate-write attribution invariant. Nothing is standing in for anything, so there is nothing to attribute. A design in which one role reads another's store is FORBIDDEN — it would be solving a problem this reframe removes, and it would introduce an access rule that has to be got right forever.
+- consequence: this composes with [DEC-ICL-UNHARNESSED-RECOVERY-INSTANCE] rather than reopening it. The `recovery-` prefix keeps a recovery instance from ever claiming the canonical identity on axis 2 (INSTANCE ID) while it shares axis 1 (ROLE) completely — which is exactly the separation [CXC-FC-THREE-AXES] exists to make expressible.
+- worked-example: live as this spec was written -- the architect authoring the source narrative was `composeux-architect` running in iTerm, outside the console — precisely this recovery mode, and precisely why [CXC-FC-BASELINE] matters. Under the fix its cwd is `~/compose-instances/composeux-architect/` and it holds the role's memory whether hosted in the widget or not. Today it does not: it shares a project key with the repo, and therefore with its own child.
+- verification: a test spawns the same role under two different hosts with two different instance ids and asserts one resolved memory store and two distinct channel namespaces; a grep guard asserts no code path resolves a memory store for a role other than the caller's own.
+- criticality: high
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-CWD-FORK] The invariant lives in ONE spawn path; the other never learned it
+
+- premise: [INSIGHT-CWD-IS-THE-SCOPE-LEVER] records the fix as "baked into `IntelligenceHost.spawn` (project_dir -> child cwd) so it is never re-discovered per child." That is ONE spawn path. The Terminal Widget is a SECOND spawn path and it defaults `cwd=None`.
+- key-insight: this is why the defect survived a fix. The invariant was not forgotten — it was implemented in one fork and the other fork was written without it, and the comment naming the hazard was sitting in the file the whole time (`ptycore.py:233`). [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS] is the general form.
+- requirement: the two spawn paths MUST de-fork onto ONE seam that derives cwd from the declared project dir. Neither path may accept a defaulted or inherited cwd for a managed instance.
+- verification: a grep guard asserting `pty.fork(` is reachable from exactly one cwd-setting site, plus a CROSS-IMPLEMENTATION test that drives BOTH paths and asserts an identical resolved cwd for the same `(instance_id, role)`. A test that covers only one path re-certifies the fork.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-PROJECT-DIR] The project dir is keyed by ROLE — the reconciliation the builder MUST honour
+
+- premise: David selected per-ROLE memory ([DD-FC-MEMORY-GRAIN]) AND a dedicated per-Intelligence home ([DD-FC-PROJECT-DIR-LAYOUT]). Those conflict as literally stated, because cwd can key only ONE thing: the project key derives from the absolute cwd and determines memory, transcripts and agent-def registration TOGETHER. A dir keyed by instance yields per-INSTANCE memory, which is not what was chosen.
+- resolution: key the project dir by ROLE, not by instance id. `~/compose-instances/composeux-architect/` is the cwd for `architect` AND for `architect-hosted`; `~/compose-instances/composeio-hardware-architect/` is a different key. Instance identity is carried by `INSTANCE_ID` plus the manifest, NEVER by cwd — axis 2 of [CXC-FC-THREE-AXES], which is precisely the axis cwd must not carry.
+- cwd-lever-scope: cwd is the lever for a TOP-LEVEL Intelligence ONLY. A dispatched subagent has an ephemeral worktree cwd and reaches the same store BY PATH, which is why [CXC-FC-STORE-ACCESS] is a requirement of this one and not an elaboration of it. A builder who implements only the cwd half has given the console's Intelligences memory and left every dispatched role cold.
+- requirement: the manifest DECLARES the project dir so it is derived rather than remembered; the shared repo is attached as an ADDITIONAL WORKING DIRECTORY so file access is unaffected; a missing or defaulted role REFUSES rather than falling back to the repo.
+- unaffected: transcripts co-locate but remain distinct files keyed by session uuid; session-pin resolution already globs across project dirs (`ptycore.py:418`); per-role agent-def registration is a bonus, because a role then sees its own agents.
+- affected-shipped-code: ⚠ what DOES change is already-shipped code -- [CXC-FC-HOMES-REKEY].
+- depends-on: [CXC-FC-STORE-ACCESS]
+- criticality: foundational
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-HOMES-REKEY] `[CXC-IH-HOMES]` currently REFUSES what this spec ratifies — re-key it from instance to role
+
+- premise: `intelligence/host/host.py::_enforce_home_isolation` (lines 202-227) enforces "one INSTANCE, one home" and raises `ValueError` when two DISTINCT ids resolve to the same project key: "home co-location: instance {id} resolves to project key {key}, already owned by {owner}." Its error message tells the operator to use an identity-keyed dir, `~/compose-instances/<id>/`.
+- consequence: under [CXC-FC-PROJECT-DIR], `architect` and `architect-hosted` deliberately share `~/compose-instances/composeux-architect/`. The shipped guard would refuse the ratified configuration. This is not a conflict the narrative names; it was found by reading the code the decision lands on.
+- requirement: `_enforce_home_isolation` MUST be re-keyed from INSTANCE to ROLE. The invariant becomes "one ROLE, one home; no two distinct ROLES may share a project key", and the ownership map `_home_by_key` maps project key -> ROLE. Its selftest (`host.py:355` onward) and both error message texts MUST be updated in the same change, and the suggested path in the message MUST become `~/compose-instances/<role>/` so the guidance does not point at the retired layout.
+- prohibition: the guard MUST NOT simply be disabled to let the ratified layout through. A disabled guard is indistinguishable from an absent one, and the co-location it was written to catch — two distinct ROLES sharing a key — remains a real defect.
+- verification: distinct roles sharing a home still raises; the same role's host and hosted child sharing a home does NOT raise; the deprecated `project_dir` alias keeps working (`host.py:106`).
+- criticality: high
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-MEMORY-INDEX-DERIVED] Per-role memory REQUIRES a derived index; without it the build ships a concurrent-write defect
+
+- premise: two live instances of one role now write one store at `~/compose-instances/<role>/memory/`, and under [CXC-FC-ROLE-MEMORY] a dispatched subagent of that role is a third concurrent writer. Memory is ONE FILE PER FACT, so real contention exists only on `MEMORY.md`, the index.
+- requirement: the memory index MUST become DERIVABLE — regenerated by scanning `memory/*.md` frontmatter — rather than hand-maintained. Concurrent writers then touch disjoint files and the index is COMPUTED, so it cannot be corrupted by interleaving.
+- rationale: this is the same define-once move used everywhere else in the platform, and it converts an accepted risk into a non-issue rather than documenting it as a caveat. A build that ships per-role memory WITHOUT the derived index has shipped the concurrent-write defect, and the failure is silent: an interleaved index loses a pointer, and a lost pointer in an automemory index is exactly the class nobody notices because the missing entry never surfaces.
+- verification: a test writes two `memory/*.md` files concurrently and asserts the regenerated index contains BOTH; a second test asserts the index is byte-identical after two regenerations from the same inputs (idempotence); a guard asserts no code path hand-edits `MEMORY.md`.
+- change: this is the mitigation that makes [DD-FC-MEMORY-GRAIN]'s accepted hazard acceptable, and it is a REQUIREMENT of that decision, not an optional companion to it.
+- context_for_change:
+  prior_state: "Memory's index was a hand-maintained `MEMORY.md` listing one line per memory file, written by whichever instance added the fact."
+  reasoning: "Hand-maintenance is safe with one writer and corrupting with two. Per-role scoping makes two writers the NORMAL case rather than the exceptional one, so the mechanism has to change with the grain."
+  rejected_alternative: "Locking `MEMORY.md`. Rejected: a lock serializes writers that have no reason to contend — they are adding disjoint facts — and a lock held by a crashed instance is a new failure mode with no owner."
+  invalidating_assumption: "That memory remains one file per fact. If the store ever consolidates facts INTO the index, contention moves onto content and derivation alone stops being sufficient."
+  implication: "The index is regenerable from the filesystem at any time, so a corrupted or deleted index is a recoverable state rather than a data loss."
+- criticality: high
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-DEFORK] One seam, covered by a cross-implementation test
+
+- requirement: the project-dir derivation MUST exist in exactly ONE function that both spawn paths call. Per [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS], the invariant MUST be spec'd and covered by a cross-implementation test rather than patched in one place.
+- verification: `project_dir_for(role)` (or equivalent) has exactly one definition site; a parametrised test drives `IntelligenceHost.spawn` and the Terminal Widget's spawn with the same `(instance_id, role)` and asserts identical resolved cwd, identical project key, and that the key is NOT the repo's.
+- consequence: without this test the fix is a patch. The 2026-08-12 defect exists because one path was fixed and the fix was never made unforkable, so a per-path test would have passed on the fixed path and proved nothing about the other.
+- depends-on: [CXC-FC-CWD-FORK]
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 5. The pane is a two-mode uber-widget
+
+### [CXC-FC-PANE-MODES] ENGAGE and CONFIGURE
+
+- requirement: the collaboration uber-widget gains an engage/configure toggle (David's UX call, 2026-08-12). ENGAGE shows the collaboration elements — conversation thread, composer, link health, the Terminal Widget for THIS instance, its telemetry. CONFIGURE shows this agent's configuration widgets and current settings — its role manifest, its bootstrap set, its memory scope, notification rules, permission posture.
+- default: a pane opens in ENGAGE. The toggle is per-pane state, never global: two panes may be in different modes simultaneously, because the reason to configure one Intelligence is rarely a reason to configure the other.
+- requirement: a mode control MUST render its SELECTED state distinctly from its unselected state. Ratified 2026-08-12 after adversarial QA: without this clause the toggle's affordance is UNFALSIFIABLE — a build can satisfy every other word of this node with two identical labels, and did. The first implementation bound the chips' `background` to a mode expression and the binding was DISCARDED IN SILENCE (`background` was absent from BINDABLE_ATTRS), so the chips rendered as bare identical text, the scene parsed clean and every test passed.
+- verification: machine — a render test asserts the selected and unselected controls differ in a rendered attribute, not merely that a mode namespace is declared. Glass — David can tell which mode a pane is in WITHOUT clicking.
+- see-also: [CXC-FC-BIND-NO-SILENT-DROP]
+- constraint: both modes bind from the SAME `(instance_id, role)` params. The configure mode reads `intelligence/<id>/config/*`, which is already per-id today.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-BIND-NO-SILENT-DROP] A binding the engine cannot apply must REFUSE, never fall through
+
+- premise: (found by adversarial QA, 2026-08-12) `background: {expr: ...}` on the pane's mode chips resolved to NOTHING. `background` was not in `bindings.py::BINDABLE_ATTRS`, so `extract_bindings` skipped the key, the dict then failed the colour parse and became `None`, and no warning was emitted anywhere. The scene parsed clean, the suite was green, and the only available evidence was a human noticing an affordance that could not be selected.
+- requirement: an attribute carrying a binding site (`expr:` / `namespace:`) that the engine cannot bind MUST raise at parse time, naming the attribute and what IS bindable. Attributes whose binding-shaped dict is consumed by a DIFFERENT mechanism MUST be enumerated in an explicit registry naming each consumer, so that an unregistered attribute is the loud case.
+- rationale: a silently dropped binding is this platform's recurring failure class and it is worse than a crash, because the surface still renders — it renders a state the system is not in. A refusal converts an invisible authoring error into a load-time stop.
+- prohibition: the registry MUST NOT be a pattern match over "looks handled". A regex would re-open the silence it closes; each exemption names its consumer or it is not an exemption.
+- criticality: high
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-SPLIT-RULE] The splitting rule, which is also the design test
+
+- rule: any dial whose correct value could DIFFER between two Intelligences belongs to the PANE; anything about the console itself, or shared by all Intelligences, stays in the console's CONFIG TAB.
+- rationale: this is not a cosmetic reorganisation. Today's tab mixes agent-specific and console dials BECAUSE there has only ever been one agent, so the distinction cost nothing. The rule maps exactly onto [CXC-FC-TIERS] — the tab holds {console-self + PLATFORM}, the pane holds {ROLE + INSTANCE}.
+- application: a builder unsure where a dial belongs applies the rule literally by naming a second Intelligence and asking whether the value could differ. If it could, it is a pane dial.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-CONFIG-TAB] The console config tab DE-SCOPES
+
+- requirement: the existing Intelligence Console configuration tab MUST de-scope to exactly two things. CONSOLE-SELF: heartbeat, retention, appearance, agents, skills, which panes are visible. PLATFORM-tier bootstrap: dusk gifts, collaboration and design principles, the wake ritual.
+- requirement: every remaining dial MUST move to the pane. `intelligence/<id>/config/*` is ALREADY per-id — it is the TAB that assumes one, so this is a re-binding of existing surfaces, not new persistence.
+- verification: no widget in the config tab binds a topic containing a literal instance id; every pane-tier dial round-trips through `intelligence/<id>/config/*` for the pane's own id.
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 6. The four data-layer singletons
+
+### [CXC-FC-S1-BRIDGES] N channel bridges from the declared instance list
+
+- premise: `data_sources.py::build_console_sources` appends exactly one `channel_bridge` (line 508) steered by a single `chat_id`. This is why, when the console's single bridge was pointed at the hosted child on 2026-08-12, the HOST lost its bus voice entirely — not a pane change, a TRANSPORT change.
+- requirement: the console MUST start ONE bridge per declared instance, each with `--id <instance_id>`.
+- evidence: the mechanism is already correct -- the flock is keyed `channel-bridge-<id>` (`channel_bridge.py:192-212`, lock file `composeio-channel-bridge-<id>.lock`), and the client id is the same stable non-PID string. Distinct ids provably cannot contend; the mechanism was simply never instantiated more than once.
+- verification: with two instances declared, two bridges run, two distinct lock files exist, both `intelligence/<id>/out` streams reach their panes, and neither instance's channel goes quiet when the other is added.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-S2-TELEMETRY] N telemetry publishers, and a transcript pin that can be RE-resolved
+
+- premise: one `self_publisher` / `transcript_publisher` / `deliverable_monitor` set exists (`data_sources.py:484-495`), all pinned to a single `intelligence_id`, and `resolve_session_jsonl` (line 152) runs ONCE, at console boot, for one session.
+- requirement: the telemetry set MUST become per-instance, and the transcript pin MUST become RE-RESOLVABLE at runtime rather than boot-once.
+- rationale-staleness-twin: the second half of the requirement -- a re-host leaves a long-running console pinned to a dead transcript. Observed: a console up 3 days pinned to a transcript dead for 2, rendering perfectly with every gauge frozen. A frozen gauge that renders is worse than a missing one, because the surface reports a state the system is not in.
+- requirement: a pin that has gone stale MUST be visible on the glass, not merely re-resolved silently. Re-resolution fixes the data; the visible marker is what prevents the same class recurring unnoticed when re-resolution itself fails.
+- verification: two instances publish to disjoint `self/<id>/*` and `thread/<id>/*` namespaces; a test kills and re-hosts one instance and asserts the console re-pins to the NEW transcript within a bounded interval and that the stale interval was visible.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-S3-ROSTER] ONE roster source — a single computation, never per-pane discovery
+
+- requirement: exactly ONE subscriber to `intelligence/+/channel/alive` applies a liveness timeout and publishes `fleet/roster` = `[{id, role, pid, instance, last_seen, hosted}]`.
+- prohibition: if each pane did its own wildcard discovery that is fork-divergence BY CONSTRUCTION — N implementations of one liveness rule, guaranteed to disagree under load. One computation, one topic, N readers.
+- key-insight: the heartbeat already carries `instance`, the session uuid, which is the key to that agent's transcript (`intelligence/channel/channel.mjs:243-245` publishes `{ts, id, pid, start, instance, delivery, unacked}`). So HOSTED CHILDREN AND INDEPENDENTLY-LAUNCHED PEERS BECOME THE SAME CODE PATH — the console need not have spawned something in order to instrument it.
+- see-also: [CXC-FC-HOST-AS-PANE]
+- constraint: (measured) `role` and `hosted` are NOT on the heartbeat. The roster source MUST resolve `role` through the manifest chain the id already resolves through and MUST derive `hosted` from the host's own roster; when either is unresolvable it MUST publish an explicit `unknown` rather than a guess, because a guessed role keys nothing and a guessed `hosted` flag mislabels a peer as a child.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-S4-BBOX] `_app/console/bbox` is a hardcoded constant; it becomes `_app/<app_id>/bbox`
+
+- premise: (verified) `python/composeio/render/engine/runtime.py:79` reads `CONSOLE_BBOX_NS = "_app/console/bbox"`. Every scene the engine launches publishes its geometry to a topic named `console`. Measured 2026-08-12: FOUR apps clobbering one topic at 2 Hz, so [DEC-LAUNCH-PLACEMENT]'s consumer reads whichever published last.
+- requirement: the namespace MUST become `_app/<app_id>/bbox`, derived from the running app's id.
+- note: this is why it is a small change -- the runtime ALREADY reads an override, `COMPOSEIO_CONSOLE_BBOX_NS` (`runtime.py:315`), and already gates publication on a launched-child sentinel (`runtime.py:317`). The seam exists; only the DEFAULT is a constant. The fix is to derive the default, not to build a new mechanism.
+- verification: two apps running simultaneously publish to two distinct topics; a placement consumer subscribed to one app's bbox is unaffected by the other's publish rate; the string `_app/console/bbox` appears nowhere as a hardcoded default.
+- dangling-reference-note: [DEC-LAUNCH-PLACEMENT] likewise has NO node in the decision graph — it is cited at `runtime.py:64`, `runtime.py:308` and once in [SPEC:CXC-TERM], where it already dangles. The edge is authored so the second citation does not make the gap look smaller than it is.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-HOST-AS-PANE] The console's own Intelligence is an ORDINARY roster entry
+
+- requirement: the console's own Intelligence MUST become an ordinary roster entry rather than the special case that owns `self/*`. No pane, no data source and no widget may branch on "is this the host".
+- rationale: this is what actually CLOSES [INSIGHT-SELF-IS-NOT-YET-A-PEER] — not "the console shows N others" but "the console has no privileged self". A privileged self is a second code path for one concept, and it is the path that produced the chimera David observed on 2026-08-12: the chat pane showing the CHILD while every gauge showed the HOST, with nothing on the glass saying which was which.
+- verification: a grep guard that no data source or widget special-cases the host id; the console's own pane is instantiated by the same `{use: intelligence_pane, ...}` line as every other.
+- see-also: [CXC-FC-IDENTITY-ON-GLASS]
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-IDENTITY-ON-GLASS] Every pane names its instance and role VISIBLY — a hard requirement
+
+- requirement: every pane MUST display its `instance_id` and its `role` visibly at all times. This is not polish and MUST NOT be deferred to a later slice.
+- rationale: a surface that renders two Intelligences without distinguishing them is the report-a-state-the-system-is-not-in failure in UX form. The 2026-08-12 chimera is the worked example — every element rendered correctly and the composition was a lie.
+- verification: machine — a render test asserts both strings are present and non-empty in every pane's capture. Glass — David looks at a two-pane console and can say which Intelligence he is talking to WITHOUT clicking anything. The human gate is mandatory and non-delegable, because a test asserting a string is present cannot see that it is illegible, truncated, or attached to the wrong pane.
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 7. Ordering
+
+### [CXC-FC-ORDER] The author's ordering — NOT a delivery contract
+
+- constraint: under [PRINCIPLE-ONE-PASS] this ships in ONE pass if the spec is complete. Slice numbering is the author's ordering, never a delivery contract, and a builder who ships slice 1 and stops has shipped a console that renders two panes over one memory store.
+- ordering: (1) `instance_id` to widget/param scope plus the `intelligence_pane` composite — PROVE WITH TWO INSTANCES IN ONE SCENE; (2) per-instance cwd/project dir and the de-fork of both spawn paths; (3) N channel bridges from declared instances; (4) roster source plus per-instance telemetry publishers; (5) host-as-a-pane and `_app/<app_id>/bbox`; (6) the engage/configure toggle and the config-tab de-scope; (7) discovery drives pane visibility — [CAP-BINDABLE-ORDER] is BUILT AND TESTED (9 passing tests), so this is a binding, not new layout code.
+- note: item 7 is the ADDITIVE step explicitly outside this build's acceptance ([DD-FC-PANE-SOURCE]). It is listed because knowing the next step is what keeps step 1 from being built in a way that forecloses it.
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 8. Decision points — ALL RATIFIED 2026-08-12, all CLOSED
+
+### [DD-FC-MEMORY-GRAIN] Memory is scoped PER ROLE
+
+- decision: is a memory store scoped per ROLE (all instances of one agent def share it) or per INSTANCE (each live instance has its own)?
+- chosen: PER ROLE. All instances of one role share a memory store; a respawned child inherits the role's accumulated pointers.
+- sharpened-same-day: "role" means EVERY role in the roster, not only top-level Intelligences, and a role's name is the BASENAME OF ITS ROLE DESCRIPTOR so the store set is derived rather than maintained ([CXC-FC-ROLE-MEMORY]). The mechanism is ONE store per role with two access paths, because cwd is unavailable to a worktree-dispatched subagent ([CXC-FC-STORE-ACCESS]).
+- alternatives: per INSTANCE — the architect's lean, argued from [PRINCIPLE-STRUCTURE-SURVIVES-THE-BOUNDARY]'s memory-rule note that automemory "is specific to THIS instance, whereas every other home is shared to disk".
+- rationale: David's call, 2026-08-12, taken against the architect's lean. A respawned child that inherits nothing re-learns the same pointers every spawn, which is the cost per-instance scoping actually charges. The mechanism is identical either way (a cwd per unit); only the granularity differs.
+- invalidating_assumption: that memory remains one file per fact with a derivable index. If contention ever moves onto content rather than the index, the shared store stops being safe and the grain reopens.
+- consequence: the accepted hazard is two live writers on one store, and [CXC-FC-MEMORY-INDEX-DERIVED] is its REQUIRED mitigation, not an optional companion.
+- status: decided
+- lifecycle-position: decided
+- decided-in-session: 2026-08-12
+- recoverability: PREFERENCE
+- part-of: [SPEC:CXC-FLEET]
+
+### [DD-FC-PANE-SOURCE] Panes are DECLARED, not discovered
+
+- decision: does the scene DECLARE which Intelligences get panes, or does the roster DISCOVER them and drive pane visibility?
+- chosen: DECLARED. The scene names which Intelligences get panes.
+- alternatives: roster-driven discovery, which [CAP-BINDABLE-ORDER] already makes mechanically possible.
+- rationale: deterministic, testable, goldens stable, no surprise windows. Roster-driven discovery is an ADDITIVE second step and is explicitly NOT in this build's acceptance.
+- invalidating_assumption: that the declared set stays small enough to maintain by hand. A fleet large enough that declaring panes is clerical work reopens this in favour of discovery.
+- consequence: acceptance criterion FC-C1 is a TWO-INSTANCE proof from a declared scene; nothing in this build may depend on discovery having landed.
+- status: decided
+- lifecycle-position: decided
+- decided-in-session: 2026-08-12
+- recoverability: PREFERENCE
+- part-of: [SPEC:CXC-FLEET]
+
+### [DD-FC-PROJECT-DIR-LAYOUT] `~/compose-instances/<role>/`, outside the repo
+
+- decision: where does an Intelligence's project dir live, and what is it keyed by?
+- chosen: `~/compose-instances/<role>/`, OUTSIDE the repo, with the shared repo attached as an additional working directory.
+- alternatives: (a) the repo itself — the current accidental state, which collapses every Intelligence into one project key; (b) `~/compose-instances/<id>/`, the per-INSTANCE layout the shipped `[CXC-IH-HOMES]` guard suggests today.
+- rationale: David's call, 2026-08-12. Outside the repo so the project key is stable under checkout moves and so a fleet does not pollute the working tree. Keyed by ROLE because cwd keys memory, transcripts and agent-def registration TOGETHER, and per-role memory was chosen — see the reconciliation at [CXC-FC-PROJECT-DIR].
+- invalidating_assumption: that the harness continues to key the project dir off the absolute cwd. If the harness ever exposed a direct project-key or memory-scope setting, the cwd would stop being the lever and instance identity could be re-separated from role.
+- consequence: option (b) is not merely rejected — it is the CURRENTLY SHIPPED guard, so this decision forces [CXC-FC-HOMES-REKEY].
+- status: decided
+- lifecycle-position: decided
+- decided-in-session: 2026-08-12
+- recoverability: PREFERENCE
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 9. Acceptance
+
+### [CXC-FC-ACCEPT-INSTANCING] FC-C1..FC-C3 — the composite and the instancing unit
+
+- definition: two-tier by construction — a machine signal is necessary and, for any surface a human perceives, never sufficient ([PRINCIPLE-MACHINE-GREEN-IS-NOT-GLASS-GREEN]).
+
+| ID | Criterion | when / then | verify.machine | verify.human (glass) |
+|---|---|---|---|---|
+| FC-C1 | Two Intelligences render in one scene from ONE composite | WHEN a scene declares two instances THEN both panes expand with complete, non-colliding bindings | a render test loads a two-pane scene and asserts two disjoint sets of channel/telemetry namespaces, two distinct id roots, and zero duplicate widget ids | **David sees two Intelligences in one console and talks to each.** Mandatory, non-delegable |
+| FC-C2 | No rasterising widget class was added for the pane | WHEN the slice lands THEN the pane is a `components:` entry only | a grep guard asserting no new engine Widget subclass is registered for the pane; the pane's definition is a `.compose.yaml` component | — |
+| FC-C3 | The instance binding lives at PARAM scope, in one place | WHEN the scene is parsed THEN no document-level `chat_id` variable exists and every channel site derives from the pane's param | `grep -c 'chat_id' intelligence/console/console.compose.yaml` returns 0 for the `variables:` block; a test asserts `start-console-daemons.sh` reads the declared instance list | — |
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-ACCEPT-MEMORY] FC-C4..FC-C7 — memory scoping, the highest-risk criteria
+
+- warning: FC-C5 is stated in BOTH directions on purpose. "Host and child resolve to distinct memory stores" is TRUE for distinct roles and FALSE for `architect`/`architect-hosted`, which share a role and therefore share a store BY DESIGN under [DD-FC-MEMORY-GRAIN]. A test asserting distinctness for the same-role pair would encode per-INSTANCE memory and contradict the ratified decision.
+
+| ID | Criterion | when / then | verify.machine | verify.human (glass) |
+|---|---|---|---|---|
+| FC-C4 | No spawn path can inherit a cwd | WHEN either spawn path runs for a managed instance THEN cwd is the declared project dir, never None and never the repo | a cross-implementation test drives `IntelligenceHost.spawn` AND the Terminal Widget with the same `(instance_id, role)` and asserts identical resolved cwd; a grep guard that `pty.fork(` is reachable from one cwd-setting site ([CXC-FC-DEFORK]) | — |
+| FC-C5 | The project key is keyed by ROLE, and never by the repo | WHEN two DISTINCT roles run THEN `project_dir_key` differs; WHEN one role's host and hosted child run THEN it is the SAME key; in NO case is it the repo's key | three assertions in one test: distinct-role keys differ; same-role keys match; neither equals `project_dir_key(REPO_ROOT)` | David opens `~/.claude/projects/` and sees a dir per role, and no fleet transcript under the repo key |
+| FC-C6 | The shipped isolation guard was RE-KEYED, not disabled | WHEN two distinct ROLES claim one home THEN `_enforce_home_isolation` still raises; WHEN one role's two instances share a home THEN it does not | the re-keyed selftest at `host.py:355` onward, asserting both directions and the updated message text naming `~/compose-instances/<role>/` ([CXC-FC-HOMES-REKEY]) | — |
+| FC-C7 | The memory index is DERIVED, so concurrent writers cannot corrupt it | WHEN two instances of one role add facts concurrently THEN the regenerated index contains both | a concurrency test asserting both entries survive; an idempotence test asserting two regenerations are byte-identical; a guard asserting no code path hand-edits `MEMORY.md` ([CXC-FC-MEMORY-INDEX-DERIVED]) | David reads the regenerated index and it names every memory file present |
+| FC-C18 | EVERY role in the roster has a store, and the store set is DERIVED | WHEN a role descriptor is added THEN that role has a store with no other act | a test asserting the derived store-name set equals the descriptor basenames under `.claude/agents/` plus the FactLattice pool; a lazy-creation test asserting a never-written role has no directory and errors nowhere ([CXC-FC-ROLE-MEMORY]) | David adds an agent def and its first dispatch can write a fact |
+| FC-C19 | ONE store, two access paths — a dispatched role's memory SURVIVES a worktree prune | WHEN a dispatched subagent writes a fact from a worktree THEN the top-level Intelligence of that role reads it with no sync step, and a prune destroys nothing | a test asserting the descriptor-stated path and the top-level load resolve to the SAME directory; a prune test asserting the fact survives; a guard asserting no store path resolves under `~/.cache/claude-worktrees/` ([CXC-FC-STORE-ACCESS]) | **David dispatches a role twice and the second dispatch already knows what the first learned.** Mandatory, non-delegable |
+| FC-C20 | Recovery is the same role, with no surrogate machinery | WHEN `composeux-architect` is instantiated outside the console under a `recovery-` instance id THEN it resolves the SAME memory store and a DISTINCT channel namespace | a test spawning one role under two hosts with two instance ids, asserting one store and two namespaces; a grep guard that no code path resolves a store for a role other than the caller's own ([CXC-FC-RECOVERY-SAME-ROLE]) | David starts a recovery instance in iTerm and it remembers what the console-hosted one learned |
+- note: FC-C18..FC-C20 were added after the narrative's [FC-ROLE-MEMORY] and [FC-RECOVERY-IS-THE-SAME-ROLE] rulings (David, 2026-08-12). They are appended rather than renumbered so an id already quoted elsewhere keeps meaning what it meant.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-ACCEPT-DATALAYER] FC-C8..FC-C13 — the four singletons, host-as-a-pane, identity
+
+| ID | Criterion | when / then | verify.machine | verify.human (glass) |
+|---|---|---|---|---|
+| FC-C8 | N bridges run and no instance loses its voice | WHEN two instances are declared THEN two bridges hold two distinct flocks and both channels stay live | a test asserting two `composeio-channel-bridge-<id>.lock` files and traffic on both `intelligence/<id>/out` ([CXC-FC-S1-BRIDGES]) | David adds a second Intelligence and his Architect keeps answering |
+| FC-C9 | Telemetry is per-instance and the transcript pin is RE-resolvable | WHEN an instance is re-hosted THEN the console re-pins to the new transcript and the stale interval was visible | disjoint `self/<id>/*` namespaces per instance; a re-host test asserting re-pin within a bounded interval and a visible stale marker ([CXC-FC-S2-TELEMETRY]) | David re-hosts an Intelligence and its gauges resume instead of freezing |
+| FC-C10 | ONE roster computation, not one per pane | WHEN the console runs THEN exactly one subscriber to `intelligence/+/channel/alive` exists and `fleet/roster` is published once | a grep guard counting wildcard-alive subscriptions == 1; a test asserting an independently-launched peer (never spawned by the console) appears in the roster ([CXC-FC-S3-ROSTER]) | David sees an Intelligence he started himself listed in the console |
+| FC-C11 | App geometry no longer collides | WHEN two apps run THEN each publishes to `_app/<app_id>/bbox` | a two-app test asserting two distinct topics; a grep guard that `_app/console/bbox` is not a hardcoded default ([CXC-FC-S4-BBOX]) | placement of a launched window is correct with several apps up |
+| FC-C12 | The console has no privileged self | WHEN the host's own pane is instantiated THEN it uses the same composite call as every other | a grep guard that no data source or widget branches on the host id ([CXC-FC-HOST-AS-PANE]) | David cannot tell from the surface which pane is "the console's own" |
+| FC-C13 | Identity is on the glass | WHEN any pane renders THEN its instance id and role are visible | a render test asserting both strings present and non-empty in every pane capture | **David looks at a two-pane console and knows which Intelligence he is talking to without clicking.** Mandatory, non-delegable |
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-ACCEPT-GUARDS] FC-C14..FC-C17 — the surface, and the machine-checkable no-second-path guards
+
+| ID | Criterion | when / then | verify.machine | verify.human (glass) |
+|---|---|---|---|---|
+| FC-C14 | The pane toggles and the tab de-scopes | WHEN a pane is in CONFIGURE THEN its dials bind `intelligence/<id>/config/*` for ITS id, and the console tab holds only console-self plus PLATFORM dials | a test asserting no config-tab widget binds a literal instance id, and that per-pane mode state is independent ([CXC-FC-CONFIG-TAB]) | David configures one Intelligence without touching the other's settings |
+| FC-C15 | No second discovery path, slicer or transport table was introduced | WHEN the guards run THEN each of the three has exactly one implementation site | three grep guards, each asserting a count of 1: subscribers to `intelligence/+/channel/alive`; the transcript/session slicing implementation; the bus transport table. A count of 0 FAILS as loudly as a count of 2, so a renamed site cannot pass by disappearing ([CXC-FC-ANTI]) | — |
+| FC-C16 | Nothing regresses | WHEN the slice lands THEN every capture for a scene this build did not TOUCH is byte-identical, and no test regresses. The CONSOLE's own capture necessarily changes — the console gaining panes IS the build — and is regenerated ONLY under a glass review | the render capture-diff green for untouched scenes; `pytest intelligence/` plus the render suite green with no unexplained drop in collected count; the expected-drift set is ENUMERATED with a cause per file (nondeterministic vs per-checkout are different defects and must not share a label) | **David reviews the regenerated console capture and accepts it.** Mandatory — a regenerated golden nobody looked at is a golden that certifies whatever it happens to contain |
+| FC-C17 | The withheld answer stays withheld, and every gift declares a tier | WHEN a gift file is read whole THEN no answer is returned with it, and every gift resolves to exactly one tier | a guard asserting no `<details>`-withheld answer outside `answers*/`; a test asserting every file under `bootstrap/dusk-gifts/` declares a tier ([CXC-FC-GIFT-MECHANISM], [CXC-FC-GIFT-TIERS]) | a fresh instance reasons a problem through before it can see the answer |
+- constraint: FC-C1, FC-C13 and FC-C5's glass leg CANNOT be waived by a green machine run. Every mechanism here can pass in isolation while the console is unusable for a reason only a human at the glass will see — two panes that render identically, a pane labelled with the wrong id, a gauge attached to the other Intelligence.
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## 10. Anti-patterns — forbidden BY NAME
+
+### [CXC-FC-ANTI] Five things this build must not do, and why each
+
+- forbidden: TWO CONSOLE INSTANCES -- rejected by [CXC-ICD-D13], and independently by the singletons themselves. Every one of them would fire at once — competing per-`<id>` flocks (there is a `yielding` counter for exactly this), duplicate daemons, N full data layers on one machine. It is forking the app to obtain a variation the composition model already expresses, which [PRINCIPLE-NARROW-WAIST] forbids.
+- forbidden: A NEW RASTERISING WIDGET CLASS FOR THE PANE -- [CXC-FC-COMPOSITE]. The composite mechanism is built, tested and already used by eight widgets; a class here duplicates a working mechanism and puts the pane outside the authoring surface every other widget lives in.
+- forbidden: A SECOND SLICER, A SECOND DISCOVERY PATH OR A SECOND TRANSPORT TABLE -- reuse by reference. Each is a computation with one right answer, so a second implementation is a guaranteed future disagreement whose symptom appears far from its cause ([INSIGHT-FORK-DIVERGENCE-IS-A-CLASS]). Guarded machine-checkably by FC-C15.
+- forbidden: DECIDING TABS-VS-WINDOWS-VS-RAIL UP FRONT -- once the pane is instantiable, presentation is scene authoring, and David has explicitly deferred it. Both can exist from the same widget, so choosing now spends a decision to buy nothing.
+- forbidden: SPECIFYING THE TERMINAL WIDGET AS A BACKUP PATH -- [CXC-FC-BASELINE]. A surface specced as a fallback is under-built, and an under-built keyboard path is how the console stays dependent on iTerm.
+- forbidden: A SURROGATE OR CROSS-ROLE MEMORY-ACCESS MECHANISM -- [CXC-FC-RECOVERY-SAME-ROLE]. Recovery instantiates the ACTUAL role, so no role ever needs to read another's store; building the mechanism anyway installs an access rule that must be got right forever to solve a problem that no longer exists.
+- forbidden: A SECOND MEMORY SYSTEM FOR DISPATCHED ROLES -- [CXC-FC-STORE-ACCESS]. Two access paths reach ONE store; two stores would diverge invisibly, because each caller only ever sees its own.
+- see-also: [CXC-FC-COMPOSITE], [CXC-FC-BASELINE], [CXC-FC-RECOVERY-SAME-ROLE], [CXC-FC-STORE-ACCESS]
+- reason-note: each prohibition above is enforced by the node named in its value; this property is the traversable form of that list, because a `forbidden:` value is descriptive and mints no edge.
+- part-of: [SPEC:CXC-FLEET]
+
+### [CXC-FC-OUT] Explicitly out of scope
+
+- out: roster-DRIVEN pane visibility ([DD-FC-PANE-SOURCE] — additive, and deliberately outside acceptance).
+- out: the presentation choice — tabs, windows or rail ([CXC-FC-ANTI]).
+- out: the Terminal Widget's own contract, which is [SPEC:CXC-TERM]'s and is consumed here unchanged.
+- out: any parser or expander change. If the pane cannot be authored with today's `expand_components`, that is a finding to report, not a change to make inside this build ([CXC-FC-COMPOSITE]).
+- out: the ordered-container mechanism itself, which is built and tested ([CAP-BINDABLE-ORDER]).
+- part-of: [SPEC:CXC-FLEET]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-FLEET] REALIZES [CXC-ICD-D13]
+- [SPEC:CXC-FLEET] DEPENDS_ON [SPEC:CXC-TERM]
+- [SPEC:CXC-FLEET] DEPENDS_ON [SPEC:CXC-INTELLIGENCE-CONSOLE]
+- [SPEC:CXC-FLEET] USES [SPEC:CXC-PRIM]
+- [SPEC:CXC-FLEET] USES [SPEC:CXC-ORDER]
+- [SPEC:CXC-FLEET] RELATED_TO [SPEC:CXC-IC-LAUNCH]
+- [CXC-FC-THESIS] CLOSES [INSIGHT-SELF-IS-NOT-YET-A-PEER]
+- [CXC-FC-THESIS] USES [CAP-BINDABLE-ORDER]
+- [CXC-FC-SHAPE] UPHOLDS [PRINCIPLE-ONE-PASS]
+- [CXC-FC-BASELINE] DEPENDS_ON [DEC-ICL-UNHARNESSED-RECOVERY-INSTANCE]
+- [CXC-FC-BASELINE] RELATED_TO [CXC-ICL-CLI-UNSUPPORTED]
+- [CXC-FC-BASELINE] RELATED_TO [CXC-TERM-SUPERSEDES-55]
+- [CXC-FC-THREE-AXES] RELATED_TO [DEC-ICL-UNHARNESSED-RECOVERY-INSTANCE]
+- [CXC-FC-UNIT] DEPENDS_ON [CXC-FC-THREE-AXES]
+- [CXC-FC-UNIT] DEPENDS_ON [CXC-TERM-MANIFEST-CHAIN]
+- [CXC-FC-BINDINGS] DEPENDS_ON [CXC-FC-UNIT]
+- [CXC-FC-COMPOSITE] USES [SPEC:CXC-PRIM]
+- [CXC-FC-COMPOSITE] UPHOLDS [PRINCIPLE-NARROW-WAIST]
+- [CXC-FC-VAR-SCOPE] DEPENDS_ON [CXC-BIND-VARS]
+- [CXC-FC-VAR-SCOPE] SUPERSEDES [DEC-CONSOLE-CHAT-ID-PARAM]
+- [CXC-FC-TIERS] EXEMPLIFIES [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS]
+- [CXC-FC-GIFT-TIERS] DEPENDS_ON [CXC-FC-TIERS]
+- [CXC-FC-GIFT-MECHANISM] RELATED_TO [SBR-TRUST]
+- [CXC-FC-MEMORY-REQUIRED] DEPENDS_ON [INSIGHT-CWD-IS-THE-SCOPE-LEVER]
+- [CXC-FC-CWD-FORK] EXEMPLIFIES [INSIGHT-FORK-DIVERGENCE-IS-A-CLASS]
+- [CXC-FC-PROJECT-DIR] DEPENDS_ON [DD-FC-PROJECT-DIR-LAYOUT]
+- [CXC-FC-PROJECT-DIR] DEPENDS_ON [DD-FC-MEMORY-GRAIN]
+- [CXC-FC-HOMES-REKEY] DEPENDS_ON [CXC-FC-PROJECT-DIR]
+- [CXC-FC-HOMES-REKEY] RELATED_TO [CXC-IH-HOMES]
+- [CXC-FC-ROLE-MEMORY] DEPENDS_ON [DD-FC-MEMORY-GRAIN]
+- [CXC-FC-ROLE-MEMORY] DEPENDS_ON [CXC-FC-THREE-AXES]
+- [CXC-FC-STORE-ACCESS] MITIGATES [INSIGHT-WORKTREE-IS-NOT-THE-ENVIRONMENT]
+- [CXC-FC-STORE-ACCESS] DEPENDS_ON [CXC-FC-ROLE-MEMORY]
+- [CXC-FC-RECOVERY-SAME-ROLE] DEPENDS_ON [DEC-ICL-UNHARNESSED-RECOVERY-INSTANCE]
+- [CXC-FC-RECOVERY-SAME-ROLE] DEPENDS_ON [CXC-FC-THREE-AXES]
+- [CXC-FC-RECOVERY-SAME-ROLE] RELATED_TO [CXC-FC-BASELINE]
+- [CXC-FC-MEMORY-INDEX-DERIVED] MITIGATES [DD-FC-MEMORY-GRAIN]
+- [CXC-FC-DEFORK] UPHOLDS [CXC-FC-MEMORY-REQUIRED]
+- [CXC-FC-PANE-MODES] DEPENDS_ON [CXC-FC-COMPOSITE]
+- [CXC-FC-PANE-MODES] DEPENDS_ON [CXC-FC-BIND-NO-SILENT-DROP]
+- [CXC-FC-BIND-NO-SILENT-DROP] UPHOLDS [PRINCIPLE-MACHINE-GREEN-IS-NOT-GLASS-GREEN]
+- [CXC-FC-SPLIT-RULE] DEPENDS_ON [CXC-FC-TIERS]
+- [CXC-FC-CONFIG-TAB] DEPENDS_ON [CXC-FC-SPLIT-RULE]
+- [CXC-FC-S1-BRIDGES] DEPENDS_ON [CXC-FC-BINDINGS]
+- [CXC-FC-S2-TELEMETRY] DEPENDS_ON [CXC-FC-BINDINGS]
+- [CXC-FC-S3-ROSTER] DEPENDS_ON [CXC-IC-CHANNEL-INSTANCE]
+- [CXC-FC-S4-BBOX] RELATED_TO [DEC-LAUNCH-PLACEMENT]
+- [CXC-FC-HOST-AS-PANE] CLOSES [INSIGHT-SELF-IS-NOT-YET-A-PEER]
+- [CXC-FC-IDENTITY-ON-GLASS] UPHOLDS [PRINCIPLE-MACHINE-GREEN-IS-NOT-GLASS-GREEN]
+- [CXC-FC-ORDER] UPHOLDS [PRINCIPLE-ONE-PASS]
+- [DD-FC-MEMORY-GRAIN] DOCUMENTS [CXC-FC-PROJECT-DIR]
+- [DD-FC-PANE-SOURCE] DOCUMENTS [CXC-FC-ORDER]
+- [DD-FC-PROJECT-DIR-LAYOUT] DOCUMENTS [CXC-FC-HOMES-REKEY]
+- [CXC-FC-ACCEPT-INSTANCING] RELATED_TO [CXC-FC-COMPOSITE]
+- [CXC-FC-ACCEPT-MEMORY] RELATED_TO [CXC-FC-MEMORY-INDEX-DERIVED]
+- [CXC-FC-ACCEPT-DATALAYER] RELATED_TO [CXC-FC-S3-ROSTER]
+- [CXC-FC-ACCEPT-GUARDS] UPHOLDS [CXC-FC-ANTI]
+- [CXC-FC-ANTI] UPHOLDS [PRINCIPLE-NARROW-WAIST]
+- [CXC-FC-OUT] RELATED_TO [DD-FC-PANE-SOURCE]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-08-12
+**Status**: Draft — every decision point ([DD-FC-MEMORY-GRAIN], [DD-FC-PANE-SOURCE], [DD-FC-PROJECT-DIR-LAYOUT]) is RATIFIED and CLOSED, so nothing here blocks dispatch under [PRINCIPLE-RATIFY-BEFORE-DISPATCH]. Three findings were added by the spec-writer against the narrative and are flagged for the architect's read: [CXC-FC-HOMES-REKEY] (the shipped per-INSTANCE isolation guard REFUSES the ratified per-ROLE layout, so it must be re-keyed rather than bypassed); [CXC-FC-GIFT-MECHANISM] (the `<details>` split already landed in commit 4bca26e, narrowing that requirement to a regression guard); and [CXC-FC-UNIT]'s refinement of the instancing unit from one parameter to the `(instance_id, role)` pair, because `role` is not derivable from `instance_id` and the manifest chain takes it as an argument. Folded in 2026-08-12 after the narrative gained [FC-ROLE-MEMORY] and [FC-RECOVERY-IS-THE-SAME-ROLE]: [CXC-FC-THREE-AXES], [CXC-FC-ROLE-MEMORY], [CXC-FC-STORE-ACCESS], [CXC-FC-RECOVERY-SAME-ROLE], acceptance FC-C18..FC-C20, and two additional named anti-patterns. No surrogate-access design was ever authored here, so nothing had to be retracted — the prohibition is recorded so it cannot be re-derived.
+**Intelligence**: composeux-architect / factlattice-editor, 2026-08-12

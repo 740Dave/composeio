@@ -1,0 +1,107 @@
+---
+scope: "Board bring-up as a descriptor-driven discipline — one machine-readable per-board descriptor is the SINGLE SOURCE for connecting, flashing, and verifying a node; the markdown recipe demotes to a generated human view and the app consumes the descriptor. A two-tier verdict (machine-green != glass-green) gates acceptance; a flash-tool + entry dispatch runs off the descriptor. Generalizes the [minnow-bringup] control surface to any node (Linux SBC or MCU). Grounded in FOUR real boards brought up this cycle (CYD, Qualia, ESP32-C3 x3, CH32V203). Captured 2026-07-10 (David)."
+audience: "ComposeUX/ComposeIO architects, embedded + Linux-node developers, the fleet dispatcher/bring-up surface builder"
+boundary: "IN: the unified per-board descriptor as single source, the two-tier machine+human verdict, the flash-tool/entry dispatch model, the bring-up control surface (allowlisted+gated mcp_actions + auto-capture + restore), and the requires:-from-bus reproducibility model. OUT (until shaped): the descriptor's ultimate bus home, the exact mcp_action schema, and the [CXC-BRINGUP-OPEN] decisions."
+not-this: "Not a build system (PlatformIO/cargo stay the builders); not a replacement for the per-board recipe's prose (the recipe becomes a generated view OF the descriptor); not a claim that machine verification suffices (the human glass gate is load-bearing by design); not the reactive engine ([SPEC:CXC-EMBED-REACTIVE]) — this is how you STAND UP a node, not what runs on it."
+depends-on: [27-composeux-peripheral-hal.lts, 29-composeux-embedded-reactive.lts, roadmap/00-render-engine-roadmap.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: concept-capture
+---
+# ComposeUX Board Bring-Up [SPEC:CXC-BRINGUP]
+
+> Bringing up a board is currently an ad-hoc flash loop rediscovered per device. Make it a descriptor: one machine-readable per-board file says how to connect, flash, and verify; the markdown recipe becomes a generated human view of it; a control surface consumes it to stand up any node and record how to rebuild it. The verdict is two-tier — machine-green is necessary but a human eyes-on-glass gate is what actually accepts a board.
+
+---
+
+## 1. Intent
+
+### [CXC-BRINGUP-INTENT] Systematize Bring-Up, From Flash Loops to a Descriptor Surface
+
+- problem: every new board is a fresh ad-hoc flash loop with the hard-won facts scattered across a platformio.ini, commit messages, and a person's memory. The real cost is concrete and recent: **this cycle's CYD shared-SPI-DMA-channel hunt** (a staged hardware bisection to find that an SD-bus `spi_bus_free()` teardown froze the panel while it kept ACKing writes) and **the CH32V203 wchisp/BOOT0 dance** (a manual ISP strap that is easy to get wrong and has no software entry) both cost real hours that a descriptor + a surface would have front-loaded.
+- definition: a bring-up discipline where each board has ONE machine-readable descriptor (`docs/board-bringup/<board>.descriptor.yaml`) carrying identity, connect, flash, config-source, requires, verify, and quirks — and a control surface that consumes it to connect/flash/verify/record a node. Same discipline as [CXC-HAL]: define-once descriptor over per-platform drivers, generalized from *binding a peripheral* to *standing up a whole board*.
+- grounded: FOUR real boards brought up this cycle prove the schema is not hypothetical — the constrained SPI-display floor (CYD), the framebuffer-tier round panel (Qualia S3), the reactive/actuator RISC-V tier (ESP32-C3 devkit + lego_dots + rack_triple_gauge), and the first non-ESP32/non-esptool part (CH32V203, wchisp). Four divergent ad-hoc descriptor shapes reconciled into one.
+- payoff: a new board = author a descriptor + (if novel) register its flash tool, not reinvent a flash loop; a new physical unit = point the surface at it and press one gated button.
+- part-of: [SPEC:CXC-BRINGUP]
+
+---
+
+## 2. The Descriptor
+
+### [CXC-BRINGUP-DESCRIPTOR] The Per-Board Descriptor Is the Single Source; the Recipe Is a Generated View
+
+- define-once: the descriptor is the SINGLE SOURCE. The markdown recipe (`docs/board-bringup/<board>.md`) demotes to a **generated human view**; the app/surface consumes the descriptor, not the prose — exactly the [CXC-HAL-PLATFORM] "define-once descriptor" move applied to a board. Divergence between recipe and descriptor becomes impossible because the recipe is rendered FROM the descriptor.
+- one schema, all boards (the deliverable is the consistency): identical top-level keys, same order, across all four — `board_id / name / chip{part,arch,flash_kb,ram_kb} / connect{bus,kind,port_glob,baud} / flash{tool,cmd,enter_bootloader,retries,notes} / config_source / requires / verify{machine,human} / quirks / variants`. Board-specific detail hangs *under* those keys; the shape never changes, so the future generalized bring-up surface consumes any board uniformly.
+- variants where one board_id fronts several units: ESP32-C3's `variants:` sub-list carries the three C3 targets (headless devkit + lego_dots 12ch + rack_triple_gauge) — shared chip/connect/flash at the top, per-variant env/role/pins/actuators/quirks below. CYD/Qualia/CH32V203 keep `variants: []` (single board) so the key still exists — consistency preserved.
+- requires: = reproducible-from-the-bus: board-specific images/packages/blobs a bring-up needs are named as `requires:` references (David's directive — any image/package a board needs lives in `bus_storage` and is fetched at bring-up, reproducible from the bus). Grounded: the CYD/Qualia scene config (`bus://assets/displays/<device_id>.compose.yaml`, the [CXC-R-BOOT] fungible-fetch) and the animation assets (`bus://assets/animations/dradis/*`, CI16 sprite frames baked offline). Where an artifact does not exist yet (a bus-hosted factory firmware image, a board package-set), it is recorded as a `null` placeholder WITH a comment naming where it WOULD live (`bus://assets/firmware/<board>/<ver>.bin`) — the gap is explicit, not silent. Non-bus prerequisites are honestly typed (the C3's gitignored `src/wifi_config.h` secret, the `mqtt://COMPOSEIO_FW_DOCUMENT_STORE_URL:1883` transport) rather than faked as bus assets.
+- quirks are traceable, each: every hard-won workaround is a `{id, value?, resolved?, note}` entry citing its recipe section/commit — the CYD DMA hazard (resolved, 9a35baf+cfa313a), the 27->20MHz SPI margin (resolved), the Qualia pclk 16->10MHz + 20-line bounce + IRAM_SAFE=n + RESTART_IN_VSYNC panel tune, the C3 strapping-pin/BC337 boot risk + rack out_max=600 placeholder, and the CH32V203 >64KB per-unit flash + the canon_equality char-signedness finding. A quirk is never lore; it is a descriptor row.
+- part-of: [SPEC:CXC-BRINGUP]
+
+---
+
+## 3. The Verdict
+
+### [CXC-BRINGUP-VERDICT] Two-Tier Acceptance — Machine-Green != Glass-Green
+
+- the key design point: bring-up is accepted on TWO tiers, not one. `verify.machine` is the set of auto-checkable signals (serial pass-tokens like "234/234" or "RGB panel up: 720x720", a `wchisp` clean verify, a capture-pixel-diff vs the Skia reference, a host-unit "ALL PASS (94 checks)"). `verify.human` is the eyes-on gate WITH its reason — and it is load-bearing, not ceremony.
+- motivating evidence (why the human tier exists at all): the CYD's real failure this cycle was **the framebuffer/render loop advancing normally while SPI writes kept returning `ESP_OK` and the glass stayed frozen on frame 0**. A healthy `[PERF]` serial stream AND a moving `capture.bmp` were BOTH insufficient — the machine tier was fully green while the panel was dead. Only eyes-on-glass caught it. Machine-green != glass-green is therefore a design invariant, sourced from a real silent-ACK failure.
+- the human gate is board-specific and reasoned: CYD = confirm live motion on the glass (silent SPI-ACK freeze); Qualia = eyes on the round glass via the pre-network color-wheel, because the ~1.5MB `/capture.bmp` truncates (IncompleteRead) and cannot be the gate; ESP32-C3 actuators = 12V + eyes on real light/needle/backlight motion (not automatable from the HAL self-report); CH32V203 = confirm the manual ISP strap enumerated (0x55e0) and per-unit-verify any >64KB image. Each `human:` string carries its WHY so the surface can present it, not just assert it.
+- machine tier is necessary, not sufficient: it gates *fast* (catches the 3/234 canon_equality regressions, a dirty wchisp verify, a pixel-diff structural divergence) and is what a headless CI/dispatcher can run — but it never closes bring-up on a board with a physical output. The two tiers compose: machine-green THEN human-green.
+- part-of: [SPEC:CXC-BRINGUP]
+
+---
+
+## 4. Dispatch
+
+### [CXC-BRINGUP-DISPATCH] Flash-Tool + Entry Dispatch Off the Descriptor
+
+- `flash.tool` is the dispatch key: the surface branches on it — `esptool` (the three ESP families, via PlatformIO) vs `wchisp` (the WCH part, a Rust CLI). A new toolchain = a new dispatch branch + a descriptor that names it, not a rewrite of the bring-up flow.
+- `enter_bootloader` is the second axis, and it is genuinely bimodal: `auto` (esptool: the CH340 auto-reset on the CYD, or native-USB auto-download on the S3/C3 — no button dance) vs `boot0-reset-manual` (wchisp: the CH32V203's physical hold-BOOT0 / tap-reset / release strap, with NO DTR/RTS software trick — `automatable:false`). The surface must PROMPT for the manual strap and confirm ISP enumeration before dispatching `wchisp flash`; it can fire the esptool path unattended.
+- `retries:` is declarative recovery: the native-USB `errno6-native-usb` transient re-enumeration (Qualia + C3) is a named, expected "retry the upload once" — the surface handles it instead of a human re-guessing. The CH340 CYD path and the atomic `wchisp flash` (write+verify+reset in one) carry empty `retries:`.
+- notes carry the tool caveats the dispatcher must respect: `wchisp` install (`cargo install wchisp --locked` needing libusb + a set rustup default), the stale-`pio pkg install` Windows-toolchain lock, the `>64KB` `maximum_size=131072` override, the `-Os`-only soft-double constraint. Dispatch is descriptor-driven end to end.
+- part-of: [SPEC:CXC-BRINGUP]
+
+---
+
+## 5. The Surface
+
+### [CXC-BRINGUP-SURFACE] Generalize [minnow-bringup] — One Control Surface Stands Up Any Node
+
+- the seed exists: `apps/minnow-bringup/` is already a ComposeUX control surface over node provisioning — a `.compose.yaml` form (hostname, a locally-hashed `$6$` password, option checkboxes) whose Provision button is an **mcp_action** that resolves the form namespaces into `fleetconsole.provision_run` params. This spec generalizes it from "provision a MinnowBoard" to "bring up ANY node from its descriptor."
+- allowlisted + gated mcp_actions (the safety model, already realized): the surface exposes a fixed **allowlist** (`_ACTIONS`, [MCPA-5]) — an un-listed tool is REFUSED loudly; destructive actions are flagged. Live effect is **gated behind an explicit env** (`FLEET_BRINGUP_LIVE=1` + the target powered on) so the default path validates+assembles the plan and stops short of firing the serial install — safe and headless-verifiable. The bring-up surface inherits this: flashing/provisioning a real board is a gated, allowlisted action, and the same surface reuses fleetpower's guarded HA plug primitives (single-sourced allowlist) to power the DUT.
+- credentials never held: the secret field hashes locally ($6$) and only the hash reaches the driver — the agent/surface never holds plaintext; the driver refuses a non-`$6$` value loudly. A bring-up surface handling WiFi creds (the C3's `wifi_config.h`) or a device password rides the same never-hold-plaintext rule.
+- auto-capture to `doc://fleet_devices` = provisioning IS recording the rebuild spec: on provision, `_capture_spec` MERGES the recipe/serial-device/params (incl. the just-used `$6$` hash) into `doc://fleet_devices/<host>` — so standing a node up is the act of recording how to rebuild it, non-clobbering, best-effort. For MCU bring-up the analogue is capturing the flashed `board_id`/`env`/image + verify results to the same fleet-device doc, closing the reproducible-from-the-bus loop with `requires:`.
+- Restore: the captured spec + the `requires:` bus references are exactly what a **Restore** needs — re-fetch the images/config from `bus_storage`, re-flash via the descriptor's dispatch, re-verify. Restore is the descriptor + capture read back.
+- UNIFIES the fleet story: one surface stands up any node — a Linux SBC (the MinnowBoard fleetconsole path, [CXC-RM-RUNTIME-DIST]'s Pi/SBC tier) OR an MCU (esptool/wchisp per the descriptor). The Linux-provision surface and the MCU-flash surface are one control surface over one descriptor shape; the reactive tier ([SPEC:CXC-EMBED-REACTIVE]) is what then RUNS on the MCU node the surface stood up.
+- part-of: [SPEC:CXC-BRINGUP]
+
+---
+
+## 6. Open Decisions (before build)
+
+### [CXC-BRINGUP-OPEN] What Needs Deciding
+
+- **descriptor bus home**: the descriptors are LOCAL-FIRST today (`docs/board-bringup/*.descriptor.yaml`, eyeballed before pushing). Their ultimate home is `doc://board_profiles/*` on the bus (sibling to `doc://fleet_devices` and `doc://surfaces`), fetched at bring-up — PENDING; do not push until the schema is owner-ratified.
+- **recipe generation direction**: confirm the recipe becomes a rendered view OF the descriptor (single source) vs. the descriptor staying a hand-maintained sibling; leaning generated-from-descriptor.
+- **the char-signedness DSL fix (CH32V203)**: 3/234 canon_equality failures are WCH-toolchain-specific (ESP32-C3, also RISC-V, passes 234/234). Try `-fsigned-char` first, else patch the canon-equality path; re-run the corpus on hardware — must not be assumed fixed. Feeds [CXC-DSL].
+- **per-unit extended-flash verification**: the CH32V203 `>64KB` (`maximum_size=131072`) relies on unmarked per-unit silicon margin; the surface should REQUIRE a clean per-unit `wchisp` verify of a 64-96KB image before trusting extended flash, with CH32V203RB (128KB official) as the recorded fallback.
+- **mcp_action schema for flashing**: reuse the `[minnow-bringup]` allowlist+gate shape for a generic `flash_run(board_id, variant, env)` action, or a per-tool action set — bound the set (esptool vs wchisp) and the gate env.
+- part-of: [SPEC:CXC-BRINGUP]
+
+---
+
+## Relationships
+
+### Semantic
+[SPEC:CXC-BRINGUP] GENERALIZES [minnow-bringup]
+[SPEC:CXC-BRINGUP] SAME-DISCIPLINE-AS [SPEC:CXC-HAL]
+[SPEC:CXC-BRINGUP] STANDS-UP-NODES-FOR [SPEC:CXC-EMBED-REACTIVE]
+[CXC-BRINGUP-DESCRIPTOR] REALIZES [CXC-R-BOOT]
+[CXC-BRINGUP-SURFACE] EXTENDS [CXC-RM-M5]
+[CXC-BRINGUP-VERDICT] EVIDENCED-BY [CXC-RM-M5]
+
+---
+
+**Version**: 0.1
+**Created**: 2026-07-10
+**Status**: CONCEPT CAPTURE (David 2026-07-10). Framing settled — one machine-readable per-board descriptor as single source (recipe demotes to a generated view), the two-tier machine+human verdict (machine-green != glass-green, sourced from the CYD silent-SPI-ACK freeze), flash-tool + entry dispatch (esptool auto vs wchisp BOOT0-manual), and a generalized bring-up control surface (allowlisted+gated mcp_actions + auto-capture to doc://fleet_devices + Restore) that unifies the Linux-SBC and MCU fleet story. Grounded in FOUR real boards. Local-first artifacts landed (`docs/board-bringup/*.descriptor.yaml` x4, byte-consistent schema); NOT yet pushed to the bus (future home doc://board_profiles/*). Belongs on the roadmap as a scheduled **[CXC-RM-BRINGUP]** item (sibling to [CXC-RM-M5]/[SPEC:CXC-EMBED-REACTIVE]); roadmap file not edited in this pass. [CXC-BRINGUP-OPEN] decisions need shaping before build-ready.

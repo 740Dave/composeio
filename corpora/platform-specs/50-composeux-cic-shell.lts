@@ -1,0 +1,434 @@
+---
+scope: "The ComposePlatform CIC console shell — the generic `colonial_console` and its ecosystem — the foundational surface of the BSG CIC simulation-screen program. A `colonial_console` is a 4:3 colonial-CIC console: a z-ORDERED LAYER STACK with the amber frame as MASTER MASK (each layer drawn loosely/independently, upper layers mask lower layers' out-of-bounds content); a TWO-LEVEL selection model (up to 7 top-level CONSOLES x 5 context-dependent SUB-TABS, each console owning its own sub-tabs + content scenes); DUAL bus-native input (touch tabs OR physical rotary switches, indistinguishable to the shell — control-is-a-peer); a per-STATION namespace scoping (`colonial_console/<station>/...`) so multiple duty stations + their peripherals never cross-wire; the Inkscape element-name -> scene-element MAPPING contract + re-scan authoring workflow (with a two-kind RENDER-AS-PRIMITIVE / EXTRACT-AS-RASTER distinction); a worked content screen (HELM->HEADING 'Planetary Survey', reticule-focus driving three linked planet panels); the 4:3-canon aspect + 2-up portrait multi-instance layout; and the embedded-tier stance."
+audience: [composeux-architect, David, the builder implementing the colonial_console + the SVG scan tool, any Intelligence driving a duty station by publishing a station's selection indices, the maker wiring the rotary-switch peripheral]
+boundary: "IN: the colonial_console layer stack + frame-as-master-mask ([CXC-CIC-WIDGET]); the two-level console/sub-tab navigation + dual touch/rotary input ([CXC-CIC-NAV]); duty-station identity + peripheral pairing + the station-scoped namespace convention ([CXC-CIC-DUTY-STATION]); the Inkscape element-name -> scene mapping contract, the two artwork-kinds, and the re-scan workflow ([CXC-CIC-SVG-MAP], [CXC-CIC-SVG-TABLE]); the Planetary-Survey worked content example ([CXC-CIC-CONTENT-PLANET-SURVEY]); the 4:3 aspect + 2-up portrait multi-instance layout ([CXC-CIC-ASPECT-MULTI]); the embedded-tier stance ([CXC-CIC-TIER]); the machine+glass acceptance gates ([CXC-CIC-VERIFY]). OUT: the DRADIS console's internals (already built — it DROPS IN as one console's content, reused by reference, [SPEC:CXC-EMBED-REACTIVE] [CXC-ER-DRADIS-BUS] / dradis.compose.yaml, not redefined); the render-engine layer/pixel_stack/SpriteContainer mask machinery (reused from [SPEC:CXC-RENDER], not re-built); the ComposeBus pattern-subscription + granularity primitives (reused from [SPEC:CXC-PATSUB]); the rotary-switch electrical hookup (a SEPARATE maker-project slice — 7-pos + 5-pos switch -> ESP32 -> publish index, pattern-referenced to the dual-throttle rig at [CXC-CIC-ROTARY-HOOKUP], not fully spec'd here); the per-console content scenes beyond the one worked example (authored screen-by-screen via the scan workflow); any WRITE path from the shell into game state."
+not-this: "Not a new render engine — the layer stack is a z-ordered `pixel_stack` and the master mask is the existing opaque-overlay/transparent-window compositing the DRADIS bezel already uses ([CXC-R-SPRITE-CONTAINER]); no new Widget subclass or compositing path is invented. Not a new bus primitive — selection is a state publish, input is a peer publish, all filtered by the existing pattern-subscription ([SPEC:CXC-PATSUB]). Not a DRADIS respec — DRADIS is one console that drops in. Not a rotary-hookup spec — the physical switch wiring is a separate slice. Four judgment calls remain DRAFTED + FLAGGED for the architect to RATIFY: the duty-station identity/pairing scheme ([DD-CIC-STATION-IDENTITY]), the SVG-map two-kind tag/infer contract ([DD-CIC-SVG-KIND]), the 2-up portrait layout mechanism ([DD-CIC-TWO-UP]), and the tier stance ([DD-CIC-TIER]). The fleet-wide theming + widget-naming call ([DD-CIC-THEME]) is RATIFIED (David 2026-07-30): the widget is the generic `colonial_console` (prose/params renamed; node + doc ids unchanged), theming is a semantic `theme` binding, and the namespace scope root is `colonial_console/`."
+depends-on: [SPEC:CXC-RENDER]
+depends-on: [SPEC:CXC-PATSUB]
+depends-on: [23-composeux-widget-primitives.lts]
+depends-on: [29-composeux-embedded-reactive.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+created: 2026-07-30
+updated: 2026-07-30
+---
+# ComposePlatform CIC Console Shell [SPEC:CXC-CIC]
+
+> The `colonial_console` is a 4:3 colonial-CIC console shell — the foundational surface of the BSG CIC simulation-screen program ([DEC-CONVERTED-CAROUSEL-IS-THE-BSG-SIM-SHELL], [DEC-CAROUSEL-PLATFORM-CALLS-SETTLED] D4). It is a z-ORDERED LAYER STACK whose amber frame is a MASTER MASK: every layer draws loosely and independently (no per-layer precision), and the frame — opaque everywhere except a transparent screen-area cutout, drawn ABOVE the content — paints over any content that bleeds past the window, exactly the opaque-overlay/transparent-window compositing the DRADIS bezel already rides ([CXC-R-SPRITE-CONTAINER]). It presents a TWO-LEVEL selection model — up to 7 top-level CONSOLES (HELM / NAVCON / FTL / DRADIS / DAMAGE CONTROL / FIRE CONTROL / SECURITY) each owning 5 context-dependent SUB-TABS + their content scenes — driven by DUAL bus-native input: touch the tabs OR turn a physical rotary switch (a 7-position for consoles, a 5-position for sub-tabs); both publish the station's two selection indices and are INDISTINGUISHABLE to the shell (control-is-a-peer, [CXC-CREDO]). All CIC state is SCOPED PER STATION (`colonial_console/<station>/...`) so multiple duty stations and their peripherals never cross-wire. DRADIS is one console — the already-built dradis scene drops in as that console's content. New screens are authored by mocking them in Inkscape with a fixed layer-name vocabulary and re-scanning ([CXC-CIC-SVG-MAP]). NOTE ON NAMING: this document is named for its FLAGSHIP use (the CIC) — the doc tag [SPEC:CXC-CIC] and every [CXC-CIC-*]/[DD-CIC-*] node id are stable cross-reference targets and stay as landed — but it specs the GENERIC, fleet-wide `colonial_console` widget; CIC is the DEFAULT theme of that widget, one instance among sickbay / flight_deck / raptor consoles ([CXC-CIC-WIDGET] theming, [DD-CIC-THEME]).
+
+---
+
+## 1. Intent & Contract
+
+### [CXC-CIC-WHY] Why — the CIC shell is the BSG sim program's foundation
+
+- definition: the ComposePlatform is building a Battlestar-Galactica CIC simulation-screen program — a set of playable colonial-warship console screens. The carousel platform work was CONVERTED into this program ([DEC-CONVERTED-CAROUSEL-IS-THE-BSG-SIM-SHELL]); the platform calls are settled ([DEC-CAROUSEL-PLATFORM-CALLS-SETTLED] D4). The `colonial_console` is the SHELL every CIC screen is hosted in — the amber-framed console chrome, the two-level tab navigation, and the station scoping — so screen authors add CONTENT, never re-build the console.
+- role: a reusable, GENERIC console surface (the names `colonial_console` and `duty_station` are deliberately domain-neutral — the shell is a colonial-CIC aesthetic, not a hardcoded ship). It holds no game logic; it hosts content scenes and routes selection.
+- requirement: the shell MUST present the layer stack of [CXC-CIC-WIDGET], the two-level navigation of [CXC-CIC-NAV], and the station scoping of [CXC-CIC-DUTY-STATION]; it MUST reuse the render-engine mask + the pattern-subscription bus primitive rather than invent either; and it MUST let a new console screen be added by the SVG scan workflow ([CXC-CIC-SVG-MAP]) without editing the shell.
+- reuse-by-reference: the mask is the DRADIS-bezel compositing ([CXC-R-SPRITE-CONTAINER]); the selection transport is the pattern subscription ([SPEC:CXC-PATSUB]); DRADIS itself is a drop-in console ([SPEC:CXC-EMBED-REACTIVE] [CXC-ER-DRADIS-BUS]). No fork.
+- part-of: [SPEC:CXC-CIC]
+
+### [CXC-CIC-CREDO] Control-is-a-peer — touch, rotary, and Intelligence all publish the same selection indices
+
+- definition: selecting a console or a sub-tab does exactly one observable thing: it publishes the station's selection index to a bus namespace ([CXC-CIC-DUTY-STATION]). A finger tapping a tab, a maker turning a rotary switch, and an Intelligence publishing the identical index are PEERS — none is privileged ([CXC-CREDO]).
+- consequence: the shell is fully drivable headlessly and observably. "Select the FTL console" is a publish of `colonial_console/<station>/console = {index: 2}` whether a finger, a rotary, or an Intelligence issues it; the shell SUBSCRIBES the index and cannot tell the sources apart and MUST NOT try.
+- constraint: the tab/rotary is an INPUT that publishes; the shell is a SUBSCRIBER that reacts. The selector never mutates content directly — it publishes the index and returns; the shell reads the index and swaps the sub-tab row + content. (state-on-the-bus / behavior-in-the-widget, [CXC-BIND-PRINCIPLE].)
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## 2. The `colonial_console` — layer stack + frame-as-master-mask
+
+### [CXC-CIC-WIDGET] The z-ordered layer stack with the amber frame as master mask
+
+- definition: a `colonial_console` is a 4:3 CIC console composited as a z-ORDERED stack of independent layers. Each layer draws LOOSELY (no per-layer pixel precision, no inter-layer alignment contract); an UPPER layer masks a LOWER layer's out-of-bounds content; the amber frame is the MASTER MASK.
+- layer stack (bottom -> top; z ascending — this is the DEFAULT order, stated so the builder does not guess):
+  1. `black_background` — the black content base (opaque fill).
+  2. AMBIENT / CONTENT — the `screen-area` content: `star-field-dynamic`, `screen-scan-stars`, the `reticule` (+`reticule-bullseye`/`reticule-indicators`), the planet displays (`planet-image-area`, `planet-resources-graph`, `planet-description`), `area-for-vertical-arrow`. Drawn loosely; may overspill `screen-area`.
+  3. THE THREE EDGE GAUGES — `left-edge-gauge`, `bottom-edge-gauge`, `right-edge-gauge`. RESERVED, EMPTY placeholders in this spec (a bound gauge widget when a screen fills one); they occupy their reserved bands and default to drawing nothing.
+  4. THE AMBER FRAME (MASTER MASK) — `top-line`/`bottom-line`/`left-line`/`right-line` + `decorators`/`optional-common-decorators`. Opaque everywhere EXCEPT a transparent `screen-area` cutout, drawn ABOVE the content, so any content bleeding past `screen-area` is painted over by the frame.
+  5. ROW2 CONSOLE TABS — `row2-tabs` + `row2-tabN-label` + `row2-tab-selected-artwork` (the top console selector, [CXC-CIC-NAV]).
+  6. ROW3 SUB-TABS + STATUS BAR — `row3-tabs` + `row3-tabN-text` + `row3-tabN-artwork`, and `row3-tab-status-bar` + `selected-tab-id-number` + `selected-tab-status-label`.
+  7. ROW1 BUTTON BAR — `row1-button-bar` (REBOOT / SHUT DOWN / firmware-version text).
+  8. `overlay-dialog-box` — the modal dialog overlay, TOPMOST, drawn only when present.
+- mechanism (reuse, not invent): the stack is a render-engine `pixel_stack` (children drawn in declared z-order, [SPEC:CXC-RENDER]); the master mask is the EXISTING opaque-overlay/transparent-window compositing — "opaque overlay artwork with transparent regions through which [lower content] is visible" ([CXC-R-SPRITE-CONTAINER], the DRADIS bezel precedent). No new Widget subclass, no new compositing path.
+- fleet-wide theming (a SEMANTIC `theme` binding resolving to base + highlight color): the colonial-console UX — the `standard_ux_shape_element` base shape ([CXC-CIC-SVG-TABLE]) — is FLEET-WIDE, not CIC-only: the SAME shell appears in the CIC, in sickbay screens, on the flight deck, and in the Raptors, each RE-THEMED. So the shell is a THEMEABLE colonial-console and CIC is ONE instance (one theme). The PRIMARY theming interface is a SEMANTIC `theme` token with NAMED values — NOT raw hex as the front door:
+  - `theme` — the semantic theme selector, a token ∈ {`cic` (DEFAULT), `sickbay`, `flight_deck`, `raptor`, …EXTENSIBLE}. The shell RESOLVES `theme` -> a (`base_color`, `highlight_color`) palette. `theme` is the BINDABLE front door; a station typically binds a semantic name, not two hex values.
+  - theme -> palette resolution table (the shell's theme registry; each named theme resolves to its base/highlight):
+    - `cic` (DEFAULT) -> base `#762400` (rgba `0x76,0x24,0x00,0xFF`) / highlight `#CD671D` (rgba `0xCD,0x67,0x1D,0xFF`) — the landed CIC amber.
+    - `sickbay` -> base/highlight TBD (placeholder from the worked green scenario: base `#1B5E20` / highlight `#66BB6A`) — FLAGGED TBD for David.
+    - `flight_deck` -> base/highlight TBD — FLAGGED TBD for David.
+    - `raptor` -> base/highlight TBD — FLAGGED TBD for David.
+  - `base_color` / `highlight_color` — the RESOLVED OUTPUT tokens `theme` produces (base = the `standard_ux_shape_element` fill; highlight = the accent). They remain BINDABLE for a RAW ONE-OFF OVERRIDE (bind `base_color`/`highlight_color` directly to bypass the semantic map for a bespoke instance), but the SEMANTIC `theme` is the primary interface; a raw override is the escape hatch, not the default path.
+  The shell MUST expose `theme` as the primary BINDABLE theming token and MUST default it to `cic` when unbound (resolving to the CIC amber above); it MUST resolve a bound `theme` name to its (`base_color`, `highlight_color`) palette; and it MUST still accept a direct `base_color`/`highlight_color` bind as a one-off override. Sickbay, flight-deck, and Raptor consoles are OTHER `theme` values of the SAME shell, differing ONLY in the resolved palette, with NO code fork. A builder MUST NOT hardcode the amber values as constants; they are the `cic`-theme DEFAULTS in the resolution table. The semantic-theme model + the fleet-wide widget-naming generalization are recorded at [DD-CIC-THEME] (ratified 2026-07-30).
+- requirement: the frame layer MUST be drawn ABOVE the content + edge-gauge layers and MUST be opaque outside the `screen-area` cutout, so loose content is bounded by MASKING, not by per-layer clipping. Content layers MUST NOT be required to self-clip to `screen-area`. The three edge-gauge layers MUST render (as reserved empty bands) even when unfilled, so a later screen that fills one does not shift the stack.
+- default: `overlay-dialog-box` is ABSENT (not drawn) unless a dialog is active; the three edge gauges are EMPTY; the frame color is amber, content black, tactical/overlay accents green, text white, alerts red (the reference palette — exact tokens lifted from the scanned artwork, [CXC-CIC-SVG-MAP]; the amber frame base/highlight are the DEFAULT `base_color` (`#762400`) / `highlight_color` (`#CD671D`) theme tokens, re-themable per instance ([DD-CIC-THEME]); a builder MUST NOT invent an unrelated palette).
+- scenario:
+  - when: a content sprite in the ambient layer moves partly outside `screen-area`
+  - then: the overspilling pixels are painted over by the amber frame layer above it; the visible content is bounded by the frame's transparent cutout, and no content layer had to clip itself
+- scenario:
+  - when: a `colonial_console` renders with no console content loaded yet
+  - then: the black background, the empty edge-gauge bands, the amber frame, and the (empty) tab rows all render; the stack is stable and nothing shifts when content later mounts
+- scenario:
+  - when: a sickbay instance of the SAME shell binds `theme = sickbay` (the semantic token, not raw hex)
+  - then: the shell RESOLVES `sickbay` -> its (base, highlight) palette and the `standard_ux_shape_element` renders with the sickbay fill + highlight — the same shell, no code path forked; the CIC (`theme = cic`) amber (`762400` / `cd671d`) is just the DEFAULT-themed instance, and only the resolved `theme` differs between the CIC, sickbay, flight-deck, and Raptor consoles (sickbay/flight_deck/raptor palettes are TBD, [DD-CIC-THEME])
+- scenario:
+  - when: a bespoke one-off station binds `base_color`/`highlight_color` DIRECTLY (bypassing the semantic map)
+  - then: the raw override wins for that instance and the shell renders those exact colors — the escape hatch for a one-off, distinct from the primary `theme`-name front door
+- see-also: [CXC-CIC-SVG-MAP], [CXC-CIC-NAV], [DD-CIC-THEME]
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## 3. Two-level navigation + dual input
+
+### [CXC-CIC-NAV] Up to 7 consoles x 5 context-dependent sub-tabs, driven by touch OR rotary
+
+- definition: the shell presents a TWO-LEVEL selection model. The TOP level is up to 7 CONSOLES (`row2-tabs`: HELM / NAVCON / FTL / DRADIS / DAMAGE CONTROL / FIRE CONTROL / SECURITY). The SECOND level is 5 CONTEXT-DEPENDENT SUB-TABS (`row3-tabs`) that BELONG TO the selected console. Selecting a console SWAPS BOTH the sub-tab row AND the content: each console owns its own 5 sub-tabs and their content scenes (HELM -> {WAYPOINT, HEADING, TRACK, VELOCITY, FUEL}; FTL -> 5 wholly-different jump-process sub-tabs).
+- input model (DUAL, bus-native, control-is-a-peer): the two selection levels are driven by EITHER touch (tap a `row2`/`row3` tab) OR a physical rotary switch (a 7-position rotary for consoles, a 5-position rotary for sub-tabs). BOTH publish the station's selection indices to the SAME namespaces ([CXC-CIC-DUTY-STATION]); touch and rotary (and an Intelligence) are INDISTINGUISHABLE to the shell.
+- requirement: on a console-index change the shell MUST swap `row3-tabs` to that console's 5 sub-tabs AND swap the content region to that console's scene set; it MUST clamp the console index to `[0, n_consoles-1]` and the sub-tab index to `[0, 4]`; and on a console change it MUST reset the sub-tab selection to that console's DEFAULT sub-tab (index 0) unless a sub-tab index is published in the same transaction. A published index that is out of range MUST clamp (preserve-and-flag: log the clamp), never crash or blank the shell.
+- default: console index default `0` (the first console, e.g. HELM); sub-tab index default `0` (the console's first sub-tab); on first render with no published selection the shell shows console 0 / sub-tab 0. `row2-tab-selected-artwork` and the `row3` selected highlight are DERIVED from the published indices, never guessed — absent any published index, the defaults above stand (never a stale highlight).
+- drop-in consoles: DRADIS is ONE console. Its already-built scene ([SPEC:CXC-EMBED-REACTIVE] [CXC-ER-DRADIS-BUS], `dradis.compose.yaml`) mounts as that console's content, reused by reference — the shell routes selection to it; it is not respec'd here.
+- scenario:
+  - when: the station publishes `colonial_console/<station>/console = {index: 2, key: "FTL"}` (via touch, a 7-pos rotary, or an Intelligence)
+  - then: `row3-tabs` swaps to FTL's 5 jump-process sub-tabs, the content region swaps to FTL's scene set, the sub-tab selection resets to FTL sub-tab 0, and `row2-tab-selected-artwork` highlights FTL
+  - and: the outcome is byte-identical regardless of which of the three sources published the index
+- scenario:
+  - when: on the HELM console the station publishes `colonial_console/<station>/subtab = {index: 1, key: "HEADING"}`
+  - then: the HELM->HEADING content ("Planetary Survey", [CXC-CIC-CONTENT-PLANET-SURVEY]) mounts and `row3` highlights HEADING
+- scenario:
+  - when: a published console index of `9` arrives (out of range for a 7-console shell)
+  - then: it clamps to the max valid index, the clamp is logged, and the shell does not blank or crash
+- see-also: [CXC-CIC-DUTY-STATION], [CXC-CIC-ROTARY-HOOKUP], [CXC-CIC-TABROW]
+- part-of: [SPEC:CXC-CIC]
+
+### [CXC-CIC-RADIO-MODE] The row1 radio row is a per-mode screen-content selector — each mode renders content from its OWN svg (PROPOSED, awaiting ratification)
+
+> STATUS: PROPOSED (defect/cic-radio-mode-content-source-map, 2026-08-04). Formalizes a behavior that was UNDER-SPEC — the row1 radio row (DRADIS/STD/EXT/CHRONO) existed in code but its per-mode content contract was never spec'd, so EXT fell through to the base screen (the reported defect). Awaiting David's ratification; the NAMING convention below and the STD/DRADIS interaction are the open calls.
+
+- definition: distinct from the two-level console/sub-tab NAV ([CXC-CIC-NAV]), the row1 button bar carries a RADIO ROW — a configurable-N set of screen-area MODES (the initial four: DRADIS / STD / EXT / CHRONO). The radio row is a screen-content MODE selector: each mode renders CONTENT FROM ITS OWN svg, so a mode is never confused with another mode's screen. It is the SAME control-is-a-peer model as the nav ([CXC-CIC-CREDO]): touch a radio button OR a rotary OR an Intelligence all publish the station-scoped radio index `colonial_console/<station>/radio`, and the shell subscribes it and swaps the screen-area content.
+- content-source model (the bus-asset model, [CXC-CIC-SVG-MAP] / the DRADIS-console `bus://` references): each OVERRIDE mode maps to its own content SVG resolved BY REFERENCE at render time — authoring `<mode>_mode.svg` (local, David's Inkscape source) -> baked -> `bus://assets/cic/<mode>.svg` (the bus asset store, offline-only package fallback per the fonts.py bus-first pattern) -> the mode's screen content nested under a `<mode>-view` group (e.g. EXT -> `ext-view`, David's external-view artwork). The render engine holds only the reference; NO art is vendored beyond the offline fallback.
+- requirement: on a radio-index change the shell MUST swap the screen-area content to the selected mode's content source, HIDING the other modes' content and (for an override mode) the standard nav content, while the chrome (frame / tabs / radios / buttons / status) stays. A mode MUST render CONTENT FROM ITS OWN svg keyed on that mode's OWN content group (`<mode>-view`); it MUST NOT fall through to another mode's content or to a generic content group SHARED across screen files (`screen-scan-stars` is byte-identical across `colonial_base_ux.svg` and `ext_mode.svg`, so keying a mode on it renders the wrong screen — the defect this node closes). A mode whose art is ABSENT (its `bus://` ref does not resolve, or its `<mode>-view` group is not present) MUST render a clean labeled PLACEHOLDER ("<MODE> / screen not built"), never the base stars and never another mode's content; dropping the mode's art onto the bus MUST light it up with NO code change (preserve-and-flag, the drop-nothing discipline).
+- STD (the standard mode): STD is the STANDARD console screen — it is NOT a full-screen override; selecting STD leaves the two-level-nav content ([CXC-CIC-NAV]: the DRADIS drop-in or the placeholder over `colonial_base_ux.svg`) showing. Its "own svg" is `colonial_base_ux.svg` (the chrome/base source). (OPEN, for ratification: whether STD should instead be a full-screen static render of `colonial_base_ux.svg`'s screen content, and what the DEFAULT radio mode should be — the artwork highlights DRADIS as button 1, but DRADIS has no art yet, so the default currently boots to a DRADIS placeholder; recommend defaulting the radio to STD.)
+- naming convention (RECOMMENDED, for ratification): authoring `<mode>_mode.svg` (matches the on-disk `ext_mode.svg`), bus ref `bus://assets/cic/<mode>.svg`, content group `<mode>-view` (matches David's `ext-view`). David has also referred to `dradis_ux.svg` / `chrono_ux.svg`; the recommendation is the `<mode>_mode.svg` / `<mode>-view` convention above (do NOT rename existing files unilaterally).
+- scenario:
+  - when: the station publishes `colonial_console/<station>/radio = {index: 2, key: "EXT"}` (via touch, a rotary, or an Intelligence)
+  - then: the screen-area swaps to the EXT mode's OWN `ext-view` external-view artwork from `ext_mode.svg` (`bus://assets/cic/ext.svg`), hiding the DRADIS drop-in / placeholder; the amber frame + chrome stay; the outcome is byte-identical regardless of which source published the index
+- scenario:
+  - when: the radio selects DRADIS or CHRONO and no art has been authored/published for that mode
+  - then: the screen-area shows a clean "<MODE> / screen not built" placeholder — NOT the base `screen-scan-stars` content, NOT another mode's content
+  - and: once David publishes `bus://assets/cic/dradis.svg` (or `chrono.svg`) with a `<mode>-view` group, that mode lights up with no code change
+- see-also: [CXC-CIC-NAV], [CXC-CIC-SVG-MAP], [CXC-CIC-CREDO], [DEC-COLONIAL-OS-SVG-IS-SOURCE-OF-TRUTH]
+- part-of: [SPEC:CXC-CIC]
+
+### [CXC-CIC-TABROW] ONE generalized CIC tab-row widget — extend the existing TabWidget, instanced twice (row2 pill / row3 filled-bg)
+
+- definition: both CIC tab rows (`row2-tabs` consoles, `row3-tabs` sub-tabs) are ONE generalized tab-row widget, INSTANCED twice — NOT two separate widgets (generalize-don't-fork). It is parameterized by (a) the LABEL SET / text bindings, (b) the SELECTED-INDICATOR STYLE, and (c) the indicator FILL color+opacity.
+- reuse-by-reference (extend, do NOT fork): the widget EXTENDS the existing `render/widgets/tab.py::TabWidget` + its subclass `render/widgets/console_tabs.py::ConsoleTabWidget` — the proven pattern of "subclass TabWidget, keep measure/arrange/hit-testing/set_active + the hidden-tabs-still-track-bus routing from the base, swap ONLY the bar CHROME, and add a bus seam that publishes the selected index on tap" ([CXC-R-WIDGET-CONTAINER]). The CIC tab-row swaps the chrome to the two CIC indicator styles below and points the publish seam at the STATION-SCOPED index namespace ([CXC-CIC-DUTY-STATION]) instead of `_app/console/tab`. A NEW widget is spec'd ONLY because no existing subclass carries the two CIC indicator styles + the station-scoped index seam; the container/routing is entirely reused.
+- TEXT-BINDABLE labels: each tab's label accepts a TEXT BINDING (a namespace whose value is the label text), so `row3`'s five sub-tab labels change per selected console (HELM -> WAYPOINT/HEADING/... ; FTL -> its five jump labels) and `row2`'s console labels are data-driven. A label with no binding uses its static text ([CXC-CIC-SVG-TABLE] `row2-tabN-label` / `row3-tabN-text`); a bound label with no published value falls back to that static text (preserve-and-flag), never a blank tab.
+- selected-indicator STYLE param (the generalization axis; both are RATIFIED tokens — a builder MUST NOT invent a fill):
+  - `filled-background` — used by ROW3 (sub-tabs): the WHOLE selected tab's background artwork fills `#333333` at 100% opacity (rgba `0x33, 0x33, 0x33, 0xFF`). Every row3 tab background is this fill; selection is the fully-opaque fill on the active tab.
+  - `pill-overlay` — used by ROW2 (consoles): a PILL (the SVG element `row2-tab-selected-artwork`) rides OVER the selected tab in `#333333` at 70% opacity (rgba `0x33, 0x33, 0x33, ~0xB3`). The pill is DERIVED from the selected index, drawn as a native primitive over the active console tab.
+- requirement: the widget MUST expose the three parameters (label set / text bindings, `selected_indicator ∈ {filled-background, pill-overlay}`, fill color+opacity) and MUST be instanced twice — `row2` as `pill-overlay` (#333 @70%) and `row3` as `filled-background` (#333 @100%); a tab TAP MUST publish the STATION-SCOPED selection index ([CXC-CIC-NAV] / [CXC-CIC-DUTY-STATION]) — `row2` -> `colonial_console/<station>/console`, `row3` -> `colonial_console/<station>/subtab` — the SAME index a rotary turn publishes, so touch and rotary are indistinguishable; and the selected indicator MUST be DERIVED from the published index, not local tap-state guesswork (so a rotary/Intelligence publish moves the indicator identically).
+- default: `selected_indicator` defaults to `filled-background`; the fill defaults to `#333333` (opacity per the style — 1.0 for filled-background, 0.7 for pill-overlay); labels default to their static SVG text when unbound; the publish namespace defaults to the station-scoped `colonial_console/<station>/console` (row2) or `colonial_console/<station>/subtab` (row3) per instance.
+- scenario:
+  - when: the `row2` instance's HELM tab is tapped, then FTL is selected via the 7-pos rotary (publishing `colonial_console/<station>/console`)
+  - then: the tap and the rotary both publish the same console index; the `pill-overlay` (#333 @70%) rides over the selected console tab identically in both cases
+- scenario:
+  - when: the selected console changes to FTL and the `row3` instance's labels are text-bound
+  - then: the five sub-tab labels swap to FTL's jump-process labels and the selected sub-tab's background shows the `filled-background` #333 @100% fill
+- see-also: [CXC-CIC-NAV], [CXC-CIC-SVG-TABLE], [CXC-R-WIDGET-CONTAINER]
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## 4. Duty-station identity + peripheral pairing + the station-scoped namespace convention
+
+### [CXC-CIC-DUTY-STATION] Each duty station is a named, UUID'd grouping whose CIC state is namespace-scoped per station
+
+- definition: a `duty_station` is a display + its physical controls, operated as one CIC position. Each duty station has a human NAME and a stable UUID; a station-SLUG is the SCOPE token in every colonial_console namespace. This is the messaging-layer foundation for multi-station gameplay: many stations + their peripherals coexist on one bus without cross-wiring.
+- station-id SHAPE (a dotted SEMANTIC path, `location.instance.role`): the `<station>` scope token is a HIERARCHICAL, dotted semantic path — segments read `location` . `instance` . `role`, e.g. `raptor.1.pilot`, `raptor.1.ewo`, `sickbay.patient1`, `flight_deck.repair_bay.1`, `cic.1.helm`. The SHAPE is specified, NOT a fixed enum: the segment values are open (the examples are illustrative), the path is dotted, and the leading segment names the physical LOCATION while trailing segments disambiguate the instance + the role. A stable UUID still identifies the station internally; the dotted path is the human-legible scope slug. The `<station>` segment in every namespace below IS this dotted path.
+- theme vs location are DISTINCT bindings (though they often correlate): a station's LOCATION (the `location` segment of its id) and its `theme` ([CXC-CIC-WIDGET]) frequently correlate — a `raptor.*` station typically binds `theme = raptor`, a `sickbay.*` station `theme = sickbay` — but they are SEPARATE bindings: the station id scopes the namespace, the `theme` selects the palette, and either can be set independently (a raptor station could run the `cic` theme). A builder MUST NOT derive one from the other; each is bound explicitly.
+- station-scoped namespace convention (SCOPE ROOT `colonial_console/` — generalized from the CIC-specific `cic/` root now that the widget is the fleet-wide `colonial_console`; all defaults STATED; a builder MUST NOT guess a namespace):
+  - `colonial_console/<station>/console` — STATE, published by whichever selector settles (touch tab / 7-pos rotary / Intelligence). Payload `{index: 0..6, key: "<CONSOLE>"}`. Default namespace pattern `colonial_console/<station>/console`.
+  - `colonial_console/<station>/subtab` — STATE, the selected sub-tab within the current console. Payload `{index: 0..4, key: "<SUBTAB>"}`. Default `colonial_console/<station>/subtab`.
+  - `colonial_console/<station>/status` — STATE, the status-bar line: `{id_number: "04", label: "PLANETARY SURVEY ACTIVE"}` (feeds `selected-tab-id-number` + `selected-tab-status-label`). Default `colonial_console/<station>/status`.
+  - `colonial_console/<station>/focus/<domain>` — STATE, content focus namespaces owned by a content scene (e.g. `colonial_console/<station>/focus/planet`, [CXC-CIC-CONTENT-PLANET-SURVEY]). Default pattern `colonial_console/<station>/focus/<domain>`.
+  - `colonial_console/<station>/identity` — STATE (retained), the station's `{name, uuid}` announcement, published once at station bring-up.
+  - `colonial_console/<station>/peripherals/<device_id>` — STATE (retained), a paired peripheral's presence + role announcement ([CXC-CIC-DUTY-STATION] pairing).
+- requirement: EVERY CIC namespace the shell publishes or subscribes MUST carry the `<station>` scope segment; the shell MUST subscribe its OWN station's namespaces only (a prefix pattern-subscription `colonial_console/<station>/*`, [SPEC:CXC-PATSUB]), so two stations on one bus never receive each other's selections. Selections MUST be published GRANULAR — the console index and sub-tab index are DISTINCT namespaces ([CXC-PS-GRANULARITY], one namespace per meaning), never a fat combined blob.
+- pairing convention (how a peripheral binds to a station): a peripheral (the touchscreen, the 7-pos rotary, the 5-pos rotary) carries its OWN device identity via the existing `_device/<id>` addressing ([CXC-ER-RESTART-BUS] device-id convention) and announces presence at `_bus/discovery/<id>`. It is PAIRED to a station by a `station: <station>` binding in its config; once paired, it PUBLISHES to that station's namespaces (a 7-pos rotary -> `colonial_console/<station>/console`, a 5-pos rotary -> `colonial_console/<station>/subtab`) and announces itself at `colonial_console/<station>/peripherals/<id>`. The station grouping is a HIGHER-LEVEL construct than a single `_device/<id>` — it groups a display + its physical controls under one CIC position — so pairing is the binding from a device id to a station scope, not a rename of the device.
+- default: absent an explicit station id, a lone `colonial_console` uses station slug `station-0` (so a single-station bring-up needs no config); a peripheral with no `station:` binding is UNPAIRED and publishes nothing to any CIC namespace (preserve-and-flag: it announces at `_bus/discovery/<id>` and logs "unpaired", never guesses a station).
+- scenario:
+  - when: two duty stations `cic.1.helm` and `cic.1.nav` are live on one bus and `cic.1.helm`'s 7-pos rotary turns to FTL
+  - then: `colonial_console/cic.1.helm/console = {index: 2, key: "FTL"}` is published; only the `cic.1.helm` shell reacts; `cic.1.nav`'s shell sees nothing (its `colonial_console/cic.1.nav/*` subscription does not match)
+  - and: an Intelligence publishing the identical `colonial_console/cic.1.helm/console` drives `cic.1.helm` identically
+- scenario:
+  - when: a 5-pos rotary is paired to `cic.1.helm` (config `station: cic.1.helm`)
+  - then: it announces at `colonial_console/cic.1.helm/peripherals/<id>`, publishes its position to `colonial_console/cic.1.helm/subtab`, and the `cic.1.helm` shell reflects the sub-tab selection
+- see-also: [DD-CIC-STATION-IDENTITY], [CXC-CIC-ROTARY-HOOKUP]
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## 5. The SVG-map authoring contract + re-scan workflow
+
+### [CXC-CIC-SVG-MAP] The Inkscape element-name -> scene-element mapping is the deterministic authoring contract
+
+- definition: David mocks a new CIC screen in Inkscape using a FIXED layer/element-name vocabulary ([CXC-CIC-SVG-TABLE]); a SCAN TOOL re-reads the artwork and REGENERATES that tab-view's scene deterministically. The naming vocabulary IS the contract: a given layer name maps to a given scene element/role, so the pipeline is repeatable and David can expand the CIC screen-by-screen without hand-editing scenes.
+- two FILE-KINDS the scan handles (the SAME deterministic contract + the SAME naming vocabulary of [CXC-CIC-SVG-TABLE] apply to both — in EACH kind an Inkscape LAYER maps to one on-screen element/widget; the only difference is scope, not convention):
+  - the full-screen SCREEN mockup — the whole console screen authored as one file, e.g. `bsg/resources/screen_base_layout/colonial_base_ux.svg`. A scan of a SCREEN file regenerates a whole console/sub-tab content scene.
+  - per-WIDGET files — a file structured the SAME way whose each LAYER is one individual on-screen WIDGET, e.g. `bsg/resources/bsg_specific_widgets/bsg_widgets_1.svg` (currently RUDIMENTARY — 5 layers/widgets, each a single placeholder image labeled `cic-reference-art-for-inspiration-not-coding`; reference art David will flesh out into the same layout convention as `colonial_base_ux.svg`). A scan of a per-WIDGET file regenerates its individual widgets.
+  The scan MUST accept BOTH file-kinds under the ONE deterministic authoring contract (same vocabulary, same z-layer + artwork-kind resolution below); a `*-for-inspiration-not-coding` placeholder layer is REFERENCE ART, not a build target — the scan PRESERVES-AND-FLAGS it (emits NO widget from a reference-only placeholder, [MODEL-EDGE] drop-nothing) until it is fleshed out into vocabulary elements, at which point it regenerates deterministically like any other layer.
+- two ARTWORK-KINDS (the load-bearing distinction — every element carries an artwork-kind tag, and the scan handles the two kinds differently):
+  - RENDER-AS-PRIMITIVE — vector geometry drawn NATIVELY via the engine's Canvas paths ([CXC-R-DRAW-CONTRACT] / [CXC-R-DRAW-SVG]): crisp at any resolution, animatable, bus-bindable. The scan reads the element's GEOMETRY + role and emits a ComposePlatform primitive or bound widget; it does NOT bitmap it. Applies to: the `reticule` (+`reticule-bullseye`/`reticule-indicators`), crosshairs, the frame lines, the tab shapes, the resource BAR GRAPHS (`planet-resources-graph`), the status-bar chrome. Precedent: the DRADIS already draws its reticule + sweep natively via PathCommands ([SPEC:CXC-RENDER] SVG parser + the dradis needle).
+  - EXTRACT-AS-RASTER — baked to a CI16/PNG image ASSET (the embedded sprite-interchange format + the desktop image path, [CXC-R-DRAW-CONTRACT] `decode_image`): the scan extracts the pixels to an asset the scene references by URI. Applies to: the planet IMAGES (`planet-image-area`/`sample-planet-image`), painterly textures/photos, any non-vector art.
+- kind resolution: the map lets David TAG each element's kind explicitly, OR the scan INFERS it — a `*-image`/photo element resolves to RASTER; a vector strokes/fills element resolves to PRIMITIVE. An explicit tag ALWAYS wins over inference. The `reticule` is a PRIMITIVE, not raster: its sub-parts (`reticule-bullseye`/`reticule-indicators`) map to the primitive's PARTS — kept labeled so they inform the primitive's structure, NEVER flattened into a bitmap. (This resolves "combine the reticule for extraction?" — no: it is never bitmapped.)
+- requirement: the scan MUST be DETERMINISTIC (the same artwork regenerates a byte-identical scene); it MUST map ONLY the registered vocabulary of [CXC-CIC-SVG-TABLE] and MUST PRESERVE-AND-FLAG an unrecognized layer name (retain it as an unmapped element with a lint warning, never silently drop it — the drop-nothing discipline of [MODEL-EDGE]); it MUST assign each element to the correct z-layer of [CXC-CIC-WIDGET] from the element's role; and it MUST resolve each element's artwork-kind (explicit tag, else inference) and emit a primitive/bound-widget (PRIMITIVE) or an asset reference (RASTER) accordingly.
+- default: an untagged element's kind is INFERRED per the rule above; an element the scan cannot place by role is emitted into the ambient/content layer (layer 2) and flagged; the scan targets ONE tab-view (one console/sub-tab content scene) per run.
+- scenario:
+  - when: David adds a `planet-resources-graph` layer (vector bars) and a `planet-image-area` layer (a painted planet) to a new HELM screen and re-scans
+  - then: the resources graph is emitted as native primitive bar/led_bar widgets (bus-bindable), the planet image is extracted to a CI16/PNG asset the scene references by URI, and the reticule is emitted as a native primitive with its bullseye/indicators as labeled parts
+  - and: re-running the scan on the unchanged artwork regenerates a byte-identical scene
+- scenario:
+  - when: the artwork carries a layer named `mystery-widget` not in the vocabulary
+  - then: the scan retains it as an unmapped element in the ambient layer and emits a lint warning naming it, rather than dropping it or guessing a role
+- scenario:
+  - when: David re-scans the per-WIDGET file `bsg/resources/bsg_specific_widgets/bsg_widgets_1.svg` while its 5 layers are still `cic-reference-art-for-inspiration-not-coding` placeholder images
+  - then: the scan recognizes the per-WIDGET file-kind, preserves-and-flags each placeholder layer as reference-only (emitting no widget from it), and once a layer is fleshed out into vocabulary elements it regenerates that widget deterministically, exactly as a SCREEN-file layer does
+- see-also: [CXC-CIC-SVG-TABLE], [DD-CIC-SVG-KIND]
+- part-of: [SPEC:CXC-CIC]
+
+### [CXC-CIC-SVG-TABLE] The element-name -> scene-element -> layer -> artwork-kind mapping table
+
+- definition: the authoritative vocabulary the scan reads. Columns: the Inkscape element/layer NAME; the SCENE ELEMENT / ROLE it maps to; the z-LAYER of [CXC-CIC-WIDGET] it lands in; and its default ARTWORK-KIND (P = render-as-primitive, R = extract-as-raster, RSVD = reserved/empty, GRP = grouping layer, TXT = bound text). An explicit per-element kind tag overrides the default ([CXC-CIC-SVG-MAP]).
+
+| Inkscape element / layer | Scene element / role | z-layer | Artwork-kind |
+|---|---|---|---|
+| `standard-ux-layout` / `standard_ux_shape_element` | the widget's 4:3 design bounds / base shape | (frame of reference) | P |
+| `screen-area` | the content viewport region (the frame's transparent cutout) | 2 / mask ref | P (region) |
+| `black_background` | the opaque black content base | 1 | P (fill) |
+| `tab-background` | background fill behind the tab rows | 1 | P (fill) |
+| `top-line` / `bottom-line` / `left-line` / `right-line` | the amber frame lines (part of the master mask) | 4 | P |
+| `decorators` / `optional-common-decorators` | frame decorative chrome | 4 | P |
+| `left-edge-gauge` / `bottom-edge-gauge` / `right-edge-gauge` | the three RESERVED edge gauges (empty placeholders; a bound gauge widget when filled) | 3 | RSVD |
+| `row1-button-bar` | the top button bar; REBOOT / SHUT DOWN buttons (each publishes an intent) + firmware-version text | 7 | P + TXT |
+| `row2-tabs` | the console selector row (up to 7) | 5 | P |
+| `row2-tab1-label` .. `row2-tab7-label` | console labels (HELM / NAVCON / FTL / DRADIS / DAMAGE CONTROL / FIRE CONTROL / SECURITY) -> console keys | 5 | TXT |
+| `row2-tab-selected-artwork` | the selected-console PILL (`pill-overlay` style, #333333 @70%; DERIVED from `colonial_console/<station>/console`, not static — [CXC-CIC-TABROW]) | 5 | P (bound) |
+| `row3-tabs` | the sub-tab selector row (5, context-dependent; `filled-background` style #333333 @100% — [CXC-CIC-TABROW]) | 6 | P |
+| `row3-tab1-text` .. `row3-tab5-text` | sub-tab labels (e.g. HELM: WAYPOINT / HEADING / TRACK / VELOCITY / FUEL) -> sub-tab keys | 6 | TXT |
+| `row3-tabN-artwork` | per-sub-tab artwork/icon (kind by tag/inference — vector icon -> P, painted -> R) | 6 | P or R |
+| `row3-tab-status-bar` | the status-bar chrome | 6 | P |
+| `selected-tab-id-number` | the status id number ("04") -> bound to `colonial_console/<station>/status.id_number` | 6 | TXT (bound) |
+| `selected-tab-status-label` | the status label ("PLANETARY SURVEY ACTIVE") -> bound to `colonial_console/<station>/status.label` | 6 | TXT (bound) |
+| `in-show-non-interactive-animations` | the ambient animation GROUP (contains the four below) | 2 | GRP |
+| `screen-scan-stars` | the ambient scanline/star sweep | 2 | P (anim) |
+| `star-field-dynamic` | the dynamic starfield the reticule focuses within (a sprite field) | 2 | P (anim) |
+| `reticule` (+ `reticule-bullseye` / `reticule-indicators`) | the focus reticule; center BOUND to a focused-planet namespace; sub-parts are labeled primitive PARTS (never flattened) | 2 | P (bound) |
+| `area-for-vertical-arrow` | a reserved region for a vertical arrow indicator | 2 | P (region) |
+| `planet-image-area` (+ `sample-planet-image`) | the planet image display; BOUND to the focused planet | 2 | R |
+| `planet-resources-graph` | vertical resource BAR GRAPHS (native primitive bars/led_bar); BOUND | 2 | P (bound) |
+| `planet-description` | the planet text summary; BOUND | 2 | TXT (bound) |
+| `overlay-dialog-box` | the modal dialog overlay (topmost, drawn only when present) | 8 | P |
+
+- requirement: the scan MUST treat this table as the closed vocabulary for role/layer assignment; a name matching a table row inherits that row's z-layer + default kind; a name NOT in the table is preserved-and-flagged ([CXC-CIC-SVG-MAP]).
+- see-also: [CXC-CIC-WIDGET]
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## 6. Worked content example — HELM -> HEADING "Planetary Survey"
+
+### [CXC-CIC-CONTENT-PLANET-SURVEY] The reticule focuses a planet; three linked panels update from bus state
+
+- definition: the exemplar content screen (HELM sub-tab HEADING, "Planetary Survey") and the model for "content layer, loosely drawn, masked by the frame". The `reticule` ANIMATES to focus a planet in the `star-field-dynamic` ("planet focus"); on a focus change, THREE linked displays update from bus state — `planet-image-area` (the planet image, RASTER), `planet-resources-graph` (vertical resource bar graphs, PRIMITIVE), `planet-description` (a text summary). All bus-driven: a focused-planet namespace is the single source, and the three panels each SUBSCRIBE it.
+- focused-planet namespace (default STATED): `colonial_console/<station>/focus/planet` — STATE, payload the focused planet's `{id, image, resources, description}` (or a planet id the panels resolve). The reticule's CENTER is BOUND to this namespace's screen position; the engine TRANSLATES the reticule to that position (the DRADIS rotation-binding precedent — a bindable transform on the animation loop, [SPEC:CXC-RENDER] / the dradis needle). The reticule is drawn as a NATIVE PRIMITIVE ([CXC-CIC-SVG-MAP]); its bullseye/indicators are labeled parts.
+- requirement: the reticule MUST derive its focus position from `colonial_console/<station>/focus/planet`, not local guesswork; on a focus change the three panels MUST each update from the SAME namespace (state-on-the-bus, [CXC-BIND-PRINCIPLE]); the panels MUST render an explicit "no planet focused" state when the namespace is empty (preserve-and-flag: never a blank panel read as "no data"); and the content MUST be drawn LOOSELY, bounded by the frame mask ([CXC-CIC-WIDGET]), not by per-panel clipping. The focus namespace MUST be published change-driven ([CXC-PS-GRANULARITY]), not re-emitted every animation tick.
+- default: on mount with no `colonial_console/<station>/focus/planet` published, no planet is focused, the reticule rests at its base position, and the three panels show their "no planet focused" state; the reticule's focus animation eases to a new center on each focus change (the engine's animation loop, [CXC-R-ENGINE-ANIM]).
+- scenario:
+  - when: `colonial_console/<station>/focus/planet` is published with a new planet
+  - then: the reticule eases to that planet's position in the star field, the `planet-image-area` swaps to that planet's image asset, the `planet-resources-graph` bars re-fill to its resource values, and the `planet-description` text swaps — all three from the one namespace
+- scenario:
+  - when: a content sprite (a planet in the star field) sits at the edge of `screen-area`
+  - then: its overspill is masked by the amber frame layer above (loosely drawn, frame-bounded), never clipped by the content layer itself
+- scenario:
+  - when: `colonial_console/<station>/focus/planet` is empty (no focus)
+  - then: the three panels render an explicit "no planet focused" state, not blank panes
+- see-also: [CXC-CIC-WIDGET], [CXC-CIC-SVG-MAP]
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## 7. Aspect + multi-instance layout
+
+### [CXC-CIC-ASPECT-MULTI] 4:3 canon; two stacked instances on one portrait monitor, each an independent station
+
+- definition: a `colonial_console` designs at 4:3 aspect (in-universe colonial canon). MULTI-INSTANCE: a 16:9 monitor MOUNTED PORTRAIT (physically flipped to 9:16) hosts TWO stacked `colonial_console` instances — the show's plywood "two-square" mask illusion — each an INDEPENDENT duty station with its own station scope ([CXC-CIC-DUTY-STATION]).
+- native authoring resolution (STATED so scan-extraction + layout math have a fixed reference): the widget is RESOLUTION-INDEPENDENT — the artwork is SVG-scalable and the engine scales the design into whatever target region it lands in — but the artwork is AUTHORED at a CANONICAL native resolution of **1280x960** (2x the 4:3 base of 640x480). 1280x960 is the FIXED coordinate space the SVG scan ([CXC-CIC-SVG-MAP]) extracts against and the layout math resolves in; a target surface scales the 1280x960 design up or down to fit. A builder MUST treat 1280x960 as the authoring/native design space and MUST NOT hardcode 640x480 or any target-pixel size as the reference resolution.
+- mechanism (recommended, FLAGGED at [DD-CIC-TWO-UP]): ONE runtime scene spans the portrait display and stacks TWO `colonial_console` instances in a vertical `pixel_stack`/column, each bound to a DISTINCT `station` (e.g. `cic.1.helm`, `cic.1.nav`), so their namespaces never cross-wire ([CXC-CIC-DUTY-STATION] station scoping is what keeps the two independent). Each instance renders its own 4:3 design into its region; the physical plywood mask + the region assignment crop/letterbox each 4:3 design into the square window the plywood cuts.
+- requirement: each stacked instance MUST carry its own station id and subscribe ONLY its own `colonial_console/<station>/*` namespaces; a selection or focus on the UPPER station MUST NOT affect the LOWER; each instance MUST apply its OWN frame mask ([CXC-CIC-WIDGET]) within its region.
+- default: a single-display bring-up is ONE instance at station `station-0` (the [CXC-CIC-DUTY-STATION] default); the 2-up portrait layout is the explicit multi-instance case, opted into by a scene declaring two instances with two station ids. The per-region fit (letterbox vs crop of the 4:3 design into the plywood square) DEFAULTS to letterbox-to-fit and is FLAGGED for ratify ([DD-CIC-TWO-UP]).
+- scenario:
+  - when: a portrait-mounted 16:9 monitor runs the 2-up scene with stations `cic.1.helm` (top) and `cic.1.nav` (bottom)
+  - then: two independent CIC consoles render stacked; turning `cic.1.helm`'s console rotary swaps only the top console; `cic.1.nav` is unaffected
+- see-also: [DD-CIC-TWO-UP], [CXC-CIC-DUTY-STATION]
+- part-of: [SPEC:CXC-CIC]
+
+### [CXC-CIC-ROTARY-HOOKUP] The rotary-switch hookup is a SEPARATE maker slice (pattern-referenced, not spec'd here)
+
+- definition: the physical rotary switches (a 7-position for consoles, a 5-position for sub-tabs) -> ESP32 -> publish the station's selection index is a SEPARATE maker-project slice. It is PATTERN-REFERENCED to the dual-throttle rig (`render/examples/dual_throttle.compose.yaml`: pots -> ADC -> `publishes:` seam) — a rotary switch is the same shape as the throttle pot, reading a discrete position instead of a continuous wiper and publishing an INDEX instead of a value.
+- requirement (the seam this spec fixes; the electrical hookup is NOT spec'd here): the rotary firmware MUST publish to the station's selection namespace ([CXC-CIC-DUTY-STATION]) — a 7-pos rotary -> `colonial_console/<station>/console = {index}`, a 5-pos rotary -> `colonial_console/<station>/subtab = {index}` — paired to its station by a `station:` config binding, so it is indistinguishable from a touch tab to the shell ([CXC-CIC-NAV]). The hookup (switch -> GPIO -> index, the deadband/debounce, the `hookup:`/`publishes:` block) is authored in its own maker artifact mirroring the dual-throttle pattern.
+- default: absent the physical rotary, the shell is fully drivable by touch and by Intelligence publishes to the same namespaces (control-is-a-peer, [CXC-CIC-CREDO]); the rotary is ADDITIVE, never required.
+- see-also: [CXC-CIC-NAV], [CXC-CIC-DUTY-STATION]
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## 8. Tier scope
+
+### [CXC-CIC-TIER] Touchscreen/desktop-first; a single console screen MAY target a Qualia (recorded stance)
+
+- principle: per [CXC-PRIM-TIER-PARITY], a UX capability is not a landed PLATFORM capability until it renders on the embedded tier ([SPEC:CXC-EMBED-REACTIVE]) OR is EXPLICITLY scoped with a recorded reason. This node is that explicit stance (the escape hatch), not a silent omission.
+- stance (DRAFTED, FLAGGED at [DD-CIC-TIER]): the FULL `colonial_console` — a 7x5 CIC console with two tab rows, ambient animation, and the master mask — is TOUCHSCREEN/DESKTOP-FIRST (the Python/Skia console tier); duty stations are full touch displays. A full 7x5 CIC on an ESP32-class device is a WAIVER (the animation + two-level nav + mask stack exceed the constrained tier's budget). HOWEVER: a SINGLE console/screen (one content scene + a reduced frame, e.g. DRADIS alone, which already runs embedded via the reactive-render tier [CXC-ER-RENDER]) COULD target a Qualia-class surface. So the stance is: shell = console/desktop-first (waiver, recorded reason); a single reduced console screen = a legitimate embedded target, as a distinct reduced variant, not a claimed port of the full shell.
+- reason: the shell's value is the two-level navigation + the ambient/masked composite on a full touch display; that is a console/desktop surface. A single content scene (a DRADIS scope) is a different, smaller capability that the embedded tier already serves ([CXC-ER-DRADIS-BUS]).
+- consequence: the layer stack is ordinary render-engine primitives (`pixel_stack` + the mask compositing), so the DRAWING is contract-clean and a reduced single-screen variant is a back-end pass, not a rewrite; it is the FULL 7x5 shell's scope (nav + animation on a constrained device) that is console-bound.
+- upholds: [CXC-PRIM-TIER-PARITY]
+- see-also: [DD-CIC-TIER]
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## 9. Acceptance — machine signal + glass gate per surface
+
+### [CXC-CIC-VERIFY] Two-tier verdicts — every human-perceptible surface carries a glass gate
+
+- definition: each requirement carries a machine signal (`verify.machine`) AND, for a human-perceptible surface, an explicit human/glass gate (`verify.human`). A machine-green build with an unseen console is not accepted.
+
+| ID | Requirement | verify.machine | verify.human (glass) |
+|----|-------------|----------------|----------------------|
+| CIC-C1 | The layer stack composites in the [CXC-CIC-WIDGET] z-order; the frame masks loose content | a headless render at a given (console, subtab) asserts the 8 layers composite in order and that content overspilling `screen-area` is painted over by the amber frame (a pixel probe outside the cutout is frame-colored, not content) | on glass: the amber frame cleanly bounds loosely-drawn content; no content bleeds past the frame |
+| CIC-C2 | Selecting a console swaps BOTH the sub-tab row and the content ([CXC-CIC-NAV]) | a test publishes `colonial_console/<station>/console={index:2}` and asserts `row3-tabs` = FTL's 5 sub-tabs, the content region = FTL's scene set, and sub-tab resets to 0 | on glass: turning the console rotary / tapping a console tab swaps the whole lower screen |
+| CIC-C3 | Touch, rotary, and Intelligence drive selection IDENTICALLY ([CXC-CIC-CREDO]) | a test publishes an index directly (no widget) and asserts the same swap a touch produces; the shell's outcome is byte-identical across sources | on glass: touch AND a physical rotary both drive selection on a real duty-station display, indistinguishably |
+| CIC-C4 | CIC state is station-scoped; two stations never cross-wire ([CXC-CIC-DUTY-STATION]) | a test runs two stations, publishes to `colonial_console/cic.1.helm/console`, and asserts only the `cic.1.helm` shell reacts and `cic.1.nav` sees nothing | on glass (2-up): a selection on the upper station leaves the lower station unchanged |
+| CIC-C5 | A peripheral pairs to a station and publishes to its scope ([CXC-CIC-DUTY-STATION]) | a test pairs a rotary (`station: cic.1.helm`) and asserts it announces at `colonial_console/cic.1.helm/peripherals/<id>` and publishes to `colonial_console/cic.1.helm/subtab`; an unpaired peripheral publishes nothing to CIC | n/a (structural) |
+| CIC-C6 | The SVG scan is deterministic + preserves-and-flags unknown layers ([CXC-CIC-SVG-MAP]) | a test scans a fixture twice and asserts byte-identical scenes; a fixture with an unknown layer name yields an unmapped element + a lint warning, never a drop | n/a (structural) |
+| CIC-C7 | Artwork-kind: reticule -> primitive, planet image -> raster ([CXC-CIC-SVG-MAP]) | a test scans a fixture with `reticule` + `planet-image-area` + `planet-resources-graph` and asserts the reticule + resource bars emit native primitives (bullseye/indicators as labeled parts, no bitmap) and the planet image extracts to a CI16/PNG asset | on glass: the reticule + resource bars are crisp at any zoom (vector); the planet image is a raster |
+| CIC-C8 | Reticule focus drives the three linked panels from one namespace ([CXC-CIC-CONTENT-PLANET-SURVEY]) | a test publishes `colonial_console/<station>/focus/planet` and asserts the reticule center translates and all three panels (image/resources/description) update from that one namespace; empty -> explicit "no planet focused" state | on glass: focusing a planet moves the reticule and updates all three panels together |
+| CIC-C9 | 2-up portrait: two independent stations stack on one display ([CXC-CIC-ASPECT-MULTI]) | a headless render of the 2-up scene asserts two 4:3 instances stack with distinct station scopes and independent frame masks | on glass: a portrait-mounted monitor shows two independent CIC consoles; each drives independently |
+| CIC-C10 | Tier stance is recorded, not silent ([CXC-CIC-TIER]) | the spec carries the console/desktop-first stance + reason and an UPHOLDS edge to [CXC-PRIM-TIER-PARITY]; a single reduced console screen is noted as a distinct embedded variant | n/a (structural) |
+| CIC-C11 | ONE generalized tab-row, instanced twice with the ratified fills ([CXC-CIC-TABROW]) | a test asserts the SAME tab-row class instanced as row2 (`pill-overlay`, rgba 0x33,0x33,0x33,0xB3) and row3 (`filled-background`, rgba 0x33,0x33,0x33,0xFF); text-bound labels swap per console; a tab tap publishes the station-scoped index, byte-identical to a rotary publish; the indicator derives from the published index (no fork of TabWidget) | on glass: the selected console shows a 70%-opacity #333 pill; the selected sub-tab shows a 100% #333 filled background; labels change with the console |
+| CIC-C12 | `theme` is a SEMANTIC binding resolving to a base/highlight palette; the same shell re-themes with no fork ([CXC-CIC-WIDGET] / [DD-CIC-THEME]) | a test binds `theme = sickbay` (a semantic name, not hex) and asserts the shell RESOLVES it to that theme's (`base_color`, `highlight_color`) palette and renders the SAME `standard_ux_shape_element` through ONE code path (no per-theme fork); unbound, `theme` defaults to `cic` -> the amber `#762400` / `#CD671D`; a direct `base_color`/`highlight_color` bind still overrides for a one-off; the artwork is authored at native 1280x960 ([CXC-CIC-ASPECT-MULTI]) and the scan extracts against that reference | on glass: the CIC (`theme=cic`) amber console and a re-themed (e.g. `theme=sickbay`) console are visibly the SAME shell under two semantic theme names |
+| CIC-C13 (PROPOSED) | Each radio mode renders content from its OWN svg; absent art -> clean placeholder, never a shared/base group ([CXC-CIC-RADIO-MODE]) | a test forces the bundled art, publishes `colonial_console/<station>/radio={index:2,key:"EXT"}`, and asserts EXT targets + DRAWS its own `ext-view` group (NOT the generic `screen-scan-stars`, which is byte-identical across `colonial_base_ux.svg`/`ext_mode.svg`); EXT's screen pixels differ from STD's; DRADIS/CHRONO (no art) render a "<MODE> / screen not built" placeholder, never the base stars nor the nav content | on glass (David's verdict): navigating to EXT shows the external-view artwork from `ext_mode.svg` (not the base scan-stars); DRADIS/CHRONO show a clean placeholder until their art is authored |
+
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## 10. Design Decisions (DRAFTED — flagged for the architect to RATIFY)
+
+### [DD-CIC-STATION-IDENTITY] The duty-station identity + peripheral-pairing scheme
+
+- decision: how a duty station is identified and how a peripheral binds to it.
+- chosen: a station = a `{name, uuid}` whose SCOPE TOKEN is a dotted SEMANTIC path of the form `location.instance.role` (e.g. `raptor.1.pilot`, `sickbay.patient1`, `cic.1.helm`) — the SHAPE is fixed (a dotted hierarchical path, location-first), the values are open (not an enum); every colonial_console namespace carries `colonial_console/<station>/...` under the GENERALIZED `colonial_console/` scope root (generalized from the CIC-specific `cic/` root now that the widget is the fleet-wide `colonial_console`); a peripheral keeps its own `_device/<id>` identity ([CXC-ER-RESTART-BUS]) and is PAIRED to a station by a `station: <station>` config binding, after which it publishes to that station's namespaces and announces at `colonial_console/<station>/peripherals/<id>`. The station is a higher-level grouping (display + physical controls) than a single device. The station's `location` segment and its `theme` ([CXC-CIC-WIDGET]) often correlate but are DISTINCT bindings.
+- rationale: station-scoping every namespace is the ONLY thing that keeps multiple stations + their peripherals off each other's wires on one bus ([CXC-CIC-DUTY-STATION]); reusing `_device/<id>` for device identity and adding a `station:` binding for the grouping avoids inventing a second device-identity scheme. Prefix pattern-subscription (`colonial_console/<station>/*`) makes the isolation a bus-native filter ([SPEC:CXC-PATSUB]), not a client-side discard.
+- alternatives: (a) a flat global `colonial_console/console` with a station field in the payload — rejected: every station receives every selection and filters in the leaf, defeating [CXC-PS-INTENT]; (b) fold the station into `_device/<id>` — rejected: a station is a group of devices (a display + two rotaries), not one device.
+- invalidating_assumption: that gameplay wants multiple independent stations on one bus. If the program stays single-station, the `<station>` scope collapses to the `station-0` default and pairing is trivial — but the scope is cheap insurance that a multi-station build does not require a namespace migration.
+- status: proposed
+- part-of: [SPEC:CXC-CIC]
+
+### [DD-CIC-SVG-KIND] The two artwork-kinds (primitive vs raster) + the tag/infer contract
+
+- decision: how the scan decides whether an SVG element becomes a native primitive or a baked raster asset.
+- chosen: every element carries an ARTWORK-KIND — RENDER-AS-PRIMITIVE (vector geometry -> engine Canvas paths / bound widget, crisp + animatable + bindable) or EXTRACT-AS-RASTER (baked to CI16/PNG). David may TAG each element explicitly; else the scan INFERS (`*-image`/photo -> raster; vector strokes/fills -> primitive); an explicit tag wins. The reticule (+bullseye/indicators) is a PRIMITIVE with labeled parts, never bitmapped.
+- rationale: the reticule must animate + bind to the focused-planet namespace (the DRADIS rotation-binding precedent) — a bitmap cannot do that, so it MUST stay a primitive; planet photos have no vector form, so they MUST be raster. A per-element kind (tag-or-infer) is the deterministic contract that lets David author screen-by-screen without the scan guessing wrong. This directly resolves David's "combine the reticule for extraction?" — no: it is never extracted.
+- alternatives: (a) extract everything to raster (rejected: kills animation/binding/crispness on the reticule + bars); (b) render everything as primitives (rejected: planet photos + painterly textures have no vector form).
+- invalidating_assumption: that the reticule + resource bars remain vector-expressible and the planet art remains photographic. If a screen needs an animated raster or a vector planet, the tag overrides the inference — the contract already supports the per-element override.
+- status: proposed
+- part-of: [SPEC:CXC-CIC]
+
+### [DD-CIC-TWO-UP] The 2-up portrait multi-instance mechanism
+
+- decision: how two independent `colonial_console` instances coexist on one portrait-mounted display.
+- chosen: ONE runtime scene spanning the portrait display, stacking two `colonial_console` instances in a vertical `pixel_stack`/column, each bound to a DISTINCT station id, each applying its own frame mask within its region; the plywood two-square physical mask crops each 4:3 design into its square. Per-region fit defaults to letterbox-to-fit.
+- rationale: station-scoping ([CXC-CIC-DUTY-STATION]) already isolates the two instances' namespaces, so two instances in one scene is the minimal move — one process, one display, two stations — and the frame-as-master-mask handles each region's bounds. Two separate windows/processes would duplicate display management for no isolation gain (the bus scope already isolates them).
+- alternatives: (a) two separate runtime windows/processes tiled on the display (more process management, same isolation the bus scope already gives); (b) one instance with a "split" mode (rejected: forks the shell to serve a layout the composition model already expresses as two instances).
+- invalidating_assumption: that the two squares are independent stations (David's brief). If the two squares are ever ONE station's two views, this collapses to a single instance with two regions — but the brief says independent duty stations. The letterbox-vs-crop fit into the plywood square is the open sub-call flagged for ratify.
+- status: proposed
+- part-of: [SPEC:CXC-CIC]
+
+### [DD-CIC-TIER] The embedded-tier stance for the CIC shell
+
+- decision: whether the full `colonial_console` is an embedded-tier capability.
+- chosen: the FULL 7x5 shell is TOUCHSCREEN/DESKTOP-FIRST — a WAIVER from embedded parity with a recorded reason ([CXC-CIC-TIER]); a SINGLE reduced console screen (e.g. DRADIS alone) is a legitimate embedded target as a distinct reduced variant, NOT a claimed port of the full shell.
+- rationale: the shell's value (two-level nav + ambient animation + mask composite on a full touch display) is a console/desktop surface; a constrained device has neither the budget nor the touch real estate for a 7x5 two-tab-row console. But a single content scene already runs embedded ([CXC-ER-DRADIS-BUS] / [CXC-ER-RENDER]), so a reduced single-screen variant is real — it is just a different, smaller capability. Recording the stance (not omitting it) satisfies the tier-parity escape hatch ([CXC-PRIM-TIER-PARITY]).
+- alternatives: (a) claim full embedded parity (rejected: a 7x5 animated CIC exceeds the ESP32 budget — an over-claim); (b) console-only with NO embedded path (rejected: DRADIS already proves a single reduced screen renders embedded, so a blanket exclusion under-claims).
+- invalidating_assumption: that the constrained tier cannot host the full two-level nav + ambient composite. If a Qualia-S3-class full-framebuffer surface makes the full shell tractable embedded, the waiver is revisited and the full shell targets that tier.
+- status: proposed
+- part-of: [SPEC:CXC-CIC]
+
+### [DD-CIC-THEME] The colonial-console UX is fleet-wide + re-themable — a SEMANTIC `theme` binding, and the widget renamed to `colonial_console` (RATIFIED)
+
+- decision: whether the `standard_ux_shape_element` colonial-console UX is CIC-specific or a fleet-wide, re-themable shell; HOW theming is bound (raw color vs a semantic name); and what to do about the CIC-specific widget name.
+- chosen: the shell is a FLEET-WIDE THEMEABLE colonial-console; CIC is ONE instance (the DEFAULT theme). Theming is a SEMANTIC binding: a `theme` token ∈ {`cic` (default), `sickbay`, `flight_deck`, `raptor`, …extensible} is the PRIMARY interface, and the shell RESOLVES `theme` -> a (`base_color`, `highlight_color`) palette (`cic` -> `#762400` / `#CD671D`, the landed amber; sickbay/flight_deck/raptor -> TBD palettes). `base_color`/`highlight_color` remain BINDABLE as the RESOLVED output tokens and as a raw one-off override, but the semantic `theme` is the front door — named values, not raw hex ([CXC-CIC-WIDGET] theming). The widget is RENAMED to the generic `colonial_console` and the namespace scope root generalized from `cic/` to `colonial_console/`.
+- naming-generalization (RATIFIED + ACTIONED 2026-07-30): because the UX is fleet-wide, the widget carries the GENERIC name `colonial_console` with CIC / sickbay / flight_deck / raptor as themed INSTANCES. This amendment ACTIONS that rename in the PROSE + params (`cic_widget` -> `colonial_console`) and generalizes the namespace scope root (`cic/<station>/*` -> `colonial_console/<station>/*`). The NODE IDs and the DOC TAG are DELIBERATELY UNCHANGED — [SPEC:CXC-CIC] and every [CXC-CIC-*] / [DD-CIC-*] id stay EXACTLY as landed, because they are stable cross-reference targets (the decision graph — [DEC-CONVERTED-CAROUSEL-IS-THE-BSG-SIM-SHELL], [DEC-CAROUSEL-PLATFORM-CALLS-SETTLED] — and sibling specs point at them; renaming them would dangle those refs). The doc is named for its flagship use (CIC) but specs the generic `colonial_console`; CIC is the default theme.
+- rationale: the same colonial-console aesthetic recurs across many ship locations differing only in color, so the palette belongs on the SHELL, not baked into a CIC-specific constant — one shell, N themes, is strictly cheaper than N forked widgets and matches the reuse-by-reference discipline. A SEMANTIC `theme` name (not raw hex) is the right front door because a station operator/author reasons in named locations ("this is a raptor console"), not hex triples; the name resolves to a palette the shell owns, so palettes can be tuned centrally without touching every binding, while a raw `base_color`/`highlight_color` override stays available for a one-off. The generic `colonial_console` name matches the fleet-wide reality; keeping the node/doc ids stable keeps the rename a prose+param move, not a corpus-wide ref migration.
+- alternatives: (a) keep the palette CIC-specific and fork a new widget per location (rejected: N forks of one shell for a color change, exactly the duplication reuse-by-reference forbids); (b) expose ONLY raw `base_color`/`highlight_color` with no semantic layer (rejected: forces every station to carry hex and scatters the palette across bindings — the semantic `theme` name centralizes it); (c) rename the node/doc ids too (rejected: they are stable cross-reference targets; renaming dangles the decision graph + sibling specs — the prose/param rename gets the generalization without the ref breakage).
+- invalidating_assumption: that the fleet's colonial consoles vary ONLY by resolved palette over one shared structure. If a location needs a structurally different console (different frame, different nav), that is a different widget, not a theme — and the `theme` seam does not cover it. Also assumes a fixed set of named themes is workable; the token is extensible, so a new location adds a `theme` value + a palette entry, not a fork.
+- resolution: RATIFIED by David 2026-07-30 — rename the widget (prose + params) to `colonial_console`, adopt the semantic `theme` binding, and generalize the namespace scope root to `colonial_console/`. Node ids + doc tag [SPEC:CXC-CIC] unchanged. OPEN sub-item flagged for David: the `sickbay` / `flight_deck` / `raptor` theme palettes are named-but-TBD (the `sickbay` green `#1B5E20` / `#66BB6A` is a placeholder from the worked scenario, not ratified).
+- status: accepted
+- part-of: [SPEC:CXC-CIC]
+
+---
+
+## Relationships
+
+### Semantic
+
+[SPEC:CXC-CIC] USES [SPEC:CXC-RENDER]
+[SPEC:CXC-CIC] USES [SPEC:CXC-PATSUB]
+[SPEC:CXC-CIC] REALIZES [CXC-CREDO]
+[SPEC:CXC-CIC] RELATED_TO [SPEC:CXC-EMBED-REACTIVE]
+[CXC-CIC-CREDO] REALIZES [CXC-CREDO]
+[CXC-CIC-CREDO] UPHOLDS [CXC-BIND-PRINCIPLE]
+[CXC-CIC-WIDGET] USES [CXC-R-SPRITE-CONTAINER]
+[CXC-CIC-WIDGET] USES [CXC-R-DRAW-CONTRACT]
+[CXC-CIC-WIDGET] DEPENDS_ON [SPEC:CXC-RENDER]
+[CXC-CIC-NAV] DEPENDS_ON [CXC-CIC-DUTY-STATION]
+[CXC-CIC-NAV] RELATED_TO [CXC-ER-DRADIS-BUS]
+[CXC-CIC-NAV] REALIZES [CXC-CREDO]
+[CXC-CIC-TABROW] USES [CXC-R-WIDGET-CONTAINER]
+[CXC-CIC-TABROW] DEPENDS_ON [CXC-CIC-NAV]
+[CXC-CIC-TABROW] REALIZES [CXC-CREDO]
+[CXC-CIC-TABROW] USES [CXC-CIC-DUTY-STATION]
+[CXC-CIC-DUTY-STATION] USES [SPEC:CXC-PATSUB]
+[CXC-CIC-DUTY-STATION] USES [CXC-PS-GRANULARITY]
+[CXC-CIC-DUTY-STATION] RELATED_TO [CXC-ER-RESTART-BUS]
+[CXC-CIC-SVG-MAP] USES [CXC-R-DRAW-SVG]
+[CXC-CIC-SVG-MAP] USES [CXC-R-DRAW-CONTRACT]
+[CXC-CIC-SVG-TABLE] DEPENDS_ON [CXC-CIC-SVG-MAP]
+[CXC-CIC-SVG-TABLE] RELATED_TO [CXC-CIC-WIDGET]
+[CXC-CIC-CONTENT-PLANET-SURVEY] EXEMPLIFIES [CXC-CIC-WIDGET]
+[CXC-CIC-CONTENT-PLANET-SURVEY] USES [CXC-R-ENGINE-ANIM]
+[CXC-CIC-CONTENT-PLANET-SURVEY] UPHOLDS [CXC-BIND-PRINCIPLE]
+[CXC-CIC-CONTENT-PLANET-SURVEY] USES [CXC-PS-GRANULARITY]
+[CXC-CIC-ASPECT-MULTI] DEPENDS_ON [CXC-CIC-DUTY-STATION]
+[CXC-CIC-ASPECT-MULTI] USES [CXC-CIC-WIDGET]
+[CXC-CIC-ROTARY-HOOKUP] RELATED_TO [CXC-CIC-NAV]
+[CXC-CIC-ROTARY-HOOKUP] EXEMPLIFIES [CXC-PS-SEMANTIC-OWNERSHIP]
+[CXC-CIC-TIER] UPHOLDS [CXC-PRIM-TIER-PARITY]
+[CXC-CIC-TIER] RELATED_TO [SPEC:CXC-EMBED-REACTIVE]
+[CXC-CIC-VERIFY] RELATED_TO [CXC-CIC-WIDGET]
+[DD-CIC-STATION-IDENTITY] DOCUMENTS [CXC-CIC-DUTY-STATION]
+[DD-CIC-SVG-KIND] DOCUMENTS [CXC-CIC-SVG-MAP]
+[DD-CIC-TWO-UP] DOCUMENTS [CXC-CIC-ASPECT-MULTI]
+[DD-CIC-TIER] DOCUMENTS [CXC-CIC-TIER]
+[DD-CIC-THEME] DOCUMENTS [CXC-CIC-WIDGET]
+
+---
+
+**Version**: 0.2
+**Created**: 2026-07-30
+**Updated**: 2026-07-30 — [DD-CIC-THEME] ratified (David): widget renamed in prose/params `cic_widget` -> `colonial_console` (node ids + doc tag [SPEC:CXC-CIC] UNCHANGED); theming is a semantic `theme` binding ({cic default, sickbay, flight_deck, raptor, …} resolving to a base/highlight palette); namespace scope root generalized `cic/<station>/*` -> `colonial_console/<station>/*`; station ids are dotted semantic paths (`location.instance.role`).
+**Status**: Draft — foundational fleet-wide colonial-console shell (`colonial_console`, CIC being its default theme) for the BSG CIC sim program. Four judgment calls remain DRAFTED + FLAGGED for the architect to ratify: the duty-station identity/pairing scheme ([DD-CIC-STATION-IDENTITY]), the SVG-map two-kind tag/infer contract ([DD-CIC-SVG-KIND]), the 2-up portrait layout mechanism ([DD-CIC-TWO-UP]), and the embedded-tier stance ([DD-CIC-TIER]). The fleet-wide theming + widget-naming generalization ([DD-CIC-THEME]) is RATIFIED + actioned. Open sub-item for David: the sickbay / flight_deck / raptor theme palettes are named-but-TBD.

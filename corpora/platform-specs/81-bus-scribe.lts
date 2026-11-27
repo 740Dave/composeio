@@ -1,0 +1,277 @@
+---
+scope: "bus_scribe: a general ComposeBus peer that, given an active scribe_profile, records every matching message with a timestamp to an append-only JSONL stream — capture, timestamp, persist, nothing more. Design settled with David, 2026-08-20: the engine/policy split that keeps one scribe serving diagnostics, audit, replay AND game-narrative; the JSONL output contract as the public interface; the sink split between a live log and document_store's catalog of completed transcripts; why narrative provenance stays with the game, never the scribe; the scribe_profile registry-and-activation shape; COMPOSEIO_MQTT_BROKER placement; and the hard on-disk storage budget as a first-class structural requirement, not a knob. Elevated to build-spec precision 2026-08-25: MUST/SHOULD requirement predicates and a two-tier ([CXC-BUS-SCRIBE-ACCEPTANCE]) verify-machine/verify-human table over every ratified/resolved node, including a negative control proving the storage budget actually enforces under pressure; the activation-schema fork resolved; an MCP tool-declaration surface added."
+audience: "David (architect) — for ratify of the activation-schema resolution and of the one architect-delegated call in [CXC-BUS-SCRIBE-PROFILE]; the builder who will implement bus_scribe as the plugin/MCP tool-declaration fan-out this elevation makes possible; the audit that diffs this document against David's verbatim turns from the settling session and against a landed build once one exists."
+boundary: "IN: the engine/policy boundary and why bus_scribe never transforms; the JSONL record shape and its tail/fold consumption contract; the live-log vs document_store sink split; why narrative provenance stays with the game; scribe_profile's registry-in-bus_storage / activate-by-push shape and its exact v1 four-field schema; COMPOSEIO_MQTT_BROKER co-location with document_store; the hard storage budget as a structural (in-code) requirement WITH a negative-control test; the MCP tool-declaration surface bus_scribe exposes, reusing [CXC-MCP-TOOL-DECLARATION]'s shape; the acceptance table + evidence slots this elevation adds. OUT: bus_scribe 2.0 (pluggable raw-to-semantic transformer modules, real-time livestream of a game unfolding) — recorded here only as a deferred/rejected-for-v1 change block, not designed; the config-over-bus chunk/transfer protocol itself ([SPEC:CXC-CONFIG-BUS]'s subject, only cited); bus_storage's and document_store's own REST/API surfaces (consumed here at one seam each, not restated); any build or dispatch authorization — this is an elevated spec, not a build order, and landing/dispatch is a separate later step."
+not-this: "Not a ratified spec — [PLACEMENT UNRATIFIED], per [CXC-VISION-PLACEMENT]: written into corpora/platform-specs because its two nearest relatives (61, 80) already sit there UNRATIFIED, not because the placement was ruled. Not a design capture any longer on the load-bearing build surface — every ratified/resolved node now has a MUST/SHOULD-testable requirement, a verify-machine criterion, and (where a human/glass gate applies) a verify-human criterion, in [CXC-BUS-SCRIBE-ACCEPTANCE]. Not a build authorization — elevation to build-spec precision ratifies WHAT to build precisely enough that a builder need not guess; it does NOT authorize a build or a dispatch, which remains a separate, later step. Not an assertion that every open point is decided — all three forks named in [CXC-BUS-SCRIBE-OPEN-FORKS] are now resolved (retention-defaults and eviction-policy-details by David 2026-08-20; activation-schema by this elevation's architect-ratified call, [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA], citing this dispatch, not David's verbatim words) — no open fork remains in this document as of this revision. As of 2026-08-25 (`DEC-BUS-SCRIBE-IS-DEFAULT-COMPOSESERVER-PLUGIN-2026-08-25`, David's ruling), [CXC-BUS-SCRIBE-DEPLOYMENT] is SUPERSEDED: bus_scribe is a default, always-present, per-tenant ComposeServer plugin, not a standalone bare-Python fleet service; its MCP surface ([CXC-BUS-SCRIBE-MCP-SURFACE]) now JOINS the ComposeServer umbrella (`bus_scribe.{tool}`) rather than standing as its own `type: mcp` connector — the tension this node previously flagged as unresolved is DECIDED, not open. Not an assertion that every node here is David's stated word — each node keeps or receives an explicit `provenance:`/`status:` property per [DX-INTERPRETATION-IS-AN-INFERENCE]: pre-existing nodes marked `status: ratified` are unchanged; the acceptance table, evidence slots and MCP surface are `architect-recommendation`; the activation-schema resolution is `architect-ratified`. Not a claim this has ever run — every POST-integration evidence slot at [CXC-BUS-SCRIBE-EVIDENCE] is the `EMPTY` sentinel per [DX-SPEC-CARRIES-ITS-EVIDENCE]; bus_scribe has no source in-repo as of this elevation."
+depends-on: [61-config-over-bus.lts, 73-bus-storage.lts, 90-composeserver-mcp-surface.lts]
+domain: plt.cux
+confidentiality: internal-only
+artifact-readiness: design-review
+status: draft
+created: 2026-08-20
+updated: 2026-08-25
+---
+# Bus Scribe — content settled with David, PLACEMENT UNRATIFIED [SPEC:CXC-BUS-SCRIBE]
+
+> bus_scribe is a general ComposeBus peer that, given an active `scribe_profile`, records every message matching that profile's namespace-set with a timestamp — capture, timestamp, persist, and nothing else. It never synthesizes or transforms. One dumb engine serves diagnostics, audit, replay and game-narrative alike, because the difference between those uses is entirely in which profile is active and what reads the output afterward, never in the engine. The output IS the public interface: an append-only JSONL stream a downstream consumer tails or folds with zero scribe involvement.
+
+---
+
+## 1. The engine/policy boundary — RATIFIED
+
+### [CXC-BUS-SCRIBE-ENGINE] Dumb general engine — capture, timestamp, persist; it never synthesizes or transforms
+
+- decision: bus_scribe is a general bus peer. Given an active `scribe_profile`, it records every message matching that profile's namespace-set, with a timestamp. Capture plus timestamp plus persist — nothing more.
+- never-transforms: the engine NEVER synthesizes or interprets a message. It does not derive a new fact, does not summarize, does not join records across namespaces. What arrives is what is written.
+- one-engine-many-uses: one scribe serves diagnostics, audit, replay, AND game-narrative. The difference between those uses lives entirely in which `scribe_profile` is active and in what reads the JSONL afterward — never in the engine.
+- realizes: [DX-ENGINE-VS-POLICY] — the mechanism every deployment needs (capture-and-persist) is the engine; the mechanism only one deployment needs (what a game does with narrative events, what an operator does with a diagnostic replay) is policy, and it stays downstream, behind the JSONL seam.
+- status: ratified
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-BUS-SCRIBE-V2-DEFERRED], [CXC-BUS-SCRIBE-NARRATIVE-SOURCE]
+
+### [CXC-BUS-SCRIBE-V2-DEFERRED] Pluggable transformers and real-time livestream are explicitly OUT OF SCOPE for v1
+
+- change: bus_scribe 2.0 — pluggable transformer modules (raw-to-semantic) and real-time livestream of a game unfolding — is deferred out of v1 scope, not designed here.
+- context_for_change:
+  prior_state: an early framing could have folded transformation and livestream into the scribe itself, since it already sees every matching message.
+  reasoning: the engine/policy split ([CXC-BUS-SCRIBE-ENGINE]) means transformation belongs downstream of the JSONL seam, not inside the engine that produces it.
+  rejected_alternative: build raw-to-semantic transformer modules and a livestream path into bus_scribe now, as part of v1.
+  quote: David — "may not be needed ever, or may be better handled by a different product that consumes the output of bus_scribe."
+  invalidating_assumption: that a downstream consumer of the JSONL stream cannot cheaply provide transformation and livestream on its own. If a concrete v1 use case is blocked without them, this deferral is the first thing to re-open.
+  implication: v1 ships with zero transform/livestream code in the engine; a bus_scribe-2.0 plugin or an entirely separate product may consume the JSONL output later, with zero scribe involvement either way.
+- status: rejected-for-v1
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-BUS-SCRIBE-ENGINE], [CXC-BUS-SCRIBE-OUTPUT]
+
+---
+
+## 2. The output contract — RATIFIED
+
+### [CXC-BUS-SCRIBE-OUTPUT] The output IS the contract — an append-only JSONL stream of raw records
+
+- decision: bus_scribe's output is an append-only **JSONL** stream. Each line is a raw record: `{ts, namespace, value, scope, source}`.
+- public-interface: the stream is a public interface, not an implementation detail. A downstream product — a bus_scribe-2.0 plugin, or an entirely separate product — consumes it by `tail -f` for livestream or by folding the file for replay, with ZERO scribe involvement.
+- consequence: because the contract is the file, not an API, any consumer that can read a JSONL file can consume bus_scribe output, forever, independent of what bus_scribe itself later becomes.
+- status: ratified
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-BUS-SCRIBE-V2-DEFERRED], [CXC-BUS-SCRIBE-SINK-SPLIT]
+
+---
+
+## 3. The sink split — RATIFIED
+
+### [CXC-BUS-SCRIBE-SINK-SPLIT] Live sink is JSONL; document_store CATALOGS completed transcripts — diagnostics vs narrative differ only in retention
+
+- decision: the live sink is an append-only JSONL log, always. document_store CATALOGS completed transcripts for retrieval and replay — a completed transcript IS a document once it stops being written to.
+- mechanism-is-one: diagnostics and narrative differ ONLY in retention/rotation policy, never in mechanism. A diagnostic stream and a game-narrative transcript are both JSONL, both written by the same engine, both catalogable once complete.
+- reuses: document_store as the catalog of completed transcripts; bus_storage as the config-over-bus store the `scribe_profile` registry lives in ([CXC-BUS-SCRIBE-PROFILE]).
+- status: ratified
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-BUS-SCRIBE-OUTPUT], [CXC-BUS-SCRIBE-BUDGET]
+
+---
+
+## 4. Narrative provenance — RATIFIED
+
+### [CXC-BUS-SCRIBE-NARRATIVE-SOURCE] Narrative comes from the GAME, not the scribe — the game owns the semantics
+
+- decision: the game emits already-narrative events on `game/event/*`; it owns the semantics (it knows an attack happened). The scribe records those events raw, alongside whatever state namespaces the active profile names — it does not infer that a narrative event occurred.
+- realizes: [DX-LEAF-OWNS-BEHAVIOR] — the cheapest node that can fully own a behaviour owns all of it. The game is the node that knows its own semantics; the scribe is not, and must not be asked to reconstruct them from raw state.
+- consequence: a bus_scribe transcript of a game session is exactly as narrative as the game chose to make its own bus traffic. The scribe adds nothing and loses nothing.
+- status: ratified
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-BUS-SCRIBE-ENGINE]
+
+---
+
+## 5. The profile registry and activation — RATIFIED, with one architect-delegated call
+
+### [CXC-BUS-SCRIBE-PROFILE] scribe_profile = {namespace-set, sink, format, retention} — defined in bus_storage, activated by a bus push
+
+- decision: `scribe_profile` is a structure of `{namespace-set, sink, format, retention}`. It is DEFINED in **bus_storage**, at `scribe/profiles/<name>`, and ACTIVATED by a `_scribe/<name>/activate` push — announce-then-bind, control-is-a-peer, matching the `_device/<id>/transport` precedent in [SPEC:CXC-CONFIG-BUS].
+- define-in-registry-activate-by-push: defining a profile and activating it are two separate actions on two separate namespaces. A profile can exist in the registry, unused, until something pushes an activation for it.
+- architect-decision: the choice of bus_storage over document_store for WHERE a profile is defined is this architect's call, delegated by David — "document_store or bus_storage, you make the call" — not David's own stated preference. Rationale: a `scribe_profile` is CONFIG, and bus_storage is the config-over-bus store ([CXC-BUSSTORE-API-CONFIG]); document_store holds the OUTPUT documents (completed transcripts, [CXC-BUS-SCRIBE-SINK-SPLIT]), not the config that produced them. Config-in, documents-out.
+- inference-marker: the storage-location call above is architect-inference from David's delegation, per [DX-INTERPRETATION-IS-AN-INFERENCE] — it must be confirmed or corrected before it is cited as settled beyond "David delegated this choice."
+- status: ratified
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-BUS-SCRIBE-OPEN-FORKS]
+- registry-confirmed: David 2026-08-20 CONFIRMED bus_storage as the scribe_profile registry ("registry = bus storage, agreed") — the architect-inference flagged in inference-marker is now RATIFIED, no longer pending confirmation. The config-in/documents-out rationale stands as David's ratified call.
+
+---
+
+## 6. Deployment — SUPERSEDED
+
+### [CXC-BUS-SCRIBE-DEPLOYMENT] Default, always-present, per-tenant ComposeServer plugin — supersedes the standalone bare-Python fleet-service shape
+
+- decision: bus_scribe is a DEFAULT (default_loaded, always-present) PER-TENANT ComposeServer plugin under [CXC-CS-PLUGIN-CONTRACT] / [CXC-CS-DEFAULT-PLUGINS] — NOT a standalone bare-Python fleet service. It runs inside the ComposeServer on COMPOSEIO_MQTT_BROKER alongside the document_store plugin, so the completed-transcript handoff stays local (co-location intent preserved). Per-tenant per [CXC-CS-MULTI-TENANCY] (a scribe must never cross the tenant membrane). It MAY pin its isolation floor to `subprocess` per [CXC-CS-ISOLATION-FLOOR] (crash/disk-fault isolation), never `inprocess`. It declares a `requires:` storage floor + `ready:` predicate per [CXC-CS-REQUIRES-FLOOR], so a deployment with no durable store PARKS it loudly rather than degrading silently.
+- why-colocated: document_store is the catalog target for completed transcripts ([CXC-BUS-SCRIBE-SINK-SPLIT]); co-locating the scribe with its own sink keeps the completed-transcript handoff local rather than crossing the bus a second time. Under the plugin shape this co-location is now IN-PROCESS-SERVER (both plugins loaded into the same ComposeServer on COMPOSEIO_MQTT_BROKER) rather than sibling fleet processes, which strengthens the same locality intent.
+- superseded-by: [DEC-BUS-SCRIBE-IS-DEFAULT-COMPOSESERVER-PLUGIN-2026-08-25]
+- status: superseded
+- provenance: david-ruling — the plugin shape, the default/always-present property, and the supersession of the standalone fleet-service deployment (`DEC-BUS-SCRIBE-IS-DEFAULT-COMPOSESERVER-PLUGIN-2026-08-25`, David 2026-08-25); architect-recommendation — the per-tenant scoping, the `subprocess` isolation-floor pin, and the `requires:`/`ready:` storage-floor consequence, per [DX-INTERPRETATION-IS-AN-INFERENCE].
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+
+---
+
+## 7. Storage budget — RATIFIED, first-class structural requirement
+
+### [CXC-BUS-SCRIBE-BUDGET] A hard on-disk budget enforced IN CODE — not a knob, and it must be provably enforced
+
+- decision: bus_scribe enforces a hard total on-disk storage budget IN CODE. (a private host name, not published) has a small drive today and needs a structural guarantee it will not be filled; a spinny disk is planned but not yet present.
+- structural-not-a-knob: a limit any caller can exceed is not a limit. This requirement needs a negative-control test that proves eviction or refusal actually fires under pressure, not merely a config value that is trusted to be honored.
+- per-class-policy: DIAGNOSTIC streams are high-volume and use ring-buffer semantics — rotate and evict-oldest within a per-profile cap. NARRATIVE transcripts are naturally session-bounded and small, so they do not need the same eviction pressure.
+- loud-under-pressure: the budget publishes a loud bus alert under pressure (e.g. `_scribe/storage/pressure`) — observable, never a silent disk-full. This mirrors the loud-expiry discipline [SPEC:CXC-CONFIG-BUS] applies to its own TTL backstop.
+- future-proof: the budget is a config VALUE, raised when the spinny disk lands — no code change required to raise the ceiling, only to enforce whatever ceiling is configured.
+- status: ratified
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-BUS-SCRIBE-SINK-SPLIT]
+
+---
+
+## 8. Open forks — NOT silently resolved
+
+### [CXC-BUS-SCRIBE-OPEN-FORKS] Three points named so they are not silently decided — ALL THREE NOW RESOLVED
+
+- retention-defaults: the retention/rotation DEFAULT values are open — the budget's total bytes, the per-profile caps, and the rotation size/time thresholds are none of them settled.
+- eviction-policy-details: the exact eviction policy per class is open — evict-oldest (diagnostic) vs refuse-new-with-alert, and whether a completed narrative transcript is PRUNED from the live JSONL log once cataloged to document_store. This interacts directly with [CXC-BUS-SCRIBE-BUDGET], since document_store is ALSO on (a private host name, not published) and shares the same drive.
+- activation-schema: the exact activation-intent shape and the `scribe_profile` schema itself (beyond the four named fields in [CXC-BUS-SCRIBE-PROFILE]) are open.
+- open-for-ratify: retention-defaults and eviction-policy-details are RATIFIED by David 2026-08-20; activation-schema REMAINS OPEN. Retention/eviction DEFAULTS accepted as proposed ("retention/eviction defaults = fine"). Narrative transcripts ARE pruned from the live JSONL log once cataloged to document_store ("yes, prune narrative transcript from the live log once it's cataloged to the document store"), resolving the eviction-policy prune question; diagnostic streams keep evict-oldest per [CXC-BUS-SCRIBE-BUDGET]. Still open: the exact activation-intent shape and the scribe_profile schema beyond the four named fields.
+- resolved-2026-08-25: activation-schema is now RESOLVED by this elevation's architect-ratified call — [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA]. The v1 `scribe_profile` schema is exactly the four named fields in [CXC-BUS-SCRIBE-PROFILE], no more (YAGNI); activation reuses the `_device/<id>/transport` config-over-bus precedent. No fork named in this node remains open as of this revision — a numeric value for retention-defaults' actual bytes/thresholds is a residual gap this elevation did NOT fill (the prose above records that David accepted "as proposed," but no proposed numbers are captured anywhere in this document); flagged for the architect, not fabricated here.
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-BUS-SCRIBE-PROFILE], [CXC-BUS-SCRIBE-BUDGET], [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA]
+
+---
+
+## 9. Activation schema — RESOLVED (architect-ratified, citing this elevation dispatch)
+
+### [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA] v1 `scribe_profile` schema is EXACTLY four fields, no more until a use case demands it; activation reuses the `_device/<id>/transport` config-over-bus precedent
+
+- decision: the v1 `scribe_profile` schema is EXACTLY the four named fields already stated in [CXC-BUS-SCRIBE-PROFILE] — `{namespace-set, sink, format, retention}` — and no more. YAGNI: no additional schema field is added speculatively; a fifth field is added only when a concrete use case demands it.
+- field-shapes: (MUST, testable — the schema a builder implements)
+  - namespace-set: list of str — bus namespace glob patterns this profile matches; the set the engine subscribes on activation.
+  - sink: enum of diagnostic or narrative — selects the per-class retention/eviction policy [CXC-BUS-SCRIBE-BUDGET] applies (ring-buffer evict-oldest for diagnostic; session-bounded, pruned-on-catalog for narrative).
+  - format: enum of jsonl only — v1 ships exactly one output format; the field exists for forward-compatibility, not because a second format is designed, per [CXC-BUS-SCRIBE-V2-DEFERRED].
+  - retention: a mapping of max-bytes (int), rotate-by (enum of size or time), and rotate-threshold (number) — the per-profile cap and rotation trigger, bounded within the total on-disk budget [CXC-BUS-SCRIBE-BUDGET] enforces.
+- activation-shape: (MUST, testable) activation is a bus PUSH on `_scribe/<name>/activate`, carrying no payload beyond the activation intent itself — the profile's own fields are already resolved at `scribe/profiles/<name>` in bus_storage, so activation does not re-transmit them. This is the SAME announce-then-bind, control-is-a-peer shape [SPEC:CXC-CONFIG-BUS]'s `_device/<id>/transport` precedent already established ([CXC-CONFIG-BUS-ADDRESSING], [CXC-CONFIG-BUS-STRATEGY]), applied to a profile name instead of a device id.
+- rejects-undeclared-fields: (MUST, testable) a profile document defining a field outside the four named ones MUST be rejected at DEFINE time, never silently accepted as an ad hoc schema extension — mirroring [MODEL-ID]'s "a duplicate id is an error, not a merge" discipline applied to schema drift instead of identity.
+- rationale: the schema stays at exactly these four fields because nothing in the settled design (engine/policy split, sink split, narrative provenance, budget) requires more, and adding speculative fields before a use case names them contradicts the deferred-v2 discipline [CXC-BUS-SCRIBE-V2-DEFERRED] already applies to transformation and livestream. Reusing the `_device/<id>/transport` shape rather than inventing a new activation grammar is [DX-NARROW-WAIST] applied to this seam.
+- change: this closes the third and final fork in [CXC-BUS-SCRIBE-OPEN-FORKS] — the exact activation-intent shape and the scribe_profile schema itself.
+- context_for_change:
+  prior_state: "[CXC-BUS-SCRIBE-OPEN-FORKS] left the activation-intent shape and any schema fields beyond the four named ones open, pending ratify."
+  reasoning: "YAGNI — the four fields already ratified in [CXC-BUS-SCRIBE-PROFILE] fully cover every ratified requirement in this document; no additional field is load-bearing for v1. Activation reuses the `_device/<id>/transport` precedent rather than a bespoke shape, keeping one config-over-bus idiom instead of two."
+  rejected_alternative: "a richer schema (e.g. separate filter predicates beyond namespace-set, or a distinct activation payload carrying profile fields redundantly instead of by reference to the registry entry)."
+  invalidating_assumption: "that no v1 use case needs a filter finer than a namespace-set, and that activation-by-name is sufficient (never needs an inline override of a defined profile's fields at activation time). If a concrete use case needs either, this schema reopens."
+  implication: "a builder implements exactly this shape with no guessing; a fifth field is a NEW change block here, not a silent addition."
+- status: resolved
+- provenance: architect-ratified — this dispatch's explicit instruction, not David's verbatim words; recorded per [DX-INTERPRETATION-IS-AN-INFERENCE].
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-BUS-SCRIBE-PROFILE], [CXC-BUS-SCRIBE-OPEN-FORKS], [CXC-CONFIG-BUS-ADDRESSING], [DX-NARROW-WAIST]
+
+---
+
+## 10. MCP tool-declaration surface — architect-recommendation
+
+### [CXC-BUS-SCRIBE-MCP-SURFACE] bus_scribe declares four MCP tools using [CXC-MCP-TOOL-DECLARATION]'s `McpToolDecl` shape, named for an Intelligence consumer
+
+- requirement: (MUST, testable) bus_scribe exposes an MCP tool surface reusing [CXC-MCP-TOOL-DECLARATION]'s `McpToolDecl` shape — `name`, `description`, `input_model`, `direction`, `namespace_mapping`, `read_mode` (where applicable), `idempotent` — the SAME schema every ComposeServer plugin's tools derive from, so a builder or agent reading bus_scribe's tool list needs no second convention.
+- naming-for-intelligence: (MUST, david-ruling) every tool name, parameter name, and description MUST make the tool's purpose unambiguous to an agent reading a tool list, favoring self-describing verbosity over human-API terseness, per [DEC-MCP-SURFACES-NAMED-FOR-INTELLIGENCE-2026-08-25] — David 2026-08-25, verbatim: "all API surfaces need to be named such that their purpose is clear to an Intelligence, even if much longer than a normal human-oriented API surface would be." The four tool names below already apply this.
+- note-on-deployment-shape: (resolved 2026-08-25, cites [CXC-BUS-SCRIBE-DEPLOYMENT] and `DEC-BUS-SCRIBE-IS-DEFAULT-COMPOSESERVER-PLUGIN-2026-08-25`) the tension this node previously flagged — this document's own dispatch phrasing ("built as a ComposeServer plugin") against [CXC-BUS-SCRIBE-DEPLOYMENT]'s then-ratified standalone-fleet-service shape — is now DECIDED, not open. bus_scribe's four MCP tools JOIN the ComposeServer UMBRELLA: aggregated and exposed as `bus_scribe.{tool}` per [CXC-MCP-UMBRELLA-RATIFIED] / [CXC-MCP-TOOL-DECLARATION], declared on bus_scribe's pydantic plugin manifest as the fourth derived artifact — NOT a standalone `type: mcp` connector per [CXC-MCP-CONNECTOR-NOT-PLUGIN]. The four tool declarations below, their `input_model`s, and the naming-for-intelligence discipline ([DEC-MCP-SURFACES-NAMED-FOR-INTELLIGENCE-2026-08-25]) are UNCHANGED — only the aggregation/connector question resolves. BS-V10 stays valid but now realizes through the umbrella rather than through a standalone connector.
+- tool-1: `define_named_scribe_profile_in_bus_storage_registry` — direction: write; input_model: `DefineScribeProfileArgs {profile_name: str, namespace_set: list[str], sink: enum(diagnostic, narrative), format: enum(jsonl), retention: {max_bytes: int, rotate_by: enum(size, time), rotate_threshold: number}}`; namespace_mapping: `{publishes: ["scribe/profiles/{profile_name}"]}`; idempotent: true; description: "Define or replace a named scribe_profile in the bus_storage registry. Does not activate it — a profile can exist, unused, until a separate activation call names it. The four fields are exactly [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA]'s ratified schema, no more."
+- tool-2: `activate_scribe_profile_by_name` — direction: write; input_model: `ActivateScribeProfileArgs {profile_name: str}`; namespace_mapping: `{publishes: ["_scribe/{profile_name}/activate"]}`; idempotent: false (unconfirmed whether re-activating an already-active profile is safe to retry; a builder question, not fabricated here); description: "Activate a previously-defined scribe_profile by name, pushing `_scribe/<name>/activate` so bus_scribe begins recording that profile's namespace-set. MUST fail loudly, named, if no profile with that name exists in the registry — never activates a fabricated profile."
+- tool-3: `list_defined_scribe_profiles_in_registry` — direction: read; read_mode: query; input_model: `ListScribeProfilesArgs {}` (no fields); namespace_mapping: resolves via bus_storage's own registry-listing seam (see resolution-note below — the exact mechanism is undetermined here); idempotent: true; description: "List every scribe_profile currently defined in the bus_storage registry, independent of which (if any) are currently active. Read-only."
+- tool-4: `list_completed_scribe_transcripts_in_document_store` — direction: read; read_mode: query; input_model: `ListScribeTranscriptsArgs {profile_name: optional str}`; namespace_mapping: resolves via document_store's own catalog-listing seam (see resolution-note below); idempotent: true; description: "List completed (cataloged) scribe transcripts recorded in document_store — the sink named in [CXC-BUS-SCRIBE-SINK-SPLIT]. Read-only."
+- resolution-note: (architect-recommendation, an open point this elevation surfaces rather than resolves) tools 3 and 4 read from bus_storage's and document_store's own listing/catalog seams, which this document's `boundary` explicitly does not respecify. Whether that seam is reachable as a `query`-mode bus round-trip (fitting [CXC-MCP-INVOKE-READ]'s standard table-driven decode) or is a direct REST proxy inside bus_scribe's own MCP connector code (outside that standard mechanism) is UNDETERMINED here and is a builder decision against bus_storage's/document_store's actual APIs, not fabricated by this spec.
+- reuse-by-reference: the MCP JSON-RPC tool-list/tool-call wire format itself, and the JSON-schema-from-`input_model` derivation, are owned by [CXC-MCP-TOOL-DECLARATION] and [CXC-MCP-CONNECTOR-NOT-PLUGIN] and are not respecified here.
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-MCP-TOOL-DECLARATION], [CXC-MCP-CONNECTOR-NOT-PLUGIN], [CXC-BUS-SCRIBE-DEPLOYMENT], [CXC-BUS-SCRIBE-PROFILE], [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA], [DEC-MCP-SURFACES-NAMED-FOR-INTELLIGENCE-2026-08-25]
+
+---
+
+## 11. Acceptance — machine signal + glass gate
+
+### [CXC-BUS-SCRIBE-ACCEPTANCE] The engine's two-tier verdict — a machine signal AND, for every failure class human eyes can catch that a narrow test cannot, an explicit human/glass gate
+
+- definition: per [DX-SPEC-CARRIES-ITS-EVIDENCE] and the WS/MCP precedent ([CXC-WS-ACCEPTANCE], [CXC-MCP-ACCEPTANCE]), machine-green alone never accepts this engine — a storage budget that is merely a trusted config value, or a narrative transcript pruned before it is safely cataloged, are exactly the failure classes a narrow unit test can pass while the real deployment is unsafe. [CXC-VISION-EPISTEMICS] applies throughout this table.
+- requirement: BS-V7 (the storage-budget negative control) is the FIRM gate of this table — (a private host name, not published) has a small drive TODAY and shares it with document_store ([CXC-BUS-SCRIBE-OPEN-FORKS]'s eviction-policy-details note); a budget that is enforced only by convention and never proven to fire under pressure is UNSAFE to ship, because a full disk on (a private host name, not published) degrades document_store too, not only bus_scribe. This mirrors [CXC-WS-ACCEPTANCE]'s WS-V4 / [CXC-MCP-ACCEPTANCE]'s MCP-V4 firm-gate discipline exactly.
+
+| ID | Requirement | verify-machine | verify-human (glass) |
+|----|-------------|-----------------|------------------------|
+| BS-V1 | Dumb engine — capture, timestamp, persist; never synthesizes or transforms ([CXC-BUS-SCRIBE-ENGINE]) | a fixture publishes N messages across >=2 namespaces under an active profile; the JSONL output contains exactly N records, each byte-identical in `value` to the published payload, with no derived/joined/summarized field ever present | none required |
+| BS-V2 | Output is append-only JSONL, `{ts, namespace, value, scope, source}` per line ([CXC-BUS-SCRIBE-OUTPUT]) | `tail -f` and a full-file fold both parse every line as one JSON object carrying exactly those five keys; a consumer process with zero scribe-specific code parses the stream | none required |
+| BS-V3 | Live sink is JSONL always; document_store catalogs a transcript once it stops being written to ([CXC-BUS-SCRIBE-SINK-SPLIT]) | closing/rotating a live JSONL stream triggers a document_store catalog write within a bounded time; the catalog entry references the same records; a still-open (in-progress) stream is NEVER visible in document_store's catalog | operator confirms a completed session's transcript is retrievable from document_store shortly after the session ends |
+| BS-V4 | Narrative provenance stays with the game; the engine never infers a narrative event from raw state ([CXC-BUS-SCRIBE-NARRATIVE-SOURCE]) | a fixture publishes raw state changes on a profile's namespace-set WITHOUT any `game/event/*` message; the resulting JSONL contains zero synthesized narrative records — every record's `value` matches a message that was actually published | none required — machine-observable by construction, the engine has no narrative-inference code path to exercise |
+| BS-V5 | `scribe_profile` DEFINED in bus_storage at `scribe/profiles/<name>`, ACTIVATED by a separate `_scribe/<name>/activate` push ([CXC-BUS-SCRIBE-PROFILE], [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA]) | a profile defined but never activated records nothing; the SAME profile activated by name begins recording within one bus round-trip; activating an undefined name fails loudly, named, never silently no-ops | none required |
+| BS-V6 | Runs as a default_loaded, per-tenant ComposeServer plugin, co-located with the document_store plugin on COMPOSEIO_MQTT_BROKER ([CXC-BUS-SCRIBE-DEPLOYMENT]) | loaded via the ComposeServer plugin loader as a default plugin, one instance per tenant bus; the completed-transcript handoff to the document_store plugin stays in-server/local (never crosses the bus a second time) | operator confirms bus_scribe is a LOADED PLUGIN (not a standalone process) in the ComposeServer on COMPOSEIO_MQTT_BROKER |
+| BS-V7 | A hard total on-disk storage budget is enforced IN CODE, never merely a trusted config value ([CXC-BUS-SCRIBE-BUDGET]) | NEGATIVE CONTROL, required: a fixture drives a diagnostic-class profile's disk usage up to its configured cap; the write path evicts-oldest (or refuses, per class) BEFORE exceeding the cap, and `_scribe/storage/pressure` publishes; a PAIRED control run with the SAME fixture and the cap set to 10x the payload size must NOT evict, refuse, or publish the pressure alert — proving enforcement is actually gated by the configured value, not an unconditional/always-firing stub | operator watches (a private host name, not published)'s disk usage during a sustained load test and confirms it never exceeds the configured budget, with a visible bus alert as it approaches the cap |
+| BS-V8 | Diagnostic streams evict-oldest under a per-profile ring-buffer cap; narrative transcripts are pruned from the live log once cataloged to document_store ([CXC-BUS-SCRIBE-OPEN-FORKS]) | a diagnostic-class fixture confirms oldest-record eviction under pressure; a narrative-class fixture confirms the live JSONL entry is removed within a bounded time after its document_store catalog write succeeds, and NOT before | none required |
+| BS-V9 | v1 `scribe_profile` schema is exactly the four named fields; activation reuses the `_device/<id>/transport` config-over-bus shape ([CXC-BUS-SCRIBE-ACTIVATION-SCHEMA]) | a profile document defining a fifth, undeclared field is rejected at DEFINE time, never silently accepted as new schema; the activation payload carries no profile-field data | none required |
+| BS-V10 | bus_scribe declares its MCP tools using the `McpToolDecl` shape, named for an Intelligence consumer ([CXC-BUS-SCRIBE-MCP-SURFACE]) | tool-list JSON-schema for each of the four declared tools matches its `input_model` field-for-field; every tool name/description is self-describing without external documentation, reviewed against [DEC-MCP-SURFACES-NAMED-FOR-INTELLIGENCE-2026-08-25] | a builder implementing bus_scribe's MCP surface needs no question answered outside this table and [CXC-MCP-TOOL-DECLARATION] |
+| BS-V11 | Placement recorded, not silent ([CXC-BUS-SCRIBE-PLACEMENT]) | the spec carries the `[PLACEMENT UNRATIFIED]` node + the filename-check property | n/a — structural |
+
+- status: proposed
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-VISION-EPISTEMICS], [CXC-WS-ACCEPTANCE], [CXC-MCP-ACCEPTANCE]
+
+---
+
+## 12. Evidence — pre-integration questions answered, post-integration slots EMPTY until a real build
+
+### [CXC-BUS-SCRIBE-EVIDENCE] Pre-integration questions (answered by this elevation pass) and post-integration evidence (EMPTY — never run)
+
+- pre-integration questions answered by this elevation: (1) requirement predicates + acceptance criteria over every ratified/resolved node -> [CXC-BUS-SCRIBE-ACCEPTANCE]; (2) the activation-schema fork -> exactly the four named fields, activate-by-push mirroring the `_device/<id>/transport` precedent -> [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA]; (3) an MCP tool-declaration surface, reusing [CXC-MCP-TOOL-DECLARATION]'s shape -> [CXC-BUS-SCRIBE-MCP-SURFACE].
+- pre-integration questions LEFT open, flagged for David/architect ratify before or during build (not silently resolved): the actual numeric retention-default values (total bytes, per-profile caps, rotation thresholds) are marked "accepted as proposed" but no proposed numbers are captured anywhere in this document; the tension between this dispatch's "ComposeServer plugin" phrasing and [CXC-BUS-SCRIBE-DEPLOYMENT]'s ratified bare-Python-fleet-service shape, flagged in [CXC-BUS-SCRIBE-MCP-SURFACE]'s `note-on-deployment-shape`; whether tools 3 and 4's list/read seam is a bus query round-trip or a direct REST proxy, flagged in [CXC-BUS-SCRIBE-MCP-SURFACE]'s `resolution-note`.
+- evidence-engine-real-load: EMPTY — no real bus_scribe process has recorded a real session; bus_scribe has never been built (no source exists in-repo as of this elevation's authoring, 2026-08-25).
+- evidence-storage-budget-negative-control: EMPTY — BS-V7's negative-control fixture has not been run; no eviction/refusal has been observed under real pressure on real hardware.
+- evidence-sink-split-real-catalog: EMPTY — no completed transcript has been cataloged to a real document_store instance.
+- evidence-activation-real-push: EMPTY — no real `_scribe/<name>/activate` push has been observed to bind a profile end-to-end.
+- evidence-mcp-surface-real-client: EMPTY — no real MCP client has invoked any of bus_scribe's four declared tools.
+- why-empty-matters: per [DX-SPEC-CARRIES-ITS-EVIDENCE], "never run at all" must be a QUERYABLE PROPERTY, not something a reader has to already know — every slot above is `EMPTY` explicitly rather than simply absent, so a future query against this node can distinguish "not yet built" from "nobody thought to record it."
+- status: draft
+- status-detail: draft — every evidence slot EMPTY by construction; bus_scribe has not been implemented
+- provenance: architect-recommendation
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [DX-SPEC-CARRIES-ITS-EVIDENCE], [CXC-BUS-SCRIBE-ACCEPTANCE]
+
+---
+
+## 13. Placement
+
+### [CXC-BUS-SCRIBE-PLACEMENT] Placement is UNRATIFIED, and it is this architect's convention choice, not David's ruling
+
+- placement-status: UNRATIFIED. Written into `corpora/platform-specs/` because [SPEC:CXC-CONFIG-BUS] (61) and [SPEC:CXC-ASSET-CHANGE-NOTIFY] (80) — its nearest relatives — already sit there, the latter also flagged `[PLACEMENT UNRATIFIED]`. That is convention, not a ruling, per [CXC-VISION-PLACEMENT].
+- filename-number-check: 81 was verified unused across `corpora/platform-specs` before this file was written (highest prior number in the checked-out sequence was 80).
+- part-of: [SPEC:CXC-BUS-SCRIBE]
+- see-also: [CXC-VISION-PLACEMENT]
+
+---
+
+## Relationships
+
+### Semantic
+
+- [SPEC:CXC-BUS-SCRIBE] DEPENDS_ON [SPEC:CXC-CONFIG-BUS]
+- [SPEC:CXC-BUS-SCRIBE] RELATED_TO [SPEC:CXC-ASSET-CHANGE-NOTIFY]
+- [SPEC:CXC-BUS-SCRIBE] DEPENDS_ON [SPEC:CXC-MCP]
+- [CXC-BUS-SCRIBE-ENGINE] REALIZES [DX-ENGINE-VS-POLICY]
+- [CXC-BUS-SCRIBE-NARRATIVE-SOURCE] REALIZES [DX-LEAF-OWNS-BEHAVIOR]
+- [CXC-BUS-SCRIBE-PROFILE] REUSES [CXC-BUSSTORE-API-CONFIG]
+- [CXC-BUS-SCRIBE-PROFILE] RELATED_TO [CXC-BUSSTORE-ROLE]
+- [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA] RESOLVES [CXC-BUS-SCRIBE-OPEN-FORKS]
+- [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA] REUSES [CXC-CONFIG-BUS-ADDRESSING]
+- [CXC-BUS-SCRIBE-MCP-SURFACE] REUSES [CXC-MCP-TOOL-DECLARATION]
+- [CXC-BUS-SCRIBE-MCP-SURFACE] RELATED_TO [CXC-BUS-SCRIBE-DEPLOYMENT]
+- [CXC-BUS-SCRIBE-ACCEPTANCE] RELATED_TO [CXC-WS-ACCEPTANCE]
+- [CXC-BUS-SCRIBE-ACCEPTANCE] RELATED_TO [CXC-MCP-ACCEPTANCE]
+
+### Causal
+
+- [CXC-BUS-SCRIBE-OUTPUT] PRECONDITION_FOR [CXC-BUS-SCRIBE-SINK-SPLIT]
+- [CXC-BUS-SCRIBE-SINK-SPLIT] PRECONDITION_FOR [CXC-BUS-SCRIBE-BUDGET]
+- [CXC-BUS-SCRIBE-BUDGET] PRECONDITION_FOR [CXC-BUS-SCRIBE-ACCEPTANCE]
+
+---
+
+**Version**: 0.2 — 2026-08-25. Elevated from concept-capture to build-spec precision. `status: ratified` nodes are unchanged from the 2026-08-20 settling session and still reflect David's stated words, his direct delegation, or direct arithmetic/fact — EXCEPT [CXC-BUS-SCRIBE-DEPLOYMENT], SUPERSEDED 2026-08-25 by `DEC-BUS-SCRIBE-IS-DEFAULT-COMPOSESERVER-PLUGIN-2026-08-25` (David's ruling: bus_scribe is a default, always-present, per-tenant ComposeServer plugin, not a standalone bare-Python fleet service); BS-V6 and [CXC-BUS-SCRIBE-MCP-SURFACE]'s `note-on-deployment-shape` are updated to match, and the MCP surface now joins the ComposeServer umbrella rather than standing as its own connector. [CXC-BUS-SCRIBE-ACTIVATION-SCHEMA] is `architect-ratified`, citing this elevation dispatch, not David's verbatim words. [CXC-BUS-SCRIBE-ACCEPTANCE], [CXC-BUS-SCRIBE-EVIDENCE] and [CXC-BUS-SCRIBE-MCP-SURFACE] are `architect-recommendation`, per [DX-INTERPRETATION-IS-AN-INFERENCE]. The one pre-existing node marked `architect-decision`/`inference-marker` ([CXC-BUS-SCRIBE-PROFILE]'s storage-location call) is itself already `registry-confirmed` by David 2026-08-20 and unchanged here.
+**Status**: Draft — `[PLACEMENT UNRATIFIED]`. Build-spec precision reached; not a build or dispatch authorization.
