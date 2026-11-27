@@ -234,12 +234,14 @@ def test_s1_negative_control_node_does_see_the_dollar_difference():
     assert json.loads(r.stdout) == [False] and re.search("^a$", "a\n") is not None
 
 
-def test_s1_shipped_file_is_exactly_the_generated_schema():
-    """[ruling S1] define-once: the shipped bytes equal render_schema_file()."""
+@pytest.mark.parametrize("contract", ["0.1", "0.2"])
+def test_s1_shipped_file_is_exactly_the_generated_schema(contract):
+    """[ruling S1] define-once: each shipped file's bytes equal
+    render_schema_file(<its contract>) (0.2: one file per contract)."""
     from importlib import resources
     shipped = resources.files("compose_plugins.schema").joinpath(
-        "manifest-0.1.schema.json").read_text(encoding="utf-8")
-    assert shipped == render_schema_file()
+        f"manifest-{contract}.schema.json").read_text(encoding="utf-8")
+    assert shipped == render_schema_file(contract)
 
 
 def test_s1_frozen_unicode_sets_match_this_python_when_versions_agree():

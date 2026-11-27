@@ -967,7 +967,14 @@ def _validate_permissions(perms: Any, refuse) -> None:
 # --------------------------------------------------------------------------- #
 # The shipped JSON Schema, BUILT from the same constants as the validator.
 # --------------------------------------------------------------------------- #
-SCHEMA_RESOURCE = "manifest-0.1.schema.json"
+#: one shipped schema per contract, chosen by a manifest's OWN ``contract``
+#: (a manifest is read by the contract it states). The 0.1 file is
+#: byte-identical to compose-plugins 0.1.0's.
+SCHEMA_RESOURCES = {"0.1": "manifest-0.1.schema.json", "0.2": "manifest-0.2.schema.json"}
+#: the schema of the contract this library implements
+SCHEMA_RESOURCE = SCHEMA_RESOURCES[HOST_CONTRACT]
+#: the fields each shipped schema carries beyond contract 0.1's
+_SCHEMA_FIELDS_FROM = {"0.1": (), "0.2": FIELDS_FROM_0_2}
 
 #: the rules a JSON Schema cannot express; the validator alone enforces them
 SCHEMA_INEXPRESSIBLE = (
@@ -986,6 +993,7 @@ SCHEMA_INEXPRESSIBLE = (
     "counts code points)",
     "no duplicate permissions entry (the same direction and target within "
     "network; the same path, whatever its access, within filesystem)",
+    # ---- (0.2) the three rules below are in the 0.2 schema only ----
     "license and eula are defined from contract 0.2: a manifest that states an "
     "earlier contract and carries either is refused naming the key (a cross-field "
     "rule)",
@@ -1000,8 +1008,20 @@ SCHEMA_INEXPRESSIBLE = (
 )
 
 
-def build_schema() -> dict:
-    """The manifest JSON Schema, from :data:`PATTERNS` and the field tuples."""
+#: how many SCHEMA_INEXPRESSIBLE entries each contract's schema lists
+_INEXPRESSIBLE_COUNT = {"0.1": 8, "0.2": len(SCHEMA_INEXPRESSIBLE)}
+
+
+def build_schema(contract: str = HOST_CONTRACT) -> dict:
+    """The manifest JSON Schema of ``contract`` ("0.1" or "0.2"), from
+    :data:`PATTERNS` and the field tuples. The 0.1 schema is exactly the one
+    compose-plugins 0.1.0 shipped."""
+    if contract not in SCHEMA_RESOURCES:
+        raise ValueError(f"no shipped schema for contract {contract!r} "
+                         f"(shipped: {sorted(SCHEMA_RESOURCES)})")
+    inexpressible = SCHEMA_INEXPRESSIBLE[:_INEXPRESSIBLE_COUNT[contract]]
+    extra_fields = _SCHEMA_FIELDS_FROM[contract]
+
     def pat(rule: str, **extra) -> dict:
         return {"type": "string", "pattern": PATTERNS[rule], **extra}
 
@@ -1023,19 +1043,19 @@ def build_schema() -> dict:
                         "properties": {"path": pat("permission_path"),
                                        "access": {"enum": list(FILESYSTEM_ACCESS)},
                                        "purpose": purpose}}
-    major, minor = (int(x) for x in HOST_CONTRACT.split("."))
-    return {
+    major, minor = (int(x) for x in contract.split("."))
+    out = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": f"compose-plugins manifest.json, contract {HOST_CONTRACT}",
+        "title": f"compose-plugins manifest.json, contract {contract}",
         "description": (
             "The static, host-neutral plug-in manifest of [SPEC:CXC-PLUGIN-CONTRACT] "
-            f"v{HOST_CONTRACT}. GENERATED from compose_plugins.manifest (build_schema); "
+            f"v{contract}. GENERATED from compose_plugins.manifest (build_schema); "
             "the validator there is AUTHORITATIVE and uses the same patterns. Patterns "
             "are written to mean the same under ECMA-262 (with the u flag) and Python "
             f"re; whitespace and Unicode format (Cf) sets are frozen at Unicode "
             f"{UNICODE_VERSION_FROZEN}. Rules this schema cannot express: "
-            + "; ".join(f"({i}) {r}" for i, r in enumerate(SCHEMA_INEXPRESSIBLE, 1)) + "."),
-        "x-compose-plugins-contract": HOST_CONTRACT,
+            + "; ".join(f"({i}) {r}" for i, r in enumerate(inexpressible, 1)) + "."),
+        "x-compose-plugins-contract": contract,
         "type": "object",
         "additionalProperties": False,
         "required": list(REQUIRED_FIELDS + GENERATED_FIELDS),
@@ -1061,8 +1081,6 @@ def build_schema() -> dict:
                     "properties": {"publishes": {"$ref": "#/$defs/busList"},
                                    "subscribes": {"$ref": "#/$defs/busList"}}},
             "standard_questions": pat("standard_questions"),
-            "license": {"type": "string", "minLength": 1, "maxLength": LICENSE_MAX_CHARS},
-            "eula": pat("eula"),
             "permissions": {"type": "object", "additionalProperties": False,
                             "properties": {
                                 "network": {"type": "array",
@@ -1075,18 +1093,60 @@ def build_schema() -> dict:
         "$defs": {"busList": bus_list, "networkPermission": network_entry,
                   "filesystemPermission": filesystem_entry},
     }
+    new = {"license": {"type": "string", "minLength": 1, "maxLength": LICENSE_MAX_CHARS},
+           "eula": pat("eula")}
+    if extra_fields:
+        # after standard_questions, as the 0.2 schema has always placed them
+        props = {}
+        for k, v in out["properties"].items():
+            props[k] = v
+            if k == "standard_questions":
+                props.update({f: new[f] for f in extra_fields})
+        out["properties"] = props
+    return out
 
 
-def render_schema_file() -> str:
-    """The exact text of the shipped schema file."""
-    return json.dumps(build_schema(), indent=2, ensure_ascii=True) + "\n"
+def render_schema_file(contract: str = HOST_CONTRACT) -> str:
+    """The exact text of the shipped schema file of ``contract``."""
+    return json.dumps(build_schema(contract), indent=2, ensure_ascii=True) + "\n"
 
 
-def schema() -> dict:
-    """The manifest JSON Schema shipped with the library ([CXC-PC-MANIFEST-FILE])."""
-    text = resources.files("compose_plugins.schema").joinpath(SCHEMA_RESOURCE) \
+def schema(contract: str = HOST_CONTRACT) -> dict:
+    """The shipped manifest JSON Schema of ``contract`` ([CXC-PC-MANIFEST-FILE]);
+    by default the one of the contract this library implements."""
+    if contract not in SCHEMA_RESOURCES:
+        raise ValueError(f"no shipped schema for contract {contract!r} "
+                         f"(shipped: {sorted(SCHEMA_RESOURCES)})")
+    text = resources.files("compose_plugins.schema").joinpath(SCHEMA_RESOURCES[contract]) \
         .read_text(encoding="utf-8")
     return json.loads(text)
+
+
+def schema_contract(manifest: Any) -> str:
+    """The shipped contract whose schema reads ``manifest``: the manifest's
+    OWN ``contract`` (a manifest is read by the contract it states); a
+    same-MAJOR lower MINOR with no file of its own ("0.0") reads with the
+    lowest shipped schema of that MAJOR. A missing, malformed or unshipped
+    contract gets this library's own schema, whose contract enum refuses it."""
+    c = manifest.get("contract") if isinstance(manifest, dict) else None
+    if isinstance(c, str) and c in SCHEMA_RESOURCES:
+        return c
+    try:
+        major, minor = parse_contract(c)
+    except Exception:              # noqa: BLE001 - malformed: the host's schema refuses it
+        return HOST_CONTRACT
+    host_major, host_minor = parse_contract(HOST_CONTRACT)
+    if major == host_major and minor <= host_minor:
+        same = sorted((parse_contract(k), k) for k in SCHEMA_RESOURCES
+                      if parse_contract(k)[0] == major and parse_contract(k)[1] >= minor)
+        if same:
+            return same[0][1]
+    return HOST_CONTRACT
+
+
+def schema_for(manifest: Any) -> dict:
+    """The shipped schema selected by the manifest's own ``contract``."""
+    return schema(schema_contract(manifest))
 
 
 __all__ = [
@@ -1096,6 +1156,7 @@ __all__ = [
     "Manifest", "NO_PACKAGE", "OPTIONAL_FIELDS", "OTHER_RESERVED_KEYS",
     "PATTERNS", "REQUIRED_FIELDS", "SCHEMA_INEXPRESSIBLE", "SectionValidator",
     "BUS_GRANT_RE", "CODE_GRANT_RE", "RESERVED_HOST_NAMES", "build_schema",
+    "SCHEMA_RESOURCES", "schema_contract", "schema_for",
     "CONTROL_RANGES", "FILESYSTEM_ACCESS", "FILESYSTEM_ENTRY_FIELDS",
     "NETWORK_DIRECTIONS", "NETWORK_ENTRY_FIELDS", "PATH_MAX_UTF8_BYTES",
     "PERMISSIONS_FIELDS", "PURPOSE_MAX_CODE_POINTS", "ipv6_rfc5952",

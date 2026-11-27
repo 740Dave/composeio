@@ -22,7 +22,7 @@ that is not ComposeIO can use the library on its own.
 
 | module | what |
 |---|---|
-| `compose_plugins.manifest` | the v0.1 manifest validator (authoritative) and the shipped JSON Schema (`schema/manifest-0.1.schema.json`), generated from the validator's own patterns |
+| `compose_plugins.manifest` | the v0.1 manifest validator (authoritative) and the shipped JSON Schemas, one per contract (`schema/manifest-0.1.schema.json`, unchanged from 0.1.0, and `schema/manifest-0.2.schema.json`; `schema_for(manifest)` picks by the manifest's `contract`), generated from the validator's own patterns |
 | `compose_plugins.package` | reading `manifest.json` from a directory or a wheel WITHOUT executing anything, and the `manifest_sha256` rule (exact bytes, no canonicalization) |
 | `compose_plugins.version` | the contract version rule: a host accepts the same MAJOR and a MINOR at or below its own, and refuses anything newer, naming both versions |
 | `compose_plugins.consent` | consent content rendered from the manifest alone, the granted set, the widening rule, and the append-only consent-record store |

@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "compose-plugins manifest.json, contract 0.2",
+  "description": "The static, host-neutral plug-in manifest of [SPEC:CXC-PLUGIN-CONTRACT] v0.2. GENERATED from compose_plugins.manifest (build_schema); the validator there is AUTHORITATIVE and uses the same patterns. Patterns are written to mean the same under ECMA-262 (with the u flag) and Python re; whitespace and Unicode format (Cf) sets are frozen at Unicode 15.1.0. Rules this schema cannot express: (1) bus namespaces under plugins/<THIS manifest's domain>/ (needs the domain value); (2) the installing host's own key in hosts, and that host's validation of its own section (needs the installing host); (3) standard_questions naming a directory that exists inside the package, case-exactly and without leaving it through a symlink (needs the package); (4) which refusal text a refused key gets (reserved vs unknown); (5) reader rules applied before JSON exists: UTF-8, no duplicate keys, finite numbers only, at most 256 KiB, nesting at most 64 levels, manifest.json not a symlink; (6) a bracketed IPv6 permissions.network target in RFC 5952 canonical form (needs an address parse; the schema checks lowercase hex and ':' only); (7) a permissions.filesystem path of at most 4096 bytes in UTF-8 (maxLength counts code points); (8) no duplicate permissions entry (the same direction and target within network; the same path, whatever its access, within filesystem); (9) license and eula are defined from contract 0.2: a manifest that states an earlier contract and carries either is refused naming the key (a cross-field rule); (10) license holding an SPDX license expression of ASCII characters (the expression grammar is a function, not one pattern; ids are not looked up in the SPDX License List); (11) eula naming, in at most 255 bytes of UTF-8, a regular file inside the package, not a symlink and not reached through one, holding 1 to 262144 bytes of UTF-8 text with no byte-order mark, no control character other than tab, line feed and carriage return, no bidirectional control character, and not only whitespace (needs the package).",
+  "x-compose-plugins-contract": "0.2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "domain",
+    "name",
+    "version",
+    "description",
+    "documentation",
+    "requirements",
+    "run",
+    "hosts",
+    "config_schema"
+  ],
+  "properties": {
+    "contract": {
+      "type": "string",
+      "enum": [
+        "0.0",
+        "0.1",
+        "0.2"
+      ]
+    },
+    "domain": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(?![\\s\\S])"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\ud804\udcbd\ud804\udccd\ud80d\udc30-\ud80d\udc3f\ud82f\udca0-\ud82f\udca3\ud834\udd73-\ud834\udd7a\udb40\udc01\udb40\udc20-\udb40\udc7f]"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?(?![\\s\\S])"
+    },
+    "description": {
+      "type": "string",
+      "pattern": "^[^\\u000a-\\u000d\\u001c-\\u001e\\u0085\\u2028-\\u2029]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\ud804\udcbd\ud804\udccd\ud80d\udc30-\ud80d\udc3f\ud82f\udca0-\ud82f\udca3\ud834\udd73-\ud834\udd7a\udb40\udc01\udb40\udc20-\udb40\udc7f][^\\u000a-\\u000d\\u001c-\\u001e\\u0085\\u2028-\\u2029]*(?![\\s\\S])"
+    },
+    "documentation": {
+      "type": "string",
+      "pattern": "^https://[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000/?#]+[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]*(?![\\s\\S])"
+    },
+    "issue_tracker": {
+      "type": "string",
+      "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000/?#]+[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000]*(?![\\s\\S])"
+    },
+    "codeowners": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^@[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?(?![\\s\\S])"
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(?!(?:[Cc][Oo][Mm][Pp][Oo][Ss][Ee][Bb][Uu][Ss]|[Cc][Oo][Mm][Pp][Oo][Ss][Ee][-_.]+[Pp][Ll][Uu][Gg][Ii][Nn][Ss]|[Cc][Oo][Mm][Pp][Oo][Ss][Ee][Ii][Oo])==)[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?==[A-Za-z0-9][A-Za-z0-9.+!_-]*(?![\\s\\S])"
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "form",
+        "entry"
+      ],
+      "properties": {
+        "form": {
+          "const": "python"
+        },
+        "entry": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?![\\s\\S])"
+        }
+      }
+    },
+    "isolation_floor": {
+      "enum": [
+        "inprocess",
+        "subprocess"
+      ]
+    },
+    "config_schema": {
+      "type": "object"
+    },
+    "bus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publishes",
+        "subscribes"
+      ],
+      "properties": {
+        "publishes": {
+          "$ref": "#/$defs/busList"
+        },
+        "subscribes": {
+          "$ref": "#/$defs/busList"
+        }
+      }
+    },
+    "standard_questions": {
+      "type": "string",
+      "pattern": "^(?![/\\\\])(?![A-Za-z]:)(?!(?:[\\s\\S]*[/\\\\])?\\.\\.(?:[/\\\\]|(?![\\s\\S])))[\\s\\S]+(?![\\s\\S])"
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "eula": {
+      "type": "string",
+      "pattern": "^(?![A-Za-z]:)(?:(?!\\.\\.?(?:/|(?![\\s\\S])))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f]+/)*(?!\\.\\.?(?:/|(?![\\s\\S])))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f]+(?![\\s\\S])"
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/networkPermission"
+          }
+        },
+        "filesystem": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/filesystemPermission"
+          }
+        }
+      }
+    },
+    "hosts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^(?!(?:bus|code|permission)(?![\\s\\S]))[a-z][a-z0-9_]*(?![\\s\\S])"
+      }
+    }
+  },
+  "$defs": {
+    "busList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "namespace",
+          "type"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "pattern": "^plugins/[a-z][a-z0-9_]*(?:/[A-Za-z0-9_-]+)+(?![\\s\\S])"
+          },
+          "type": {
+            "enum": [
+              "STATE",
+              "EVENT"
+            ]
+          }
+        }
+      }
+    },
+    "networkPermission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "target",
+        "purpose"
+      ],
+      "properties": {
+        "direction": {
+          "enum": [
+            "outbound",
+            "inbound"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "pattern": "^(?:any|(?!any:)(?:(?=[a-z0-9.-]{1,253}(?::|(?![\\s\\S])))(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)*(?=[0-9]*[a-z-])[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?|(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])){3}|\\[[0-9a-f:]{2,39}\\])(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?)(?![\\s\\S])"
+        },
+        "purpose": {
+          "type": "string",
+          "pattern": "^[^\\u000a-\\u000d\\u001c-\\u001e\\u0085\\u2028-\\u2029]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\ud804\udcbd\ud804\udccd\ud80d\udc30-\ud80d\udc3f\ud82f\udca0-\ud82f\udca3\ud834\udd73-\ud834\udd7a\udb40\udc01\udb40\udc20-\udb40\udc7f][^\\u000a-\\u000d\\u001c-\\u001e\\u0085\\u2028-\\u2029]*(?![\\s\\S])",
+          "maxLength": 200
+        }
+      }
+    },
+    "filesystemPermission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "access",
+        "purpose"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/(?:(?!\\.\\.?(?:/|(?![\\s\\S])))[^/~*?\\[\\u0000-\\u001f\\u007f-\\u009f]+(?:/(?!\\.\\.?(?:/|(?![\\s\\S])))[^/~*?\\[\\u0000-\\u001f\\u007f-\\u009f]+)*)?(?![\\s\\S])"
+        },
+        "access": {
+          "enum": [
+            "read",
+            "read-write"
+          ]
+        },
+        "purpose": {
+          "type": "string",
+          "pattern": "^[^\\u000a-\\u000d\\u001c-\\u001e\\u0085\\u2028-\\u2029]*[^\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028-\\u2029\\u202f\\u205f\\u3000\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\ud804\udcbd\ud804\udccd\ud80d\udc30-\ud80d\udc3f\ud82f\udca0-\ud82f\udca3\ud834\udd73-\ud834\udd7a\udb40\udc01\udb40\udc20-\udb40\udc7f][^\\u000a-\\u000d\\u001c-\\u001e\\u0085\\u2028-\\u2029]*(?![\\s\\S])",
+          "maxLength": 200
+        }
+      }
+    }
+  }
+}
