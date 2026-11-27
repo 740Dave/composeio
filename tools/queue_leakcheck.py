@@ -83,6 +83,18 @@ def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+WORK_PREFIX = "queue-leakcheck-"
+
+
+def load_workdir():
+    """tools/workdir.py, loaded by path (from this script's own folder; the gates run under `python -I`, so it is not on sys.path)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_composeio_workdir", TOOLS / "workdir.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--head")
@@ -113,7 +125,13 @@ def main(argv=None):
     if not a.head:
         ap.error("--head is required")
     pdir = a.private_dir or os.environ.get("COMPOSEIO_LEAKCHECK_PRIVATE") or str(pathlib.Path(tempfile.gettempdir()) / "no-private-vocabulary")
-    work = pathlib.Path(tempfile.mkdtemp(prefix="queue-leakcheck-"))
+    # The work folder holds the PR text and a worktree of the head: tools/workdir.py removes it on every exit unless
+    # COMPOSEIO_KEEP_WORK=1 (it used to be left in TMPDIR on every run).
+    return load_workdir().run_in_work_dir(WORK_PREFIX, "queue-leakcheck", lambda w: _queue(a, pdir, pathlib.Path(w)))
+
+
+def _queue(a, pdir, work):
+    """main()'s body from the work folder on, run inside the folder main() owns."""
 
     if a.local_probe:
         say("NOTE: --local-probe: the runner preconditions were NOT checked (never passed by the workflow)")

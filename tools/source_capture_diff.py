@@ -185,6 +185,19 @@ def _install_fake_paho():
     return mqtt, original
 
 
+LOCK_PREFIX = "capture-locks-"
+
+
+def load_workdir():
+    """tools/workdir.py, loaded by path from this script's own folder (not a package, so not importable by name)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_composeio_workdir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "workdir.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 # --------------------------------------------------------------------------- #
 # capture
 # --------------------------------------------------------------------------- #
@@ -199,7 +212,7 @@ def capture(source: str, argv: List[str], seconds: float,
 
     tmp_lock = None
     if lock_dir is None:
-        tmp_lock = tempfile.mkdtemp(prefix="capture-locks-")
+        tmp_lock = tempfile.mkdtemp(prefix=LOCK_PREFIX)
         lock_dir = tmp_lock
     # A PRIVATE lock dir so the source ACQUIRES its singleton instead of yielding
     # to the live console — otherwise `run()` returns immediately and the capture
@@ -274,6 +287,14 @@ def capture(source: str, argv: List[str], seconds: float,
             os.environ.pop("COMPOSEIO_LOCK_DIR", None)
         else:
             os.environ["COMPOSEIO_LOCK_DIR"] = prev_lock
+        # The private lock folder this call made (never a caller's lock_dir) is removed through tools/workdir.py,
+        # unless COMPOSEIO_KEEP_WORK=1. It used to be left in TMPDIR on every capture.
+        if tmp_lock is not None:
+            wd = load_workdir()
+            if os.environ.get(wd.KEEP_ENV) == "1":
+                print(f"[source_capture_diff] work folder kept ({wd.KEEP_ENV}=1): {tmp_lock}", flush=True)
+            else:
+                wd.remove_work(tmp_lock, LOCK_PREFIX, "source_capture_diff")
 
 
 # --------------------------------------------------------------------------- #

@@ -131,6 +131,18 @@ def gitleaks(repo, base, history):
     return p.returncode, p.stdout
 
 
+WORK_PREFIX = "leakcheck-negctl-"
+
+
+def load_workdir():
+    """tools/workdir.py, loaded by path (from the repository's tools/ folder; the gates run under `python -I`, so it is not on sys.path)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_composeio_workdir", TOOLS / "workdir.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     src = ap.add_mutually_exclusive_group(required=True)
@@ -140,7 +152,13 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     listed = [ln.split("\t")[0] for ln in CASES.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.startswith("#")]
-    work = pathlib.Path(tempfile.mkdtemp(prefix="leakcheck-negctl-"))
+    # The work folder holds the scratch repositories and, with --synthetic, the throwaway vocabulary: tools/workdir.py removes it
+    # on every exit unless COMPOSEIO_KEEP_WORK=1 (it used to be left in TMPDIR on every run).
+    return load_workdir().run_in_work_dir(WORK_PREFIX, "negative-control", lambda w: _control(a, listed, pathlib.Path(w)))
+
+
+def _control(a, listed, work):
+    """main()'s body from the work folder on, run inside the folder main() owns."""
     if a.synthetic:
         pdir = work / "private"
         pdir.mkdir()
@@ -255,7 +273,7 @@ def main(argv=None):
             print(f"  FAIL  {cid}: {detail}")
             bad += 1
     mode = "synthetic vocabulary" if a.synthetic else "private vocabulary"
-    print(f"[negative-control] {len(results)} case(s), {bad} failure(s), {len(names)} rule(s) ({mode}); scratch: {work}")
+    print(f"[negative-control] {len(results)} case(s), {bad} failure(s), {len(names)} rule(s) ({mode}); scratch: {work} (removed at exit unless COMPOSEIO_KEEP_WORK=1)")
     return 1 if bad else 0
 
 

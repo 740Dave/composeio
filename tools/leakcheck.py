@@ -45,7 +45,6 @@ import re
 import subprocess
 import sys
 import tarfile
-import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
 GUARD = HERE / "disclosure_guard.py"
@@ -222,6 +221,18 @@ def run_guard(root, pdir, report):
     return p.returncode, doc
 
 
+WORK_PREFIX = "leakcheck-"
+
+
+def load_workdir():
+    """tools/workdir.py, loaded by path from this script's own folder (the gates run under `python -I`, so it is not on sys.path)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_composeio_workdir", pathlib.Path(__file__).resolve().parent / "workdir.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -235,11 +246,17 @@ def main(argv=None):
         s.add_argument("--repo", default=".")
         s.add_argument("--private-dir")
         s.add_argument("--report", help="write the combined JSON report here")
-        s.add_argument("--keep", action="store_true", help="keep the scratch scan tree and print its path")
+        s.add_argument("--keep", action="store_true", help="keep the work folder (the scan tree is its scan/ subfolder) and print its path")
     a = ap.parse_args(argv)
     repo = pathlib.Path(a.repo).resolve()
     pdir = private_dir(repo, a.private_dir)
-    work = pathlib.Path(tempfile.mkdtemp(prefix="leakcheck-"))
+    # The work folder holds a copy of the scanned tree (private-derived): tools/workdir.py removes it on every exit unless --keep or
+    # COMPOSEIO_KEEP_WORK=1 asks to keep it (it used to be left in TMPDIR on every run).
+    return load_workdir().run_in_work_dir(WORK_PREFIX, "leakcheck", lambda w: _check(a, repo, pdir, pathlib.Path(w)), keep=a.keep)
+
+
+def _check(a, repo, pdir, work):
+    """main()'s body, run inside the work folder main() owns."""
     root = work / "scan"
     root.mkdir()
     try:
@@ -273,8 +290,6 @@ def main(argv=None):
         pathlib.Path(a.report).write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
     nfind = len(doc.get("findings", [])) + len(held)
     print(f"[leakcheck] RESULT: {result.upper()} ({nfind} finding(s)), exit {final}")
-    if a.keep:
-        print(f"[leakcheck] scan tree kept at {root}")
     return final
 
 

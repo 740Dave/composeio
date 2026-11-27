@@ -31,7 +31,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 import urllib.error
 import urllib.request
 
@@ -156,13 +155,31 @@ def history_scan(binary, tree, base, work):
     return rc if rc in (0, 1) else 2
 
 
+WORK_PREFIX = "ci-gitleaks-"
+
+
+def load_workdir():
+    """tools/workdir.py, loaded by path from this script's own folder (the gates run under `python -I`, so it is not on sys.path)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_composeio_workdir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "workdir.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--tree", default=".")
     ap.add_argument("--history-base", default=None)
     ap.add_argument("--require-history", action="store_true")
     a = ap.parse_args(argv)
-    work = tempfile.mkdtemp(prefix="ci-gitleaks-")  # left in place (the runner's temp is discarded)
+    # The work folder holds the binary, a copy of the whole tree and a history clone. tools/workdir.py removes it on EVERY exit (it used
+    # to be left in place: 410 folders, 14.2 GiB measured in TMPDIR on one Mac); COMPOSEIO_KEEP_WORK=1 keeps it.
+    return load_workdir().run_in_work_dir(WORK_PREFIX, "ci_gitleaks", lambda work: _scan(a, work))
+
+
+def _scan(a, work):
+    """main()'s body, run inside the work folder that main() owns and removes."""
     override = os.environ.get("GITLEAKS_BIN")
     if override and (os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS")):  # ComposeIO: in CI only the pinned, sha-checked binary runs
         print("[ci_gitleaks] FAIL: GITLEAKS_BIN is set while CI/GITHUB_ACTIONS is set; in CI only the pinned, sha256-checked "
