@@ -406,6 +406,84 @@ def test_dropped_count_resets_on_flush_and_bus_client_carries_the_same_key():
     assert other["pending_dropped"] is None
 
 
+# ── a subscribe racing the connect cannot strand the held messages ──────────
+
+class _SubscribeDuringConnectClient(FakeClient):
+    """On the FIRST subscribe the transport makes inside the connect callback,
+    run `during()` on ANOTHER thread and wait (up to 0.5 s) for it to finish:
+    a source thread subscribing a new namespace exactly while the connect is
+    re-subscribing. Deterministic: the interleaving is forced, not hoped for."""
+
+    def __init__(self, during):
+        super().__init__()
+        self._during = during
+        self._fired = False
+        self.callbacks_added: list[str] = []
+
+    def subscribe(self, topic, qos=1, **kw):
+        if not self._fired:
+            self._fired = True
+            th = threading.Thread(target=self._during, daemon=True)
+            th.start()
+            th.join(0.5)
+        self.subscribed.append(topic)
+
+    def message_callback_add(self, topic, cb):
+        self.callbacks_added.append(topic)
+
+
+def test_a_subscribe_during_the_connect_does_not_strand_held_messages():
+    t = MQTTTransport(broker="test.local", client_id="t")
+    t.subscribe("a/one", lambda m: None)
+    t.subscribe("a/two", lambda m: None)            # >1 so the loop goes on
+    t.send(_msg("held/x", 1))
+    t.send(_msg("held/x", 2))
+    fake = _SubscribeDuringConnectClient(
+        during=lambda: t.subscribe("late/ns", lambda m: None))
+    t._client = fake
+
+    raised = None
+    try:
+        t._on_connect(fake, None, {}, 0)
+    except Exception as e:                           # noqa: BLE001
+        raised = e
+    deadline = time.time() + 5
+    while (not any(x.endswith("/late/ns") for x in fake.subscribed)
+           and time.time() < deadline):
+        time.sleep(0.01)
+
+    assert raised is None, f"connect raised {raised!r}"
+    values = [BusMessage.from_json(json.loads(p[1])).value
+              for p in fake.published if p[0] == "composeio/global/held/x"]
+    assert values == [1, 2], "held messages stranded while the link is up"
+    assert t._pending == []
+    assert any(x.endswith("/late/ns") for x in fake.subscribed)  # not lost
+
+
+def test_a_failing_resubscribe_does_not_skip_the_flush_or_the_rest(caplog):
+    class _Flaky(FakeClient):
+        def subscribe(self, topic, qos=1, **kw):
+            if topic.endswith("/bad/ns"):
+                raise ValueError("refused by the client")
+            self.subscribed.append(topic)
+
+        def message_callback_add(self, topic, cb):
+            pass
+
+    caplog.set_level(logging.INFO, logger="composeio.transport_mqtt")
+    t = MQTTTransport(broker="test.local", client_id="t")
+    t.subscribe("bad/ns", lambda m: None)
+    t.subscribe("good/ns", lambda m: None)
+    t.send(_msg("held/y", 7))
+    fake = _Flaky()
+    t._client = fake
+    t._on_connect(fake, None, {}, 0)
+    assert [p[0] for p in fake.published] == ["composeio/global/held/y"]
+    assert any(x.endswith("/good/ns") for x in fake.subscribed)
+    assert any("re-subscribe of 'bad/ns'" in r.getMessage()
+               for r in caplog.records if r.levelno == logging.ERROR)
+
+
 # ── fleet_roster: its "last published" becomes true with the hold ───────────
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

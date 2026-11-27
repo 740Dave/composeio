@@ -860,7 +860,8 @@ class MQTTTransport(Transport):
 
     def subscribe(self, namespace: str, callback: Callable[[BusMessage], None]):
         """Subscribe to a namespace via MQTT."""
-        self._subscribers[namespace].append(callback)
+        with self._pending_lock:            # see `_on_connect_ok`
+            self._subscribers[namespace].append(callback)
         if self._connected and self._client:
             # Subscribe to both global and local topics for this namespace
             self._client.subscribe(f"{self._topic_prefix}/+/{namespace}", qos=1)
@@ -885,9 +886,10 @@ class MQTTTransport(Transport):
         """[CXC-FL-PATTERN]: widen reception via MQTT's native wildcard —
         matching traffic arrives even for namespaces never registered."""
         topic = self._pattern_topic(pattern)
-        if topic in self._pattern_topics:
-            return
-        self._pattern_topics.add(topic)
+        with self._pending_lock:            # see `_on_connect_ok`
+            if topic in self._pattern_topics:
+                return
+            self._pattern_topics.add(topic)
         if self._connected and self._client:
             self._client.subscribe(topic, qos=1)
 
@@ -931,7 +933,8 @@ class MQTTTransport(Transport):
         well-formed for its own protocol.
         """
         self._reject_composeio_channel(channel)
-        self._foreign_subs.setdefault(channel, []).append(callback)
+        with self._pending_lock:            # see `_on_connect_ok`
+            self._foreign_subs.setdefault(channel, []).append(callback)
         if self._connected and self._client:
             self._client.subscribe(channel, qos=1)
             self._client.message_callback_add(channel, self._on_foreign_message)
@@ -941,7 +944,9 @@ class MQTTTransport(Transport):
         return self._client is not None
 
     def _on_foreign_message(self, client, userdata, mqtt_msg):
-        for filt, callbacks in self._foreign_subs.items():
+        with self._pending_lock:            # a snapshot: subscribe_foreign may run meanwhile
+            subs = [(f, list(cbs)) for f, cbs in self._foreign_subs.items()]
+        for filt, callbacks in subs:
             if not _topic_matches(filt, mqtt_msg.topic):
                 continue
             for cb in callbacks:
@@ -951,11 +956,12 @@ class MQTTTransport(Transport):
                     logger.error(f"Foreign subscriber callback error: {e}")
 
     def unsubscribe(self, namespace: str, callback: Callable[[BusMessage], None]):
-        if namespace in self._subscribers:
-            try:
-                self._subscribers[namespace].remove(callback)
-            except ValueError:
-                pass
+        with self._pending_lock:            # see `_on_connect_ok`
+            if namespace in self._subscribers:
+                try:
+                    self._subscribers[namespace].remove(callback)
+                except ValueError:
+                    pass
 
     def start(self):
         """Connect to MQTT broker."""
@@ -1200,30 +1206,60 @@ class MQTTTransport(Transport):
 
     def _on_connect_ok(self, client) -> None:
         """A successful CONNACK: resubscribe and flush. Called with the
-        pending lock held (see `_on_connect`)."""
+        pending lock held (see `_on_connect`).
+
+        The three subscription sets are SNAPSHOTS taken here, under the lock
+        their mutators also take (`subscribe`, `subscribe_pattern`,
+        `subscribe_foreign`, `unsubscribe`). Iterating the live dicts let a
+        source thread's subscribe raise "dictionary changed size during
+        iteration" on paho's thread: the flush below never ran, the link stayed
+        marked up, and every held message was stranded. A subscribe that lands
+        after the snapshot is not lost: it sees the link up and subscribes
+        itself. And whatever one re-subscribe raises, the flush still runs:
+        each subscription is tried on its own, and the flush is in `finally`.
+        """
         failed = self._link.record_success()
-        if failed:
-            logger.info(f"MQTT connected after {failed} failed attempt(s)")
-        logger.info(f"MQTT connected to {self._broker}:{self._port} "
-                    f"(MQTT 5)")
-        opts = self._subscribe_options()
-        # Re-subscribe to all namespaces
-        for ns in self._subscribers:
-            self._sub(client, f"{self._topic_prefix}/+/{ns}", opts)
-        # Re-subscribe wildcard pattern filters ([CXC-FL-PATTERN])
-        for topic in self._pattern_topics:
-            self._sub(client, topic, opts)
-        # Subscribe to infrastructure topics
-        self._sub(client, f"{self._topic_prefix}/+/_bus/#", opts)
-        # Re-subscribe FOREIGN channels (peer protocols on this substrate).
-        # NoLocal is NOT applied here even when enabled: a foreign channel is
-        # another protocol's topic, and suppressing our own echo on it would
-        # silently change a peer protocol's semantics from inside our
-        # transport. Our loopback problem is on `composeio/` topics.
-        for filt in self._foreign_subs:
-            client.subscribe(filt, qos=1)
-            client.message_callback_add(filt, self._on_foreign_message)
-        self._flush_pending()
+        try:
+            if failed:
+                logger.info(f"MQTT connected after {failed} failed attempt(s)")
+            logger.info(f"MQTT connected to {self._broker}:{self._port} "
+                        f"(MQTT 5)")
+            opts = self._subscribe_options()
+            namespaces = list(self._subscribers)
+            patterns = list(self._pattern_topics)
+            foreign = list(self._foreign_subs)
+            # Re-subscribe to all namespaces
+            for ns in namespaces:
+                self._resub(lambda ns=ns: self._sub(
+                    client, f"{self._topic_prefix}/+/{ns}", opts), ns)
+            # Re-subscribe wildcard pattern filters ([CXC-FL-PATTERN])
+            for topic in patterns:
+                self._resub(lambda t=topic: self._sub(client, t, opts), topic)
+            # Subscribe to infrastructure topics
+            self._resub(lambda: self._sub(
+                client, f"{self._topic_prefix}/+/_bus/#", opts), "_bus/#")
+            # Re-subscribe FOREIGN channels (peer protocols on this substrate).
+            # NoLocal is NOT applied here even when enabled: a foreign channel is
+            # another protocol's topic, and suppressing our own echo on it would
+            # silently change a peer protocol's semantics from inside our
+            # transport. Our loopback problem is on `composeio/` topics.
+            for filt in foreign:
+                def _foreign(f=filt):
+                    client.subscribe(f, qos=1)
+                    client.message_callback_add(f, self._on_foreign_message)
+                self._resub(_foreign, filt)
+        finally:
+            self._flush_pending()
+
+    @staticmethod
+    def _resub(do, what: str) -> None:
+        """One re-subscribe on connect; a failure is logged, never fatal to
+        the rest of the connect (the other subscriptions and the flush)."""
+        try:
+            do()
+        except Exception as e:                               # noqa: BLE001
+            logger.error(f"MQTT re-subscribe of '{what}' on connect failed: "
+                         f"{type(e).__name__}: {e}")
 
     @staticmethod
     def _sub(client, topic: str, options) -> None:
