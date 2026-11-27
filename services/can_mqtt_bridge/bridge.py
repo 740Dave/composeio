@@ -904,7 +904,7 @@ class CANMQTTBridge:
             # already un-ageable, so this hop is the first one that CAN date a
             # value.
             # Built at the paho seam so paho 2.x constructs too.
-            from composeio.transport_mqtt import new_paho_client
+            from composeio.paho_compat import new_paho_client
             self._mqtt_client = new_paho_client(mqtt=mqtt,
                                                 client_id=MQTT_CLIENT_ID,
                                                 protocol=mqtt.MQTTv5)

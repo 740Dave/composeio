@@ -294,7 +294,7 @@ def test_negative_control_blocking_connect_does_not_retry():
     same kind of closed port raises once and nothing retries. If this ever
     stopped raising, the retry test above would be measuring nothing."""
     from composeio.transport_mqtt import new_paho_client
-    c = new_paho_client(client_id="ctl", protocol=paho.MQTTv5)
+    c = new_paho_client(mqtt=paho, client_id="ctl", protocol=paho.MQTTv5)
     with pytest.raises(OSError):
         c.connect("127.0.0.1", _closed_port(), keepalive=60)
 

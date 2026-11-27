@@ -25,6 +25,9 @@ from composeio.transport import Transport, BusMessage, MessageType
 # travel, not a new coupling. A second hand-rolled `+`/`#` matcher is precisely
 # the fork that drops messages with no error at all.
 from composeio.bus_client import topic_matches as _topic_matches
+# paho 1.x / 2.x construction lives in a pure helper module so code that must
+# not import a transport (the launcher) can use it too; re-exported here.
+from composeio.paho_compat import new_paho_client  # noqa: E402,F401
 
 logger = logging.getLogger("composeio.transport.mqtt")
 
@@ -409,35 +412,6 @@ def _connack_reason(rc) -> str:
     if text is None:
         return f"rc={rc!r}"
     return f"0x{code:02X} ({code}) {text}"
-
-
-def new_paho_client(*, protocol, mqtt=None, **kwargs):
-    """Build a paho ``Client`` on paho 1.x AND 2.x. Every paho client in
-    ``python/`` is built here (pinned by test_paho2_and_bus_client_backoff.py).
-
-    WHY. ``pyproject.toml`` allows ``paho-mqtt>=1.6.0``, so 2.x installs. paho
-    2.0.0 made ``callback_api_version`` the REQUIRED first parameter of
-    ``Client.__init__``, so the 1.x call ``Client(client_id=..., protocol=...)``
-    is a TypeError there; 2.1.0 defaults it to VERSION1 with a
-    DeprecationWarning. When the module has ``CallbackAPIVersion`` this passes
-    ``VERSION1``, which keeps every callback in this repo on the signatures it
-    was written for (``on_connect(client, userdata, flags, rc, properties)``
-    under v5, ``on_connect_fail(client, userdata)``). Without the enum (1.x) it
-    is the old call, unchanged. Moving to VERSION2 is a separate change: it
-    rewrites every callback signature.
-
-    ``protocol`` is REQUIRED, keyword-only: the generic ``mqtt.Client(`` call
-    below is invisible to the v5 grep guard in test_mqtt5_negotiation.py, so the
-    "no client takes paho's 3.1.1 default by omission" rule lives in this
-    signature instead. ``mqtt`` is the paho client module, injectable for tests.
-    """
-    if mqtt is None:
-        import paho.mqtt.client as mqtt
-    api = getattr(mqtt, "CallbackAPIVersion", None)
-    if api is None:
-        return mqtt.Client(protocol=protocol, **kwargs)
-    return mqtt.Client(callback_api_version=api.VERSION1, protocol=protocol,
-                       **kwargs)
 
 
 def connect_with_backoff(client, host, port, *, keepalive=60, min_delay=None,

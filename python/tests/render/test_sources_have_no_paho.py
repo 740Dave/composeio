@@ -214,6 +214,12 @@ def test_the_permanently_exempt_launcher_still_exists_and_still_hand_frames():
         # reaches no bus and no transport; it is bound on first use (_load_core), so module
         # LOAD stays composeio-free — the property this exemption actually protects.
         "composeio.ptycore",
+        # w-26, 2026-11-27: paho 2.x requires a CallbackAPIVersion at Client(), so the
+        # launcher builds its client through the shared constructor. `paho_compat` is
+        # import-free (the caller passes its own paho module) and reaches no bus and
+        # no transport; it is imported lazily inside connect_mqtt(). The launcher still
+        # hand-frames its own paho traffic, which is what this exemption is about.
+        "composeio.paho_compat",
     }
     for m in re.finditer(r"^(?:from|import)\s+(composeio[\w.]*)", text, re.M):
         raise AssertionError(

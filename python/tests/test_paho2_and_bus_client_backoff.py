@@ -240,8 +240,8 @@ def test_every_paho_construction_under_python_goes_through_the_helper():
         if n:
             hits[str(rel)] = n
     assert scanned > 100, f"scan covered only {scanned} files"
-    assert hits == {"composeio/transport_mqtt.py": 2}, (
-        "paho clients built outside transport_mqtt.new_paho_client: "
+    assert hits == {"composeio/paho_compat.py": 2}, (
+        "paho clients built outside paho_compat.new_paho_client: "
         f"{hits}")
 
 

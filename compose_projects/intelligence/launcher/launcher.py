@@ -604,7 +604,7 @@ class Launcher:
         # CallbackAPIVersion). Lazy, like every composeio import here.
         if _PY_ROOT not in sys.path:
             sys.path.insert(0, _PY_ROOT)
-        from composeio.transport_mqtt import new_paho_client
+        from composeio.paho_compat import new_paho_client
         client = new_paho_client(mqtt=mqtt,
                                  client_id=f"intelligence-launcher-{self.id}",
                                  protocol=mqtt.MQTTv5)

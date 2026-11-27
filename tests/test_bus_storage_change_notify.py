@@ -307,7 +307,7 @@ class TestRetainAgainstLiveBroker:
             time.sleep(1.0)  # let the retained publish settle on the broker
 
             # a FRESH subscriber that joins AFTER both writes must still see the latest.
-            from composeio.transport_mqtt import new_paho_client  # paho 1.x and 2.x
+            from composeio.paho_compat import new_paho_client  # paho 1.x and 2.x
             sub = new_paho_client(mqtt=mqtt, client_id=f"acn-test-sub-{uuid.uuid4().hex[:8]}", protocol=mqtt.MQTTv5)
             sub.on_message = lambda c, u, m: received.append((m.topic, m.payload, m.retain))
             sub.connect(host, port, keepalive=30)
