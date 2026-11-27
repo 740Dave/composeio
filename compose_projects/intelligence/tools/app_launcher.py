@@ -171,6 +171,12 @@ TARGET_TABLE: Dict[str, Target] = {
 }
 
 
+
+# The host-singleton role this daemon holds while it runs. The console-stack bringup reads
+# app_launcher's liveness from THIS lock (`stack_member_probe --role`), never from the process
+# table, so the two must name the same role; test_start_console_stack pins that.
+SINGLETON_ROLE = "app-launcher"
+
 def registered_targets() -> Tuple[str, ...]:
     """Every roster target with a registered consumer ([CXC-LB-INTENT-TABLE]
     register-guard).  A by-construction test asserts this covers the 7 roster
@@ -373,7 +379,7 @@ def run(mqtt_url: str, geometry_store: Optional[str] = None,
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                         os.pardir, "publisher"))
         from singleton import acquire_singleton
-    lock = acquire_singleton("app-launcher")
+    lock = acquire_singleton(SINGLETON_ROLE)
     if lock is None:
         sys.stderr.write("[app_launcher] another instance holds the singleton; "
                          "yielding\n")

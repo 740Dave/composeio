@@ -165,6 +165,13 @@ class Composition:
     # become the authoritative host of the console's telemetry publishers.  Only
     # the console scene opts in.
     data_sources: bool = False
+    # [CXC-IC-SURFACE-SINGLETON] the DECLARATIVE opt-in that makes a scene a host
+    # singleton WITHOUT hosting the data layer: one window per `app: id:` per host,
+    # held as the surface flock.  The Launch Bar ribbon sets it.  It is a console-stack
+    # member, and the stack's idempotency guard asks the member's LOCK, never the
+    # process table (DEFECT-CONSOLE-STACK-CONSOLE-RIBBON-APP-A37C0E).  Default False:
+    # viewers stay unconstrained, so several may run at once.
+    surface_singleton: bool = False
     background: tuple = _BG
     # [CXC-ICV-CHROME] scene background pass (all optional):
     #   design.background: color         -> overrides `background`
@@ -1811,6 +1818,7 @@ def parse_widget_tree(config: dict, base_dir: Optional[str] = None,
         window_key=str(design.get("window_key", "")),
         personalization=str(design.get("personalization", "")),
         data_sources=bool(design.get("data_sources", False)),
+        surface_singleton=bool(design.get("surface_singleton", False)),
         namespaces=list(config.get("namespaces", []) or []),
         transports=list(app.get("transports", []) or []),
         variables=doc_vars,

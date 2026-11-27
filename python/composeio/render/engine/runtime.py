@@ -2461,7 +2461,13 @@ def _surface_singleton_required(app: "RenderApp") -> bool:
     second viewer window impossible would be a worse regression than the duplicate
     console this closes.
     """
-    return _scene_hosts_data_layer(app)
+    # A scene may also declare itself a host singleton WITHOUT hosting the data
+    # layer (`design.surface_singleton: true`): the Launch Bar ribbon, a console-stack
+    # member whose liveness the bringup reads from this lock
+    # (DEFECT-CONSOLE-STACK-CONSOLE-RIBBON-APP-A37C0E).
+    comp = getattr(app, "comp", None)
+    return _scene_hosts_data_layer(app) or bool(
+        comp is not None and getattr(comp, "surface_singleton", False))
 
 
 def _acquire_surface_singleton(app: "RenderApp"):

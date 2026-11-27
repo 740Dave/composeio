@@ -293,6 +293,29 @@ def test_only_a_session_owning_scene_is_constrained():
     assert not _surface_singleton_required(_App(None))
 
 
+def test_a_scene_may_DECLARE_itself_a_host_singleton_without_the_data_layer():
+    """DEFECT-CONSOLE-STACK-CONSOLE-RIBBON-APP-A37C0E (2026-11-26). The console-stack bringup
+    reads each member's liveness from its host LOCK, so the ribbon, which hosts no data layer,
+    declares `design.surface_singleton: true`. The flag must reach the gate through the REAL
+    parser, the shipped ribbon scene must carry it, and a scene that sets neither flag (every
+    viewer) must stay unconstrained: the containment clause above still holds."""
+    from composeio.render.engine.parser import parse_compose_yaml
+    from composeio.render.engine.runtime import _surface_singleton_required
+
+    class _App:
+        def __init__(self, comp):
+            self.comp = comp
+
+    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    ribbon = parse_compose_yaml(os.path.join(
+        repo, "apps", "compose_platform_launch_bar", "launch_bar.compose.yaml"))
+    assert ribbon.surface_singleton and not ribbon.data_sources
+    assert _surface_singleton_required(_App(ribbon))
+    viewer = parse_compose_yaml(os.path.join(repo, "apps", "composeux-shell", "launcher.compose.yaml"))
+    assert not viewer.surface_singleton and not viewer.data_sources
+    assert not _surface_singleton_required(_App(viewer))
+
+
 def test_the_runtime_actually_consults_the_gate_before_running():
     """WIRING.  Every other test here can pass while `main()` never calls the gate —
     a fix that exists and is not invoked is the quietest way for this defect to come

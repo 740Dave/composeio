@@ -14,10 +14,14 @@
 #   interactive bounce, the boot LaunchAgent, and any operator all reuse — so the ribbon can never
 #   again be forgotten by a launch path.
 #
-# IDEMPOTENT: each of the three legs launches ONLY if not already alive (pgrep guard), so this is
-# safe to run on every bounce and safe for a KeepAlive-less LaunchAgent RunAtLoad.
+# DETACHED: each member runs in its own session (spawn_detached), so it outlives the bringup and
+# whatever launched it. Without that, the LaunchAgent reaps all three as soon as this one-shot exits.
 #
-# ⛔ THE pgrep GUARD IS A FAST PATH, NOT THE GUARANTEE ([CXC-IC-SURFACE-SINGLETON],
+# IDEMPOTENT: each of the three legs launches ONLY if its member's host LOCK is free (see
+# surface_absent; until 2026-11-26 this was a pgrep guard), so this is safe to run on every bounce
+# and safe for a KeepAlive-less LaunchAgent RunAtLoad.
+#
+# ⛔ THE (former) pgrep GUARD WAS A FAST PATH, NOT THE GUARANTEE ([CXC-IC-SURFACE-SINGLETON],
 # DEFECT-TWO-CONSOLES-SPAWNED-THEN-KILLED, David 2026-08-15). This comment used to end "Re-running
 # it never doubles a live surface." It could not promise that, and the promise is what let the
 # duplicate-console defect live:
@@ -67,25 +71,109 @@ export PYTHONPATH="$REPO_ROOT/python:$PROJECTS_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 CONSOLE_SCENE="compose_projects/intelligence/console/console.compose.yaml"
 RIBBON_SCENE="apps/compose_platform_launch_bar/launch_bar.compose.yaml"
 APP_LAUNCHER_MODULE="intelligence.tools.app_launcher"
+APP_LAUNCHER_ROLE="app-launcher"     # == app_launcher.SINGLETON_ROLE (pinned by the test)
 
 echo "console stack -> bus $MQTT  repo=$REPO_ROOT  logs=$LOG_DIR"
 
-# surface_absent <pattern> — TRUE only when pgrep AFFIRMATIVELY reports no match (exit 1).
-# Exit 0 => alive. ANY OTHER exit (2 = usage/error, and anything a future pgrep invents) means the
-# probe could not answer, and an unanswerable probe must NOT be read as "nothing is running" —
-# that read is what put a third console on top of two ([CXC-IC-SURFACE-SINGLETON] clause (2)).
-# We report the doubt out loud and DECLINE to launch: the surface flock makes a missed launch
-# recoverable (re-run the bringup), whereas a spurious launch used to be invisible.
+# member_probe --scene <scene> | --role <role> — ask the member's OWN host lock whether it is up.
+# Exit 0 = held (stdout: holder pid), 1 = free, anything else = could not probe.
+#
+# WHY A LOCK, NOT THE PROCESS TABLE (DEFECT-CONSOLE-STACK-CONSOLE-RIBBON-APP-A37C0E, 2026-11-26).
+# The guards used to infer membership from command-line text (`pgrep -f <token>`), and text
+# failed in both directions. (1) A shell that merely MENTIONED a member counted as one: a
+# caller's `zsh -c "… pgrep -f intelligence.tools.app_launcher"` made the bringup print "=
+# app_launcher already up (pid <that shell>)", and app_launcher was never launched. (2) A
+# pattern anchored to stop that missed real members started another way (an absolute scene path,
+# `python3 -u -m`, `./scene`, app_launcher run as a script, an interpreter path with a space), and
+# a duplicate was started. Every member already holds an authoritative lock: the surface flock
+# ([CXC-IC-SURFACE-SINGLETON]) for the console and the ribbon (which declares
+# `design.surface_singleton: true`), and the `app-launcher` role singleton for app_launcher.
+# `stack_member_probe` asks that lock through the repo's one flock primitive (non-blocking, never
+# disturbs a holder) at the same path the member uses, honouring $COMPOSEIO_LOCK_DIR.
+member_probe() { python3 -m composeio.stack_member_probe "$@"; }
+
+# surface_absent <probe args…> — TRUE only when the probe AFFIRMATIVELY reports the lock free
+# (exit 1). Exit 0 => alive, and the holder pid is left in $MEMBER_PID for the message. ANY OTHER
+# exit means the probe could not answer, and an unanswerable probe must NOT be read as "nothing
+# is running": that read is what put a third console on top of two ([CXC-IC-SURFACE-SINGLETON]
+# clause (2)). We report the doubt out loud and DECLINE to launch: a missed launch is recoverable
+# (re-run the bringup), whereas a spurious launch used to be invisible.
+# The window this leaves: a member takes its lock a moment after it starts (the console parses its
+# scene first). A second bringup inside that window launches a duplicate, which finds the lock held
+# and yields (exit 0) without opening a window. The lock is still the guarantee.
+MEMBER_PID=""
 surface_absent() {
-  local pattern="$1" rc=0
-  pgrep -f "$pattern" >/dev/null 2>&1 || rc=$?
+  local rc=0 out
+  out="$(member_probe "$@" 2>/dev/null)" || rc=$?
   case "$rc" in
-    0) return 1 ;;                                     # alive
+    0) MEMBER_PID="${out:-?}"; return 1 ;;             # alive
     1) return 0 ;;                                     # affirmatively absent -> launch
-    *) echo "  ! pgrep could not probe '$pattern' (exit $rc) — NOT launching on an" \
+    *) echo "  ! could not probe the lock for '$*' (exit $rc) — NOT launching on an" \
             "unanswerable probe; re-run the bringup once the probe works" >&2
        return 1 ;;
   esac
+}
+
+# A member whose spawn fails (a log it cannot write, or exec failing with 127) must not stop the
+# OTHERS. Under `set -e` an unguarded failure aborted the whole bringup (candidate review N7), so
+# each spawn records its failure and the script carries on, then exits non-zero naming them.
+FAILED_MEMBERS=()
+spawn_member() {
+  local name="$1"; shift
+  local rc=0
+  spawn_detached "$@" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "  ! $name failed to start (spawn exit $rc; see its log) — carrying on with the others" >&2
+    FAILED_MEMBERS+=("$name")
+  fi
+}
+
+member_status() { local out; out="$(member_probe "$@" 2>/dev/null)" && echo "${out:-?}" || echo '-'; }
+
+# spawn_detached <log> <cmd...> — launch a stack member in its OWN SESSION (new process group),
+# stdin from /dev/null and output to <log>. It returns only AFTER the member has left this
+# script's process group.
+#
+# WHY (DEFECT-CONSOLE-STACK-CONSOLE-RIBBON-APP-A37C0E, 2026-11-26): this script used `nohup cmd
+# &`, and the LaunchAgent comment called that "detached". It is not. nohup ignores SIGHUP and
+# nothing else, so every member stayed in THIS script's process group. The LaunchAgent runs this
+# script as a one-shot job, and when a launchd job exits, launchd SIGTERMs whatever is left in its
+# process group (launchd.plist(5), AbandonProcessGroup). Measured on the live host: the job
+# exited 1176 ms after start, the ribbon was gone 0.5 s later and the console 4 s later. SDL turns
+# SIGTERM into SDL_QUIT, so the console stopped its sources and exited 0 with no traceback.
+# app_launcher took Python's default SIGTERM and died.
+# STRUCTURAL, NOT TIMED: the shim runs in the FOREGROUND and ALWAYS forks. The child calls
+# setsid() and reports on a pipe; the parent exits only after that report. So when this function
+# returns, the member is already out of the group, and nothing depends on the trailing `sleep 1`
+# or on how slowly a cold interpreter starts at login. (A backgrounded shim left each member in
+# the group for tens of ms; a review measured a group SIGTERM in that window killing the ribbon
+# 6 times in 6.) If exec fails, the child reports that too and the shim exits 127.
+# macOS ships no setsid(1); python3 is already this stack's interpreter.
+spawn_detached() {
+  local log="$1"; shift
+  python3 -c 'import os, sys
+r, w = os.pipe()                      # non-inheritable: the write end closes at a successful exec
+if os.fork() == 0:
+    os.close(r)
+    os.setsid()
+    os.write(w, b"S")                 # out of the launcher process group, now
+    try:
+        os.execvp(sys.argv[1], sys.argv[1:])
+    except OSError as exc:
+        os.write(w, b"E" + str(exc).encode())
+        os._exit(127)
+os.close(w)
+got = b""
+while True:
+    chunk = os.read(r, 4096)
+    if not chunk:
+        break
+    got += chunk
+if got[:1] != b"S":
+    sys.stderr.write("spawn_detached: the child never reported setsid()\n"); os._exit(1)
+if got[1:2] == b"E":
+    sys.stderr.write("spawn_detached: exec failed: %s\n" % got[2:].decode(errors="replace")); os._exit(127)
+os._exit(0)' "$@" >"$log" 2>&1 </dev/null
 }
 
 # ── 1. CONSOLE (viewer + in-process data layer) — session-pinned, only if absent ──────────────
@@ -96,39 +184,40 @@ if [[ -z "${NO_CONSOLE:-}" ]]; then
     COMPOSEIO_SESSION_JSONL="$(ls "$HOME"/.claude/projects/*/"${CLAUDE_CODE_SESSION_ID}".jsonl 2>/dev/null | head -1 || true)"
     [[ -n "$COMPOSEIO_SESSION_JSONL" ]] && export COMPOSEIO_SESSION_JSONL
   fi
-  if surface_absent "$CONSOLE_SCENE"; then
+  if surface_absent --scene "$CONSOLE_SCENE"; then
     if [[ -n "${COMPOSEIO_SESSION_JSONL:-}" && -f "${COMPOSEIO_SESSION_JSONL:-}" ]]; then
       echo "  + console (pinned $COMPOSEIO_SESSION_JSONL)"
     else
       echo "  + console (NO session pin — UX renders, telemetry dark until a session attaches)"
     fi
-    nohup python3 -m composeio.render.engine.runtime "$CONSOLE_SCENE" --transports \
-          >"$LOG_DIR/console.log" 2>&1 &
+    spawn_member console "$LOG_DIR/console.log" python3 -m composeio.render.engine.runtime "$CONSOLE_SCENE" --transports
   else
-    echo "  = console already up (pid $(pgrep -f "$CONSOLE_SCENE" | head -1))"
+    echo "  = console already up (pid $MEMBER_PID)"
   fi
 fi
 
 # ── 2. LAUNCH BAR RIBBON — pure tile scene, no session dependency, only if absent ─────────────
-if surface_absent "$RIBBON_SCENE"; then
+if surface_absent --scene "$RIBBON_SCENE"; then
   echo "  + launch bar ribbon"
-  nohup python3 -m composeio.render.engine.runtime "$RIBBON_SCENE" --transports \
-        >"$LOG_DIR/launch_bar.log" 2>&1 &
+  spawn_member ribbon "$LOG_DIR/launch_bar.log" python3 -m composeio.render.engine.runtime "$RIBBON_SCENE" --transports
 else
-  echo "  = launch bar ribbon already up (pid $(pgrep -f "$RIBBON_SCENE" | head -1))"
+  echo "  = launch bar ribbon already up (pid $MEMBER_PID)"
 fi
 
 # ── 3. app_launcher DAEMON — turns a tile's _app/<target>/open intent into a spawn, only if absent ─
-if surface_absent "$APP_LAUNCHER_MODULE"; then
+if surface_absent --role "$APP_LAUNCHER_ROLE"; then
   echo "  + app_launcher"
-  nohup python3 -m "$APP_LAUNCHER_MODULE" --mqtt "$MQTT" \
-        >"$LOG_DIR/app_launcher.log" 2>&1 &
+  spawn_member app_launcher "$LOG_DIR/app_launcher.log" python3 -m "$APP_LAUNCHER_MODULE" --mqtt "$MQTT"
 else
-  echo "  = app_launcher already up (pid $(pgrep -f "$APP_LAUNCHER_MODULE" | head -1))"
+  echo "  = app_launcher already up (pid $MEMBER_PID)"
 fi
 
 sleep 1
-echo "console stack up: console $(pgrep -f "$CONSOLE_SCENE" | head -1 || echo '-'), ribbon $(pgrep -f "$RIBBON_SCENE" | head -1 || echo '-'), app_launcher $(pgrep -f "$APP_LAUNCHER_MODULE" | head -1 || echo '-')"
+echo "console stack up (lock holders; '-' = not yet locked): console $(member_status --scene "$CONSOLE_SCENE"), ribbon $(member_status --scene "$RIBBON_SCENE"), app_launcher $(member_status --role "$APP_LAUNCHER_ROLE")"
 echo "prove it: re-run this script — it is idempotent. And the guarantee does not rest on that:"
 echo "          the SURFACE holds a host flock ([CXC-IC-SURFACE-SINGLETON]), so a console launched"
 echo "          by ANY other path yields too. COMPOSEIO_SURFACE_SUPERSEDE=1 to win a bounce."
+if [[ "${#FAILED_MEMBERS[@]}" -gt 0 ]]; then
+  echo "console stack INCOMPLETE: failed to start: ${FAILED_MEMBERS[*]}" >&2
+  exit 1
+fi
