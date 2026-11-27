@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from collections import defaultdict
 from typing import Callable
 
@@ -368,6 +369,30 @@ def _will_properties(delay_s: int):
     return props
 
 
+#: the clock the connect-failure log throttle reads; a module attribute so a
+#: test can drive it without sleeping.
+_monotonic = time.monotonic
+
+
+def _broker_host_error(host) -> "str | None":
+    """Why `host` can never resolve, or None if it might.
+
+    No I/O. `socket.getaddrinfo` encodes a str host with the idna codec, so a
+    host that idna rejects (an empty label as in `bad..host`, a label over 63
+    characters) raises UnicodeError INSIDE paho's loop thread. paho 1.6.1
+    catches only OSError there, so the thread dies with nothing counted and
+    nothing in health(). Checking the same codec here turns that into a loud,
+    recorded config error.
+    """
+    if not isinstance(host, str) or not host.strip():
+        return f"invalid broker host {host!r}: empty"
+    try:
+        host.encode("idna")
+    except UnicodeError as exc:
+        return f"invalid broker host {host!r}: {exc}"
+    return None
+
+
 def _connack_reason(rc) -> str:
     """Render a v5 CONNACK reason code as words an operator can act on.
 
@@ -431,6 +456,15 @@ class MQTTTransport(Transport):
         self._topic_prefix = topic_prefix
         self._client = None
         self._connected = False
+        #: consecutive failed connect attempts since the last CONNACK Success.
+        #: Counted from paho's on_connect_fail, so an outage is a NUMBER a
+        #: health check can read, not a log line nobody does.
+        self._connect_failures = 0
+        self._last_connect_error: str | None = None
+        # failure log throttle, PER KIND (see _throttled_log): kind ->
+        # [monotonic time of the last line, repeats since it]. Cleared on a
+        # successful CONNACK, so a new outage always logs its first line.
+        self._fail_log: dict[str, list] = {}
         self._subscribers: dict[str, list[Callable[[BusMessage], None]]] = defaultdict(list)
         self._all_subscribers: list[Callable[[BusMessage], None]] = []
         # [CXC-FL-PATTERN] wildcard topic filters (deduped), re-subscribed
@@ -460,6 +494,22 @@ class MQTTTransport(Transport):
     #: how many pre-connect messages to hold before dropping the OLDEST.
     #: A scene's startup burst is a handful; this is slack, not a buffer.
     PENDING_MAX = 64
+
+    #: paho's reconnect backoff, in seconds: the first retry after RECONNECT_
+    #: MIN_DELAY_S, doubling to a cap of RECONNECT_MAX_DELAY_S, reset on a
+    #: successful CONNACK. paho's default cap is 120 s; 30 s is chosen because
+    #: the cap IS the worst-case time from "broker back" to "bus back", and
+    #: 30 s keeps that inside one Docker HEALTHCHECK interval, while one TCP
+    #: attempt per 30 s per client is no load on a broker that is coming back
+    #: up. Retained state means a late reconnect still receives the current
+    #: world, so nothing is gained by hammering faster than 1 s.
+    RECONNECT_MIN_DELAY_S = 1
+    RECONNECT_MAX_DELAY_S = 30
+
+    #: repeated IDENTICAL connect failures are logged once, then summarised
+    #: at most once per this many seconds. A new kind of failure is logged at
+    #: once. The count in health() is never thinned.
+    FAILURE_LOG_SUMMARY_S = 600
 
     #: Message Expiry Interval for a retained message whose namespace declares
     #: NO refresh interval. 24 hours.
@@ -764,8 +814,22 @@ class MQTTTransport(Transport):
         self._set_will()
 
         self._client.on_connect = self._on_connect
+        self._client.on_connect_fail = self._on_connect_fail
         self._client.on_message = self._on_message
         self._client.on_disconnect = self._on_disconnect
+        self._client.reconnect_delay_set(min_delay=self.RECONNECT_MIN_DELAY_S,
+                                         max_delay=self.RECONNECT_MAX_DELAY_S)
+
+        # A host that can never resolve: one loud, recorded error, no loop
+        # thread. It cannot become valid without a config change, so retrying
+        # would only spin; health() carries the reason meanwhile.
+        bad_host = _broker_host_error(self._broker)
+        if bad_host is not None:
+            self._record_failure(
+                bad_host,
+                f"MQTT not connecting: {bad_host}. Fix the broker setting and "
+                f"restart; this transport stays DOWN until then.")
+            return
 
         try:
             # SESSION SEMANTICS ARE DECLARED, NOT DEFAULTED. paho's v5 default is
@@ -776,12 +840,26 @@ class MQTTTransport(Transport):
             # retain now delivers) and not a replay of everything it missed. On a
             # flaky RF link the replay is a flood of superseded values, each
             # arriving looking live. See MQTT5_ADOPTION["session_expiry_interval"].
-            self._client.connect(self._broker, self._port, keepalive=60,
-                                 clean_start=True,
-                                 properties=_connect_properties())
+            #
+            # ASYNC, SO A FAILED FIRST CONNECT IS RETRIED. This used to be the
+            # blocking `connect()` followed by `loop_start()`: when the broker
+            # was unreachable at start, `connect()` raised, `loop_start()` never
+            # ran, and nothing ever retried. The process stayed up and looked
+            # healthy while queueing into a connection that would never come
+            # (measured: a ComposeServer container with no MQTT socket for 2+
+            # days). `connect_async()` only records the target; paho's loop
+            # thread makes the first attempt and every later one with the
+            # backoff above, so "down at start" and "dropped mid-run" are now
+            # the same case, and `on_connect` re-subscribes + flushes on each.
+            self._client.connect_async(self._broker, self._port, keepalive=60,
+                                       clean_start=True,
+                                       properties=_connect_properties())
             self._client.loop_start()
         except Exception as e:
-            logger.error(f"MQTT connection failed: {e}")
+            # Only a malformed target reaches here (connect_async does no I/O);
+            # an unreachable broker is retried by the loop thread instead.
+            self._last_connect_error = str(e)
+            logger.error(f"MQTT connection setup failed: {e}")
 
     def _set_will(self) -> None:
         """Register the v5 Last Will, if one was declared.
@@ -838,6 +916,65 @@ class MQTTTransport(Transport):
     def is_connected(self) -> bool:
         return self._connected
 
+    def health(self) -> dict:
+        """The link state behind `is_connected`, for a health check to read.
+
+        `connected` IS `is_connected` (one signal, not a parallel one); the rest
+        says why it is false: never started, or how many attempts have failed
+        since the last success and with what error.
+        """
+        return {
+            "connected": self._connected,
+            "started": self._client is not None,
+            "broker": f"{self._broker}:{self._port}",
+            "connect_failures": self._connect_failures,
+            "last_error": self._last_connect_error,
+            "pending": len(self._pending),
+        }
+
+    def _on_connect_fail(self, client, userdata):
+        """paho could not open the connection; its loop thread will retry."""
+        self._connected = False
+        self._record_failure(
+            "connection attempt failed",
+            f"MQTT connect to {self._broker}:{self._port} failed; retrying "
+            f"with backoff {self.RECONNECT_MIN_DELAY_S}-"
+            f"{self.RECONNECT_MAX_DELAY_S}s, {len(self._pending)} message(s) "
+            f"held")
+
+    def _record_failure(self, kind: str, first_line: str) -> None:
+        """Count one failed attempt, and log it through the throttle."""
+        self._connect_failures += 1
+        self._last_connect_error = kind
+        self._throttled_log(logging.ERROR, kind, first_line,
+                            f"MQTT connect to {self._broker}:{self._port} "
+                            f"still failing ({kind})")
+
+    def _throttled_log(self, level: int, kind: str, first_line: str,
+                       summary: str) -> None:
+        """Log a repeating failure without flooding.
+
+        The first line of each KIND is logged at once. Repeats of that kind
+        produce at most one summary line, with the count, per
+        FAILURE_LOG_SUMMARY_S. Kinds are tracked separately, so a refused
+        login (a CONNACK refusal, then paho's disconnect for the dropped
+        socket) is two kinds thinned independently rather than two kinds
+        that keep resetting each other.
+        """
+        now = _monotonic()
+        state = self._fail_log.get(kind)
+        if state is None:
+            logger.log(level, first_line)
+            self._fail_log[kind] = [now, 0]
+            return
+        state[1] += 1
+        if now - state[0] >= self.FAILURE_LOG_SUMMARY_S:
+            logger.log(level,
+                       f"{summary}: {state[1]} more since the last report, "
+                       f"{self._connect_failures} failed attempts in total, "
+                       f"{len(self._pending)} message(s) held")
+            state[0], state[1] = now, 0
+
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         # `properties` DEFAULTS so both callback arities work: MQTT 5 passes a
         # 5th argument, 3.1.1 does not. A TypeError raised here would happen
@@ -850,6 +987,12 @@ class MQTTTransport(Transport):
         # Success (0) still tests equal. Verified against paho 1.6.1.
         if rc == 0:
             self._connected = True
+            if self._connect_failures:
+                logger.info(f"MQTT connected after {self._connect_failures} "
+                            f"failed attempt(s)")
+            self._connect_failures = 0
+            self._last_connect_error = None
+            self._fail_log.clear()
             logger.info(f"MQTT connected to {self._broker}:{self._port} "
                         f"(MQTT 5)")
             opts = self._subscribe_options()
@@ -874,8 +1017,11 @@ class MQTTTransport(Transport):
             # NAME THE REASON. A refused v5 CONNECT is the GOOD failure mode —
             # paho does not downgrade, so this is a loud stop rather than a
             # connection that quietly drops every property — but it is only good
-            # if the log says what to do about it.
-            logger.error(
+            # if the log says what to do about it. Thinned like any repeated
+            # failure: an auth error retried every 30 s must not log 2,900
+            # identical lines a day.
+            self._record_failure(
+                f"CONNACK refused: {_connack_reason(rc)}",
                 f"MQTT connection to {self._broker}:{self._port} REFUSED: "
                 f"{_connack_reason(rc)}. This client requires MQTT 5 "
                 f"(paho does NOT fall back to 3.1.1).")
@@ -908,7 +1054,15 @@ class MQTTTransport(Transport):
     def _on_disconnect(self, client, userdata, rc, properties=None):
         self._connected = False
         if rc != 0:
-            logger.warning(f"MQTT unexpected disconnect (rc={rc}), will auto-reconnect")
+            # Thinned by rc: against a broker that refuses the login, paho calls
+            # this after EVERY refused CONNACK, which unthinned was one WARNING
+            # per attempt (about 2,880 a day at the 30 s cap). A drop after a
+            # good connection still logs at once, because a successful CONNACK
+            # clears the throttle.
+            self._throttled_log(
+                logging.WARNING, f"disconnect rc={rc}",
+                f"MQTT unexpected disconnect (rc={rc}), will auto-reconnect",
+                f"MQTT disconnects (rc={rc}) repeating")
 
     @staticmethod
     def _annotate_age(msg: BusMessage, payload: dict, mqtt_msg) -> None:

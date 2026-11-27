@@ -66,6 +66,15 @@ class FakePahoClient:
         self.connect_calls.append(dict(host=host, port=port,
                                        keepalive=keepalive, **kw))
 
+    # The transport starts with connect_async() so paho's loop thread retries a
+    # failed first connect (test_transport_mqtt_reconnect.py). Recorded into the
+    # same list: these tests assert WHAT is asked for, not which call asks.
+    def connect_async(self, host, port, keepalive=60, **kw):
+        self.connect(host, port, keepalive=keepalive, **kw)
+
+    def reconnect_delay_set(self, min_delay=1, max_delay=120):
+        pass
+
     def loop_start(self):
         pass
 

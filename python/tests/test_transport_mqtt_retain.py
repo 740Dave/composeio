@@ -293,6 +293,8 @@ def test_client_is_constructed_as_mqtt_5(monkeypatch):
 
         def username_pw_set(self, *a): pass
         def connect(self, *a, **kw): pass
+        def connect_async(self, *a, **kw): pass
+        def reconnect_delay_set(self, *a, **kw): pass
         def loop_start(self): pass
 
     monkeypatch.setattr(paho, "Client", _C)

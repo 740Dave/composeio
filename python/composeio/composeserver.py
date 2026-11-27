@@ -190,6 +190,9 @@ class StandupResult:
     loaded: list[ComposePlugin] = field(default_factory=list)
     parked: dict[str, list[str]] = field(default_factory=dict)   # name -> unmet
     subprocess_pending: list[str] = field(default_factory=list)  # names needing IPC host
+    #: the connector objects built from the DECLARED specs and attached, so
+    #: health can tell a declared connector from one attached later.
+    connectors: list = field(default_factory=list)
 
     def is_clean(self) -> bool:
         return not self.parked
@@ -220,6 +223,7 @@ def standup(
     bus = ComposeIOBus(bus_id=bus_id)
 
     # (2) attach declared connectors (multi-attach)
+    attached: list = []
     for spec in (connectors or []):
         built = build_connector(spec)
         if built is None:
@@ -229,8 +233,9 @@ def standup(
             continue
         transport, scope_class = built
         bus.attach_connector(transport, scope_class)
+        attached.append(transport)
 
-    result = StandupResult(bus=bus)
+    result = StandupResult(bus=bus, connectors=attached)
     caps = set(available_capabilities or set())
 
     # (3) load plugins, respecting each requires: floor
@@ -285,6 +290,14 @@ class _Tenant:
     #: extra callables run on every announce tick (ADDITIVE; spec 95 r18
     #: composeio-health-tick: the plug-in host's status tick rides this one)
     tick_hooks: list = field(default_factory=list)
+    #: how many EXTERNAL (global/remote) connectors the tenant's manifest
+    #: DECLARED. Health is judged against this, not against what attached: a
+    #: connector whose construction failed is skipped by standup with a
+    #: warning, and judged on what attached the tenant would look healthy.
+    declared_connectors: int = 0
+    #: the declared connectors that were actually built and attached
+    #: (identity, from standup); anything else attached is an EXTRA.
+    declared_attached: list = field(default_factory=list)
 
     def republish(self) -> None:
         """Re-publish the whole `_server/*` surface for this tenant."""
@@ -352,6 +365,8 @@ class ComposeServer:
             capabilities=set(capabilities or set()),
             plugin_specs=plugins,
             subprocess_pending=list(result.subprocess_pending),
+            declared_connectors=self.declared_external(connectors),
+            declared_attached=list(result.connectors),
         )
         self._tenants[tenant_id] = tenant
         if start:
@@ -390,6 +405,57 @@ class ComposeServer:
 
     def tenant_bus(self, tenant_id: str) -> ComposeIOBus:
         return self._tenants[tenant_id].bus
+
+    @staticmethod
+    def declared_external(specs: "list | None") -> int:
+        """How many of these connector specs are EXTERNAL (scope not local)."""
+        n = 0
+        for spec in specs or []:
+            scope = (spec.get("scope", "global") if isinstance(spec, dict)
+                     else "global")
+            if str(scope).strip().lower() != "local":
+                n += 1
+        return n
+
+    def connector_health(self) -> dict:
+        """Every tenant's EXTERNAL connectors, judged against what was DECLARED.
+
+        Reads each transport's own `is_connected` (the signal the bus and
+        `ComposeApp.status()` already use), plus its `health()` detail when it
+        has one. `connectors` lists the ones built from the manifests'
+        declarations, `extra_connectors` any attached by other means, and
+        `expected_connectors` is how many the manifests declared.
+
+        `healthy` is True iff (a) every DECLARED connector is attached (a
+        declared connector whose construction failed is missing, however many
+        extras there are) and (b) EVERY attached connector, declared or extra,
+        is connected. Extras are allowed; an extra that is down is unhealthy.
+        A server that declares none and has none attached is healthy.
+        Local connectors are in-process and not counted.
+        """
+        declared_rows, extra_rows = [], []
+        expected = 0
+        for tid, tenant in self._tenants.items():
+            expected += tenant.declared_connectors
+            ours = {id(c) for c in tenant.declared_attached}
+            for scope in ("global", "remote"):
+                for conn in tenant.bus.connectors(scope):
+                    row = {"tenant": tid, "scope": scope,
+                           "transport": type(conn).__name__}
+                    detail = getattr(conn, "health", None)
+                    if callable(detail):
+                        try:
+                            row.update(detail())
+                        except Exception as exc:  # noqa: BLE001
+                            row["health_error"] = str(exc)
+                    row["connected"] = bool(getattr(conn, "is_connected", False))
+                    (declared_rows if id(conn) in ours else extra_rows).append(row)
+        everything = declared_rows + extra_rows
+        return {"healthy": (len(declared_rows) >= expected
+                            and all(r["connected"] for r in everything)),
+                "expected_connectors": expected,
+                "connectors": declared_rows,
+                "extra_connectors": extra_rows}
 
     def tenants(self) -> list[str]:
         return list(self._tenants)
