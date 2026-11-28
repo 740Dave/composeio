@@ -1,18 +1,18 @@
 ---
-scope: "The SHARED PLUG-IN CONTRACT v0.2 (v0.1 plus the four additions of its v0.2 delta) — the layer a plug-in is INSTALLED and CONSENTED TO, plus the shared manager that drives it, for two hosts (ComposeIO's ComposeServer and Gnomon). Three layers: R (the runtime `ComposePlugin`, spec 85, unchanged), P (the static host-neutral `manifest.json` a host reads BEFORE any plug-in code runs, new here), H (the host: consent, host sections, the shared management library, the plain web Plugin Manager UI, new here). Sized to what the hello-world conformance fixture exercises and no more."
+scope: "The SHARED PLUG-IN CONTRACT v0.3 (v0.1, plus the four additions of its v0.2 delta, plus the v0.3 delta that freezes the manifest) — the layer a plug-in is INSTALLED and CONSENTED TO, plus the shared manager that drives it, for two hosts (ComposeIO's ComposeServer and Gnomon). Three layers: R (the runtime `ComposePlugin`, spec 85, unchanged), P (the static host-neutral `manifest.json` a host reads BEFORE any plug-in code runs, new here), H (the host: consent, host sections, the shared management library, the plain web Plugin Manager UI, new here). Sized to what the hello-world conformance fixture exercises and no more."
 audience: "composeux-architect (ratifies as contract owner, after Plumb's R3/R6 review; HoP may overrule); HoP (confirmation of the proposals marked for it); gnomon-architect (Gnomon's host side, Gnomon spec 50 revised, implements against this); composeio-expert (builds `compose_plugins` and the ComposeServer host); the audit (spec-auditor, then Plumb's R3/R6 review) that diffs this against HoP's words in gnomon:GM-0216 and the brief."
 boundary: "IN: the manifest (every v0.1 field, with source and the not-adopted record), derive-once-with-consent-before-code, consent content/record/widening rule, lifecycle, discovery and the registry (settling [DD-CSL-DISCOVERY] and PARTIALLY settling [DD-CSL-MANIFEST-FORMAT]), the shared library and its plain web UI (URL-prefix-correct, host-provided auth and consent hooks), the subprocess runner, the version rule, the hello-world fixture and conformance script with its negative controls, the host-section rules, the standing rule that a host-side change cites the contract version it implements. OUT: the runtime contract itself ([SPEC:CXC-COMPOSESERVER], cited, unchanged); the loader internals ([SPEC:CXC-CS-LOADER], reused; this spec settles one of its forks, partially settles another, and does NOT edit it); the contents of Gnomon's `gnomon:` section (Gnomon spec 50, revised); anything reserved for v0.2+ (see [CXC-PC-RESERVED-NAMES])."
 depends-on: [84-composebus-kernel.lts, 85-composeserver-plugin-contract.lts, 87-composeserver-plugin-loader.lts]
 domain: plt.cux
-confidentiality: internal-only
+confidentiality: public
 artifact-readiness: design-review
 status: draft
 created: 2026-11-26
-updated: 2026-11-27
+updated: 2026-11-28
 ---
-# Shared Plug-in Contract v0.2 — runtime, package manifest and host; repo placement decided by HoP, path set at publication [SPEC:CXC-PLUGIN-CONTRACT]
+# Shared Plug-in Contract v0.3 — runtime, package manifest and host; repo placement decided by HoP, path set at publication [SPEC:CXC-PLUGIN-CONTRACT]
 
-> One host-neutral plug-in contract, living in ComposeIO's public repo, that both ComposeIO and Gnomon implement. A plug-in is declared at three layers: R (runtime, spec 85 `ComposePlugin`, unchanged), P (a static `manifest.json` a host reads and renders for consent BEFORE any plug-in code is imported), H (the host: it owns consent, owns its own manifest section, and mounts a shared plain-web Plugin Manager). The contract is authoritative: when two hosts disagree, the host whose behaviour differs has the bug, and the arbiter is a hello-world conformance script both hosts run against their pinned contract version. v0.1 is exactly the size hello-world exercises.
+> One host-neutral plug-in contract, living in ComposeIO's public repo, that both ComposeIO and Gnomon implement. A plug-in is declared at three layers: R (runtime, spec 85 `ComposePlugin`, unchanged), P (a static `manifest.json` a host reads and renders for consent BEFORE any plug-in code is imported), H (the host: it owns consent, owns its own manifest section, and mounts a shared plain-web Plugin Manager). The contract is authoritative: when two hosts disagree, the host whose behaviour differs has the bug, and the arbiter is a hello-world conformance script both hosts run against their pinned contract version. v0.1 is exactly the size hello-world exercises. (0.3) Contract 0.3 is an additive MINOR that freezes the manifest schema, adds optional `capabilities` and `warnings`, asks consent only at grant changes, makes a refuse always stop, and records every state-changing operation with its operator; section 18 is the delta and section 19 holds its open decisions.
 
 ---
 
@@ -161,6 +161,7 @@ updated: 2026-11-27
 - see-also: [CXC-PC-ADOPTED], [CXC-PC-NOT-ADOPTED], [CXC-PC-RESERVED-NAMES], [CXC-CS-ISOLATION-FLOOR], [CXC-PC-STANDARD-QUESTIONS]
 - validator-readings: NORMATIVE contract rules, so a second implementation cannot fork from the shared library: a manifest must validate identically in every host, and a rule kept only in library code is the fork these readings exist to prevent. The same holds for the PEP 503 comparison in `host-provided-packages` and for the consent-record string rules at [CXC-PC-CONSENT-RECORD] `granted-format`. (1) `bus` carries BOTH `publishes` and `subscribes` when present; use [] for none. (2) Unknown keys inside a bus entry are refused. (3) `issue_tracker` is an http or https URL; `documentation` stays https only. (4) `name` and `description` are non-empty. (5) Each `requirements` entry is exactly `name==version`: no spaces, extras, markers or wildcards. (6) `run.entry` is `module:attr` with ASCII Python identifiers only. (7) `standard_questions` is a path relative to the directory holding manifest.json; it must be a directory, and may not be (or pass through) a symlink that leaves the package. Path names are compared EXACTLY and case-sensitively, on every filesystem: `SQ` does not match a directory named `sq` (G2). The same exact, case-sensitive matching applies to `manifest.json` itself, so a file named MANIFEST.JSON is refused (E1). A manifest.json that is a symlink is refused (N5). (8) The manifest reader refuses duplicate JSON keys and any non-finite number: NaN, Infinity, and a literal such as `1e999` (a finiteness check on parsed floats; G1). (9) In a wheel, the import package is the single top-level directory, other than *.dist-info and *.data, that holds a manifest.json; none or more than one is refused. (10) The consent screen renders only the INSTALLING host's own host section. (11) The consent-record store is append-only JSON lines under an exclusive file lock (macOS and Linux, consistent with the runner's platforms). (12) "Non-empty" means at least one character that is neither whitespace nor Unicode format (Cf). "One line" forbids every line and paragraph separator, including U+2028 and U+2029 (N3). Both rules also apply to the consent record's text fields (E2). The whitespace, Unicode-format and line-break character sets are frozen at Unicode 15.1, so the validator and schema agree whichever runtime evaluates them; the schema's ECMA reading assumes the `u` flag (E4). (13) Bus namespaces in a v0.1 manifest are exact topics: segments separated by single `/`, each segment matching `[A-Za-z0-9_-]+`; no empty segments, no `.` or `..`, no leading or trailing `/`, no whitespace or control characters, and NO wildcards (`*`, `#`, `+`) in v0.1. Each must also pass composebus `validate_pattern` (G3). (14) manifest.json is at most 256 KiB, on disk or decompressed; nesting deeper than 64 levels is refused, and both refusals are named (never a raw RecursionError) (N1). (15) The shipped JSON Schema must agree with the validator under BOTH ECMA-262 and Python `re` semantics: anchor patterns with `(?![\s\S])` instead of `$`, and write `[0-9]` instead of `\d`. A test runs the adversarial set through Python `jsonschema` and asserts zero disagreements, apart from the rules the schema cannot express, which are listed in its description (S1). Single source: every string rule is one pattern in the validator, the shipped JSON Schema is generated from those patterns, and a test fails if the shipped file drifts from the generated one (E3).
 - single-source-exceptions: (r22) `validator-readings` (15) says every string rule is one pattern in the validator from which the shipped JSON Schema is generated. One stated exception: the IPv6 RFC 5952 section 4 canonical form of a `permissions` network `target` ([CXC-PC-PERMISSIONS] `target-schema-coverage`) is a function, not one pattern; the validator alone enforces it, and the schema lists it in its description as a rule it cannot express, as (15) already allows for such rules.
+- v0-3-delta: (0.3) Two OPTIONAL fields are added, `capabilities` and `warnings`, valid only in a manifest that states contract "0.3" (CXC-PC-V03-CAPABILITIES, CXC-PC-V03-WARNINGS). The `contract` row now accepts "0.1", "0.2" and "0.3". The complete field set, frozen at 0.3, is the table at CXC-PC-V03-MANIFEST-FROZEN. In a manifest that states "0.3" a grant-bearing `config_schema` property draws a named advisory, not a refusal (CXC-PC-V03-GRANT-FREE-CONFIG). `required-fields` is unchanged: no existing field becomes required.
 
 ### [CXC-PC-STANDARD-QUESTIONS] An OPTIONAL `standard_questions` field points to the plug-in's standard-questions corpus; its content is defined by gnomon:GM-RM-X145, not here
 
@@ -243,6 +244,7 @@ updated: 2026-11-27
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-NOT-ADOPTED], [CXC-PC-HOST-SECTIONS], [CXC-PC-NC-UNKNOWN-CORE-KEY]
 - v0-2-versioned-keys: (0.2) `license` and `eula` are defined from contract 0.2. A manifest that states `contract: "0.1"` and carries either is REFUSED naming the key, like any key its stated contract does not define (CXC-PC-V02-VERSION-0-2). A 0.1 host refuses both keys as unknown, as today.
+- v0-3-delta: (0.3) `capabilities` and `warnings` are defined from contract 0.3. A manifest that states "0.1" or "0.2" and carries either is REFUSED naming the key, like any key its stated contract does not define (CXC-PC-V03-VERSION-0-3).
 
 ### [CXC-PC-ADOPTED] The adopt record: what v0.1 takes from Home Assistant, Python entry points and WebExtensions, with sources
 
@@ -335,6 +337,7 @@ updated: 2026-11-27
 - license-line: (0.2) When `license` is declared, the content carries ONE line `license: <expression> (declared by the plug-in; not verified)`, placed after the `documentation` line and before the run form. When it is not declared there is NO licence line. This is a deliberate exception to the boundary-case 'a field absent from the manifest is shown as absent', so that the consent content of a manifest with no licence is byte-identical to 0.1's apart from the page footer's contract version.
 - eula-block: (0.2) When `eula` is declared, the content carries the EULA block of CXC-PC-V02-EULA-DISPLAY after the last permission line, in the web screen and in `ConsentContent.text()`. When it is not declared there is no block.
 - package-file-exception: (0.2) The rule 'the consent content MUST come from the manifest alone' is read with one addition: the EULA file that the manifest's `eula` names is read by the package reader and is part of the content. It is read like `standard_questions` is checked, without importing or executing any plug-in code and without a network call; the existing `verify-machine` assertion of no network call and no import holds for it.
+- v0-3-delta: (0.3) When a manifest that states "0.3" declares `capabilities`, the content carries one `capabilities:` line after the permission lines (CXC-PC-V03-CAPABILITIES); when it or the host declares warnings, the content carries a warnings block after the EULA block, each warning with its own acknowledgement (CXC-PC-V03-WARNINGS, CXC-PC-V03-WARNING-ACK). A grant-bearing config property adds one advisory line (CXC-PC-V03-GRANT-FREE-CONFIG). A manifest with none of these renders as under 0.2.
 
 ### [CXC-PC-CONSENT-RECORD] A consent record is kept for audit, even after uninstall
 
@@ -350,6 +353,7 @@ updated: 2026-11-27
 - see-also: [CXC-PC-CONSENT-CONTENT], [CXC-PC-LIFECYCLE-UNINSTALL], [CXC-PC-EVIDENCE]
 - optional-keys: (0.2) The record has the eight keys above and ONE optional key, `eula_sha256` (CXC-PC-V02-EULA-HASH-RECORD): omitted when no EULA is declared, never null. The reader accepts the eight keys, plus that key when it is 64 lowercase hex, and refuses any other key set naming the key. `granted-format` is unchanged: the EULA hash is not a grant.
 - record-decline: (0.2) A `refused` record may also be written by `PluginManager.record_decline` (CXC-PC-V02-RECORD-DECLINE), through the same append. The rule 'a refusal is recorded as well as a grant' is unchanged and now has a path that does not run an install or an upgrade.
+- v0-3-delta: (0.3) The record may carry a second optional key, `acknowledged_warnings` (CXC-PC-V03-WARNING-ACK); `granted-format` is unchanged because a warning is not a grant. The reader accepts the eight keys plus `eula_sha256` and `acknowledged_warnings`, each only when valid (CXC-PC-V03-STORES-COMPAT).
 
 ### [CXC-PC-CONSENT-WIDENING] An upgrade that WIDENS the granted set requires fresh consent
 
@@ -379,6 +383,7 @@ updated: 2026-11-27
 - see-also: [CXC-PC-RULE-CONSENT-HOST-OWNED], [CXC-PC-CONSENT-CONTENT], [CXC-PC-CONSENT-RECORD]
 - v0-2-record-decline: (0.2) A host can record an operator's decline without running install or upgrade, with `PluginManager.record_decline` (CXC-PC-V02-RECORD-DECLINE). Each host's gate is unchanged.
 - v0-2-eula-must-show: (0.2) A host that offers consent for a manifest that declares `eula` MUST show the EULA text, or refuse the install naming `eula` (CXC-PC-V02-EULA-HOST-OBLIGATION). The gates themselves are unchanged.
+- v0-3-delta: (0.3) The gate runs exactly at install and at an upgrade that widens grants, changes the EULA, or adds or changes a capability token or a warning; enable, disable, configure and uninstall take no gate and need the host's authenticated operator (CXC-PC-V03-CONSENT-TRIGGERS). An operator's refuse or cancel stops any operation, gate or not (CXC-PC-V03-REFUSE-ALWAYS-STOPS).
 
 ---
 
@@ -424,6 +429,7 @@ updated: 2026-11-27
 - provenance: architect-synthesis
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-CSL-CONFIG-VALIDATION], [CXC-CSL-ERROR-TAXONOMY], [CXC-PC-NC-INVALID-CONFIG]
+- v0-3-delta: (0.3) For a manifest that states "0.3" a grant-bearing `config_schema` property draws a named advisory, a structural author aid and not enforcement (CXC-PC-V03-GRANT-FREE-CONFIG); `configure` takes no gate and writes one lifecycle entry that never carries the value (CXC-PC-V03-LIFECYCLE-RECORD).
 
 ### [CXC-PC-LIFECYCLE-HEALTH] Health comes from the runtime contract; v0.1 has no `health` manifest field
 
@@ -448,6 +454,7 @@ updated: 2026-11-27
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-CONSENT-WIDENING], [CXC-PC-LIFECYCLE-CONFIG], [CXC-PC-HELLO-V2]
 - v0-2-eula-reconsent: (0.2) An upgrade also requires fresh consent when its EULA digest differs from the installed one (CXC-PC-V02-EULA-RECONSENT). Stored-config handling, manual-only upgrade and the reserved `upgrade` block are unchanged.
+- v0-3-delta: (0.3) An upgrade with no gate and `accepted=False` aborts with no change and writes a `decline` entry (CXC-PC-V03-REFUSE-ALWAYS-STOPS); the 0.2.0 behaviour, which upgrades whatever the operator chose, is the registered defect named there. Stored-config handling and manual-only upgrade are unchanged.
 
 ### [CXC-PC-LIFECYCLE-DISABLE] Disable stops the plug-in and keeps install, config and consent
 
@@ -459,6 +466,7 @@ updated: 2026-11-27
 - provenance: architect-synthesis
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-LIFECYCLE-STATES], [CXC-PC-CONSENT-RECORD]
+- v0-3-delta: (0.3) Disable and re-enable take no consent gate; each is one lifecycle entry carrying the operator (CXC-PC-V03-CONSENT-TRIGGERS, CXC-PC-V03-LIFECYCLE-RECORD).
 
 ### [CXC-PC-LIFECYCLE-UNINSTALL] Uninstall stops, tombstones retained topics, removes code and config, keeps the consent record
 
@@ -471,6 +479,7 @@ updated: 2026-11-27
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-CONSENT-RECORD], [CXC-PC-LIFECYCLE-STATES]
 - v0-2-web-confirm: (0.2) The library's web manager puts a confirm step in front of this operation (CXC-PC-V02-UNINSTALL-CONFIRM). `PluginManager.uninstall` itself is unchanged, and the operation appends its `uninstall` event before it stops the plug-in.
+- v0-3-delta: (0.3) The uninstall confirm offers keep (default) or delete for the plug-in's data folder, and the choice is written to the uninstall entry (CXC-PC-V03-UNINSTALL-DATA-CHOICE). The rule above is unchanged.
 
 ---
 
@@ -520,6 +529,7 @@ updated: 2026-11-27
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-LIBRARY], [CXC-PC-WEB-UI], [CXC-PC-SUBPROCESS-RUNNER]
 - v0-2-additions: (0.2) The library also holds: the install event log `InstallLog` (CXC-PC-V02-INSTALL-LOG-FILE) and its divergence check (CXC-PC-V02-INSTALL-LOG-DIVERGENCE); the public call `PluginManager.record_decline` (CXC-PC-V02-RECORD-DECLINE); the licence validator and the EULA reader (CXC-PC-V02-LICENSE-FIELD, CXC-PC-V02-EULA-FIELD). The `Host` protocol gains no member (CXC-PC-V02-STORES-COMPAT).
+- v0-3-delta: (0.3) The library also holds: the optional `Host.policy` and `Host.data_dir` members (CXC-PC-V03-HOST-POLICY-HOOK, CXC-PC-V03-UNINSTALL-DATA-CHOICE); the third schema file `manifest-0.3.schema.json` (CXC-PC-V03-VERSION-0-3); the grant-free config advisory (CXC-PC-V03-GRANT-FREE-CONFIG). The 0.2 additions and the rule that a `Host` written against an earlier contract runs unchanged still hold (CXC-PC-V03-STORES-COMPAT).
 
 ### [CXC-PC-WEB-UI] The Plugin Manager UI is plain: server-rendered HTML, minimal JS, a mountable WSGI app
 
@@ -531,6 +541,7 @@ updated: 2026-11-27
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-UI-URL-PREFIX], [CXC-PC-UI-HOST-HOOKS], [CXC-PC-COMPOSEIO-HOST-IDENTITY]
 - v0-2-uninstall-confirm: (0.2) The route set gains `POST .../plugin/<domain>/uninstall/prepare` and `POST .../plugin/<domain>/uninstall/decide`, and the route `POST .../plugin/<domain>/uninstall` no longer uninstalls (CXC-PC-V02-UNINSTALL-CONFIRM). The consent screen shows a declared EULA (CXC-PC-V02-EULA-DISPLAY). The index page lists install-log findings when there are any.
+- v0-3-delta: (0.3) The no-gate upgrade screen is labelled "Upgrade" and "Cancel" (CXC-PC-V03-REFUSE-ALWAYS-STOPS); the consent screen carries a control per warning (CXC-PC-V03-WARNING-ACK); the uninstall confirm carries the data choice (CXC-PC-V03-UNINSTALL-DATA-CHOICE).
 
 ### [CXC-PC-UI-URL-PREFIX] The mounted app MUST work under a URL prefix: SCRIPT_NAME-correct links, no absolute paths
 
@@ -543,6 +554,7 @@ updated: 2026-11-27
 - provenance: architect-synthesis — the ask is gnomon-architect's UI requirement.
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-WEB-UI], [CXC-PC-UI-HOST-HOOKS]
+- v0-3-delta: (0.3) The rule is unchanged and is now also a tested requirement for the mount `/plugin-manager`, covering every 0.3 screen (CXC-PC-V03-MOUNTABLE-WEB-MANAGER).
 
 ### [CXC-PC-UI-HOST-HOOKS] The UI takes BOTH its auth hook and its consent gate from the host's `Host` implementation; the library does no authentication
 
@@ -559,6 +571,7 @@ updated: 2026-11-27
 - csrf-defence: The shared Plugin Manager MUST refuse every state-changing request (each POST: install/consent, configure, enable, disable, upgrade decide, uninstall) unless it carries a per-session CSRF token (see `csrf-token-scope` for what "per-session" means) that matches the one issued in the rendered form. It MUST also refuse any state-changing request whose `Origin` is present and is not the host's own origin, or whose `Sec-Fetch-Site` is `cross-site`. A refused request changes nothing and records nothing; it never becomes a consent record. Reason: a browser re-sends cached HTTP Basic credentials on a cross-site form POST to the loopback origin, so without this, a page the operator merely visits could grant consent under the operator's name. Provenance: architect-synthesis, composeux-architect 2026-11-26 (r18), on independent QA FAIL 1; a library rule, so it binds both hosts.
 - csrf-token-scope: "Per-session" for the csrf-defence token means per operator, per app instance: an HMAC of the operator name under a key created when the app starts, which rotates at every restart. Basic authentication has no session to bind to, and a cross-site page cannot read the token under the same-origin policy.
 - v0-2-new-routes: (0.2) The two new uninstall routes are POSTs: every request passes the host's auth hook first and the `csrf-defence` below, exactly as the other state-changing routes do. `csrf-defence` and `csrf-token-scope` are unchanged.
+- v0-3-delta: (0.3) A host that mounts the web manager also keeps every state-changing route out of agents' reach, a host obligation the library cannot check (CXC-PC-V03-HOST-AGENT-BLOCK).
 
 ---
 
@@ -649,6 +662,7 @@ updated: 2026-11-27
 - provenance: architect-synthesis — Plumb's addendum to the brief.
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-CONTRACT-AUTHORITATIVE], [CXC-PC-RELEASE-TAGS], [CXC-PC-NC-CONTRACT-MISMATCH]
+- v0-3-delta: (0.3) The host's version is "0.3" and rules (1) to (5) are unchanged. The version the library accepts is stated at CXC-PC-V03-VERSION-0-3; the freeze that follows from rules (2) and (3) is stated at CXC-PC-V03-MANIFEST-FROZEN.
 
 ### [CXC-PC-CONTRACT-AUTHORITATIVE] When the two hosts disagree, the contract is authoritative and the host whose behaviour differs has the bug
 
@@ -737,6 +751,7 @@ updated: 2026-11-27
 - see-also: [CXC-PC-HELLO-V1], [CXC-PC-HELLO-V2], [CXC-PC-NEGATIVE-CONTROLS], [CXC-PC-HOST-ISOLATION-CHOICE]
 - host-section-hook: (r24, architect-synthesis) The conformance TARGET (the object the conformance factory returns) MAY provide `host_section(fixture: str) -> dict`, returning THIS host's own valid section VALUE for the named fixture. `fixture` is one of the conformance script's own fixture ids: `hello-world-v1`, `hello-world-v2`, and each negative-control fixture by its NC id (`NC1` to `NC8`). The runner writes that value into the fixture's manifest at `hosts.<target.host.name>` before each step or control that installs (so the consented `manifest_sha256` covers it). A target that does not provide `host_section` gets `{}` there; ComposeIO's target provides none, so its section stays `{}`, unchanged. The shared fixtures do not define any host's section content: each host owns its own section ([CXC-PC-HOST-SECTIONS] rule 3).
 - foreign-host: (r24, architect-synthesis) EVERY host's conformance target MUST provide `foreign_host: str`, a host name other than `target.host.name`; ComposeIO's target provides `foreign_host = "gnomon"`. The positive control paired with [CXC-PC-NC-UNKNOWN-CORE-KEY] puts an unknown key inside `hosts.<foreign_host>` and asserts that this host ignores it and the plug-in installs. The runner REFUSES to run before step 1: an absent `foreign_host` with the message "foreign_host missing"; one that equals `target.host.name` or breaks [CXC-PC-HOST-SECTIONS] `host-name-rule` with a message naming the value.
+- v0-3-delta: (0.3) The script runs NC9 and NC10 after NC8, and the fixture ids that `host_section` receives gain `NC9` and `NC10`; NC3 sends `"0.4"` (CXC-PC-V03-READS-0-2-UNCHANGED). Steps 1 to 9 and the 0.2 fixtures are unchanged.
 
 ### [CXC-PC-NEGATIVE-CONTROLS] The negative controls: each MUST fail loudly, never pass or half-apply
 
@@ -749,6 +764,7 @@ updated: 2026-11-27
 - provenance: architect-synthesis — six of the seven controls are from the narrative; the seventh is Plumb's R3 condition.
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-CONFORMANCE-SCRIPT], [DX-SPEC-CARRIES-ITS-EVIDENCE]
+- v0-3-delta: (0.3) Two more controls join the eight, so the claim above reads ten from 0.3: NC9 CXC-PC-V03-NC-UPGRADE-DECLINED and NC10 CXC-PC-V03-NC-GRANT-BEARING-CONFIG.
 
 ### [CXC-PC-NC-TAMPERED-MANIFEST] Negative control 1: a tampered manifest (sha mismatch) is refused at install
 
@@ -785,6 +801,7 @@ updated: 2026-11-27
 - provenance: architect-synthesis
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-VERSION-RULE], [CXC-PC-NEGATIVE-CONTROLS]
+- v0-3-delta: (0.3) On a 0.3 host the manifest this control sends states `"0.4"` (the host's MINOR plus one); `"0.3"` would install (CXC-PC-V03-VERSION-0-3 `negative-control-input`). The refusal names `0.4` and `0.3`.
 
 ### [CXC-PC-NC-UNKNOWN-CORE-KEY] Negative control 4: an unknown core key is refused naming the key
 
@@ -954,6 +971,7 @@ updated: 2026-11-27
 - evidence-consent-dialog-title: EMPTY — (r21) no render showing the dialog title "<name> <version>  Manifest: Declared by its Developer" and the permission lines ([CXC-PC-CONSENT-CONTENT] `dialog-title`, `permission-lines`); QA's 45bef44 consent screens predate the title.
 - evidence-predates-r24: STALE AGAINST r24 (marked 2026-11-26): every FILLED ComposeIO conformance slot here (`evidence-conformance-composeio-subprocess` PASS 20 of 20, `evidence-conformance-composeio-inprocess` PASS 18 of 18, the NC1 to NC7 `-composeio` slots, `evidence-runner-local-only-composeio` and `evidence-runner-child-kill`), and the 21 of 21 and 19 of 19 PASS results reported at r22, were produced by the runner BEFORE r24's `host-section-hook` and `foreign-host` rules ([CXC-PC-CONFORMANCE-SCRIPT]). They must be re-run after the library change; no r24 re-run has been made. The slot values above are kept as recorded.
 - evidence-v0-2-delta: EMPTY — every CXC-PC-V02-* requirement and test node carries its own `evidence: EMPTY` key and an `evidence-fills-with` line saying what fills it; none has been run. The existing slots, including `evidence-predates-r24`, are unchanged, and the filled ComposeIO slots are evidence for 0.1, not for 0.2. (2026-11-27, at applying r25, this slot's text is superseded in part: the compose-plugins 0.2.0 build and its candidate review have run, so the `evidence` slot of every CXC-PC-V02-* requirement and test node is filled, each naming its tests and composeio commit e5c82fb000b8be82e0f14e4f4820da40736ea954; the Gnomon share of `evidence-per-host` at CXC-PC-V02-EULA-HOST-OBLIGATION stays EMPTY.)
+- evidence-v0-3-delta: EMPTY — every CXC-PC-V03-* requirement, control and test node carries its own `evidence: EMPTY` key and an `evidence-fills-with` line saying what fills it; none has been run, and nothing of 0.3 is built. The existing slots are unchanged, and the filled slots are evidence for 0.1 and 0.2, not for 0.3.
 
 ### [CXC-PC-ARCHITECT-PROPOSALS] Every node with provenance architect-synthesis is a proposal — list them by QUERY, not from a hand list
 
@@ -1374,6 +1392,7 @@ updated: 2026-11-27
 - provenance: architect-synthesis — the carried fields are the requester's; the key list, the basis values and the event set are the writer's
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-LIFECYCLE-STATES], [CXC-PC-CONSENT-RECORD], [CXC-PC-CONFORMANCE-SCRIPT], [CXC-PC-V02-INSTALL-LOG-FILE]
+- v0-3-delta: (0.3) A 0.3 library writes entries with three more keys (`operator`, `result`, `consent_id`), the event names `configure` and `decline`, and `data` on `uninstall`, and reads both forms (CXC-PC-V03-LIFECYCLE-RECORD). Where `not-events` above says a refused consent decision and `configure` write no event, 0.3 supersedes it for those two.
 
 ### Test: the 9-step lifecycle leaves exactly the seven expected events, each carrying its sha and consent [CXC-PC-V02-T-INSTALL-LOG-EVENTS-OF-THE-LIFECYCLE]
 
@@ -1619,6 +1638,7 @@ updated: 2026-11-27
 - provenance: architect-synthesis — the library-level confirm is the contract owner's; the shape is the writer's
 - part-of: [SPEC:CXC-PLUGIN-CONTRACT]
 - see-also: [CXC-PC-WEB-UI], [CXC-PC-UI-HOST-HOOKS], [CXC-PC-UI-URL-PREFIX], [CXC-PC-LIFECYCLE-UNINSTALL], [CXC-PC-V02-RULING-UNINSTALL-RECORD], [CXC-PC-V02-RULING-UNINSTALL-HOST-LINES]
+- v0-3-delta: (0.3) The confirm screen gains the keep-or-delete choice for the plug-in's data folder, keep first and by default (CXC-PC-V03-UNINSTALL-DATA-CHOICE). The prepare and decide routes, the stale check and `cancel` are unchanged.
 
 ### Test: one click changes nothing, cancel changes nothing, confirm uninstalls, and the screen lists what is removed [CXC-PC-V02-T-UNINSTALL-CONFIRM-FLOW]
 
@@ -1812,6 +1832,645 @@ updated: 2026-11-27
 
 ---
 
+## 18. v0.3 additions (freezes the manifest)
+
+### [CXC-PC-V03-BASIS] Contract 0.3 is an additive MINOR over 0.2 that FREEZES the manifest schema; this section is a delta on r25, ratified 2026-11-28 and not yet built
+
+- claim: contract 0.3 changes eight things and no more: consent at grant, EULA, capability and warning changes only, refuse always stops, an operator-attributed lifecycle record, an advisory screen that flags grant-bearing config fields, declared `capabilities` and `warnings` with a host policy hook, a keep-or-delete choice for the plug-in's data at uninstall, a web manager that mounts under any prefix, and the freeze of the manifest schema with its compatibility rule. Every node of this section is a requirement or a test of one of them.
+- note: Base. spec 95 r25 (contract 0.2) at composeio main 0c6bb2886b711fe78b0cc0e2f56a5d5c6c2c6ce8; library compose-plugins 0.2.0 (tag plugin-contract-v0.2). The release this delta describes is tag `plugin-contract-v0.3` with `compose-plugins` 0.3.0.
+- note: Not built. every requirement and test node of this section carries `evidence: EMPTY` and an `evidence-fills-with` line. EMPTY is the sentinel for "never run"; an absent key would mean nobody thought to write it.
+- note: How edited. this delta adds sections 18 and 19, relationship lines at the end, and ONE new key on each existing node it touches (`v0-3-delta`, or `evidence-v0-3-delta` on CXC-PC-EVIDENCE); the title, the frontmatter `scope` and `updated`, and the header summary are re-worded; no existing key of any existing node is edited or removed. The list of touched nodes is in the delta record that accompanies this file.
+- note: Guard check. none of the 14 areas or 4 hardening checks of CXC-PC-V0-2-GROWTH-GUARD is extended: no `validator-readings`, `granted-format`, `widening-definition`, `host-name-rule`, `permissions-widen` or `code-is-a-permission` text is edited; widening is unchanged; the new manifest fields and the new refusal are gated by the manifest's stated contract (CXC-PC-V03-VERSION-0-3).
+- note: Out of scope. Plugin Discovery (listing GitHub releases, summary cards, a token held by reference by the host) is for a later v0.4. Its install rule is recorded here so that 0.3 text does not contradict it: discovery downloads the release file (the package) to the machine and the contract installs from that LOCAL file; declared claims are never enforced.
+- note: Two digests, not one. `manifest_sha256` is the SHA-256 of the exact bytes of the shipped `manifest.json` (CXC-PC-LIFECYCLE-INSTALL `manifest-sha256-definition`) and is already recorded at install. The install under Discovery also records the sha256 of the DOWNLOADED RELEASE FILE itself (the package, for example the wheel); that is a different digest, taken over different bytes, and it is a v0.4 addition to the install record or the log. It is not a manifest field, so the freeze is untouched, and nothing in 0.3 records it.
+- note: Revision 2026-11-28. The frontmatter `confidentiality` of this file changes from `internal-only` to `public`: the file is already on public main and the public authoring guide cites it.
+- rule: Fix upstream. a Plugin Manager capability gap is fixed UPSTREAM in compose-plugins, in the shared library, and never worked around in a host.
+- evidence: EMPTY
+- evidence-fills-with: the 0.3.0 release commit, the full suite output and its sha256, and the independent review verdict
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the eight items are the contract owner's direction of 2026-11-28; the node shapes are the writer's
+- basis: owner-decided (project owner)
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V0-2-GROWTH-GUARD], [CXC-PC-VERSION-RULE], [CXC-PC-RELEASE-TAGS], [CXC-PC-LIFECYCLE-INSTALL], [CXC-PC-V03-VERSION-0-3], [CXC-PC-V03-CONSENT-TRIGGERS], [CXC-PC-V03-REFUSE-ALWAYS-STOPS], [CXC-PC-V03-LIFECYCLE-RECORD], [CXC-PC-V03-GRANT-FREE-CONFIG], [CXC-PC-V03-CAPABILITIES], [CXC-PC-V03-WARNINGS], [CXC-PC-V03-UNINSTALL-DATA-CHOICE], [CXC-PC-V03-MOUNTABLE-WEB-MANAGER], [CXC-PC-V03-MANIFEST-FROZEN]
+
+### [CXC-PC-V03-VERSION-0-3] A 0.3 host reads 0.1, 0.2 and 0.3 manifests; `capabilities` and `warnings` and the grant-free config advisory apply only to a manifest that says `contract: "0.3"`
+
+- rule: (1) the library reports its contract as "0.3". (2) A 0.3 host accepts a manifest whose `contract` is "0.1", "0.2" or "0.3", by rule (4) of CXC-PC-VERSION-RULE. (3) A manifest that states "0.1" or "0.2" and carries `capabilities` or `warnings` is REFUSED at install naming the key and stating "defined from contract 0.3", because a manifest is read by the contract it states (the same reading as CXC-PC-V02-VERSION-0-2 rule (3)). (4) The grant-free config advisory (CXC-PC-V03-GRANT-FREE-CONFIG) is emitted only for a manifest that states "0.3"; a manifest that states "0.1" or "0.2" is validated exactly as under 0.2. (5) A 0.2 host refuses a "0.3" manifest by CXC-PC-NC-CONTRACT-MISMATCH, unchanged. (6) The library ships a third schema file, `manifest-0.3.schema.json`, reporting `x-compose-plugins-contract: "0.3"`; `manifest-0.1.schema.json` and `manifest-0.2.schema.json` stay byte-identical to the files shipped with 0.2.0; the schema is selected by the manifest's own `contract` (CXC-PC-V02-SCHEMA-FILES). (7) The tag is `plugin-contract-v0.3`, cut with `compose-plugins` 0.3.0.
+- code-read: python/compose_plugins/compose_plugins/version.py line 15 reads `HOST_CONTRACT = "0.2"`; python/compose_plugins/compose_plugins/manifest.py line 973 reads `SCHEMA_RESOURCES = {"0.1": "manifest-0.1.schema.json", "0.2": "manifest-0.2.schema.json"}`. Both change; `check_contract` in version.py already implements rule (2) for any host constant.
+- consequence: Negative control input. CXC-PC-NC-CONTRACT-MISMATCH names `"0.3"` on a 0.2 host. From 0.3 the conformance script MUST send the host's MINOR plus one, `"0.4"`, so the control still tests a manifest newer than the host; sending `"0.3"` to a 0.3 host would install it and fail the control.
+- default: a manifest that carries none of the new keys behaves exactly as under 0.2, whichever of the three `contract` values it states.
+- boundary-case: `contract: "0.2"` with `capabilities` is refused naming `capabilities`; `contract: "0.1"` with `warnings` is refused naming `warnings`; `contract: "0.4"` is refused naming `0.4` and `0.3`.
+- verify-machine: CXC-PC-V03-T-VERSION-TABLE.
+- verify-human: none required — structural.
+- tested-by: [CXC-PC-V03-T-VERSION-TABLE]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the table-driven test with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the MINOR rule is the contract's; applying the manifest-states-its-own-version reading to the new keys follows CXC-PC-V02-VERSION-0-2
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-VERSION-RULE], [CXC-PC-V02-VERSION-0-2], [CXC-PC-V02-SCHEMA-FILES], [CXC-PC-NC-CONTRACT-MISMATCH], [CXC-PC-RELEASE-TAGS], [CXC-PC-UNKNOWN-KEYS]
+
+### [CXC-PC-V03-T-VERSION-TABLE] Test: the version table accepts the new keys only under "0.3" and refuses "0.4" naming both versions
+
+- procedure: build manifests from the hello-world v1 manifest: (0.2 plain), (0.2 with `capabilities`), (0.2 with `warnings`), (0.3 plain), (0.3 with `capabilities`), (0.3 with `warnings`), (0.3 with both), (0.4 plain); run each through the validator and through install; record the outcome and the refusal text. Add (0.2 with a config_schema property named `path`) and (0.3 with the same): both install; the second carries a named advisory and the first none (CXC-PC-V03-GRANT-FREE-CONFIG).
+- asserts: rows 1, 4, 5, 6, 7 and the 0.2 `path` row install; rows 2 and 3 are refused naming the key and "defined from contract 0.3"; row 8 is refused naming `0.4` and `0.3`; the 0.3 `path` row installs and its validation result holds one `config-grant-bearing` advisory naming the property, while the 0.2 row holds none; the library constant equals "0.3" and equals the shipped 0.3 schema's `x-compose-plugins-contract`; the two earlier schema files are byte-identical to their 0.2.0 digests.
+- verify-machine: the test exits non-zero if any row's outcome or named key differs.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-VERSION-0-3]
+
+### [CXC-PC-V03-CONSENT-TRIGGERS] Consent is asked at install and at an upgrade that widens grants or changes the EULA, a capability or a warning, and nowhere else; enable, disable, configure and uninstall take no consent gate
+
+- rule: (1) The host's consent gate runs exactly at: `install`; and `upgrade` when `upgrade_widens(...)` is true (CXC-PC-CONSENT-WIDENING) or the new package's EULA digest differs from the installed record's `eula_sha256` (CXC-PC-V02-EULA-RECONSENT) or `declarations_change(...)` is true: a NEW or CHANGED `capabilities` token, or a NEW or CHANGED warning (by text sha256), plug-in or host (CXC-PC-V03-DECLARATION-CHANGE-PREDICATE). (2) `enable`, `disable`, `configure` and `uninstall` call no gate and write no consent record. Each needs the host's authenticated operator instead: through the web manager, the host's auth hook (CXC-PC-UI-HOST-HOOKS); through the library, the `operator` argument (CXC-PC-V03-LIFECYCLE-RECORD-WRITE). (3) An upgrade that satisfies none of the three triggers calls no gate; its refuse path is CXC-PC-V03-REFUSE-ALWAYS-STOPS. (4) A change of `license` or of a permission `purpose` alone is not a trigger; a REMOVED capability or warning is not a trigger either (CXC-PC-V03-RULING-DECLARATION-CHANGE-GATES).
+- why: consent is for what a plug-in may do. Enabling, disabling or reconfiguring it changes nothing it was granted, so a consent screen there is noise that trains operators to click through the one that matters.
+- code-read: python/compose_plugins/compose_plugins/lifecycle.py, PluginManager.upgrade, lines 705 to 707: `if eula_changed or upgrade_widens(old["granted"], prompt.content.granted,` ... `record = self._gate(prompt, operator, accepted)  # refused: no change` is the only gate call on the upgrade path; `configure` (lines 552 to 554) is `self._check("configure", domain)` then `self.configs.put(domain, config)` with no gate; `disable` (line 673) and `uninstall` (line 730) take a domain and nothing else. The 0.2 behaviour already matches rules (1) and (2); this node makes them normative and tested.
+- default: none.
+- boundary-case: an install whose host gate refuses writes a refused consent record and changes nothing (CXC-PC-CONSENT-RECORD); a refused gate at a widening upgrade leaves v1 in place (CXC-PC-NC-WIDENING-REFUSED).
+- verify-machine: CXC-PC-V03-T-GATE-CALLS.
+- verify-human: on the glass an operator disables, re-enables, configures and uninstalls a plug-in and sees no consent screen; installs and sees one.
+- tested-by: [CXC-PC-V03-T-GATE-CALLS]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the gate-spy test with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the rule is the contract owner's direction of 2026-11-28; the enumeration and the spy test are the writer's
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-CONSENT-GATES], [CXC-PC-CONSENT-WIDENING], [CXC-PC-V02-EULA-RECONSENT], [CXC-PC-LIFECYCLE-DISABLE], [CXC-PC-LIFECYCLE-UPGRADE], [CXC-PC-V03-RULING-DECLARATION-CHANGE-GATES]
+
+### [CXC-PC-V03-T-GATE-CALLS] Test: a spy on the host's consent gate counts its calls across the whole lifecycle
+
+- procedure: run install, configure, enable, disable, enable, a non-widening upgrade with an unchanged EULA, a widening upgrade, an upgrade that changes only the EULA, an upgrade that only adds a capability token, an upgrade that only changes a warning's text, an upgrade that only removes a warning, and uninstall, with a host whose `consent_gate` is a counting spy that grants.
+- asserts: the spy is called once at install, zero times at configure, enable, disable, the non-widening upgrade and uninstall, once at the widening upgrade, once at the EULA-only upgrade, once at the capability-only upgrade, once at the warning-text-only upgrade, and zero times at the warning-removal upgrade; the consent store gains one line per gate call and no other line.
+- verify-machine: non-zero exit on any count that differs.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-CONSENT-TRIGGERS]
+
+### [CXC-PC-V03-DECLARATION-CHANGE-PREDICATE] `declarations_change` is true when an upgrade adds or changes a capability token or a warning, and it forces the consent gate like a changed EULA
+
+- rule: (1) Define `declarations_change(old, new)`. `old` is the installed record's `capabilities` (a sorted list of tokens, absent read as empty) and `warning_digests` (a map from acknowledgement key `<source>:<id>` to the sha256 of that warning's text, absent read as empty). `new` is the same two things for the package being upgraded and for the host's `policy` result (CXC-PC-V03-HOST-POLICY-HOOK). (2) It is true iff (a) some token of the new `capabilities` is not in the old set, or (b) some acknowledgement key of the new warnings, plug-in or host, is absent from the old map or maps to a different sha256. (3) A removed token or a removed warning never makes it true (narrowing, as in CXC-PC-CONSENT-WIDENING `permissions-widen`); a changed `title` alone does not (only the text is hashed). (4) When true, the gate runs ONCE, together with any widening or EULA trigger, and the consent page shows every current warning for acknowledgement (CXC-PC-V03-WARNING-ACK); a refusal is recorded and stops the upgrade exactly as for a widening upgrade. (5) `install` and `upgrade` write the installed record's `capabilities` and `warning_digests` (omitted when empty), so the next upgrade can compare. A record written by a 0.2 library has neither and reads as empty, so the first 0.3 upgrade of such a plug-in that declares `agent-messaging` asks.
+- why: a capability or a warning changes the risk the operator accepted. `agent-messaging` arriving in an upgrade must not install without the host-required warning being shown and acknowledged.
+- code-read: python/compose_plugins/compose_plugins/lifecycle.py lines 703 to 707 form the 0.2 trigger: `eula_changed = ...` then `if eula_changed or upgrade_widens(old["granted"], prompt.content.granted,` `old["runs_as"], prompt.runs_as):` then `record = self._gate(prompt, operator, accepted)`. The 0.3 `if` gains `or declarations_change(...)`. python/compose_plugins/compose_plugins/consent.py line 146 defines `upgrade_widens`, the model for this predicate.
+- default: no capabilities and no warnings on either side gives false.
+- boundary-case: an upgrade that adds `agent-messaging` while the host's policy requires its warning is true even when the plug-in declares no warning of its own; an upgrade that keeps the same token and the same texts is false; a host that edits its own warning text between releases makes it true for every plug-in that declares the token.
+- verify-machine: CXC-PC-V03-T-UPGRADE-ADDS-AGENT-MESSAGING, and the rows of CXC-PC-V03-T-GATE-CALLS.
+- verify-human: on the glass an operator upgrading a plug-in that now declares `agent-messaging` sees the consent page with the host-required warning and must acknowledge it.
+- tested-by: [CXC-PC-V03-T-UPGRADE-ADDS-AGENT-MESSAGING]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the predicate table and of the upgrade test, with the library commit and the sha256 of each output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the trigger is the contract owner's ruling of 2026-11-28; the predicate, the record keys and the comparison by text digest are the writer's
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-CONSENT-TRIGGERS], [CXC-PC-CONSENT-WIDENING], [CXC-PC-V02-EULA-RECONSENT], [CXC-PC-V03-CAPABILITIES], [CXC-PC-V03-WARNINGS], [CXC-PC-V03-WARNING-ACK], [CXC-PC-V03-HOST-POLICY-HOOK], [CXC-PC-V03-RULING-DECLARATION-CHANGE-GATES]
+
+### [CXC-PC-V03-T-UPGRADE-ADDS-AGENT-MESSAGING] Test: an upgrade that adds `agent-messaging` shows the consent page with the host-required warning, and a decline stops it
+
+- procedure: with a stub host whose `policy` returns one host warning for `agent-messaging`, install a 0.3 plug-in with no capability and no warning; then upgrade to a package that differs only by `capabilities: ["agent-messaging"]` (no widening, no EULA). Run it three times: (a) through the library with the full `acknowledged_warnings` mapping; (b) through the web manager, reading the consent page and then posting accept with every box set; (c) through the web manager, posting refuse; and a fourth run with `accepted=False` and a gate that refuses.
+- asserts: in every run the gate is called once and the consent page lists the host-required warning (labelled "required by this host") with its own acknowledgement control; (a) and (b) upgrade, write a consent record carrying `acknowledged_warnings` with `host:<id>` and its digest, and write an `upgrade` entry whose `consent_basis` is `recorded`; (c) and the refusing gate leave v1 installed with `installs.json` and the code tree byte-identical, write a `refused` consent record without `acknowledged_warnings`, and append one `decline` entry; a second upgrade to a package that adds nothing calls no gate.
+- verify-machine: non-zero exit on any mismatch.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-DECLARATION-CHANGE-PREDICATE], [CXC-PC-V03-HOST-POLICY-HOOK], [CXC-PC-V03-REFUSE-ALWAYS-STOPS]
+
+### [CXC-PC-V03-REFUSE-ALWAYS-STOPS] An operator's refuse or cancel stops any operation, gate or not: an upgrade with no gate and `accepted=False` aborts with no change and writes a `decline` lifecycle entry
+
+- rule: (1) When a gate runs, its decision governs, as in 0.2 (a refusal is recorded and raises `ConsentDenied`). (2) When NO gate runs for an `upgrade` (it satisfies none of the triggers of CXC-PC-V03-CONSENT-TRIGGERS), `accepted=False` ABORTS the operation before any side effect: it raises the new `OperatorDeclined` (a subclass of `PluginContractRefusal`) with a message of the form "upgrade of '<domain>' <version> DECLINED by the operator; nothing changed"; no consent record is written (no consent was asked), no code is placed, the install record, the stored config, the running plug-in and `installs.json` are byte-identical to before, and the manager appends exactly one lifecycle entry with `event` `decline` and `result` `declined` (CXC-PC-V03-LIFECYCLE-RECORD). (3) The check precedes the write-ahead append and precedes stopping the running plug-in. (4) The web manager labels the no-gate upgrade screen with the buttons "Upgrade" (`decision=upgrade`) and "Cancel" (`decision=cancel`), never "Accept" and "Refuse"; a screen whose upgrade needs the gate keeps "Accept" (`decision=accept`) and "Refuse" (`decision=refuse`). (5) The web layer treats the operation as accepted only when `decision` is exactly one value and that value is `accept` or `upgrade`; a missing, repeated, `cancel`, `refuse` or unknown value is not accepted. (6) The web layer answers an `OperatorDeclined` with a redirect to the plug-in's detail page, not an error page: a cancel is not a failure. (7) Every other operation that offers the operator a refuse or cancel control keeps stopping on it (the uninstall confirm's `cancel`, CXC-PC-V02-UNINSTALL-CONFIRM).
+- why: Defect. registered as DEFECT-COMPOSE-PLUGINS-UPGRADE-THAT-WIDENS-3E963B. In 0.2.0 an upgrade that does not widen and keeps the EULA proceeds whatever the operator chose, so a click on "Refuse" upgrades the plug-in.
+- code-read: python/compose_plugins/compose_plugins/lifecycle.py, PluginManager.upgrade, lines 703 to 707: `eula_changed = eula is not None and eula.sha256 != old.get("eula_sha256")`, `record = None`, `if eula_changed or upgrade_widens(old["granted"], prompt.content.granted,`, `old["runs_as"], prompt.runs_as):`, `record = self._gate(prompt, operator, accepted)  # refused: no change`. `accepted` is read only at line 707, inside the `if`; when the `if` is false it is never read. python/compose_plugins/compose_plugins/web.py lines 188 to 189: `m.upgrade(form["source"], consented_sha256=form["sha256"], operator=identity,` and `accepted=form.get("decision") == "accept",` pass a refuse click as `accepted=False`, which the library then ignores. The screen at web.py `_consent_screen` lines 293 to 296 always renders the buttons `("accept", "accept"), ("refuse", "refuse")`.
+- default: `accepted` has no default (it is a required keyword of `upgrade`); a caller that omits it gets a `TypeError` as in 0.2.
+- boundary-case: `accepted=False` on an upgrade that DOES widen is the existing gate path (the gate decides); `accepted=False` on an upgrade whose domain is not installed is the existing transition refusal; a no-gate upgrade with `accepted=True` proceeds and writes no consent record, as in 0.2.
+- verify-machine: CXC-PC-V03-NC-UPGRADE-DECLINED.
+- verify-human: on the glass an operator opens a non-widening upgrade, sees "Upgrade" and "Cancel", presses "Cancel" and sees the plug-in still at its old version; opens a widening upgrade and still sees "Accept" and "Refuse".
+- tested-by: [CXC-PC-V03-NC-UPGRADE-DECLINED]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the negative control at both isolation levels with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the rule and the labels are the contract owner's direction of 2026-11-28; the exception name, the redirect and the decision-value reading are the writer's
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-CONSENT-GATES], [CXC-PC-CONSENT-WIDENING], [CXC-PC-LIFECYCLE-UPGRADE], [CXC-PC-V02-EULA-RECONSENT], [CXC-PC-V03-CONSENT-TRIGGERS], [CXC-PC-V03-LIFECYCLE-RECORD]
+
+### [CXC-PC-V03-NC-UPGRADE-DECLINED] Negative control 9: a non-widening upgrade with `accepted=False` aborts with no change and writes a `decline` entry
+
+- claim: install hello-world v1, enable it, then call `upgrade` to a package whose manifest differs only in `version` (so it does not widen and declares no EULA) with `accepted=False`. Repeat through the web manager with `decision=cancel` and with `decision=refuse`.
+- expected: REFUSED with `OperatorDeclined` (web: a 303 redirect to the detail page); `installs.json`, the installed code tree and the stored config are byte-identical; v1 is still `running`; the consent store gains no line; `installs.jsonl` gains exactly one line, with `event` `decline`, `result` `declined` and `consent` null; a second run with `accepted=True` upgrades and writes no consent line.
+- verify-machine: the control asserts each byte-identity, the single log line and its keys, and the redirect; the mutation check of CXC-PC-NEGATIVE-CONTROLS removes the `accepted` check in a scratch copy and asserts the control then FAILS.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- status-detail: proposed — awaiting ratify
+- provenance: architect-synthesis
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-REFUSE-ALWAYS-STOPS], [CXC-PC-NEGATIVE-CONTROLS]
+
+### [CXC-PC-V03-LIFECYCLE-RECORD] Every state-changing operation appends one operator-attributed entry to the append-only `installs.jsonl`; the entry is the 0.2 event with three added keys and two added event names (the record schema; compatibility is CXC-PC-V03-LIFECYCLE-RECORD-COMPAT)
+
+- claim: Relation to 0.2. the record IS the 0.2 install event log (CXC-PC-V02-INSTALL-LOG-FILE, CXC-PC-V02-INSTALL-LOG-EVENT); there is no second file. `installs.jsonl` stays beside `installs.json` in the host's state root, append-only, with no library operation that rewrites or deletes a line. The 0.3 entry maps the requested fields so: the operation is the existing `event` key, the UTC time is the existing `at` key, `domain` and `version` are unchanged, and the operator, the result and the consent-record id are new keys. The library writes every entry; no `Host` member writes one.
+- rule: Operations. `event` is one of `install`, `upgrade`, `enable`, `disable`, `uninstall`, `abort` (0.2) and, new in 0.3, `configure` and `decline`. Entries for `configure` and `decline` carry `from_state` equal to `to_state` (the domain's current state; for a declined first install, `available`).
+- rule: New keys. every entry written by a 0.3 library carries exactly three more keys beside the 0.2 keys. `operator`: a non-empty one-line string of at most 200 code points (the blank and one-line rules of CXC-PC-MANIFEST-FIELDS `validator-readings` (12)), or null when the caller supplied none (CXC-PC-V03-RULING-OPERATOR-NULL). `result`: `ok` on an `install`, `upgrade`, `enable`, `disable`, `uninstall` or `configure` entry (written ahead, so it states that the operation passed its checks and is proceeding; a later `abort` entry retracts it), `declined` on a `decline` entry, `aborted` on an `abort` entry. `consent_id`: the lowercase hex sha256 of the consent record's line as written to `consent.jsonl` (the UTF-8 bytes of `json.dumps(record.to_json(), sort_keys=True, ensure_ascii=False)`, no trailing line feed), or null; it is null exactly when `consent` is null (CXC-PC-V03-RULING-CONSENT-ID). An `uninstall` entry carries a fourth key, `data`, one of `kept`, `deleted`, `none` (CXC-PC-V03-UNINSTALL-DATA-CHOICE); no other entry carries it.
+- rule: Decline entry. a `decline` entry is written when an operator's refusal stops an `install` or an `upgrade`: at a gate that refused (its `consent` is the refused record just appended, `consent_basis` `recorded`, `consent_id` its digest), and at a no-gate upgrade with `accepted=False` (`consent` null, `consent_basis` `none`, `consent_id` null). Its `version` and `manifest_sha256` are those of the package the operator declined.
+- rule: Never carried. no entry carries a config value, a EULA text or a warning text; `configure` records that the config changed, not what it became.
+- code-read: python/compose_plugins/compose_plugins/store.py lines 80 to 81 define `EVENT_KEYS = ("seq", "at", "host", "event", "domain", "from_state", "to_state", "version",` `"manifest_sha256", "consent", "consent_basis")` and line 84 `EVENTS = ("install", "upgrade", "enable", "disable", "uninstall", "abort")`; `_event_problem` (line 100) refuses any key set other than those. lifecycle.py `_event` (line 413) builds the dict with those eleven keys only. consent.py line 477 `ConsentRecord.to_json` is the serialisation `consent_id` hashes.
+- default: none.
+- boundary-case: an entry whose `operator` is blank, multi-line or longer than 200 code points is not written: the operation raises the existing `InstallLogRefused`, nothing changes, and no entry is appended; a `consent_id` that is not 64 lowercase hex, or is null while `consent` is not (or the reverse), makes the line malformed.
+- verify-machine: CXC-PC-V03-T-LIFECYCLE-RECORD.
+- verify-human: an operator reads the log of a plug-in's lifecycle and can say who installed, configured, enabled, disabled, declined and removed it, and when, from the log alone.
+- tested-by: [CXC-PC-V03-T-LIFECYCLE-RECORD]
+- evidence: EMPTY
+- evidence-fills-with: the installs.jsonl and consent.jsonl of a real run of the lifecycle, with the library commit and the sha256 of each file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the entry content (operation, domain, version, operator, UTC time, result, consent-record id) is the contract owner's direction of 2026-11-28; mapping it onto the 0.2 keys, the result values, the digest definition and the reader rule are the writer's
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V02-INSTALL-LOG-FILE], [CXC-PC-V02-INSTALL-LOG-EVENT], [CXC-PC-V02-INSTALL-LOG-MALFORMED-LINES], [CXC-PC-CONSENT-RECORD], [CXC-PC-V03-LIFECYCLE-RECORD-WRITE], [CXC-PC-V03-RULING-LOG-KEYS], [CXC-PC-V03-RULING-OPERATOR-NULL], [CXC-PC-V03-RULING-CONSENT-ID], [CXC-PC-V03-RULING-RECORD-DECLINE-UNCHANGED], [CXC-PC-V03-LIFECYCLE-RECORD-COMPAT]
+
+
+### [CXC-PC-V03-LIFECYCLE-RECORD-COMPAT] A 0.3 reader reads both forms of `installs.jsonl`; a 0.2 reader reports 0.3 lines as malformed, and a roll-back can repeat `seq`
+
+- consequence: Supersedes 0.2. CXC-PC-V02-INSTALL-LOG-EVENT `not-events` lists a refused consent decision and `configure` as writing no event. From 0.3 both write an entry (`decline` and `configure`); a status change such as `parked` or `degraded`, and `PluginManager.record_decline`, still write none (CXC-PC-V03-RULING-RECORD-DECLINE-UNCHANGED).
+- rule: Reader. a 0.3 reader accepts a line when it is a valid 0.2 event (eleven keys, plus the two abort keys on an `abort`) OR a valid 0.3 entry (those keys plus the three new keys, plus `data` on an `uninstall`); a line with only some of the three new keys, or an unknown key, is malformed under CXC-PC-V02-INSTALL-LOG-MALFORMED-LINES (reason `bad-keys`), skipped and reported, never blocking.
+- known-limit: a 0.2 library pointed at a state root where a 0.3 library wrote entries reports every 0.3 line as `malformed-line` with reason `bad-keys` (CXC-PC-V02-INSTALL-LOG-MALFORMED-LINES): skipped for every purpose, never blocking. After a roll-back its new events take `seq` from the highest VALID line, so they can repeat the `seq` of skipped 0.3 lines. This is the same kind of limit as the 0.1 library meeting a 0.2 consent line that carries `eula_sha256` (CXC-PC-V02-STORES-COMPAT `known-limit`): hosts move their pin forward, and a roll-back after 0.3 entries exist needs a person.
+- default: a state root written only by 0.2 or only by 0.3 reads without a finding.
+- boundary-case: a line with only some of the three new keys, or with `data` on an event other than `uninstall`, is `bad-keys`.
+- verify-machine: CXC-PC-V03-T-READS-0-2 check (e) of CXC-PC-V03-STORES-COMPAT: the 0.2 reader's `install_log_findings()` returns a `bad-keys` finding for each 0.3 line and nothing blocks; a 0.3 reader reads a mixed file of 0.2 and 0.3 lines with no finding.
+- verify-human: none required.
+- tested-by: [CXC-PC-V03-T-READS-0-2]
+- evidence: EMPTY
+- evidence-fills-with: the raw test output with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the writer's; the limit is the cost of reusing the 0.2 log, ratified at CXC-PC-V03-RULING-LOG-KEYS
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V02-INSTALL-LOG-EVENT], [CXC-PC-V02-INSTALL-LOG-MALFORMED-LINES], [CXC-PC-V02-STORES-COMPAT], [CXC-PC-V03-LIFECYCLE-RECORD], [CXC-PC-V03-STORES-COMPAT], [CXC-PC-V03-RULING-LOG-KEYS]
+
+### [CXC-PC-V03-LIFECYCLE-RECORD-WRITE] The entry is appended before the change it describes, the operator comes from the host's authenticated identity, and a failed append changes nothing
+
+- rule: (1) The write-ahead rule of CXC-PC-V02-INSTALL-LOG-WRITE-ORDER extends to `configure`: its entry is appended and `fsync`ed BEFORE `ConfigStore.put`, and a failure after the append leaves an `abort` entry. (2) A `decline` entry has nothing to write ahead of: it is appended after the refusal, and a failure to append it is swallowed so that the caller sees the original `ConsentDenied` or `OperatorDeclined`, as for an `abort`. (3) `operator` is a new keyword-only optional argument, default None, on `PluginManager.configure`, `enable`, `disable` and `uninstall`; `install` and `upgrade` already take it. (4) The library's web manager passes the host auth hook's identity as `operator` on every state-changing route; a library caller that supplies none records null. (5) For `install` and `upgrade` the entry's `operator` is the `operator` argument, which may differ from the consent record's `decided_by` (the gate's own answer; a gate that waits for a person ignores the argument).
+- code-read: python/compose_plugins/compose_plugins/lifecycle.py line 552 `def configure(self, domain: str, config: Any) -> None:` takes no operator, and line 673 `def disable(self, domain: str) -> str:`, line 557 `def enable(self, domain: str) -> str:` and line 730 `def uninstall(self, domain: str) -> dict:` take none; line 692 `def upgrade(self, source, *, consented_sha256: str, operator: "str | None",` takes one. python/compose_plugins/compose_plugins/web.py lines 165 to 183 call `m.enable(domain)`, `m.disable(domain)` and `m.configure(domain, cfg)` without passing `identity`.
+- default: `operator=None`.
+- boundary-case: an append that raises on `configure` raises `InstallLogRefused` naming the log path and the error's class, `ConfigStore.put` is not called, and the config file is byte-identical; `uninstall`, `disable` and the others behave as CXC-PC-V02-INSTALL-LOG-WRITE-ORDER `failure-of-the-append` already states.
+- verify-machine: CXC-PC-V03-T-LIFECYCLE-RECORD.
+- verify-human: none required — fully machine-observable.
+- tested-by: [CXC-PC-V03-T-LIFECYCLE-RECORD]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the fault-injection cases for `configure` and `decline`, with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the writer's, extending the write-ahead rule of 0.2 to the new entries
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V02-INSTALL-LOG-WRITE-ORDER], [CXC-PC-V02-INSTALL-LOG-FAILURE-TEXT], [CXC-PC-UI-HOST-HOOKS], [CXC-PC-V03-LIFECYCLE-RECORD], [CXC-PC-V03-CONSENT-TRIGGERS]
+
+### [CXC-PC-V03-T-LIFECYCLE-RECORD] Test: each operation leaves exactly one entry with the operator, the result and the consent id, and no config value reaches the log
+
+- procedure: run install, configure (with the planted value `CANARY-CONFIG-7`), enable, disable, enable, a non-widening upgrade with `accepted=False`, a widening upgrade, uninstall with delete, each with a distinct `operator`; then a run of CXC-PC-V03-NC-UPGRADE-DECLINED; then fault injections: the append raises on `configure`; the snapshot write raises after a `disable` entry; the append raises on a `decline` entry.
+- asserts: one entry per operation, in order, `seq` consecutive, each with the `operator` passed and the keys of CXC-PC-V03-LIFECYCLE-RECORD; `result` is `ok`, `declined` or `aborted` as stated; each non-null `consent_id` equals the sha256 of the matching consent line; the string `CANARY-CONFIG-7` occurs nowhere in `installs.jsonl`; the injected faults leave `installs.json` and the config file byte-identical and an `abort` entry where the rule says; a `decline` append failure leaves the caller's exception unchanged; the 0.2 `InstallLog` has no new public method.
+- verify-machine: non-zero exit on any mismatch.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-LIFECYCLE-RECORD], [CXC-PC-V03-LIFECYCLE-RECORD-WRITE]
+
+### [CXC-PC-V03-GRANT-FREE-CONFIG] A plug-in's `config_schema` should carry no grant-bearing field; the validator advises with a named warning and never refuses
+
+- rule: (1) Authoring rule: a plug-in's config does not name a bus namespace, a host, a filesystem path or a grant; reach is widened only by upgrade and consent. (2) For a manifest that states `contract: "0.3"`, the validator emits one ADVISORY for each grant-bearing property in its validation result, with the code `config-grant-bearing`, the JSON pointer of the property, the test that matched, and the text "this config field looks grant-bearing". It does NOT refuse the manifest. (3) The consent content of that manifest carries one line per advisory, "config field <pointer> looks grant-bearing (structural check; not verified)"; it needs no acknowledgement and is not a consent trigger. (4) A property is grant-bearing when its NAME, split into tokens, contains a token of the name tokens, or its schema declares a `format` of the formats below. (5) Ordinary values (strings, numbers, integers, booleans, enums, labels, thresholds) whose names and formats match neither list draw nothing.
+- rule: Structural author aid. This is a screen of declared names and formats that helps an author notice a mistake. It is not enforcement and not proof, and the contract claims no more: nothing checks a config value at run time, and a plug-in can evade it by naming a field `x` (CXC-PC-PERMISSIONS `never-verified-scope`).
+- rule: Result shape. `validate_manifest` returns the `Manifest` as before; it gains the read-only attribute `advisories`, a tuple of `Advisory(code, field, message)`, empty for a manifest that states "0.1" or "0.2". `ConsentContent` gains one line kind, `advisory`, after the permission lines.
+- rule: Name tokens. a property name is lower-cased and split at `_`, `-`, `.`, spaces and at each lower-to-upper case boundary; a token is compared for exact equality, never as a substring. The tokens are: `namespace`, `topic`, `host`, `hostname`, `ip`, `url`, `uri`, `endpoint`, `path`, `dir`, `directory`, `folder`, `filename`, `filepath`, `grant`, `permission`, `permissions`. So `target_host` and `statePath` draw an advisory; `greeting`, `repeat`, `threshold` and `hostile` do not.
+- rule: Formats. `hostname`, `idn-hostname`, `ipv4`, `ipv6`, `uri`, `uri-reference`, `iri`, `iri-reference`, `uri-template`.
+- rule: Walk. the validator visits every schema reachable from the root through `properties`, `patternProperties`, `additionalProperties` and `items` when they hold a schema, `prefixItems`, `$defs`, `definitions`, `allOf`, `anyOf`, `oneOf`, `not`, `if`, `then` and `else`; it checks each property name it meets and each schema's `format`. A `patternProperties` key is a pattern, not a name, and is not tested.
+- rule: Where. the advisories are computed wherever the manifest is validated (prepare, install, upgrade) and shown wherever consent content is rendered. `compose-plugin build` SHOULD print the same advisories for the generated `config_schema`, so the author learns at build time.
+- consequence: because the lists only produce advisories, a change to them never changes whether a manifest is accepted; adding a token or a format after the freeze is therefore additive (CXC-PC-V03-MANIFEST-FROZEN, CXC-PC-V03-RULING-GRANT-TOKENS).
+- code-read: python/compose_plugins/compose_plugins/manifest.py lines 656 to 660: `if "config_schema" in manifest:` `v = manifest["config_schema"]` `if not isinstance(v, dict):` `refuse("config_schema", f"must be a JSON Schema object, got "` — the 0.2 validator checks only that `config_schema` is an object, and `refuse` is not called for any other reason.
+- default: none; a manifest whose `config_schema` is the empty-object schema draws no advisory.
+- boundary-case: `{"properties": {"target_host": {"type": "string"}}}` installs and draws one advisory naming `config_schema/properties/target_host` and the token `host`; `{"properties": {"site": {"type": "string", "format": "uri"}}}` draws one naming `config_schema/properties/site` and the format `uri`; a grant-bearing property inside `$defs` or under `items` draws one naming its full pointer; the same schema in a manifest stating "0.2" draws none.
+- verify-machine: CXC-PC-V03-NC-GRANT-BEARING-CONFIG; the hello-world v1, v2 and EULA manifests draw no advisory.
+- verify-human: an operator reading the consent page for a manifest with a `target_host` config field sees the advisory line, and the Accept control is unaffected.
+- tested-by: [CXC-PC-V03-NC-GRANT-BEARING-CONFIG]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the table-driven advisory test with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — made ADVISORY, not a refusal, by the contract owner's ruling of 2026-11-28 under the rule that declared claims are never enforced; the token and format lists, the walk and the version gate are the writer's
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-DERIVE-ONCE], [CXC-PC-LIFECYCLE-CONFIG], [CXC-PC-PERMISSIONS], [CXC-PC-CONSENT-WIDENING], [CXC-PC-CONSENT-CONTENT], [CXC-PC-V03-VERSION-0-3], [CXC-PC-V03-RULING-GRANT-TOKENS]
+
+### [CXC-PC-V03-NC-GRANT-BEARING-CONFIG] Control 10: a 0.3 manifest whose `config_schema` has a grant-bearing property draws a named advisory and is not refused
+
+- claim: take the hello-world v1 manifest, state `contract: "0.3"`, and add to `config_schema.properties` first `target_host` (type string), then `site` (type string, format `uri`), then, inside `$defs`, a property `data_path`.
+- expected: each installs; its validation result holds one `config-grant-bearing` advisory naming the pointer and the matching token or format; the consent content carries the line "config field <pointer> looks grant-bearing (structural check; not verified)"; no refusal and no extra consent step. The same three manifests stating `contract: "0.2"` install with no advisory; a manifest stating "0.3" whose only properties are `greeting` and `repeat` draws none.
+- verify-machine: the control FAILS if a manifest is refused or an advisory is missing, wrong or duplicated; the mutation check removes the walk's `$defs` branch in a scratch copy and asserts the third case then FAILS.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- status-detail: proposed — awaiting ratify
+- provenance: architect-synthesis
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-GRANT-FREE-CONFIG], [CXC-PC-NEGATIVE-CONTROLS]
+
+### [CXC-PC-V03-CAPABILITIES] `capabilities` is an optional list of declared capability tokens; `agent-messaging` is the one defined now; a declaration is never enforced or verified
+
+- rule: (1) `capabilities` is an optional manifest field, valid only in a manifest that states `contract: "0.3"` (CXC-PC-V03-VERSION-0-3). (2) Its value is a list of at most 16 strings; each matches `^[a-z][a-z0-9-]{0,63}$`; a duplicate is refused. (3) Defined now: `agent-messaging`, meaning the plug-in says it sends messages to agents or receives messages from agents. (4) A well-formed token that is not defined is ACCEPTED (CXC-PC-V03-RULING-UNKNOWN-CAPABILITY-TOKENS); only a defined token can trigger a host policy (CXC-PC-V03-HOST-POLICY-HOOK). Defining a further token is a new contract version. (5) The consent content carries one line `capabilities: <token>, <token> (declared by the plug-in; not verified)`, placed after the `permissions` lines and before the EULA block; when the field is absent there is no such line. (6) A capability is not a grant: it adds nothing to `granted`, so it never widens an upgrade; but a NEW token in an upgrade is a consent trigger of its own (CXC-PC-V03-DECLARATION-CHANGE-PREDICATE). (7) Declarations are never enforced or verified: no host code path reads `capabilities` except the validator, the consent renderer and the host policy hook, and no run-time check compares a plug-in's behaviour with it.
+- default: absent means none declared, the same as `[]`.
+- boundary-case: each is REFUSED at install naming `capabilities`: a value that is not a list, an entry that is not a string, an entry that breaks the grammar (`Agent-Messaging`, `agent_messaging`, the empty string), a duplicate, more than 16 entries, and the field in a manifest stating "0.1" or "0.2". ACCEPTED: `[]`, `["agent-messaging"]`, `["agent-messaging", "x-example"]`.
+- verify-machine: CXC-PC-V03-T-CAPABILITIES-WARNINGS-TABLE.
+- verify-human: an operator reads a consent screen for a plug-in declaring `agent-messaging` and can say that the line is the plug-in's own claim.
+- tested-by: [CXC-PC-V03-T-CAPABILITIES-WARNINGS-TABLE]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the table-driven test with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the field and the defined token are the contract owner's direction of 2026-11-28; the grammar, the bound, the consent line and the unknown-token reading are the writer's
+- basis: owner-decided (project owner)
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-MANIFEST-FIELDS], [CXC-PC-CONSENT-CONTENT], [CXC-PC-PERMISSIONS], [CXC-PC-V03-VERSION-0-3], [CXC-PC-V03-HOST-POLICY-HOOK], [CXC-PC-V03-RULING-UNKNOWN-CAPABILITY-TOKENS]
+
+### [CXC-PC-V03-WARNINGS] `warnings` is an optional list of `{id, title, text}` that the plug-in declares; each is shown on the consent page and needs its own acknowledgement
+
+- rule: (1) `warnings` is an optional manifest field, valid only in a manifest that states `contract: "0.3"`. (2) Its value is a list of at most 8 objects whose ONLY keys are `id`, `title` and `text`; an unknown or missing key is refused naming it (the reading of CXC-PC-MANIFEST-FIELDS `validator-readings` (2)). (3) `id` matches `^[a-z][a-z0-9_-]{0,63}$` and is unique within the list. (4) `title` is non-empty and one line (`validator-readings` (12)), at most 120 code points. (5) `text` is non-empty under the blank rule of `validator-readings` (12), at most 2000 code points, and holds no control character other than line feed. (6) The consent content shows each warning with its title and its text verbatim (HTML-escaped on the web page, nothing else done to it), after the EULA block, in declared order, labelled "declared by the plug-in; not verified" (CXC-PC-V03-WARNING-ACK). (7) A warning is not a grant and is never enforced.
+- default: absent means none declared.
+- boundary-case: each is REFUSED at install naming the field or entry: a value that is not a list; an entry that is not an object; a missing or unknown key; an `id` that breaks the grammar or repeats; a blank, multi-line or over-long `title`; a blank, over-long or control-character `text`; more than 8 entries; the field in a manifest stating "0.1" or "0.2". ACCEPTED: `[]` and a single entry whose text spans three lines.
+- verify-machine: CXC-PC-V03-T-CAPABILITIES-WARNINGS-TABLE.
+- verify-human: an operator reads a consent screen with one declared warning and sees it on the same page as the EULA.
+- tested-by: [CXC-PC-V03-T-CAPABILITIES-WARNINGS-TABLE]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the table-driven test and the rendered consent page, with the library commit and the sha256 of each file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the field and its three keys are the contract owner's direction of 2026-11-28; the grammar, the bounds and the placement are the writer's
+- basis: owner-decided (project owner)
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-MANIFEST-FIELDS], [CXC-PC-CONSENT-CONTENT], [CXC-PC-V02-EULA-DISPLAY], [CXC-PC-V03-VERSION-0-3], [CXC-PC-V03-WARNING-ACK]
+
+### [CXC-PC-V03-T-CAPABILITIES-WARNINGS-TABLE] Test: one manifest per boundary case of `capabilities` and `warnings`, refused naming the field, plus the consent content with both
+
+- procedure: one manifest per boundary case of CXC-PC-V03-CAPABILITIES and CXC-PC-V03-WARNINGS, each stating "0.3" except the version rows; the accepted examples; and a render of the consent content (`ConsentContent.text()` and the web page) for hello-world v1 stating "0.3" with `capabilities: ["agent-messaging"]` and two warnings.
+- asserts: each refusal names exactly the field or entry; each accepted example installs; the render holds the capabilities line, then the EULA block when present, then the two warnings in declared order, each with its title and verbatim text; a manifest with neither field renders byte-identically to 0.2 apart from the page footer's contract version; the render makes no network call and no import of the plug-in module.
+- verify-machine: non-zero exit on any mismatch.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-CAPABILITIES], [CXC-PC-V03-WARNINGS]
+
+### [CXC-PC-V03-HOST-POLICY-HOOK] A host MAY add host-required warnings keyed on declared capabilities and MAY refuse an install or upgrade by policy, through one optional `Host.policy` member
+
+- rule: (1) `Host` gains one OPTIONAL member, `policy(self, view) -> HostPolicy`. `view` is a read-only `PolicyView` holding `domain`, `version`, `capabilities` (a tuple, empty when none) and a deep copy of the manifest. `HostPolicy` holds `warnings` (a tuple of `{id, title, text}` under the grammar of CXC-PC-V03-WARNINGS) and `refuse` (a one-line string or None). The base class returns `HostPolicy()`; a host written against 0.2 needs no change. (2) The library calls `policy` when it prepares an install or an upgrade (to render) and again, afresh, inside `install` and `upgrade` (to check what was acknowledged). The hook MUST be free of side effects. (3) Host warnings are shown on the same page as the plug-in's, after them, labelled "required by this host". (4) A non-None `refuse` stops the install or upgrade with the new `PolicyRefused` (a subclass of `PluginContractRefusal`) carrying the host's text; it is not an operator decision, so it writes no consent record and no lifecycle entry, and nothing changes. (5) A `policy` that raises fails closed: the operation is refused naming the exception CLASS only, nothing written. (6) The hook decides only what to show or whether to refuse; nothing it returns is verified against the plug-in's behaviour. (7) The text of any host warning (Gnomon's fixed text for `agent-messaging`) belongs to the host's own spec, not to this contract.
+- default: no host warnings and no refusal.
+- boundary-case: a host warning whose `id` or text breaks the grammar is a host defect: the operation is refused naming the id, nothing written; a host warning and a plug-in warning may share an `id` (their acknowledgement keys differ, CXC-PC-V03-WARNING-ACK).
+- verify-machine: CXC-PC-V03-T-WARNING-ACK.
+- verify-human: on Gnomon an operator installing a plug-in that declares `agent-messaging` sees the host's fixed warning beside the plug-in's own.
+- tested-by: [CXC-PC-V03-T-WARNING-ACK]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the hook test with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the hook, host warnings keyed on declared capabilities and refusal by policy are the contract owner's direction of 2026-11-28; the member's shape, its call points and the fail-closed reading are the writer's
+- basis: owner-decided (project owner)
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-LIBRARY-CONTENTS], [CXC-PC-UI-HOST-HOOKS], [CXC-PC-HOST-SECTIONS], [CXC-PC-V03-CAPABILITIES], [CXC-PC-V03-WARNINGS], [CXC-PC-V03-WARNING-ACK]
+
+### [CXC-PC-V03-WARNING-ACK] Each warning, the plug-in's and the host's, needs its own acknowledgement, and the consent record stores the sha256 of each acknowledged text
+
+- rule: (1) The consent page shows the EULA and every warning together on one page; each warning has its own control, a checkbox named `ack` whose value is the acknowledgement key `<source>:<id>` with `source` `plugin` or `host`. (2) Accept needs every control set; refuse and cancel need none. (3) `install` and `upgrade` gain an optional keyword `acknowledged_warnings`, a mapping from acknowledgement key to the sha256 shown, mirroring `consented_eula_sha256`. When the prompt carries any warning and a gate runs, the mapping MUST hold exactly the prompt's keys, each value equal to the lowercase hex sha256 of that warning's `text` as UTF-8 exactly as declared; otherwise the operation raises the new `WarningAckRefused` naming the key, before the gate, with nothing recorded and nothing placed. A mapping given when no warning exists is refused naming it. (4) The consent record gains ONE optional key, `acknowledged_warnings`: a list of `{id, sha256}` objects sorted by `id`, where `id` is the acknowledgement key; it is present only on a `granted` record whose prompt carried warnings, and omitted otherwise, never null or empty. A refused record omits it. (5) `granted` is unchanged: a warning is not a grant. (6) At an upgrade where no gate runs there is nothing to acknowledge and nothing is recorded; a NEW or CHANGED warning is itself a gate trigger, so such an upgrade always reaches rule (1) (CXC-PC-V03-DECLARATION-CHANGE-PREDICATE).
+- code-read: python/compose_plugins/compose_plugins/consent.py line 369 `OPTIONAL_RECORD_KEYS = ("eula_sha256",)` and lines 487 to 493 refuse any key set outside the eight keys plus that one; lifecycle.py `_check_eula` (line 386) is the pattern: it refuses before the gate when the shown digest and the file's differ.
+- default: no warning, no key, no acknowledgement.
+- boundary-case: a mapping with a missing key, an extra key, a non-hex digest or a digest that differs from the warning's text is refused naming the key; a web accept with one box clear is refused naming the key and records nothing; the host's warning edited between prepare and install (a different digest) is refused naming it.
+- verify-machine: CXC-PC-V03-T-WARNING-ACK.
+- verify-human: on the glass an operator cannot press accept until each warning is acknowledged, and refuse works with every box clear.
+- tested-by: [CXC-PC-V03-T-WARNING-ACK]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the acknowledgement test and a consent line carrying the key, with the library commit and the sha256 of each file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — one page, one acknowledgement per warning and the sha256 of the warning text in the consent record are the contract owner's direction of 2026-11-28; the key name, the mapping argument and the refusal order follow the EULA pattern of CXC-PC-V02-EULA-HASH-RECORD
+- basis: owner-decided (project owner)
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-CONSENT-RECORD], [CXC-PC-V02-EULA-HASH-RECORD], [CXC-PC-V02-EULA-HOST-OBLIGATION], [CXC-PC-V03-WARNINGS], [CXC-PC-V03-HOST-POLICY-HOOK], [CXC-PC-V03-STORES-COMPAT]
+
+### [CXC-PC-V03-T-WARNING-ACK] Test: the acknowledgement mapping, the recorded digests and the host hook, including a refusal by policy
+
+- procedure: with a stub host whose `policy` returns one host warning for `agent-messaging` and, in a second run, `refuse="no agents here"`; install a 0.3 manifest declaring `agent-messaging` and one warning, first with a full mapping, then with a missing key, an extra key and a wrong digest; repeat through the web manager with every box set and with one clear; run an upgrade that widens and carries the same warnings; run a `policy` that raises.
+- asserts: the full mapping installs and the consent line holds `acknowledged_warnings` with the two keys `plugin:<id>` and `host:<id>` sorted, each digest equal to the sha256 of that text; each bad mapping is refused naming the key, before the gate, with the consent store, the install root and the log unchanged; the web accept with one box clear is refused the same way and refuse with all clear writes a refused record without the key; `policy` is called at prepare and again at install; `refuse` raises `PolicyRefused` with the host's text, no consent line and no log entry; a raising `policy` refuses naming the class only; a 0.2 stub host without `policy` installs a manifest with no warnings unchanged.
+- verify-machine: non-zero exit on any mismatch.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-WARNING-ACK], [CXC-PC-V03-HOST-POLICY-HOOK]
+
+### [CXC-PC-V03-UNINSTALL-DATA-CHOICE] The uninstall confirm offers keep (the default) or delete for the plug-in's data folder, the choice is recorded, and delete removes only that exact path inside the host state root
+
+- rule: (1) The plug-in's data folder is the directory `Host.data_dir(domain)`; the base class returns `<state_root>/data/<domain>` (CXC-PC-V03-RULING-DATA-FOLDER). The library creates, reads and writes nothing in it; it only removes it, and only here. (2) `PluginManager.uninstall` gains the keyword-only optional `delete_data: bool = False` and `operator` (CXC-PC-V03-LIFECYCLE-RECORD-WRITE). (3) The web confirm screen (CXC-PC-V02-UNINSTALL-CONFIRM) gains a choice named `data` with values `keep`, listed first and set by default, and `delete`, and a line naming the folder relative to the state root; `confirm` deletes only when the single `data` value is exactly `delete`, and any other value (missing, repeated, unknown) means keep. (4) A preflight runs BEFORE the log entry and before any side effect: when the folder does not exist the choice is `none`; otherwise `delete` is REFUSED, the whole uninstall with it and nothing changed, when the path is a symlink, when any component of it below the state root is a symlink, when its real path is not strictly inside the real state root, when it is not a directory, or when it is, or contains, the install root, the config store, `installs.json`, `installs.jsonl` or `consent.jsonl`. The refusal names the data folder and the reason. (5) Deletion removes the folder with `shutil.rmtree`; a symlink found inside it is removed as a link and never followed. (6) The uninstall entry's `data` key is `kept`, `deleted` or `none`; `deleted` is written ahead like the rest of the entry, and a failure leaves an `abort` entry.
+- code-read: python/compose_plugins/compose_plugins/lifecycle.py `uninstall` (line 730) removes the install target with `shutil.rmtree(target)` (line 747) and the config with `self.configs.remove(domain)` (line 750); nothing in lifecycle.py, store.py or host.py names a plug-in data folder (`grep -i "data_dir"` in python/compose_plugins/compose_plugins finds none), so this node DEFINES it. host.py line 83 sets `self.install_root = self.state_root / "installed"`.
+- default: keep.
+- boundary-case: `delete` on a folder that is a symlink to a directory outside the state root is refused and the target is untouched; `delete` with no folder records `none`; a confirm that is stale under CXC-PC-V02-UNINSTALL-CONFIRM-BINDING is refused before the data choice is read.
+- verify-machine: CXC-PC-V03-T-UNINSTALL-DATA.
+- verify-human: on the glass an operator uninstalls with the default and finds the data folder still there; uninstalls another with delete and finds it gone, and the log entry says which.
+- tested-by: [CXC-PC-V03-T-UNINSTALL-DATA]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the data-choice test and the two log lines, with the library commit and the sha256 of each file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — keep as the default, delete as the choice, the record of the choice and the refusal of a symlink or outside path are the contract owner's direction of 2026-11-28; the folder's definition and the preflight list are the writer's
+- basis: owner-decided (project owner)
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-LIFECYCLE-UNINSTALL], [CXC-PC-V02-UNINSTALL-CONFIRM], [CXC-PC-V02-UNINSTALL-CONFIRM-BINDING], [CXC-PC-V02-RULING-UNINSTALL-HOST-LINES], [CXC-PC-V03-LIFECYCLE-RECORD], [CXC-PC-V03-RULING-DATA-FOLDER]
+
+### [CXC-PC-V03-T-UNINSTALL-DATA] Test: keep leaves the folder, delete removes exactly it, and a symlink or outside path refuses the whole uninstall
+
+- procedure: create `<state_root>/data/hello_world` holding a file and a symlink to an outside directory holding a canary file; uninstall with the default, then (in a second manager) with `data=delete`; then replace the folder with a symlink to an outside directory and with a symlink in an inner component, and try `delete`; then a domain with no folder.
+- asserts: keep leaves the folder byte-identical and records `kept`; delete removes the folder, leaves the outside canary file in place, and records `deleted`; each symlink case refuses naming the data folder with `installs.json`, the install root and the outside directory byte-identical and no log entry; no folder records `none`; the web screen lists the keep choice first and set by default, and a confirm with no `data` field keeps.
+- verify-machine: non-zero exit on any mismatch.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-UNINSTALL-DATA-CHOICE]
+
+### [CXC-PC-V03-MOUNTABLE-WEB-MANAGER] The web manager honours the WSGI `SCRIPT_NAME`, so a host mounts it under a prefix unchanged
+
+- rule: (1) A host mounts the app returned by `make_app(manager)` under any `SCRIPT_NAME` (Gnomon: `/plugin-manager`) with no wrapper, no rewriting and no host-specific code in the library. (2) Every link, form action and redirect starts with the active `SCRIPT_NAME`, a trailing `/` of which is ignored; routes are read from `PATH_INFO` only. (3) The CSRF defence, the auth hook and `extra_panels` behave identically under every prefix, and the pages added in 0.3 (the no-gate upgrade screen, the warning controls, the uninstall data choice) obey rule (2). (4) A gap found in mounting is fixed in the library (CXC-PC-V03-BASIS `fix-upstream`).
+- note: Relation. this restates CXC-PC-UI-URL-PREFIX as a tested requirement of 0.3 and adds `/plugin-manager` to its mount list; the rule itself is unchanged.
+- code-read: python/compose_plugins/compose_plugins/web.py line 108 `prefix = environ.get("SCRIPT_NAME", "").rstrip("/")`, line 137 `parts = [p for p in environ.get("PATH_INFO", "/").split("/") if p]`, and line 215 `raise _Response("303 See Other", "", [("Location", f"{prefix}{path}")])` already build every URL from `prefix` and read routes from `PATH_INFO`.
+- default: an empty `SCRIPT_NAME` works.
+- boundary-case: `SCRIPT_NAME` of `/plugin-manager/` (trailing slash) behaves as `/plugin-manager`; a request with `PATH_INFO` empty serves the index.
+- verify-machine: CXC-PC-V03-T-MOUNT.
+- verify-human: on Gnomon an operator opens the manager at `/plugin-manager` and follows every link without leaving the prefix.
+- tested-by: [CXC-PC-V03-T-MOUNT]
+- evidence: EMPTY
+- evidence-fills-with: the raw crawl output for each prefix, with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — mounting under a host prefix unchanged is the contract owner's direction of 2026-11-28; the test list is the writer's
+- basis: owner-decided (project owner)
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-UI-URL-PREFIX], [CXC-PC-WEB-UI], [CXC-PC-UI-HOST-HOOKS], [CXC-PC-V03-BASIS]
+
+### [CXC-PC-V03-T-MOUNT] Test: a crawl under the empty prefix, `/plugin-manager` and a deeper prefix, covering every 0.3 screen
+
+- procedure: mount the app under the empty prefix, `/plugin-manager` and `/gnomon/config/plugins`; crawl the index, a plug-in detail page, the install consent screen with a warning, the no-gate upgrade screen, the gated upgrade screen, the uninstall confirm with the data choice, the consent records page and an `extra_panels` page; post the forms.
+- asserts: every `href`, `src`, `action` and `Location` is relative or begins with the active `SCRIPT_NAME`, and none begins with `/` outside it; the results are the same under each prefix apart from the prefix itself; `SCRIPT_NAME` with a trailing `/` behaves as without.
+- verify-machine: non-zero exit on any link outside the prefix.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-MOUNTABLE-WEB-MANAGER], [CXC-PC-UI-URL-PREFIX]
+
+### [CXC-PC-V03-HOST-AGENT-BLOCK] A host that mounts the web manager MUST keep every state-changing route out of agents' reach; read-only routes MAY be reachable
+
+- rule: (1) A host that mounts the web manager MUST keep every state-changing route under its mount out of agents' reach: install and upgrade prepare and decide, consent, warning acknowledgement, enable, disable, configure, uninstall and its confirm. (2) Read-only routes (index, detail, status) MAY be reachable by agents. (3) The host chooses the means, for example a prefix block at its router. (4) The library cannot tell a person from an agent, so this is a host obligation, not a library check; the library adds no agent test and its auth hook and CSRF defence are unchanged.
+- why: with the consent click in the browser as the operator's only consent, an agent that can reach a state-changing route can answer consent for the operator; the guide's rule that an agent never does so (CXC-PA-NO-CONSENT-BY-AGENT) needs a wall behind it.
+- code-read: python/compose_plugins/compose_plugins/web.py lines 154 to 193 route every state-changing action (`install/prepare`, `install/decide`, `plugin/<domain>/enable`, `disable`, `uninstall/prepare`, `uninstall/decide`, `configure`, `upgrade/prepare`, `upgrade/decide`) through POST, and lines 145 to 153 and 194 to 195 serve the read-only index, consent records, panels and detail page by GET; line 110 `identity = self.host.auth_hook(environ)` is the only identity the library sees.
+- default: none; a host that does not mount the web manager has no such routes.
+- boundary-case: a prepare route changes nothing but is still blocked, because it renders the consent page the decide route answers; the consent-records page and `extra_panels` pages are read-only and may be reachable.
+- verify-machine: CXC-PC-V03-T-HOST-AGENT-BLOCK.
+- verify-human: on the host, an operator confirms that a request attributed to an agent cannot reach any state-changing route and can still open the index.
+- tested-by: [CXC-PC-V03-T-HOST-AGENT-BLOCK]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the route table test run against each host, with the host commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-UI-HOST-HOOKS], [CXC-PC-RULE-CONSENT-HOST-OWNED], [CXC-PC-CONSENT-GATES], [CXC-PC-V03-MOUNTABLE-WEB-MANAGER], [CXC-PC-V03-CONSENT-TRIGGERS], [CXC-PC-V02-UNINSTALL-CONFIRM]
+
+### [CXC-PC-V03-T-HOST-AGENT-BLOCK] Test: an agent-attributed request to each state-changing route is refused by the host before the library, and the read-only routes still answer
+
+- procedure: mount the web manager behind the host's real router and agent block; send, as an identity the host classes as an agent, one request to each state-changing route (`install/prepare`, `install/decide`, `plugin/<domain>/enable`, `disable`, `configure`, `upgrade/prepare`, `upgrade/decide`, `uninstall`, `uninstall/prepare`, `uninstall/decide`) with a valid CSRF token and a spy behind the mount; then one GET to the index, a detail page and the consent-records page.
+- asserts: every state-changing request is refused by the host (a non-2xx answer) and the spy behind the mount, the consent gate, the log and `installs.json` record zero calls and no change; each read-only GET answers 200; the same requests as an operator identity reach the library.
+- verify-machine: non-zero exit on any state-changing route that reaches the library or any read-only route that does not answer.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-HOST-AGENT-BLOCK]
+
+### [CXC-PC-V03-MANIFEST-FROZEN] The manifest schema is FROZEN at 0.3: a field is added only by a new contract version under the additive rule, and no field is removed or retyped
+
+- rule: (1) From ratification, 2026-11-28, the set of manifest fields below is the frozen set; the freeze is in force as of that date, before any build and before the tag. (2) A later contract adds a field only as a new MINOR under CXC-PC-VERSION-RULE (2): the new field is optional, valid only in a manifest that states that contract or a later one, and no existing field becomes required. (3) No later contract removes a field, renames it, retypes it, narrows what it accepts, or changes what a value means; a manifest valid under 0.3 stays valid, with the same meaning, under every later MINOR of the same MAJOR (a change of meaning is a MAJOR, CXC-PC-VERSION-RULE (3)). (4) The frozen artifact is `manifest-0.3.schema.json`, generated from the validator's patterns (CXC-PC-MANIFEST-FIELDS `validator-readings` (15)); it never changes after the tag. (5) A reader or an agent cites THIS node for the field set. (6) Two open questions were closed so that they only add: undefined well-formed capability tokens are accepted forever (CXC-PC-V03-RULING-UNKNOWN-CAPABILITY-TOKENS), and the grant-bearing lists drive advisories only, so changing them never narrows acceptance (CXC-PC-V03-RULING-GRANT-TOKENS).
+- claim: Frozen fields. the table below lists every field at 0.3: name, requiredness, JSON type, and the first contract that defines it.
+
+| field | requiredness at 0.3 | JSON type | defined from |
+|---|---|---|---|
+| `contract` | required | string `"MAJOR.MINOR"`: "0.1", "0.2" or "0.3" | 0.1 |
+| `domain` | required | string | 0.1 |
+| `name` | required | string | 0.1 |
+| `version` | required | string, SemVer | 0.1 |
+| `description` | required | string | 0.1 |
+| `documentation` | required | string, https URL | 0.1 |
+| `requirements` | required (may be `[]`) | list of strings | 0.1 |
+| `run` | required | object `{form, entry}` | 0.1 |
+| `hosts` | required | object, at least one key | 0.1 |
+| `issue_tracker` | optional | string, URL | 0.1 |
+| `codeowners` | optional | list of strings | 0.1 |
+| `isolation_floor` | optional | string, `inprocess` or `subprocess` | 0.1 |
+| `bus` | optional | object `{publishes, subscribes}` | 0.1 |
+| `standard_questions` | optional | string, relative directory path | 0.1 |
+| `permissions` | optional | object `{network, filesystem}` | 0.1 |
+| `license` | optional | string, SPDX expression | 0.2 |
+| `eula` | optional | string, package-relative file path | 0.2 |
+| `capabilities` | optional | list of strings | 0.3 |
+| `warnings` | optional | list of objects `{id, title, text}` | 0.3 |
+| `config_schema` | generated; always present in a built manifest | object, a JSON Schema | 0.1 |
+
+- default: none.
+- boundary-case: a proposal that adds a field to 0.3 itself after ratification is a new contract version, not an edit; a proposal that makes `capabilities` required, or removes `standard_questions`, is refused by this node.
+- verify-machine: a pinning test holds the 0.3 field names, their requiredness and JSON types as a literal, and fails when the validator or the shipped schema drops, renames, retypes or newly requires any of them; the shipped 0.3 schema equals the generated one (the existing drift check); CXC-PC-V03-T-READS-0-2.
+- verify-human: none required — structural.
+- tested-by: [CXC-PC-V03-T-READS-0-2]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the pinning test with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the freeze and its additive rule are the contract owner's direction of 2026-11-28; the field table, the monotone-acceptance wording and the pinning test are the writer's
+- basis: owner-decided (project owner)
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-MANIFEST-FIELDS], [CXC-PC-VERSION-RULE], [CXC-PC-RELEASE-TAGS], [CXC-PC-RESERVED-NAMES], [CXC-PC-V03-VERSION-0-3], [CXC-PC-V03-READS-0-2-UNCHANGED]
+
+### [CXC-PC-V03-READS-0-2-UNCHANGED] A 0.3 library reads contract "0.2" and "0.1" manifests unchanged, and the 0.2 conformance fixtures stay in the suite unmodified
+
+- rule: (1) For a manifest that states "0.1" or "0.2", a 0.3 library validates, renders, hashes and installs exactly as a 0.2 library: the same refusals naming the same fields, the same `granted` set, the same `manifest_sha256`. (2) The conformance fixtures `hello_world_v1`, `hello_world_v2` and `hello_world_eula`, and their plug-in code, stay in the suite UNMODIFIED, byte for byte (digests below); a 0.3 fixture is a new directory, never an edit of these. (3) The consent content of each is byte-identical to 0.2's apart from the page footer's contract version, the one exception CXC-PC-V02-STORES-COMPAT `page-identity` already states. (4) The conformance script runs the nine steps and NC1 to NC8 against these fixtures, then NC9 and NC10 (CXC-PC-V03-NC-UPGRADE-DECLINED, CXC-PC-V03-NC-GRANT-BEARING-CONFIG), with NC3's input moved to "0.4" (CXC-PC-V03-VERSION-0-3 `negative-control-input`).
+- note: Fixture digests. sha256 of each file at composeio main 0c6bb2886b711fe78b0cc0e2f56a5d5c6c2c6ce8 under python/compose_plugins/compose_plugins/fixtures/: hello_world_v1/manifest.json d877dec1a9863eca1007b81cb363841e6932fdd435437972106038e584d49b21; hello_world_v1/hello_world/plugin.py f720ffa6f4526cd214e4fcdb05ed07b25fe1b16b33a47aae28b6fd3fa986d0df; hello_world_v2/manifest.json f57b34efb08ec25e0bd2530add1892045e2ae01f28207fa326ddda8e0dad5fe0; hello_world_v2/hello_world/plugin.py d9b67cedbf6e7ab75823a4eb31a2d8cc8d4d3cca9dcd242ab671af743677cdea; hello_world_eula/manifest.json 18dbd0d33e92154f0482886bed5b61af462da61b8f0fde9f161ab337a7e1f56d; hello_world_eula/EULA.txt 9bc1644fa4fe198412e0ef70f44646b00dd13ca5238b2fbf82b3c8494c34bf0b; hello_world_eula/hello_world/plugin.py f720ffa6f4526cd214e4fcdb05ed07b25fe1b16b33a47aae28b6fd3fa986d0df.
+- default: none.
+- boundary-case: a 0.2 manifest whose `config_schema` has a property named `path` installs on a 0.3 host (CXC-PC-V03-VERSION-0-3 rule (4)).
+- verify-machine: CXC-PC-V03-T-READS-0-2.
+- verify-human: none required.
+- tested-by: [CXC-PC-V03-T-READS-0-2]
+- evidence: EMPTY
+- evidence-fills-with: the raw output of the compatibility test and of the 0.2 test files run unmodified against the 0.3 library, with the library commit and the sha256 of each output
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the compatibility rule is the contract owner's direction of 2026-11-28; the digests and the page-identity carry-over are the writer's
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V02-STORES-COMPAT], [CXC-PC-V02-VERSION-0-2], [CXC-PC-HELLO-V1], [CXC-PC-HELLO-V2], [CXC-PC-CONFORMANCE-SCRIPT], [CXC-PC-V03-MANIFEST-FROZEN]
+
+### [CXC-PC-V03-T-READS-0-2] Test: the 0.2 fixtures are unmodified, every 0.2 test still passes against the 0.3 library, and the field set is pinned
+
+- procedure: hash every fixture file listed at CXC-PC-V03-READS-0-2-UNCHANGED; run the 0.2 test files (test_v02_*.py and the earlier suites) unmodified against the 0.3 library; run the conformance script at both isolation levels; run the field-set pinning test of CXC-PC-V03-MANIFEST-FROZEN.
+- asserts: each digest equals the listed value; every 0.2 test passes except those whose assertion is the library's own contract constant or the sole NC3 input, each such exception named in the output; the script passes steps 1 to 9 and NC1 to NC10; the pinning test passes.
+- verify-machine: non-zero exit on any mismatch.
+- verify-human: none required.
+- evidence: EMPTY
+- status: proposed
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-READS-0-2-UNCHANGED], [CXC-PC-V03-MANIFEST-FROZEN]
+
+### [CXC-PC-V03-STORES-COMPAT] The state files change additively for hosts; a 0.2 library that reads a 0.3 consent line or log line reports or refuses it loudly instead of misreading it
+
+- host-protocol: `Host` gains two OPTIONAL members, `policy` (CXC-PC-V03-HOST-POLICY-HOOK) and `data_dir` (CXC-PC-V03-UNINSTALL-DATA-CHOICE), each with a base-class default. A `Host` written against 0.2 constructs and runs under 0.3 unchanged.
+- manager-signatures: only new optional keyword arguments and new exceptions: `operator` on `configure`, `enable`, `disable`, `uninstall`; `delete_data` on `uninstall`; `acknowledged_warnings` on `install` and `upgrade`; `OperatorDeclined`, `PolicyRefused`, `WarningAckRefused`. No 0.2 signature loses or reorders a parameter.
+- installs-json: the top level stays `{domain: record}`. A record gains two optional keys, `capabilities` and `warning_digests` (CXC-PC-V03-DECLARATION-CHANGE-PREDICATE), omitted when empty; a 0.2 record has neither and reads as empty. A 0.3 library reads a 0.2 file unchanged.
+- consent-jsonl: a record gains ONE more optional key, `acknowledged_warnings` (CXC-PC-V03-WARNING-ACK); the reader accepts the eight keys plus `eula_sha256` and `acknowledged_warnings` when each is valid, and refuses any other key set naming the key. A record for a manifest without warnings is byte-identical in shape to 0.2's.
+- installs-jsonl: entries gain `operator`, `result`, `consent_id` and, on an `uninstall`, `data`; the event names `configure` and `decline` are new (CXC-PC-V03-LIFECYCLE-RECORD). A 0.3 reader reads 0.2 lines unchanged.
+- known-limit: a 0.2 library pointed at a state root where a 0.3 library wrote entries reports every 0.3 `installs.jsonl` line as `malformed-line` with reason `bad-keys` (skipped for every purpose, never blocking), so a roll-back appends new events with `seq` values that may repeat those of the skipped 0.3 lines; and it refuses loudly a consent line that carries `acknowledged_warnings` ("keys must be exactly ..."). Hosts move their pin forward; a roll-back after warnings were acknowledged needs a person.
+- verify-machine: CXC-PC-V03-T-READS-0-2 covers (a) a state root written by the 0.2 library loads under 0.3 and its first 0.3 entry takes the next `seq`; (b) a 0.2-style stub `Host` drives steps 1 to 9; (c) a consent line with an unknown key is refused naming it; (d) a consent line with a non-hex digest in `acknowledged_warnings` is refused naming it; (e) a 0.3 log line is reported by the 0.2 reader as `bad-keys` and nothing blocks.
+- verify-human: none required.
+- tested-by: [CXC-PC-V03-T-READS-0-2]
+- evidence: EMPTY
+- evidence-fills-with: the raw test output with the library commit and the sha256 of the output file
+- status: ratified
+- status-detail: ratified 2026-11-28 by composeux-architect, contract owner
+- provenance: architect-synthesis — the writer's, following the shape of CXC-PC-V02-STORES-COMPAT
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V02-STORES-COMPAT], [CXC-PC-CONSENT-RECORD], [CXC-PC-V02-INSTALL-LOG-MALFORMED-LINES], [CXC-PC-V03-LIFECYCLE-RECORD], [CXC-PC-V03-WARNING-ACK], [CXC-PC-V03-HOST-POLICY-HOOK], [CXC-PC-V03-UNINSTALL-DATA-CHOICE]
+
+---
+
+## 19. v0.3 open decisions for the architect's ratify
+
+### [CXC-PC-V03-RULING-OPERATOR-NULL] Ruled: when a library caller supplies no `operator`, the entry records null
+
+- question: every entry is "operator-attributed", but `operator` is optional on the library calls so that 0.2 callers keep working. Should a call with no operator be refused instead?
+- lean: record null. The web manager always supplies the authenticated identity, so the attribution the contract owner wants holds wherever a person acts; a refusal would break every 0.2 programmatic caller, against the additive rule. A null is visible in the log.
+- if-reopened: make `operator` a required keyword on `configure`, `enable`, `disable` and `uninstall`, refuse a blank one with `InstallLogRefused`, and drop the null from `operator` in CXC-PC-V03-LIFECYCLE-RECORD `new-keys`.
+- invalidating-assumption: a host calls the library from an unattended path and still needs the log to name a person
+- answered-by: ratified by the contract owner, 2026-11-28, on the lean below, which is now the rule
+- status: decided
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-LIFECYCLE-RECORD], [CXC-PC-V03-LIFECYCLE-RECORD-WRITE]
+
+### [CXC-PC-V03-RULING-CONSENT-ID] Ruled: the consent-record id is the sha256 of the record's line, not a new key on the record
+
+- question: the brief asks for the consent-record id in the entry, but a consent record has no id (it has eight keys, CXC-PC-CONSENT-RECORD). Add an `id` key to the record, or derive one?
+- lean: derive it. A new key on every record would make every 0.3 consent line unreadable to a 0.2 library, the reason CXC-PC-V02-RULING-RECORD-KIND kept the record at eight keys. The digest of the exact line identifies the record without touching it, and the entry already embeds the record in `consent`.
+- if-reopened: add an optional `id` to the record under CXC-PC-V03-STORES-COMPAT and have `make_record` generate it.
+- invalidating-assumption: a host needs to cite a consent record by an id that survives re-serialisation of the line
+- answered-by: ratified by the contract owner, 2026-11-28, on the lean below, which is now the rule
+- status: decided
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-LIFECYCLE-RECORD], [CXC-PC-CONSENT-RECORD], [CXC-PC-V02-RULING-RECORD-KIND]
+
+### [CXC-PC-V03-RULING-LOG-KEYS] Ruled: the lifecycle entry reuses the 0.2 log and its key names instead of a second file with the brief's key names
+
+- question: the brief names the fields `op`, `time`, `result`, `operator`; the 0.2 log already carries `event` and `at` and a strict key set. Reuse the 0.2 file and map the names, or write a new file?
+- lean: reuse and map. Two logs of one lifecycle can disagree, and CXC-PC-V02-INSTALL-LOG-DIVERGENCE already checks one against the snapshot; the cost is that a 0.2 reader skips 0.3 lines loudly (CXC-PC-V03-STORES-COMPAT `known-limit`).
+- if-reopened: write the 0.3 entries to a second file, `lifecycle.jsonl`, with `op`, `domain`, `version`, `operator`, `time`, `result` and `consent_id`, and leave `installs.jsonl` as in 0.2.
+- invalidating-assumption: a host must keep reading `installs.jsonl` with a 0.2 library after a 0.3 library has written to the same state root
+- answered-by: ratified by the contract owner, 2026-11-28, on the lean below, which is now the rule
+- status: decided
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-LIFECYCLE-RECORD], [CXC-PC-V02-INSTALL-LOG-FILE], [CXC-PC-V02-INSTALL-LOG-DIVERGENCE]
+
+### [CXC-PC-V03-RULING-RECORD-DECLINE-UNCHANGED] Ruled: `record_decline` still writes one consent line and no lifecycle entry
+
+- question: a decline is a lifecycle entry (CXC-PC-V03-LIFECYCLE-RECORD). `PluginManager.record_decline` also records an operator's refusal, but CXC-PC-V02-T-RD-ONE-RECORD-NOTHING-ELSE-CHANGES requires that it change nothing but one consent line. Should it now also append a `decline` entry?
+- lean: no. The 0.2 contract and its test say "one record and nothing else"; the gate refusals and the no-gate decline already write entries; `record_decline` is the call a host makes when it ran its own screen, and the host may log that itself.
+- if-reopened: add one `decline` entry to `record_decline` and amend CXC-PC-V02-RECORD-DECLINE `writes` and the RD tests 1 and 4.
+- invalidating-assumption: a host relies on the log alone to reconstruct every refusal
+- answered-by: ratified by the contract owner, 2026-11-28, on the lean below, which is now the rule
+- status: decided
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V02-RECORD-DECLINE], [CXC-PC-V02-T-RD-ONE-RECORD-NOTHING-ELSE-CHANGES], [CXC-PC-V03-LIFECYCLE-RECORD]
+
+### [CXC-PC-V03-RULING-DATA-FOLDER] Ruled: the plug-in's data folder is `<state_root>/data/<domain>`, supplied by `Host.data_dir`
+
+- question: the brief says "the plug-in's data folder" and "the exact data path inside the host state root", but the 0.2 library has no such folder. Where is it, and who names it?
+- lean: `Host.data_dir(domain)`, default `<state_root>/data/<domain>`, an optional member so a host can place it elsewhere inside the state root; the preflight refuses anything that is not strictly inside.
+- if-reopened: fix the path in the contract with no host member, or name a different directory.
+- invalidating-assumption: a host already keeps plug-in data in a location the default does not match
+- answered-by: ratified by the contract owner, 2026-11-28, on the lean below, which is now the rule
+- status: decided
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-UNINSTALL-DATA-CHOICE]
+
+### [CXC-PC-V03-RULING-GRANT-TOKENS] Ruled: grant-bearing is a closed list of name tokens and schema formats that produces advisories only, so changing it never narrows the frozen manifest
+
+- question: "grant-bearing" needs a mechanical test, and the audit asked whether a change to the lists after 0.3 would be a MAJOR under CXC-PC-V03-MANIFEST-FROZEN rule (3).
+- rule: the token and format lists of CXC-PC-V03-GRANT-FREE-CONFIG, applied to manifests stating "0.3" only, drive an ADVISORY (a named warning), never a refusal. A list change after 0.3 changes which advisories appear and never whether a manifest is accepted, so it is ADDITIVE and may ship in a MINOR. It is a structural author aid, not enforcement.
+- if-reopened: if a later contract makes the screen refuse, that is a narrowing of a frozen field and is a MAJOR.
+- invalidating-assumption: authors name grant-bearing fields in ways the lists miss, or ordinary fields collide with them often enough that the advisory is ignored
+- answered-by: ratified by the contract owner, 2026-11-28 (a closed list, a screen, not proof); made advisory by the ruling of the same date
+- status: decided
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-GRANT-FREE-CONFIG], [CXC-PC-V03-MANIFEST-FROZEN]
+
+### [CXC-PC-V03-RULING-DECLARATION-CHANGE-GATES] Ruled: a new or changed capability or warning in an upgrade IS a consent-gate trigger, like a changed EULA
+
+- question: the first draft followed the brief's wording that the gate runs exactly at install, widening and EULA change, so a warning or capability added in an upgrade would not be shown. Should it be a trigger?
+- rule: YES. A NEW or CHANGED `capabilities` token, or a NEW or CHANGED warning (by text sha256), in an upgrade is a trigger, because it changes the risk the operator accepted; `agent-messaging` arriving in an upgrade must not slip through. Removals are not triggers.
+- applied-in: CXC-PC-V03-CONSENT-TRIGGERS, CXC-PC-V03-DECLARATION-CHANGE-PREDICATE, CXC-PC-V03-T-UPGRADE-ADDS-AGENT-MESSAGING, CXC-PC-V03-CAPABILITIES, CXC-PC-V03-WARNING-ACK
+- if-reopened: drop the third trigger from CXC-PC-V03-CONSENT-TRIGGERS rule (1) and delete the predicate node and its test.
+- invalidating-assumption: operators are asked so often by host warning-text edits that they stop reading the page
+- answered-by: ratified by the contract owner, 2026-11-28 (reverses the draft's lean)
+- status: decided
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-CONSENT-TRIGGERS], [CXC-PC-V03-DECLARATION-CHANGE-PREDICATE], [CXC-PC-V03-WARNING-ACK], [CXC-PC-V02-EULA-RECONSENT]
+
+### [CXC-PC-V03-RULING-UNKNOWN-CAPABILITY-TOKENS] Ruled: a well-formed capability token that is not defined is accepted and shown, now and in every later contract
+
+- question: only `agent-messaging` is defined. Should an author's other token be refused? The audit noted that refusing later would narrow `capabilities` and breach the freeze.
+- rule: ACCEPT, and state it so it only adds. A well-formed undefined token is accepted and shown as a claim, and no later contract refuses it; a later contract may DEFINE a meaning for a token (additive: a host policy or a consent line), never refuse one that 0.3 accepted. An accepted undefined token does nothing but appear.
+- if-reopened: refusing undefined tokens is a MAJOR (it narrows a frozen field) and is outside this contract line.
+- invalidating-assumption: a plug-in uses an undefined token to dodge a host's policy by a near-miss spelling
+- answered-by: resolved by the writer on the contract owner's instruction of 2026-11-28 to close it additively
+- status: decided
+- basis: contract-owner design call
+- part-of: [SPEC:CXC-PLUGIN-CONTRACT]
+- see-also: [CXC-PC-V03-CAPABILITIES], [CXC-PC-V03-HOST-POLICY-HOOK], [CXC-PC-V03-MANIFEST-FROZEN]
+
+---
+
 ## Relationships
 
 ### Semantic
@@ -1970,6 +2629,72 @@ updated: 2026-11-27
 - [CXC-PC-V02-RULING-UNINSTALL-HOST-LINES] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
 - [CXC-PC-V02-RULING-PYPI-UPLOAD-GRANT] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
 - [CXC-PC-V02-RULING-BASE-SHA] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-BASIS] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-VERSION-0-3] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-VERSION-TABLE] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-CONSENT-TRIGGERS] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-GATE-CALLS] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-DECLARATION-CHANGE-PREDICATE] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-UPGRADE-ADDS-AGENT-MESSAGING] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-REFUSE-ALWAYS-STOPS] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-NC-UPGRADE-DECLINED] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-LIFECYCLE-RECORD] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-LIFECYCLE-RECORD-COMPAT] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-LIFECYCLE-RECORD-WRITE] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-LIFECYCLE-RECORD] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-GRANT-FREE-CONFIG] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-NC-GRANT-BEARING-CONFIG] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-CAPABILITIES] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-WARNINGS] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-CAPABILITIES-WARNINGS-TABLE] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-HOST-POLICY-HOOK] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-WARNING-ACK] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-WARNING-ACK] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-UNINSTALL-DATA-CHOICE] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-UNINSTALL-DATA] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-MOUNTABLE-WEB-MANAGER] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-MOUNT] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-HOST-AGENT-BLOCK] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-HOST-AGENT-BLOCK] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-MANIFEST-FROZEN] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-READS-0-2-UNCHANGED] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-T-READS-0-2] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-STORES-COMPAT] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-RULING-OPERATOR-NULL] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-RULING-CONSENT-ID] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-RULING-LOG-KEYS] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-RULING-RECORD-DECLINE-UNCHANGED] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-RULING-DATA-FOLDER] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-RULING-GRANT-TOKENS] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-RULING-DECLARATION-CHANGE-GATES] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-RULING-UNKNOWN-CAPABILITY-TOKENS] PART_OF [SPEC:CXC-PLUGIN-CONTRACT]
+- [CXC-PC-V03-VERSION-0-3] EXTENDS [CXC-PC-V02-VERSION-0-2]
+- [CXC-PC-V03-LIFECYCLE-RECORD] EXTENDS [CXC-PC-V02-INSTALL-LOG-EVENT]
+- [CXC-PC-V03-LIFECYCLE-RECORD-WRITE] EXTENDS [CXC-PC-V02-INSTALL-LOG-WRITE-ORDER]
+- [CXC-PC-V03-WARNING-ACK] EXTENDS [CXC-PC-V02-EULA-HASH-RECORD]
+- [CXC-PC-V03-UNINSTALL-DATA-CHOICE] EXTENDS [CXC-PC-V02-UNINSTALL-CONFIRM]
+- [CXC-PC-V03-MOUNTABLE-WEB-MANAGER] EXTENDS [CXC-PC-UI-URL-PREFIX]
+- [CXC-PC-V03-CONSENT-TRIGGERS] EXTENDS [CXC-PC-CONSENT-GATES]
+- [CXC-PC-V03-REFUSE-ALWAYS-STOPS] EXTENDS [CXC-PC-LIFECYCLE-UPGRADE]
+- [CXC-PC-V03-MANIFEST-FROZEN] DEPENDS_ON [CXC-PC-V03-VERSION-0-3]
+- [CXC-PC-V03-HOST-POLICY-HOOK] DEPENDS_ON [CXC-PC-V03-CAPABILITIES]
+- [CXC-PC-V03-WARNING-ACK] DEPENDS_ON [CXC-PC-V03-WARNINGS]
+- [CXC-PC-NEGATIVE-CONTROLS] CONTAINS [CXC-PC-V03-NC-UPGRADE-DECLINED]
+- [CXC-PC-NEGATIVE-CONTROLS] CONTAINS [CXC-PC-V03-NC-GRANT-BEARING-CONFIG]
+- [CXC-PC-V03-VERSION-0-3] RELATED_TO [CXC-PC-V03-T-VERSION-TABLE]
+- [CXC-PC-V03-CONSENT-TRIGGERS] RELATED_TO [CXC-PC-V03-T-GATE-CALLS]
+- [CXC-PC-V03-LIFECYCLE-RECORD] RELATED_TO [CXC-PC-V03-T-LIFECYCLE-RECORD]
+- [CXC-PC-V03-CAPABILITIES] RELATED_TO [CXC-PC-V03-T-CAPABILITIES-WARNINGS-TABLE]
+- [CXC-PC-V03-WARNINGS] RELATED_TO [CXC-PC-V03-T-CAPABILITIES-WARNINGS-TABLE]
+- [CXC-PC-V03-WARNING-ACK] RELATED_TO [CXC-PC-V03-T-WARNING-ACK]
+- [CXC-PC-V03-UNINSTALL-DATA-CHOICE] RELATED_TO [CXC-PC-V03-T-UNINSTALL-DATA]
+- [CXC-PC-V03-MOUNTABLE-WEB-MANAGER] RELATED_TO [CXC-PC-V03-T-MOUNT]
+- [CXC-PC-V03-HOST-AGENT-BLOCK] RELATED_TO [CXC-PC-V03-T-HOST-AGENT-BLOCK]
+- [CXC-PC-V03-HOST-AGENT-BLOCK] EXTENDS [CXC-PC-UI-HOST-HOOKS]
+- [CXC-PC-V03-READS-0-2-UNCHANGED] RELATED_TO [CXC-PC-V03-T-READS-0-2]
+- [CXC-PC-V03-DECLARATION-CHANGE-PREDICATE] RELATED_TO [CXC-PC-V03-T-UPGRADE-ADDS-AGENT-MESSAGING]
+- [CXC-PC-V03-DECLARATION-CHANGE-PREDICATE] EXTENDS [CXC-PC-CONSENT-WIDENING]
+- [CXC-PC-V03-LIFECYCLE-RECORD-COMPAT] EXTENDS [CXC-PC-V02-INSTALL-LOG-MALFORMED-LINES]
 
 ---
 
